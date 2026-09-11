@@ -414,6 +414,17 @@ struct task {
     uint64_t          sc_num;
     uint64_t          sc_arg0, sc_arg1, sc_arg2, sc_arg3;
     uint64_t          sc_arg4;   /* A-32: the fifth, for invocations */
+    uint64_t          sc_arg5, sc_arg6, sc_arg7;  /* A-33: the message ABI */
+    /*
+     * A-33 — the return message.
+     *
+     * A receive returns a whole message and a message does not fit in a return
+     * value, so the seven words go here and the exit path puts them in the
+     * registers they arrived in.  Initialised from the ARGUMENTS at entry, so
+     * a call that returns only a status hands the caller its own inputs back
+     * and no handler has to say anything.
+     */
+    uint64_t          sc_ret[7];
     uint32_t          sc_restart_count;  /* diagnostic: restarts observed */
 
     uint32_t          fault_seq_counter;

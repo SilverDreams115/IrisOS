@@ -53,13 +53,14 @@ syscall_entry:
     movq %gs:48, %rsp           /* cpu_local.syscall_kstack */
 
     /* save the syscall frame:
-     *   [rsp+120] user rbp   ┐
-     *   [rsp+112] user rbx   │ callee-saved (see below)
-     *   [rsp+104] user r12   │
-     *   [rsp+96]  user r13   │
-     *   [rsp+88]  user r14   │
-     *   [rsp+80]  user r15   ┘
-     *   [rsp+72] arg4        (r8, 5th user arg — A-32)
+     *   [rsp+128] user rbp   ┐ callee-saved (see below)
+     *   [rsp+120] user rbx   │
+     *   [rsp+112] user r12   ┘
+     *   [rsp+104] user r13
+     *   [rsp+96]  arg7       (r14, 8th user arg — A-33)
+     *   [rsp+88]  arg6       (r15, 7th user arg — A-33)
+     *   [rsp+80]  arg5       (r9,  6th user arg — A-33)
+     *   [rsp+72]  arg4       (r8,  5th user arg — A-32)
      *   [rsp+64] user rsp    (from %gs:72)
      *   [rsp+56] user rflags (r11, set by syscall insn)
      *   [rsp+48] user rip    (rcx, set by syscall insn)
@@ -73,10 +74,15 @@ syscall_entry:
      * The callee-saved registers are pushed FIRST, above everything else, so
      * that every offset the rest of this file uses stayed where it was.
      *
-     * arg4 is pushed with the callee-saved block rather than next to its four
-     * siblings so that every offset below it — and every instruction in this
-     * file that names one — stayed exactly where it was when the fifth
-     * argument arrived.
+     * args 4 through 7 are pushed with the callee-saved block rather than next
+     * to their four siblings, so that every offset below them — and every
+     * instruction in this file that names one — stayed where it was as the
+     * argument count grew.
+     *
+     * r15 and r14 cost nothing to carry: they were ALREADY being pushed here
+     * as callee-saved, so the message ABI (A-33) taking them as arguments is
+     * the same two stores with a different name on them.  seL4 uses r15 as a
+     * message register on x86_64 for exactly this reason.
      *
      * A procedural kernel does not need them here: it obeys the C ABI, so the
      * user's rbx/rbp/r12-r15 either stay in registers or get spilled onto this
@@ -91,8 +97,9 @@ syscall_entry:
     pushq %rbx
     pushq %r12
     pushq %r13
-    pushq %r14
-    pushq %r15
+    pushq %r14        /* arg7 (A-33) — and the user's r14 */
+    pushq %r15        /* arg6 (A-33) — and the user's r15 */
+    pushq %r9         /* arg5 (A-33) */
     pushq %r8         /* arg4 (A-32) */
     pushq %gs:72      /* user rsp    */
     pushq %r11        /* user rflags */
@@ -119,51 +126,110 @@ syscall_entry:
     movq %rsp, %rdi
     call syscall_save_user_ctx
 
-    /* syscall_dispatch(num, arg0, arg1, arg2, arg3, arg4) */
-    movq  8(%rsp), %rdi   /* num  */
-    movq 16(%rsp), %rsi   /* arg0 */
-    movq 24(%rsp), %rdx   /* arg1 */
-    movq 32(%rsp), %rcx   /* arg2 */
-    movq 40(%rsp), %r8    /* arg3 */
-    movq 72(%rsp), %r9    /* arg4 */
+    /*
+     * syscall_dispatch(num, arg0..arg7) — nine parameters, eight of them user
+     * words (A-33).
+     *
+     * Six go in registers per the C ABI and THREE on the stack: arg5, arg6 and
+     * arg7, in that order at [rsp+0], [rsp+8], [rsp+16].  32 bytes rather than
+     * 24 because the call needs 16-byte alignment and three words is not.
+     */
+    subq $32, %rsp
+    movq 112(%rsp), %rax
+    movq %rax,  0(%rsp)   /* arg5 */
+    movq 120(%rsp), %rax
+    movq %rax,  8(%rsp)   /* arg6 */
+    movq 128(%rsp), %rax
+    movq %rax, 16(%rsp)   /* arg7 */
+    movq  40(%rsp), %rdi  /* num  */
+    movq  48(%rsp), %rsi  /* arg0 */
+    movq  56(%rsp), %rdx  /* arg1 */
+    movq  64(%rsp), %rcx  /* arg2 */
+    movq  72(%rsp), %r8   /* arg3 */
+    movq 104(%rsp), %r9   /* arg4 */
     call syscall_dispatch
+    addq $32, %rsp
     /* return value in rax */
 
-    addq $8, %rsp
+    /*
+     * A-33: hand the message back.
+     *
+     * A receive returns a whole message and a message does not fit in rax, so
+     * the kernel writes its return words into THIS FRAME and the restore below
+     * puts them back in the registers they arrived in.  Done in C, from a
+     * pointer to the frame, for the same reason the save at entry is: `struct
+     * task`'s field offsets are not hard-coded in assembly.
+     *
+     * rax is the status and has to survive the call, so it waits in the
+     * frame's syscall-number slot, which nothing reads after this point.
+     */
+    movq %rax, 8(%rsp)
+    movq %rsp, %rdi
+    call syscall_store_user_ret
+    movq 8(%rsp), %rax
 
-    /* recover saved user context:
-     * after addq $8: rsp+40=user_rip, rsp+48=user_rflags, rsp+56=user_rsp
-     * rax = syscall return value — must NOT be clobbered until sysretq */
-    movq 40(%rsp), %rcx    /* user rip    → rcx (sysretq restores RIP from RCX) */
-    movq 48(%rsp), %r11    /* user rflags → r11 (sysretq restores RFLAGS from R11) */
-    movq 56(%rsp), %r9     /* user rsp    → r9 (scratch; not consumed by sysretq) */
-    addq $64, %rsp
+    /*
+     * A-33: the exit reads everything it needs out of the frame BEFORE it
+     * moves rsp, because the frame is on the kernel stack and the last act is
+     * to leave it.  The order below is forced by that: scratch first, the
+     * return message last, the user stack pointer last of all.
+     *
+     * rax is the status and is not touched from here to sysretq.
+     */
+    movq 48(%rsp), %rcx    /* user rip    → rcx (sysretq restores RIP from RCX) */
+    movq 56(%rsp), %r11    /* user rflags → r11 (sysretq restores RFLAGS from R11) */
 
-    /* switch to user CR3 using r8 as scratch; preserves rax (return value) */
-    movq %gs:56, %r8        /* cpu_local.syscall_user_cr3 */
-    testq %r8, %r8
+    /* switch to the user address space.  r10 is the scratch and is reloaded
+     * with a message register below; the kernel is mapped in every address
+     * space, so this frame survives the CR3 write. */
+    movq %gs:56, %r10       /* cpu_local.syscall_user_cr3 */
+    testq %r10, %r10
     jz .Lsyscall_no_user_cr3
-    movq %r8, %cr3
+    movq %r10, %cr3
 .Lsyscall_no_user_cr3:
 
     /* validate RCX canonical: bits[63:47] must all be 0 for user addresses.
-     * Non-canonical RIP causes SYSRETQ to #GP in ring-0.  Use r8 as scratch
-     * so rax (return value) and r11/rcx (user state) remain intact. */
-    movq %rcx, %r8
-    shrq $47, %r8
+     * Non-canonical RIP causes SYSRETQ to #GP in ring-0.  Same scratch. */
+    movq %rcx, %r10
+    shrq $47, %r10
     jnz .Lsyscall_noncanonical
 
-    movq %r9, %rsp
+    /*
+     * The return message (A-33).  For a call that returns only a status these
+     * still hold what the caller passed in — syscall_store_user_ret left the
+     * frame alone — which is strictly kinder than the clobber ring 3 already
+     * assumes.  For a receive they hold the message: msginfo, badge, four
+     * words, and the capability that was delivered.
+     */
+    movq 16(%rsp), %rdi
+    movq 24(%rsp), %rsi
+    movq 32(%rsp), %rdx
+    movq 40(%rsp), %r10
+    movq 72(%rsp), %r8
+    movq 80(%rsp), %r9
+    movq 88(%rsp), %r15
+
+    movq 64(%rsp), %rsp     /* the user's stack: the last thing read here */
     swapgs                  /* restore user GS: GS_BASE=0, KERNEL_GS_BASE=&cpu_local */
     sysretq                 /* rax=return value, rcx=user RIP, r11=user RFLAGS */
 
 .Lsyscall_noncanonical:
-    /* iretq fallback: SS=0x1B(user data), CS=0x23(user code) */
+    /* iretq fallback: SS=0x1B(user data), CS=0x23(user code).  The frame is
+     * built FIRST, out of registers already loaded, and the message is read
+     * afterwards at offsets 40 bytes higher — five pushes. */
+    movq 64(%rsp), %r10     /* user rsp */
     pushq $0x1B
-    pushq %r9
+    pushq %r10
     pushq %r11
     pushq $0x23
     pushq %rcx
+    movq  56(%rsp), %rdi
+    movq  64(%rsp), %rsi
+    movq  72(%rsp), %rdx
+    movq  80(%rsp), %r10
+    movq 112(%rsp), %r8
+    movq 120(%rsp), %r9
+    movq 128(%rsp), %r15
     swapgs                  /* restore user GS before iretq */
     iretq
 
@@ -194,15 +260,26 @@ syscall_entry:
  *   rdx = user RFLAGS
  *   rcx = user RSP
  *   r8  = &task->sc_user_regs[0]  — r15, r14, r13, r12, rbx, rbp
+ *   r9  = &task->sc_ret[0]        — the return message (A-33): ret0..ret6
+ *
+ * A-33: a parked receive completes here, and a receive returns a MESSAGE.  The
+ * fast path above reads it out of the frame; this path has no frame, so the
+ * kernel left it in the TCB and hands over a pointer the same way it already
+ * does for the callee-saved block.
  */
 .global syscall_return_to_user
 syscall_return_to_user:
-    /* switch to the user address space, as the normal exit does.  r9 is the
-     * scratch here because r8 carries the callee-saved block. */
-    movq %gs:56, %r9        /* cpu_local.syscall_user_cr3 */
-    testq %r9, %r9
+    /* Switch to the user address space, as the normal exit does.
+     *
+     * r11 is the scratch.  It used to be r9 — which A-33 made an ARGUMENT, the
+     * pointer to the return message, and the first thing this function then
+     * did was overwrite it with a CR3 value and dereference that.  r8 carries
+     * the callee-saved block and r9 the message, so r11 is what is left: it is
+     * caller-saved and nothing on this path has put anything in it. */
+    movq %gs:56, %r11       /* cpu_local.syscall_user_cr3 */
+    testq %r11, %r11
     jz .Lrtu_no_cr3
-    movq %r9, %cr3
+    movq %r11, %cr3
 .Lrtu_no_cr3:
 
     /* iretq frame: SS, RSP, RFLAGS, CS, RIP.  Built before the register
@@ -217,12 +294,24 @@ syscall_return_to_user:
 
     /* the user's callee-saved registers, saved at entry by syscall_entry and
      * carried in the TCB across the park */
-    movq  0(%r8), %r15
     movq  8(%r8), %r14
     movq 16(%r8), %r13
     movq 24(%r8), %r12
     movq 32(%r8), %rbx
     movq 40(%r8), %rbp
+
+    /* the return message (A-33).  r15 comes from HERE rather than from the
+     * callee-saved block above, because it is a message register: what the
+     * thread gets back is what the receive delivered, not what it was holding
+     * when it parked.  r8 is read last of all, being the pointer. */
+    movq  0(%r9), %rdi
+    movq  8(%r9), %rsi
+    movq 16(%r9), %rdx
+    movq 24(%r9), %r10
+    movq 48(%r9), %r15
+    movq 40(%r9), %r11      /* ret5 parked: r9 is still the pointer */
+    movq 32(%r9), %r8
+    movq %r11, %r9
 
     swapgs                  /* ring-3 GS: GS_BASE=0, KGS_BASE=&cpu_local */
     iretq

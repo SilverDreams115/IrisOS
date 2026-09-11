@@ -58,13 +58,17 @@ struct syscall_frame {
     uint64_t user_rflags;  /*  56 — r11, set by the syscall insn    */
     uint64_t user_rsp;     /*  64 — the caller's stack              */
     uint64_t arg4;         /*  72 — r8  (ledger A-32)               */
-    /* Callee-saved, pushed FIRST so the offsets above did not move. */
-    uint64_t user_r15;     /*  80 */
-    uint64_t user_r14;     /*  88 */
-    uint64_t user_r13;     /*  96 */
-    uint64_t user_r12;     /* 104 */
-    uint64_t user_rbx;     /* 112 */
-    uint64_t user_rbp;     /* 120 */
+    uint64_t arg5;         /*  80 — r9  (ledger A-33)               */
+    uint64_t arg6;         /*  88 — r15 (ledger A-33)               */
+    uint64_t arg7;         /*  96 — r14 (ledger A-33)               */
+    /* Callee-saved, pushed FIRST so the offsets above did not move.
+     * r15 and r14 are ABOVE, because they are arguments now: the same two
+     * pushes, carrying the user's values on the way in and the message on the
+     * way out. */
+    uint64_t user_r13;     /* 104 */
+    uint64_t user_r12;     /* 112 */
+    uint64_t user_rbx;     /* 120 */
+    uint64_t user_rbp;     /* 128 */
 };
 
 /*
@@ -83,12 +87,32 @@ void syscall_save_user_ctx(struct syscall_frame *f) {
     t->sc_user_rsp    = f->user_rsp;
     /* Callee-saved too: abandoning the frame throws away the spills that
      * would otherwise have preserved them for the caller. */
-    t->sc_user_regs[0] = f->user_r15;
-    t->sc_user_regs[1] = f->user_r14;
+    /* r15 and r14 are message registers now (A-33), so what a parked thread
+     * gets back in them is what its receive delivered — not what it happened
+     * to be holding.  They are saved here anyway, because a thread that parked
+     * in a call which returns no message must find them unchanged. */
+    t->sc_user_regs[0] = f->arg6;   /* r15 */
+    t->sc_user_regs[1] = f->arg7;   /* r14 */
     t->sc_user_regs[2] = f->user_r13;
     t->sc_user_regs[3] = f->user_r12;
     t->sc_user_regs[4] = f->user_rbx;
     t->sc_user_regs[5] = f->user_rbp;
+
+    /*
+     * A-33: the return message starts out as the arguments.
+     *
+     * A call that returns nothing but a status writes none of these, and the
+     * caller gets its own inputs back — strictly kinder than the clobber ring
+     * 3 already assumes, and it means only the calls that RETURN a message
+     * have to say anything.
+     */
+    t->sc_ret[0] = f->arg0;
+    t->sc_ret[1] = f->arg1;
+    t->sc_ret[2] = f->arg2;
+    t->sc_ret[3] = f->arg3;
+    t->sc_ret[4] = f->arg4;
+    t->sc_ret[5] = f->arg5;
+    t->sc_ret[6] = f->arg6;
     /*
      * Step 3: a thread that made a SYSCALL resumes in the KERNEL, not at the
      * ring-3 context some earlier interrupt saved.  It has a syscall to
@@ -118,7 +142,27 @@ void syscall_save_user_ctx(struct syscall_frame *f) {
  */
 static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
                                      uint64_t arg1, uint64_t arg2,
-                                     uint64_t arg3, uint64_t arg4);
+                                     uint64_t arg3, uint64_t arg4,
+                                     uint64_t arg5, uint64_t arg6,
+                                     uint64_t arg7);
+
+/*
+ * A-33 — copy the return message out of the thread and into the frame.
+ *
+ * Called by syscall_entry between the dispatch and the restore, from a pointer
+ * to the frame, so that `struct task`'s field offsets stay out of assembly.
+ */
+void syscall_store_user_ret(struct syscall_frame *f) {
+    struct task *t = task_current();
+    if (!t || !f) return;
+    f->arg0 = t->sc_ret[0];
+    f->arg1 = t->sc_ret[1];
+    f->arg2 = t->sc_ret[2];
+    f->arg3 = t->sc_ret[3];
+    f->arg4 = t->sc_ret[4];
+    f->arg5 = t->sc_ret[5];
+    f->arg6 = t->sc_ret[6];
+}
 
 /* Global restart gauge — the only way, from outside, to tell a restartable
  * blocking path from a stack-parked one. */
@@ -152,8 +196,10 @@ void syscall_request_restart(struct task *t) {
  */
 static uint64_t syscall_run(struct task *t, uint64_t num, uint64_t arg0,
                             uint64_t arg1, uint64_t arg2, uint64_t arg3,
-                            uint64_t arg4) {
-    uint64_t r = syscall_dispatch_one(num, arg0, arg1, arg2, arg3, arg4);
+                            uint64_t arg4, uint64_t arg5, uint64_t arg6,
+                            uint64_t arg7) {
+    uint64_t r = syscall_dispatch_one(num, arg0, arg1, arg2, arg3, arg4,
+                                      arg5, arg6, arg7);
     if (!t || !t->sc_restart) { if (t) t->sc_reentry = 0u; return r; }
 
     t->sc_restart = 0u;
@@ -163,15 +209,17 @@ static uint64_t syscall_run(struct task *t, uint64_t num, uint64_t arg0,
 
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
                           uint64_t arg1, uint64_t arg2, uint64_t arg3,
-                          uint64_t arg4) {
+                          uint64_t arg4, uint64_t arg5, uint64_t arg6,
+                          uint64_t arg7) {
     struct task *t = task_current();
     if (t) {
         t->sc_num  = num;  t->sc_arg0 = arg0; t->sc_arg1 = arg1;
         t->sc_arg2 = arg2; t->sc_arg3 = arg3; t->sc_arg4 = arg4;
+        t->sc_arg5 = arg5; t->sc_arg6 = arg6; t->sc_arg7 = arg7;
         t->sc_restart = 0u;
         t->sc_reentry = 0u;
     }
-    return syscall_run(t, num, arg0, arg1, arg2, arg3, arg4);
+    return syscall_run(t, num, arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
 /*
@@ -211,7 +259,8 @@ __attribute__((noreturn)) void syscall_restart_trampoline(void) {
     t->sc_reentry = 1u;
 
     uint64_t r = syscall_run(t, t->sc_num, t->sc_arg0, t->sc_arg1,
-                             t->sc_arg2, t->sc_arg3, t->sc_arg4);
+                             t->sc_arg2, t->sc_arg3, t->sc_arg4,
+                             t->sc_arg5, t->sc_arg6, t->sc_arg7);
 
     /*
      * And return to ring 3 without a syscall frame — the whole point of step 2.
@@ -219,7 +268,7 @@ __attribute__((noreturn)) void syscall_restart_trampoline(void) {
      * put it at entry.
      */
     syscall_return_to_user(r, t->sc_user_rip, t->sc_user_rflags,
-                           t->sc_user_rsp, t->sc_user_regs);
+                           t->sc_user_rsp, t->sc_user_regs, t->sc_ret);
     __builtin_unreachable();
 }
 
@@ -244,9 +293,12 @@ uint64_t syscall_numbered_call_count(void) {
 
 static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
                                      uint64_t arg1, uint64_t arg2,
-                                     uint64_t arg3, uint64_t arg4) {
+                                     uint64_t arg3, uint64_t arg4,
+                                     uint64_t arg5, uint64_t arg6,
+                                     uint64_t arg7) {
     /* The invocation door. */
-    if (num == SYS_INVOKE) return syscall_invoke(arg0, arg1, arg2, arg3, arg4);
+    if (num == SYS_INVOKE)
+        return syscall_invoke(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 
     /*
      * Everything below is the numbered door, and what takes it is counted —

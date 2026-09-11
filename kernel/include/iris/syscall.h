@@ -2212,11 +2212,14 @@ void syscall_init(void);
 void syscall_set_kstack(uint64_t kstack_top);
 void syscall_set_user_cr3(uint64_t val);
 
-/* Called from ASM handler — 6 params: num + 5 user args (arg3 via r10,
- * arg4 via r8; ledger A-32). */
+/* Called from ASM handler — 9 params: num + EIGHT user args.
+ * arg3 via r10, arg4 via r8 (A-32), arg5 via r9, arg6 via r15, arg7 via r14
+ * (A-33, the message ABI: r15 and r14 were already being pushed as
+ * callee-saved, so carrying them costs nothing). */
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
                           uint64_t arg1, uint64_t arg2, uint64_t arg3,
-                          uint64_t arg4);
+                          uint64_t arg4, uint64_t arg5, uint64_t arg6,
+                          uint64_t arg7);
 #endif /* __KERNEL__ */
 #endif /* __ASSEMBLER__ */
 

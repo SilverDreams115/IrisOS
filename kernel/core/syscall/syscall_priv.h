@@ -415,7 +415,12 @@ __attribute__((noreturn)) void syscall_return_to_user(uint64_t rax_value,
                                                       uint64_t user_rip,
                                                       uint64_t user_rflags,
                                                       uint64_t user_rsp,
-                                                      const uint64_t *callee_saved);
+                                                      const uint64_t *callee_saved,
+                                                      const uint64_t *ret_msg);
+/* A-33 — copy the return message from the thread into the syscall frame.
+ * Called by syscall_entry between the dispatch and the register restore. */
+struct syscall_frame;
+void syscall_store_user_ret(struct syscall_frame *f);
 /* Where an abandoned syscall resumes, on a fresh stack. */
 __attribute__((noreturn)) void syscall_restart_trampoline(void);
 /* Park the caller so it resumes at the trampoline, abandoning this frame.
@@ -474,7 +479,8 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── The invocation door (ledger A-32, syscall_invoke.c) ─────────── */
 uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
-                        uint64_t a1, uint64_t a2, uint64_t a3);
+                        uint64_t a1, uint64_t a2, uint64_t a3,
+                        uint64_t a4, uint64_t a5, uint64_t a6);
 /* How many calls still came through the numbered door (syscall_dispatch.c).
  * Reported by SYS_UNTYPED_QUERY; must be 0 when the conversion closes. */
 uint64_t syscall_numbered_call_count(void);

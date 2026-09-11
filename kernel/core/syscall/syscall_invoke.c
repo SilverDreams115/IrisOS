@@ -49,7 +49,13 @@
 #include <iris/invoke.h>
 
 uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
-                        uint64_t a1, uint64_t a2, uint64_t a3) {
+                        uint64_t a1, uint64_t a2, uint64_t a3,
+                        uint64_t a4, uint64_t a5, uint64_t a6) {
+    /* a4..a6 are the message ABI's extra words (A-33): only the IPC methods
+     * read them, and they reach those methods through the thread rather than
+     * through this switch, which would otherwise carry eight arguments for the
+     * benefit of seven of its sixty cases. */
+    (void)a4; (void)a5; (void)a6;
     switch (label) {
     /* ── KOBJ_TCB ─────────────────────────────────────────────────────── */
     case INV_TCB_SUSPEND:              return sys_tcb_suspend(cptr, a1, a2);
