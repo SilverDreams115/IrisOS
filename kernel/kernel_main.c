@@ -240,6 +240,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                 { IRIS_BOOTCAP_FB_CONTROL,     BOOT_CPTR_FB_CONTROL },
                 { IRIS_BOOTCAP_SCHED_CONTROL,  BOOT_CPTR_SCHED_CONTROL },
                 { IRIS_BOOTCAP_ASID_CONTROL,   BOOT_CPTR_ASID_CONTROL },
+                { IRIS_BOOTCAP_DOMAIN_CONTROL, BOOT_CPTR_DOMAIN_CONTROL },
             };
             for (uint32_t i = 0;
                  ut && i < sizeof(boot_controls) / sizeof(boot_controls[0]);

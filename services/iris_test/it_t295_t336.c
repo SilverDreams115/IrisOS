@@ -2328,3 +2328,117 @@ void test_t342(void) {
     it_quiesce_reaper();
     if (ok) it_pass("T342"); else it_fail("T342", why);
 }
+
+/* T343's worker: it does nothing but count, so "is it running" is readable. */
+static volatile uint64_t g_t343_ticks;
+static volatile int      g_t343_stop;
+static uint8_t           g_t343_stack[8192];
+
+static void t343_worker(void) {
+    while (!g_t343_stop) {
+        g_t343_ticks++;
+        it_sys1(SYS_YIELD, 0);
+    }
+    it_sys1(SYS_EXIT, 0);
+    for (;;) {}
+}
+
+/* ── T343: scheduling domains — the top-level time partition ───────────────
+ *
+ * A domain is not a priority.  Priority orders threads that COMPETE; a domain
+ * decides whether they compete at all.  A fixed schedule says which domain
+ * owns the CPU for how long, and a thread runs only while its own domain is
+ * the current one — whatever its priority, and whatever any other domain's
+ * threads are doing.
+ *
+ * That is the point of having them.  Priority leaks: two threads at different
+ * priorities can measure each other through when they get to run, and the
+ * bandwidth of that channel depends on how busy the other one is.  A time
+ * partition does not, because the boundary is a SCHEDULE rather than a
+ * comparison — domain 0 gets its slot whether or not domain 1 has anything to
+ * run, so what domain 1 does is not observable from domain 0's timing.
+ *
+ * Four claims:
+ *  1. the authority is required.  `Domain_Set` without the DomainControl
+ *     capability is ACCESS_DENIED — this is a separate authority from the TCB
+ *     capability on purpose, so a supervisor that may set a thread's priority
+ *     cannot thereby move it into somebody else's time;
+ *  2. the domain is bounded: one that does not exist is INVALID_ARG, not a
+ *     thread filed into a queue nothing dispatches;
+ *  3. **a thread in an unscheduled domain does not run.**  The default
+ *     schedule is one entry — all of the CPU, to domain 0, for ever, which is
+ *     seL4's CONFIG_NUM_DOMAINS=1 default — so a thread moved to domain 1 is
+ *     moved out of time entirely.  Its counter must STOP, and stop completely:
+ *     not slow down, which is what a priority would do;
+ *  4. and it comes back.  Moved to domain 0 again, it runs again — so what
+ *     stopped it was the partition and not something that broke it.
+ * Invariants: A1, A5, S5. */
+void test_t343(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "a domain is not a priority";
+
+    g_t343_ticks = 0; g_t343_stop = 0;
+    uint64_t rsp = ((uint64_t)(uintptr_t)(g_t343_stack +
+                      sizeof(g_t343_stack))) & ~0xFULL;
+    long tcb = it_thread_create((uint64_t)(uintptr_t)t343_worker, rsp, 0);
+    if (tcb < 0) { it_fail("T343", "thread"); return; }
+
+    /* It is in domain 0 — the only scheduled one — so it runs. */
+    for (int i = 0; i < 200 && g_t343_ticks == 0; i++) it_settle(1);
+    if (g_t343_ticks == 0) { ok = 0; why = "the worker never ran at all"; }
+
+    /* 2. a domain that does not exist. */
+    if (ok) {
+        long r = it_invoke2((long)IT_CPTR_DOMAIN_CONTROL, INV_DOMAIN_SET,
+                            tcb, (long)IRIS_NUM_DOMAINS);
+        if (r != (long)IRIS_ERR_INVALID_ARG) {
+            it_fz_note("T343", (uint32_t)(-r), (uint32_t)IRIS_NUM_DOMAINS, 0u);
+            ok = 0; why = "a domain outside the configured set was accepted";
+        }
+    }
+
+    /* 1. the authority is required.  The suite's own endpoint capability is a
+     *    real capability that is not DomainControl, which is the case that
+     *    matters: not "no capability", but "the wrong one". */
+    if (ok && it_invoke2((long)IRIS_CPTR_SVCMGR_EP, INV_DOMAIN_SET, tcb, 1)
+              != (long)IRIS_ERR_ACCESS_DENIED) {
+        ok = 0; why = "a non-domain capability moved a thread between domains";
+    }
+
+    /* 3. out of the scheduled domain, and it stops. */
+    if (ok && it_invoke2((long)IT_CPTR_DOMAIN_CONTROL, INV_DOMAIN_SET,
+                         tcb, 1) != 0) {
+        ok = 0; why = "domain set";
+    }
+    if (ok) {
+        for (int i = 0; i < 40; i++) it_settle(1);   /* let it drain out */
+        uint64_t a = g_t343_ticks;
+        for (int i = 0; i < 200; i++) it_settle(1);
+        uint64_t b = g_t343_ticks;
+        if (b != a) {
+            it_fz_note("T343", (uint32_t)(b - a), 1u, 0u);
+            ok = 0; why = "a thread in an unscheduled domain still ran";
+        }
+    }
+
+    /* 4. ...and back. */
+    if (ok && it_invoke2((long)IT_CPTR_DOMAIN_CONTROL, INV_DOMAIN_SET,
+                         tcb, 0) != 0) {
+        ok = 0; why = "domain set back";
+    }
+    if (ok) {
+        uint64_t a = g_t343_ticks;
+        int moved = 0;
+        for (int i = 0; i < 200 && !moved; i++) {
+            it_settle(1);
+            if (g_t343_ticks != a) moved = 1;
+        }
+        if (!moved) { ok = 0; why = "the thread did not come back with its domain"; }
+    }
+
+    g_t343_stop = 1;
+    for (int i = 0; i < 400; i++) it_settle(1);
+    it_quiesce_reaper();
+    if (ok) it_pass("T343"); else it_fail("T343", why);
+}

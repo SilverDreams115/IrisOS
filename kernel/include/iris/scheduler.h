@@ -18,6 +18,14 @@ void     scheduler_tick(void);
  *   Use the low 32 bits for short-lived deltas; use both halves for absolute timestamps.
  */
 uint32_t sched_live_task_count(void);
+
+/* Scheduling domains (seL4's top-level time partition; see iris/domain.h).
+ * sched_set_domain requeues the thread, because its queue is keyed on
+ * (domain, priority) and a bare field write would strand it. */
+struct task;
+void     sched_set_domain(struct task *t, uint8_t domain);
+uint32_t sched_domain_current(void);
+uint64_t sched_domain_switches(void);
 /* Phase 16: high-water depth of the deferred-reap queue.  Monotonic; a value
  * approaching REAP_QUEUE_SIZE would mean the single-CPU "one death per yield"
  * assumption is being violated and dead task slots may leak. */

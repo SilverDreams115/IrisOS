@@ -302,3 +302,6 @@ uint64_t sys_sc_yield_to(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     t->need_resched = 1;
     return sys_yield(0, 0, 0);
 }
+
+/* `sys_domain_set` lives in syscall_tcb.c: it resolves a TCB, and the resolver
+ * for that is there. */

@@ -219,10 +219,20 @@ uint32_t sched_duplicate_enqueue_count(void) {
     return atomic_load_explicit(&sched_dup_enq, memory_order_relaxed);
 }
 
+/* A thread's queue is (its domain, its priority).  The domain is read here
+ * rather than passed in, so every enqueue path gets it without knowing it
+ * exists — which is what makes adding domains a change to three functions
+ * instead of to every caller. */
+static inline uint32_t rq_dom_of(const struct task *t) {
+    uint32_t d = (uint32_t)t->domain;
+    return (d < IRIS_NUM_DOMAINS) ? d : 0u;
+}
+
 void rq_enqueue(struct task *t) {
     struct CpuRunQueue *rq = cpu_local[t->home_cpu].rq;
     if (!rq) return;
     int prio = (int)(uint8_t)t->priority;
+    uint32_t dom = rq_dom_of(t);
     uint64_t flags = irq_spinlock_lock(&rq->lock);
     if (t->rq_queued) {
         /* S4 guard engaged: task already queued — reject the duplicate. */
@@ -232,13 +242,13 @@ void rq_enqueue(struct task *t) {
     }
     t->rq_queued = 1;
     t->rq_next   = 0;
-    if (rq->head[prio] == 0) {
-        rq->head[prio] = t;
-        rq->tail[prio] = t;
-        rq->mask[prio >> 6] |= (1ULL << (prio & 63));
+    if (rq->head[dom][prio] == 0) {
+        rq->head[dom][prio] = t;
+        rq->tail[dom][prio] = t;
+        rq->mask[dom][prio >> 6] |= (1ULL << (prio & 63));
     } else {
-        rq->tail[prio]->rq_next = t;
-        rq->tail[prio]          = t;
+        rq->tail[dom][prio]->rq_next = t;
+        rq->tail[dom][prio]          = t;
     }
     rq_live_inc();
     irq_spinlock_unlock(&rq->lock, flags);
@@ -250,35 +260,49 @@ void rq_remove(struct task *t) {
     uint64_t flags = irq_spinlock_lock(&rq->lock);
     if (!t->rq_queued) { irq_spinlock_unlock(&rq->lock, flags); return; }
     int prio = (int)(uint8_t)t->priority;
-    struct task *prev = 0, *cur = rq->head[prio];
+    uint32_t dom = rq_dom_of(t);
+    struct task *prev = 0, *cur = rq->head[dom][prio];
     while (cur && cur != t) { prev = cur; cur = cur->rq_next; }
     if (!cur) { t->rq_queued = 0; rq_live_dec(); irq_spinlock_unlock(&rq->lock, flags); return; }
     struct task *nxt = t->rq_next;
-    if (!prev)                   rq->head[prio] = nxt;
-    else                         prev->rq_next  = nxt;
-    if (rq->tail[prio] == t)     rq->tail[prio]  = prev;
-    if (rq->head[prio] == 0)
-        rq->mask[prio >> 6] &= ~(1ULL << (prio & 63));
+    if (!prev)                        rq->head[dom][prio] = nxt;
+    else                              prev->rq_next       = nxt;
+    if (rq->tail[dom][prio] == t)     rq->tail[dom][prio]  = prev;
+    if (rq->head[dom][prio] == 0)
+        rq->mask[dom][prio >> 6] &= ~(1ULL << (prio & 63));
     t->rq_queued = 0;
     t->rq_next   = 0;
     rq_live_dec();
     irq_spinlock_unlock(&rq->lock, flags);
 }
 
+/*
+ * The highest-priority runnable thread OF THE CURRENT DOMAIN.
+ *
+ * This is where a time partition actually happens.  A priority-255 thread in
+ * domain 1 is invisible here while domain 0 holds the CPU — not deprioritised,
+ * not skipped over, but in a set of queues this function does not read.  That
+ * is what makes the cost of dispatching independent of what other domains
+ * hold, and the cost is the channel: a search that had to step over other
+ * domains' threads would take longer when they had more, which is a fact about
+ * them measurable from here.
+ */
 struct task *rq_dequeue_best(void) {
     struct CpuRunQueue *rq = cpu_self()->rq;
     if (!rq) return 0;
+    uint32_t dom = iris_cur_domain;
+    if (dom >= IRIS_NUM_DOMAINS) dom = 0u;
     uint64_t flags = irq_spinlock_lock(&rq->lock);
     for (int w = 3; w >= 0; w--) {
-        if (!rq->mask[w]) continue;
-        int bit  = 63 - __builtin_clzll(rq->mask[w]);
+        if (!rq->mask[dom][w]) continue;
+        int bit  = 63 - __builtin_clzll(rq->mask[dom][w]);
         int prio = w * 64 + bit;
-        struct task *t   = rq->head[prio];
+        struct task *t   = rq->head[dom][prio];
         struct task *nxt = t->rq_next;
-        rq->head[prio] = nxt;
+        rq->head[dom][prio] = nxt;
         if (nxt == 0) {
-            rq->tail[prio] = 0;
-            rq->mask[w] &= ~(1ULL << bit);
+            rq->tail[dom][prio] = 0;
+            rq->mask[dom][w] &= ~(1ULL << bit);
         }
         t->rq_queued = 0;
         t->rq_next   = 0;
@@ -293,16 +317,39 @@ struct task *rq_dequeue_best(void) {
 int rq_top_priority(void) {
     struct CpuRunQueue *rq = cpu_self()->rq;
     if (!rq) return -1;
+    uint32_t dom = iris_cur_domain;
+    if (dom >= IRIS_NUM_DOMAINS) dom = 0u;
     uint64_t flags = irq_spinlock_lock(&rq->lock);
     int result = -1;
     for (int w = 3; w >= 0; w--) {
-        if (rq->mask[w]) {
-            result = w * 64 + (63 - __builtin_clzll(rq->mask[w]));
+        if (rq->mask[dom][w]) {
+            result = w * 64 + (63 - __builtin_clzll(rq->mask[dom][w]));
             break;
         }
     }
     irq_spinlock_unlock(&rq->lock, flags);
     return result;
+}
+
+/*
+ * Move a thread between scheduling domains, requeueing it if it was queued.
+ *
+ * The REQUEUE is the operation, not the field write.  A runnable thread sits
+ * in the queue of (domain, priority); writing the new domain and leaving it
+ * where it was would leave it dispatchable in its OLD domain and invisible in
+ * its new one — the partition failing in both directions at once.
+ *
+ * It lives here rather than in the syscall layer because the run queues do,
+ * and because `rq_remove`/`rq_enqueue` are scheduler-private: a syscall that
+ * had to reach into them would be a syscall that knows how dispatch is
+ * implemented.
+ */
+void sched_set_domain(struct task *t, uint8_t domain) {
+    if (!t || t->domain == domain) return;
+    int was_queued = t->rq_queued;
+    if (was_queued) rq_remove(t);
+    t->domain = domain;
+    if (was_queued) rq_enqueue(t);
 }
 
 void task_wakeup(struct task *t) {
@@ -747,8 +794,10 @@ void task_init(void) {
     /* Initialize CPU 0's run queue and wire it before any rq_* call. */
     struct CpuRunQueue *rq0 = &cpu_rqs[0];
     irq_spinlock_init(&rq0->lock);
-    for (int i = 0; i < 256; i++) { rq0->head[i] = 0; rq0->tail[i] = 0; }
-    rq0->mask[0] = rq0->mask[1] = rq0->mask[2] = rq0->mask[3] = 0;
+    for (uint32_t d = 0; d < IRIS_NUM_DOMAINS; d++) {
+        for (int i = 0; i < 256; i++) { rq0->head[d][i] = 0; rq0->tail[d][i] = 0; }
+        rq0->mask[d][0] = rq0->mask[d][1] = rq0->mask[d][2] = rq0->mask[d][3] = 0;
+    }
     cpu_local[0].rq = rq0;
 
     atomic_store_explicit(&sched_live_count, 1u, memory_order_relaxed); /* idle */

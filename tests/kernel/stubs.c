@@ -62,6 +62,15 @@ void kslab_free(void *ptr, uint32_t size) {
 /* ── task / scheduler stubs ─────────────────────────────────────────────── */
 #include <iris/task.h>
 void         task_wakeup(struct task *t) { (void)t; }
+/* Domains: the host has no run queues, so the REQUEUE half of this is not
+ * modelled — what the host suite checks about `Domain_Set` is the authority
+ * and the argument validation, and both happen before this is reached.  The
+ * partition itself is a runtime claim (T343). */
+void         sched_set_domain(struct task *t, uint8_t domain) {
+    if (t) t->domain = domain;
+}
+uint32_t     sched_domain_current(void)  { return 0u; }
+uint64_t     sched_domain_switches(void) { return 0u; }
 void         task_yield(void)            { }
 
 /*

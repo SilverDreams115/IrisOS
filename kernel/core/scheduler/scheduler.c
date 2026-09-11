@@ -277,6 +277,59 @@ void sched_idle_account(void) {
     cpu_self()->idle_ticks++;
 }
 
+/* ── the domain schedule ─────────────────────────────────────────────────
+ *
+ * FIXED, like seL4's.  There is no invocation that edits it, and that is the
+ * design rather than an omission: a schedule somebody can influence is a
+ * schedule that carries information, which is the one thing a time partition
+ * exists to prevent.  What ring 3 can do is place a THREAD in a domain
+ * (`Domain_Set`), gated by its own boot capability.
+ *
+ * The default is one entry — all of the CPU, to domain 0, for ever — so a
+ * system that configures nothing dispatches exactly as it did before domains
+ * existed.  seL4 ships CONFIG_NUM_DOMAINS = 1 for the same reason.
+ */
+static const struct iris_dom_slot dom_schedule[] = {
+    { 0u, 0u },   /* ticks == 0 means "until something else happens": the
+                   * single-domain default never advances the schedule at all,
+                   * so the tick does no work and no switch is ever counted. */
+};
+static uint32_t dom_sched_idx;
+static uint32_t dom_ticks_left;
+uint8_t         iris_cur_domain;
+static _Atomic uint64_t dom_switches;
+
+uint32_t sched_domain_current(void)  { return (uint32_t)iris_cur_domain; }
+uint64_t sched_domain_switches(void) {
+    return atomic_load_explicit(&dom_switches, memory_order_relaxed);
+}
+
+/*
+ * One tick of the schedule.  Returns 1 when the domain CHANGED, which the
+ * caller turns into a reschedule — the outgoing domain's thread must stop
+ * running immediately, not at the end of its own quantum, or the partition
+ * would be a suggestion.
+ */
+int sched_domain_tick(void) {
+    const uint32_t n = (uint32_t)(sizeof(dom_schedule) / sizeof(dom_schedule[0]));
+    /* A schedule of one entry with no length is the default: nothing to
+     * advance, and the branch costs one comparison on every tick. */
+    if (n <= 1u && dom_schedule[0].ticks == 0u) return 0;
+
+    if (dom_ticks_left > 0u) dom_ticks_left--;
+    if (dom_ticks_left > 0u) return 0;
+
+    uint8_t prev = iris_cur_domain;
+    dom_sched_idx = (dom_sched_idx + 1u) % n;
+    iris_cur_domain = dom_schedule[dom_sched_idx].domain;
+    dom_ticks_left  = dom_schedule[dom_sched_idx].ticks;
+    if (iris_cur_domain != prev) {
+        atomic_fetch_add_explicit(&dom_switches, 1u, memory_order_relaxed);
+        return 1;
+    }
+    return 0;
+}
+
 void scheduler_init(void) {
     task_init();
 }
@@ -286,6 +339,13 @@ void scheduler_tick(void) {
 
     scheduler_ticks++;
     wall_ticks++;
+
+    /* The domain schedule advances on the same tick that drives preemption,
+     * and a domain change forces a reschedule: the outgoing domain's thread
+     * must stop running now, not at the end of its own quantum, or the
+     * partition would be a suggestion rather than a boundary. */
+    if (sched_domain_tick() && current_task)
+        current_task->need_resched = 1;
     if (current_task == task_list_head)
         cpu_self()->idle_ticks++;
 

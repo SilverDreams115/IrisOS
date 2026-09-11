@@ -29,6 +29,7 @@
 #include <iris/ipc_msg.h>
 #include <iris/user_ctx.h>
 #include <iris/ipc_recv_slot.h>
+#include <iris/domain.h>
 #include <iris/endpoint_proto.h>
 #include "../common/iris_timer.h"
 #include <iris/fb_info.h>
@@ -276,7 +277,24 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * destroys a live object — that cost two hangs during bring-up. */
 /* The only slots genuinely unassigned in this process (verified by enumerating
  * every IRIS_CPTR_ and BOOT_CPTR_ constant, every _SLOT define and every
- * range-reserved pool): 29, 43, 63, 99, 254, 255. */
+ * range-reserved pool): 29, 43, 63, 99, 254, 255.  Of those, 99 is now the
+ * DOMAIN authority (below) and the rest are the scratch pool and the serial
+ * KIoPort. */
+
+/*
+ * The DOMAIN authority (seL4's seL4_CapDomain), as THIS process receives it.
+ *
+ * Every other task gets it at IRIS_CPTR_DOMAIN_CONTROL (97), which is free
+ * everywhere except here: 88..97 is the suite's fixed reply-object range and
+ * T113 deletes 97 on its way out.  A capability minted into 97 at load time
+ * therefore survives until T113 runs and then silently is not there — which is
+ * how this was found, by T343 getting ACCESS_DENIED for a capability the
+ * loader had definitely delivered.
+ *
+ * The suite's CNode is the crowded one, so the suite names its own slot.  99
+ * is on the free list above and is not IRIS_CPTR_FB_CONTROL here: iris_test is
+ * never given framebuffer control. */
+#define IT_CPTR_DOMAIN_CONTROL IRIS_CPTR_DOMAIN_CONTROL_TEST
 /* Stage 5 Step 2: slot 99 is IRIS_CPTR_FB_CONTROL, the framebuffer control
  * capability.  T134's guaranteed-EMPTY probe moved to a scratch slot it
  * deletes itself, which is a stronger guarantee than a slot everyone was
@@ -2007,8 +2025,22 @@ struct it_utq_taskobj {
  * ONE more for the same reason: ASIDControl, the authority to carve
  * address-space identifier pools.  The POOL userboot carves from it is NOT a
  * root — it is retyped from an Untyped and parented there, which is the whole
- * point of the split. */
-#define IT_MDB_LEGACY_ROOT_CEILING 25u
+ * point of the split.
+ *
+ * The DOMAIN SCHEDULER adds the third, and the last one this pattern can
+ * produce for a while: DomainControl, seL4's seL4_CapDomain, the authority to
+ * place a thread in a time partition.  Same shape as the two above — one
+ * capability, minted once at boot, in BootInfo, a root because there is
+ * nothing above it to be a child of, and every delegation downward is a
+ * child.
+ *
+ * This number going UP is not automatically fine, which is why the test
+ * refuses rather than reporting.  What makes these three fine is that each is
+ * a BOOT AUTHORITY: it exists before any Untyped a capability could be
+ * parented to, so "unparented" is a fact about when it was made and not about
+ * an ancestry that was lost.  A root appearing anywhere else is a defect, and
+ * the ceiling is what makes the difference visible. */
+#define IT_MDB_LEGACY_ROOT_CEILING 26u
 
 /* ── T309: a passive server serves a LOOP on donated time (Stage 8-mcs) ───
  *
@@ -2960,6 +2992,7 @@ void test_t339(void);
 void test_t340(void);
 void test_t341(void);
 void test_t342(void);
+void test_t343(void);
 void test_t324(void);
 void test_t319(void);
 void test_t296(void);

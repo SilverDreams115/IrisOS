@@ -52,6 +52,22 @@
  * meaning "I may have as many address spaces as I like".
  */
 #define IRIS_BOOTCAP_ASID_CONTROL   (1u << 8)  /* IRIS_KOBJ_ASID_POOL retype */
+/*
+ * Authority to place a thread in a scheduling DOMAIN.
+ *
+ * seL4's `seL4_CapDomain`, whose only invocation is `seL4_DomainSet_Set`.
+ * Domains are the top-level time partition: the schedule says which domain
+ * owns the CPU for how long, and a thread runs only while its own domain is
+ * the current one — whatever its priority, and whatever any other domain's
+ * threads are doing.
+ *
+ * It is a separate authority from priority for the reason it is separate in
+ * seL4: priority orders threads that COMPETE, and a domain decides whether
+ * they compete at all.  A holder of a TCB capability may order its threads
+ * within the time it has been given; moving one into somebody else's time is
+ * a different question, and this is the capability that answers it.
+ */
+#define IRIS_BOOTCAP_DOMAIN_CONTROL (1u << 9)  /* Domain_Set */
 
 struct KBootstrapCap {
     struct KObject base;

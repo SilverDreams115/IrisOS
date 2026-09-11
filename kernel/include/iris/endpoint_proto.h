@@ -432,6 +432,29 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * control capability (99).
  */
 #define IRIS_CPTR_SCHED_CONTROL ((uint64_t)98)
+/* Authority to place a thread in a scheduling DOMAIN (seL4's seL4_CapDomain).
+ * Next to SchedControl because both are authority over TIME, and they are
+ * separate for the reason seL4 separates them: a budget says how MUCH of the
+ * CPU a thread may have, a domain says WHEN it may have any. */
+#define IRIS_CPTR_DOMAIN_CONTROL ((uint64_t)97)
+/*
+ * ...and the slot IRIS_TEST receives it at, which is not that one.
+ *
+ * 97 is free in every task except the suite, whose fixed reply-object range is
+ * 88..97 and whose T113 deletes 97 on its way out.  A capability minted into
+ * it at load time is therefore delivered, survives most of the run, and is
+ * gone by the time a late test looks — which is how this was found.
+ *
+ * The suite's CNode is the crowded one, so the suite gets its own slot rather
+ * than everyone else moving.  It lives HERE rather than in the suite's private
+ * header because `init` is what mints it and cannot see that header.
+ *
+ * 87 rather than 99: the suite's own free-slot comment named 99, and 99 is
+ * IRIS_CPTR_FB_CONTROL, which init DOES mint into the suite — so the second
+ * mint silently replaced the first and the authority was a framebuffer
+ * capability by the time anything asked.  87 is the top of the S1 scratch
+ * window (64..87), empty at suite start and named by no test. */
+#define IRIS_CPTR_DOMAIN_CONTROL_TEST ((uint64_t)87)
 /*
  * Ledger A-21: the two address-space-identifier authorities.
  *

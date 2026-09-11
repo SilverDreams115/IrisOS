@@ -117,6 +117,7 @@ uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
     case INV_SC_CONSUMED:              return sys_sc_consumed(cptr, a1, a2);
     case INV_SC_YIELD_TO:              return sys_sc_yield_to(cptr, a1, a2);
     case INV_SC_CONFIGURE:             return sys_sc_configure(cptr, a1, a2, a3);
+    case INV_DOMAIN_SET:               return sys_domain_set(cptr, a1, a2);
     case INV_SC_SET_ON_CALLER:         return sys_thread_set_sc(cptr, a1, a2);
 
     /* ── KOBJ_FRAME ───────────────────────────────────────────────────── */

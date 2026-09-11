@@ -734,6 +734,53 @@ uint64_t sys_tcb_set_mcpriority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return 0;
 }
 
+/*
+ * sys_domain_set(auth_cptr, tcb_cptr, domain) — seL4's `seL4_DomainSet_Set`.
+ *
+ * Places a THREAD in a scheduling domain.  Domains are the top-level time
+ * partition: a fixed schedule says which domain owns the CPU for how long, and
+ * a thread runs only while its own domain is current — whatever its priority,
+ * and whatever any other domain's threads are doing.
+ *
+ * `auth_cptr` is the DOMAIN CONTROL capability and it is checked first,
+ * exactly as `SchedControl` is for a budget (A-20).  A separate authority from
+ * the TCB capability on purpose: holding a thread lets you order it within the
+ * time you were given, and moving it into somebody else's time is a different
+ * question.  A supervisor that may configure its children must not be able to
+ * move one into another partition's slot just because it can set its priority.
+ *
+ * RIGHT_WRITE on the target: this changes when it runs.
+ */
+uint64_t sys_domain_set(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *caller = task_current();
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    if (!syscall_has_bootcap(caller, arg0, IRIS_BOOTCAP_DOMAIN_CONTROL))
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+
+    if (arg2 >= IRIS_NUM_DOMAINS) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct task *target; iris_rights_t rights;
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg1,
+                                   RIGHT_WRITE, &target, &rights);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    if (target->terminal) {
+        kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_NOT_FOUND);
+    }
+
+    int moved = (target->domain != (uint8_t)arg2);
+    sched_set_domain(target, (uint8_t)arg2);
+
+    /* A thread that moved itself out of the current domain is no longer
+     * entitled to the CPU.  Mark rather than switch: the dispatcher decides. */
+    if (moved && target == caller) caller->need_resched = 1;
+
+    kobject_release(&target->base);
+    return syscall_ok_u64(0);
+}
+
 uint64_t sys_tcb_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *caller = task_current();

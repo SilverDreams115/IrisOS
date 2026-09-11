@@ -26,6 +26,7 @@
 #include <iris/nc/kvspace.h>
 #include <iris/nc/kreply.h>
 #include <iris/nc/kpagetable.h>
+#include <iris/domain.h>
 #include <iris/nc/ktcb.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/cspace.h>
@@ -445,6 +446,9 @@ uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 uint64_t sys_cspace_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — Block 3 scheduler (Ph73-75) ─────────── */
+/* Domains: seL4's seL4_DomainSet_Set.  In syscall_tcb.c, because it resolves a
+ * TCB and the resolver for that lives there. */
+uint64_t sys_domain_set(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                           uint64_t arg3);
 uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2);

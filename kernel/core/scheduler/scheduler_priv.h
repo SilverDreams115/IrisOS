@@ -18,6 +18,7 @@
 #include <iris/task.h>
 #include <iris/cpu_local.h>
 #include <iris/nc/spinlock.h>
+#include <iris/domain.h>
 #include <stdint.h>
 #include <stdatomic.h>
 
@@ -32,11 +33,38 @@ struct CpuRunQueue {
      * index-keyed arrays (next[TASK_MAX]/queued[TASK_MAX]) are retired — the
      * per-task FIFO link and queued flag live inside struct task (rq_next /
      * rq_queued), so the run queue no longer derives identity from a static
-     * array position. */
-    struct task   *head[256];      /* head task per priority, NULL=empty */
-    struct task   *tail[256];      /* tail task per priority, NULL=empty */
-    uint64_t       mask[4];        /* 256-bit: bit p set ↔ prio-p non-empty  */
+     * array position.
+     *
+     * A queue PER DOMAIN, which is what makes the domain scheduler O(1): the
+     * dispatcher searches the current domain's 256 priorities and never looks
+     * at another domain's threads at all.  seL4 indexes one flat array by
+     * `domain * NUM_PRIORITIES + prio` for the same reason.  Searching one set
+     * of queues and skipping threads of the wrong domain would be the same
+     * answer at O(threads), and it would make the cost of running a domain
+     * depend on how many threads the OTHER domains have — which is exactly the
+     * leak a time partition exists to close. */
+    struct task   *head[IRIS_NUM_DOMAINS][256];
+    struct task   *tail[IRIS_NUM_DOMAINS][256];
+    uint64_t       mask[IRIS_NUM_DOMAINS][4];  /* bit p set ↔ prio-p non-empty */
 };
+
+/* ── the domain schedule (seL4's ksDomSchedule) ──────────────────────────── */
+
+struct iris_dom_slot {
+    uint8_t  domain;
+    uint32_t ticks;      /* how long this domain owns the CPU */
+};
+
+/* The current domain, and how many ticks it has left.  Read by the dispatcher,
+ * advanced by the tick. */
+extern uint8_t  iris_cur_domain;
+
+/* Advance the schedule by one tick; returns 1 if the DOMAIN changed, which the
+ * tick turns into a reschedule. */
+int  sched_domain_tick(void);
+/* The live schedule, for diagnostics and for the tests that drive it. */
+uint32_t sched_domain_current(void);
+uint64_t sched_domain_switches(void);
 
 /* ── Shared state (defined in task_lifecycle.c) ──────────────────────────── */
 

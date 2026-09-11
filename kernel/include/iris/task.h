@@ -641,6 +641,13 @@ struct task {
      * Set at creation time; stays constant for the task's lifetime. */
     uint8_t           home_cpu;
 
+    /* The scheduling DOMAIN this thread runs in (seL4's tcbDomain).  A thread
+     * is dispatchable only while its domain holds the CPU, whatever its
+     * priority.  Every thread starts in domain 0, so a system that never
+     * configures one behaves exactly as it did before domains existed.
+     * Changed only through `Domain_Set`, which needs its own boot authority. */
+    uint8_t           domain;
+
     /* FPU/SSE state — 512-byte FXSAVE image, must be 16-byte aligned.
      * Saved and restored on every context switch so FPU state never leaks
      * across task boundaries. Placed last to keep alignment padding minimal. */

@@ -243,6 +243,16 @@ void test_root_bootinfo(void) {
                       IRIS_BOOTCAP_INITRD_CONTROL, 7u), IRIS_OK);
         ASSERT_EQ(root_bootinfo_set_control_cap(page, RBI_PAGE,
                       IRIS_BOOTCAP_FB_CONTROL, 8u), IRIS_OK);
+        /* The three added after the first cut, which this block had never
+         * covered — so a kind with no field returned INVALID_ARG and the boot
+         * path turned that into a FATAL, which is how the domain authority's
+         * missing case was found at runtime rather than here. */
+        ASSERT_EQ(root_bootinfo_set_control_cap(page, RBI_PAGE,
+                      IRIS_BOOTCAP_SCHED_CONTROL, 11u), IRIS_OK);
+        ASSERT_EQ(root_bootinfo_set_control_cap(page, RBI_PAGE,
+                      IRIS_BOOTCAP_ASID_CONTROL, 12u), IRIS_OK);
+        ASSERT_EQ(root_bootinfo_set_control_cap(page, RBI_PAGE,
+                      IRIS_BOOTCAP_DOMAIN_CONTROL, 13u), IRIS_OK);
 
         /* Each authority has its OWN field: a reader asking for one never
          * gets another, which is the whole point of the split. */
@@ -252,6 +262,9 @@ void test_root_bootinfo(void) {
         ASSERT_EQ(bi->cap_proc_control, 6u);
         ASSERT_EQ(bi->cap_initrd_control, 7u);
         ASSERT_EQ(bi->cap_fb_control, 8u);
+        ASSERT_EQ(bi->cap_sched_control, 11u);
+        ASSERT_EQ(bi->cap_asid_control, 12u);
+        ASSERT_EQ(bi->cap_domain_control, 13u);
 
         /* A kind the page has no field for, and a grant naming CPTR_NULL, are
          * refused rather than dropped silently. */
@@ -264,6 +277,9 @@ void test_root_bootinfo(void) {
                       IRIS_BOOTCAP_FB_CONTROL, 0u),
                   IRIS_ERR_INVALID_ARG);
         ASSERT_EQ(bi->cap_fb_control, 8u);
+        ASSERT_EQ(bi->cap_sched_control, 11u);
+        ASSERT_EQ(bi->cap_asid_control, 12u);
+        ASSERT_EQ(bi->cap_domain_control, 13u);
     }
 
     free(page);

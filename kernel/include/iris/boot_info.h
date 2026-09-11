@@ -62,6 +62,9 @@
 /* Authority to carve address-space identifier pools (ledger A-21), seL4's
  * ASIDControl.  Convention-only, like the two above. */
 #define BOOT_CPTR_ASID_CONTROL   12u
+/* Authority to place a thread in a scheduling DOMAIN — seL4's seL4_CapDomain.
+ * Convention-only, like the three above. */
+#define BOOT_CPTR_DOMAIN_CONTROL 13u
 #define BOOT_CPTR_RES_END         15u   /* inclusive; slots 1-15 are reserved */
 #define BOOT_CPTR_UNTYPED_START   16u   /* first boot KUntyped CPtr */
 #define BOOT_CPTR_UNTYPED_END    255u   /* last boot KUntyped CPtr (root CNode has 256 slots) */

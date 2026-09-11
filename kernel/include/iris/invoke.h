@@ -176,10 +176,11 @@
 #define INV_TCB_SET_MCPRIORITY             64u
 #define INV_PAGE_TABLE_UNMAP               65u
 #define INV_CSPACE_ROTATE                  66u
+#define INV_DOMAIN_SET                     67u
 
 /* First unassigned.  A label is never reused, for the same reason a syscall
  * number never was: a stale caller must get a refusal, not somebody else's
  * method. */
-#define INV_LABEL_COUNT                    67u
+#define INV_LABEL_COUNT                    68u
 
 #endif /* IRIS_INVOKE_H */

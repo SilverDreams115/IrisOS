@@ -508,7 +508,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[21] = { 0 };
+        struct svc_mint it_mints[22] = { 0 };
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
@@ -635,6 +635,19 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         it_mints[18].src_cptr = IRIS_CPTR_SCHED_CONTROL;
         it_mints[18].rights = RIGHT_READ | RIGHT_DUPLICATE;
         it_mints[18].badge = 0;
+        /* The domain authority, so T343 can drive a time partition — and so
+         * that the negative half is testable too: without this mint the same
+         * invocation must answer ACCESS_DENIED.
+         *
+         * It lands at a DIFFERENT slot than everyone else gets it at.  The
+         * service-wide constant is 97, which is free in init and in every
+         * service — and is the last of iris_test's fixed reply-object range
+         * (88..97), which T113 deletes.  The suite's slot map is the crowded
+         * one, so the suite names its own; 99 is on its documented free list. */
+        it_mints[21].slot = IRIS_CPTR_DOMAIN_CONTROL_TEST;
+        it_mints[21].src_cptr = IRIS_CPTR_DOMAIN_CONTROL;
+        it_mints[21].rights = RIGHT_READ | RIGHT_DUPLICATE;
+        it_mints[21].badge = 0;
         /* Ledger A-21: the suite builds address spaces (T079, T328) and has
          * to be able to name them.  It receives the POOL and not the CONTROL,
          * so T328 can also assert that carving a pool without ASIDControl is
@@ -660,7 +673,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * retired duplicate had to exist. */
         r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
                                "iris_test",
-                            &proc_h, &boot_h, it_mints, 21u,
+                            &proc_h, &boot_h, it_mints, 22u,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
                                16u << 20, /*own_budget_slot=*/0, /* has TEST_UNTYPED */
                                /* Stage 7 Step 9: keep the suite's CSpace root
