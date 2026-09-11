@@ -2128,10 +2128,18 @@ teardown); it was not wrong, it was a quarter of the list.
 | `next_id` | plain `uint32_t`, three incrementing call sites | `_Atomic`.  A diagnostic that hands two threads the same id is a diagnostic that lies |
 | `reap_queue_hwm` | plain | **the catalog was wrong**: the write was always under `reap_queue_lock` and only the read was bare.  Made `_Atomic` so the type says what the code does |
 
-One more found while closing these, which the catalog had missed:
-`kschedctx_apply_refills` mutates a scheduling context's refill ring without
-taking the lock that object has.  It is called from inside the list walk, so it
-is step 1's, not step 4's.
+One more found while closing these, which the catalog had missed and which is
+now ✅ closed: the whole sporadic-replenishment family — `refill_reset`,
+`charge_tick`, `flush_run`, `apply_refills` — mutated a scheduling context's
+ring buffer without taking `sc->lock`.  The object HAD a lock and three
+functions used it (configure, bind, unbind); the half a RUNNING system touches
+did not.  On one core the tick, the dispatcher and the idle walk cannot
+interleave; on two they are three CPUs writing one ring.
+
+The `_locked` split it needed is forced rather than stylistic: `configure`
+already holds the lock when it resets the ring, and these spinlocks are not
+reentrant, so a single locking version would have deadlocked the configure
+path against itself on its first call.
 
 **Protected, but by an argument rather than a lock** — ten sites whose comment
 says the kernel is uniprocessor or non-preemptive.  Each needs re-deriving, and

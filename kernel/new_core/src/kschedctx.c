@@ -80,6 +80,10 @@ void kschedctx_close(struct KSchedContext *sc) {
     kobject_release(&sc->base);
 }
 
+/* Defined below with the rest of the replenishment family; declared here
+ * because `configure` resets the ring while already holding the lock. */
+static void kschedctx_refill_reset_locked(struct KSchedContext *sc);
+
 iris_error_t kschedctx_configure(struct KSchedContext *sc,
                                    uint64_t budget, uint64_t period) {
     /* Phase S2 (fix I1): budget <= period, MCS style.  budget == period is a
@@ -99,7 +103,7 @@ iris_error_t kschedctx_configure(struct KSchedContext *sc,
      * time on a cadence nobody asked for.  The new budget is available now,
      * which is what the invariant sum == budget_ticks requires with an empty
      * queue. */
-    kschedctx_refill_reset(sc);
+    kschedctx_refill_reset_locked(sc);   /* the lock is already held here */
     irq_spinlock_unlock(&sc->lock, flags);
     return IRIS_OK;
 }
@@ -142,26 +146,51 @@ void kschedctx_unbind(struct KSchedContext *sc, struct task *t) {
  * tick, and it is why a queue of 8 is enough for budgets far larger than 8.
  */
 
-void kschedctx_refill_reset(struct KSchedContext *sc) {
-    if (!sc) return;
+/*
+ * THE REPLENISHMENT STATE TAKES THE LOCK THE OBJECT ALREADY HAD.
+ *
+ * `sc->lock` existed and three functions used it — configure, bind, unbind.
+ * The sporadic-replenishment family did not, and it is the half that a
+ * RUNNING system touches: the tick charges, the dispatcher flushes, the idle
+ * walk applies.  Three call sites on one core cannot interleave; on two they
+ * are three CPUs writing one ring buffer.
+ *
+ * The split into `_locked` inner functions is forced rather than stylistic:
+ * `kschedctx_configure` already holds the lock when it resets the ring, and
+ * these spinlocks are not reentrant (see nc/spinlock.h).  A single locking
+ * version would deadlock the configure path against itself on the first call.
+ */
+static void kschedctx_refill_reset_locked(struct KSchedContext *sc) {
     sc->refill_head   = 0;
     sc->refill_count  = 0;
     sc->consumed_run  = 0;
     sc->consume_start = 0;
 }
 
+void kschedctx_refill_reset(struct KSchedContext *sc) {
+    if (!sc) return;
+    uint64_t flags = irq_spinlock_lock(&sc->lock);
+    kschedctx_refill_reset_locked(sc);
+    irq_spinlock_unlock(&sc->lock, flags);
+}
+
 int kschedctx_charge_tick(struct KSchedContext *sc, uint64_t now) {
     if (!sc) return 0;
+    uint64_t flags = irq_spinlock_lock(&sc->lock);
     if (sc->remaining_budget > 0) {
         if (sc->consumed_run == 0) sc->consume_start = now;
         sc->remaining_budget--;
         sc->consumed_run++;
     }
-    return sc->remaining_budget == 0;
+    int exhausted = (sc->remaining_budget == 0);
+    irq_spinlock_unlock(&sc->lock, flags);
+    return exhausted;
 }
 
 void kschedctx_flush_run(struct KSchedContext *sc) {
-    if (!sc || sc->consumed_run == 0) return;
+    if (!sc) return;
+    uint64_t flags = irq_spinlock_lock(&sc->lock);
+    if (sc->consumed_run == 0) { irq_spinlock_unlock(&sc->lock, flags); return; }
 
     uint64_t due = sc->consume_start + sc->period_ticks;
     uint64_t amt = sc->consumed_run;
@@ -175,6 +204,7 @@ void kschedctx_flush_run(struct KSchedContext *sc) {
         sc->refills[idx].at     = due;
         sc->refills[idx].amount = amt;
         sc->refill_count++;
+        irq_spinlock_unlock(&sc->lock, flags);
         return;
     }
 
@@ -191,10 +221,12 @@ void kschedctx_flush_run(struct KSchedContext *sc) {
     uint32_t last = (sc->refill_head + sc->refill_count - 1u) % sc->refill_max;
     if (due > sc->refills[last].at) sc->refills[last].at = due;
     sc->refills[last].amount += amt;
+    irq_spinlock_unlock(&sc->lock, flags);
 }
 
 int kschedctx_apply_refills(struct KSchedContext *sc, uint64_t now) {
     if (!sc) return 0;
+    uint64_t flags = irq_spinlock_lock(&sc->lock);
     int gained = 0;
     while (sc->refill_count > 0 && sc->refills[sc->refill_head].at <= now) {
         sc->remaining_budget += sc->refills[sc->refill_head].amount;
@@ -207,5 +239,6 @@ int kschedctx_apply_refills(struct KSchedContext *sc, uint64_t now) {
      * the parts from turning into extra time. */
     if (sc->remaining_budget > sc->budget_ticks)
         sc->remaining_budget = sc->budget_ticks;
+    irq_spinlock_unlock(&sc->lock, flags);
     return gained;
 }
