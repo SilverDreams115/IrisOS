@@ -60,12 +60,12 @@ void test_t239(void) {
      * rewind, so what "released" means is that the budget can RESET, which it
      * refuses while a single child of it is alive. */
     handle_id_t vh = (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
-    if (ok && it_sys1(SYS_UNTYPED_RESET, pool) == 0) { ok = 0; why = "reset while live"; }
+    if (ok && it_invoke0(pool, INV_UNTYPED_RESET) == 0) { ok = 0; why = "reset while live"; }
     it_close(&vh);
     it_quiesce_reaper();
     if (ok && !it_utq_1(pool, &u2)) { ok = 0; why = "info2"; }
     if (ok && u2.child_count != u0.child_count) { ok = 0; why = "release drift"; }
-    if (ok && it_sys1(SYS_UNTYPED_RESET, pool) != 0) { ok = 0; why = "reset after release"; }
+    if (ok && it_invoke0(pool, INV_UNTYPED_RESET) != 0) { ok = 0; why = "reset after release"; }
 
     /* A VMO created from a CHILD's budget spends the CHILD's region and not
      * the creator's — Q2, said about the object that holds the memory. */
@@ -294,21 +294,21 @@ void test_t245(void) {
     handle_id_t vbh = (vb >= 0) ? (handle_id_t)vb : HANDLE_INVALID;
     if (ok && (va < 0 || vb < 0)) { ok = 0; why = "create in pool"; }
     /* Both regions are spoken for: neither can be reset under a live object. */
-    if (ok && it_sys1(SYS_UNTYPED_RESET, poolA) == 0) { ok = 0; why = "A resettable while live"; }
-    if (ok && it_sys1(SYS_UNTYPED_RESET, poolB) == 0) { ok = 0; why = "B resettable while live"; }
+    if (ok && it_invoke0(poolA, INV_UNTYPED_RESET) == 0) { ok = 0; why = "A resettable while live"; }
+    if (ok && it_invoke0(poolB, INV_UNTYPED_RESET) == 0) { ok = 0; why = "B resettable while live"; }
 
     /* Kill A and release only A's memory.  B's region must still refuse a
      * RESET — nothing about A's death may reach into it. */
     if (ok) { (void)it_kill((long)procA); (void)it_lp_wait_exit(procA); it_quiesce_reaper(); }
     it_close(&vah);
     it_quiesce_reaper();
-    if (ok && it_sys1(SYS_UNTYPED_RESET, poolA) != 0) { ok = 0; why = "A did not come back"; }
-    if (ok && it_sys1(SYS_UNTYPED_RESET, poolB) == 0) { ok = 0; why = "B disturbed by A death"; }
+    if (ok && it_invoke0(poolA, INV_UNTYPED_RESET) != 0) { ok = 0; why = "A did not come back"; }
+    if (ok && it_invoke0(poolB, INV_UNTYPED_RESET) == 0) { ok = 0; why = "B disturbed by A death"; }
     it_close(&cmdA); it_close(&procA);
 
     it_close(&vbh);
     it_quiesce_reaper();
-    if (ok && it_sys1(SYS_UNTYPED_RESET, poolB) != 0) { ok = 0; why = "B did not come back"; }
+    if (ok && it_invoke0(poolB, INV_UNTYPED_RESET) != 0) { ok = 0; why = "B did not come back"; }
     it_bare_kill(&cmdB, &procB);
     if (poolA >= 0) it_slot_delete((uint32_t)poolA);
     if (poolB >= 0) it_slot_delete((uint32_t)poolB);
@@ -495,7 +495,7 @@ void test_t250(void) {
             }
             for (uint32_t i = 0; i < made; i++) it_close(&vv[i]);
             it_quiesce_reaper();
-            if (ok && it_sys1(SYS_UNTYPED_RESET, small) != 0) { ok = 0; why = "s2 no recovery"; }
+            if (ok && it_invoke0(small, INV_UNTYPED_RESET) != 0) { ok = 0; why = "s2 no recovery"; }
             it_slot_delete((uint32_t)small);
             break;
         }
@@ -505,8 +505,8 @@ void test_t250(void) {
             long v = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096);
             if (v < 0) { ok = 0; why = "s3 create"; break; }
             handle_id_t vh = (handle_id_t)v;
-            if (it_sys4(SYS_FRAME_MAP, (long)vh, IT_VS, (long)T26_SELF_VA, 0L) != 0) { ok = 0; why = "s3 map"; }
-            if (ok) (void)it_sys3(SYS_FRAME_UNMAP, (long)vh, IT_VS, (long)T26_SELF_VA);
+            if (it_invoke((long)vh, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 0L) != 0) { ok = 0; why = "s3 map"; }
+            if (ok) (void)it_invoke2((long)vh, INV_FRAME_UNMAP, IT_VS, (long)T26_SELF_VA);
             it_close(&vh);
             break;
         }
@@ -565,7 +565,7 @@ void test_t251(void) {
         if (it_retype2_at(su, canon[i].t, S1_SLOT_A, 1u, canon[i].arg) != 0) {
             ok = 0; why = "canonical type not creatable"; break;
         }
-        if (it_sys1(SYS_CAP_IDENTIFY, (long)S1_SLOT_A) != canon[i].ht) {
+        if (it_invoke0((long)S1_SLOT_A, INV_CAP_IDENTIFY) != canon[i].ht) {
             ok = 0; why = "created type mismatch";
         }
         it_slot_delete(S1_SLOT_A);
@@ -647,14 +647,14 @@ void test_t252(void) {
     /* The objects are REAL (usable through their CSpace caps). */
     if (ok) {
         struct IrisMsg m; it_iris_msg_zero(&m);
-        if (it_sys2(SYS_EP_NB_RECV, (long)S1_SLOT_A, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ep dead"; }
-        if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)S1_SLOT_C, 1) != 0) { ok = 0; why = "nt dead"; }
+        if (it_invoke1((long)S1_SLOT_A, INV_EP_NB_RECV, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ep dead"; }
+        if (ok && it_invoke1((long)S1_SLOT_C, INV_NOTIFY_SIGNAL, 1) != 0) { ok = 0; why = "nt dead"; }
     }
 
     /* Destroy all → region reusable, gauges at baseline. */
     it_slot_delete(S1_SLOT_A); it_slot_delete(S1_SLOT_B);
     it_slot_delete(S1_SLOT_C); it_slot_delete(S1_SLOT_D);
-    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy"; }
+    if (ok && it_invoke0(su, INV_UNTYPED_RESET) != 0) { ok = 0; why = "reset busy"; }
     if (ok && (!it_utq_1(su, &u2) || u2.used_bytes != 0u || u2.child_count != 0u)) { ok = 0; why = "not reclaimed"; }
 
     it_close(&su_h);
@@ -677,7 +677,7 @@ void test_t253(void) {
     /* Success batch: 4 endpoints into 241..244. */
     if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 4u, 0) != 0) { ok = 0; why = "batch"; }
     for (uint32_t i = 0; ok && i < 4u; i++) {
-        if (it_sys1(SYS_CAP_IDENTIFY, (long)(S1_SLOT_A + i))
+        if (it_invoke0((long)(S1_SLOT_A + i), INV_CAP_IDENTIFY)
             != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
             ok = 0; why = "batch member missing";
         }
@@ -697,8 +697,8 @@ void test_t253(void) {
     }
     if (ok && oa.endpoints_live != ob.endpoints_live) { ok = 0; why = "failed batch left object"; }
     if (ok) {
-        if (it_sys1(SYS_CAP_IDENTIFY, 239) >= 0) { ok = 0; why = "partial slot filled"; }
-        if (it_sys1(SYS_CAP_IDENTIFY, 240) >= 0) { ok = 0; why = "partial slot filled 2"; }
+        if (it_invoke0(239, INV_CAP_IDENTIFY) >= 0) { ok = 0; why = "partial slot filled"; }
+        if (it_invoke0(240, INV_CAP_IDENTIFY) >= 0) { ok = 0; why = "partial slot filled 2"; }
     }
     /* Capacity failure: 8 CNodes of 64 slots (~5 KiB each with the Phase S3
      * MDB slot metadata) ≫ the 8 KiB region, while the batch stays under
@@ -709,7 +709,7 @@ void test_t253(void) {
     if (ok && (!it_utq_1(su, &ua) || ua.used_bytes != ub.used_bytes)) { ok = 0; why = "capacity fail consumed"; }
 
     it_slot_delete(S1_SLOT_A);
-    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy"; }
+    if (ok && it_invoke0(su, INV_UNTYPED_RESET) != 0) { ok = 0; why = "reset busy"; }
     it_close(&su_h);
     if (ok) it_pass("T253"); else it_fail("T253", why);
 }
@@ -763,10 +763,7 @@ void test_t254(void) {
     }
     /* Destination that is not a CNode (the notification at S1_SLOT_A) — A-30:
      * WRONG_TYPE, because that is what the resolver found. */
-    if (ok && it_sys4(SYS_UNTYPED_RETYPE2, su,
-                      (long)((uint64_t)IRIS_KOBJ_ENDPOINT | (1ULL << 32)),
-                      (long)((uint64_t)S1_SLOT_A | ((uint64_t)S1_SLOT_B << 32)),
-                      0) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "bad dest cnode"; }
+    if (ok && it_invoke(su, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_ENDPOINT | (1ULL << 32)), (long)((uint64_t)S1_SLOT_A | ((uint64_t)S1_SLOT_B << 32)), 0) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "bad dest cnode"; }
     /* Released untyped cap: delete the slot, then retype through the dead
      * CPtr.  Stage 4: an emptied slot answers NOT_FOUND — the CSpace form of
      * the BAD_HANDLE this asserted while the untyped was a handle.  The
@@ -785,11 +782,11 @@ void test_t254(void) {
     if (ok && !it_utq_1(su, &ua)) { ok = 0; why = "query 2"; }
     if (ok && (ua.used_bytes != ub.used_bytes + (ua.used_bytes - ub.used_bytes))) { ok = 0; why = "?"; }
     if (ok) {
-        if (it_sys1(SYS_CAP_IDENTIFY, (long)S1_SLOT_B) >= 0) { ok = 0; why = "ghost object"; }
+        if (it_invoke0((long)S1_SLOT_B, INV_CAP_IDENTIFY) >= 0) { ok = 0; why = "ghost object"; }
     }
 
     it_slot_delete(S1_SLOT_A);
-    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy"; }
+    if (ok && it_invoke0(su, INV_UNTYPED_RESET) != 0) { ok = 0; why = "reset busy"; }
     it_close(&su_h);
     if (ok) it_pass("T254"); else it_fail("T254", why);
 }
@@ -803,7 +800,7 @@ static volatile long g_t255_res;
 static uint8_t       g_t255_stack[8192];
 static void t255_waiter(void) {
     struct IrisMsg m; it_iris_msg_zero(&m);
-    g_t255_res  = it_sys3(SYS_EP_RECV, (long)S1_SLOT_A, (long)&m, 0);
+    g_t255_res  = it_invoke2((long)S1_SLOT_A, INV_EP_RECV, (long)&m, 0);
     g_t255_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -824,7 +821,7 @@ void test_t255(void) {
     /* send/receive through the CPtr + the derived CPtr. */
     if (ok) {
         struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x255;
-        if (it_sys2(SYS_EP_NB_SEND, d, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "nb send"; }
+        if (it_invoke1(d, INV_EP_NB_SEND, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "nb send"; }
     }
     /* call: needs our reply object. */
     if (ok && it_reply_create_at(S1_SLOT_B) < 0) { ok = 0; why = "reply"; }
@@ -832,7 +829,7 @@ void test_t255(void) {
     if (ok) { it_slot_delete(IT_SCRATCH_0); d = -1; }
     if (ok) {
         struct IrisMsg m; it_iris_msg_zero(&m);
-        if (it_sys2(SYS_EP_NB_RECV, (long)S1_SLOT_A, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) {
+        if (it_invoke1((long)S1_SLOT_A, INV_EP_NB_RECV, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) {
             ok = 0; why = "object died with one cap (S10)";
         }
     }
@@ -854,11 +851,11 @@ void test_t255(void) {
     it_slot_delete(S1_SLOT_B);
     if (h >= 0) it_slot_delete((uint32_t)h);
     /* Region reusable; the SAME range hosts a working replacement. */
-    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy (S12)"; }
+    if (ok && it_invoke0(su, INV_UNTYPED_RESET) != 0) { ok = 0; why = "reset busy (S12)"; }
     if (ok && it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "reuse retype"; }
     if (ok) {
         struct IrisMsg m; it_iris_msg_zero(&m);
-        if (it_sys2(SYS_EP_NB_RECV, (long)S1_SLOT_A, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "reused ep dead"; }
+        if (it_invoke1((long)S1_SLOT_A, INV_EP_NB_RECV, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "reused ep dead"; }
         it_slot_delete(S1_SLOT_A);
     }
     it_close(&su_h);
@@ -875,7 +872,7 @@ static volatile long g_t256_res;
 static uint8_t       g_t256_stack[8192];
 static void t256_waiter(void) {
     uint64_t bits = 0;
-    g_t256_res  = it_sys2(SYS_NOTIFY_WAIT, (long)S1_SLOT_A, (long)(uintptr_t)&bits);
+    g_t256_res  = it_invoke1((long)S1_SLOT_A, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits);
     g_t256_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -895,19 +892,17 @@ void test_t256(void) {
     long h = -1;
     if (ok) {
         it_slot_delete(IT_SCRATCH_0);
-        if (it_sys3(SYS_CSPACE_MINT, (long)S1_SLOT_A,
-                    (long)((uint64_t)IT_SCRATCH_0 << 32),
-                    (long)RIGHT_SAME_RIGHTS) != 0) { ok = 0; why = "copy"; }
+        if (it_invoke2((long)S1_SLOT_A, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_0 << 32), (long)RIGHT_SAME_RIGHTS) != 0) { ok = 0; why = "copy"; }
         else h = (long)IT_SCRATCH_0;
     }
-    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, h, (long)S1_SLOT_A) != 1) {
+    if (ok && it_invoke1(h, INV_CAP_SAME_OBJECT, (long)S1_SLOT_A) != 1) {
         ok = 0; why = "copy is a different object";
     }
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, h, 0x5) != 0) { ok = 0; why = "signal"; }
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)S1_SLOT_A, 0x2) != 0) { ok = 0; why = "signal cptr"; }
+    if (ok && it_invoke1(h, INV_NOTIFY_SIGNAL, 0x5) != 0) { ok = 0; why = "signal"; }
+    if (ok && it_invoke1((long)S1_SLOT_A, INV_NOTIFY_SIGNAL, 0x2) != 0) { ok = 0; why = "signal cptr"; }
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_WAIT, (long)S1_SLOT_A, (long)(uintptr_t)&bits) != 0 ||
+        if (it_invoke1((long)S1_SLOT_A, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
             bits != 0x7u) { ok = 0; why = "pending bits"; }
     }
     /* Waiter + last-cap delete → CLOSED (S26), no zombie. */
@@ -927,7 +922,7 @@ void test_t256(void) {
     }
     if (h >= 0) it_slot_delete((uint32_t)h);
     /* Reuse: same region, fresh notification, ZERO residual bits (S28). */
-    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy"; }
+    if (ok && it_invoke0(su, INV_UNTYPED_RESET) != 0) { ok = 0; why = "reset busy"; }
     if (ok && it_retype2_at(su, IRIS_KOBJ_NOTIFICATION, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "reuse retype"; }
     if (ok) {
         uint64_t bits = 0;
@@ -953,7 +948,7 @@ static void t257_caller(void) {
     uint8_t rb[16];
     struct IrisMsg m; it_iris_msg_zero(&m);
     m.label = 0x257; m.buf_uptr = (uint64_t)(uintptr_t)rb;
-    (void)it_sys2(SYS_EP_CALL, (long)S1_SLOT_A, (long)&m);
+    (void)it_invoke1((long)S1_SLOT_A, INV_EP_CALL, (long)&m);
     g_t257_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -981,11 +976,11 @@ void test_t257(void) {
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t257_stack + sizeof(g_t257_stack))) & ~0xFULL;
         if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread"; break; }
         struct IrisMsg m; it_iris_msg_zero(&m);
-        if (it_sys3(SYS_EP_RECV, (long)S1_SLOT_A, (long)&m, (long)S1_SLOT_B) != 0 ||
+        if (it_invoke2((long)S1_SLOT_A, INV_EP_RECV, (long)&m, (long)S1_SLOT_B) != 0 ||
             m.attached_handle != S1_SLOT_B) { ok = 0; why = "recv/echo"; break; }
         struct IrisMsg rm; it_iris_msg_zero(&rm); rm.label = 0xAC7;
-        if (it_sys2(SYS_REPLY, (long)S1_SLOT_B, (long)&rm) != 0) { ok = 0; why = "reply"; break; }
-        if (it_sys2(SYS_REPLY, (long)S1_SLOT_B, (long)&rm) != (long)IRIS_ERR_NOT_FOUND) {
+        if (it_invoke1((long)S1_SLOT_B, INV_REPLY_SEND, (long)&rm) != 0) { ok = 0; why = "reply"; break; }
+        if (it_invoke1((long)S1_SLOT_B, INV_REPLY_SEND, (long)&rm) != (long)IRIS_ERR_NOT_FOUND) {
             ok = 0; why = "one-shot broken (S18)"; break;
         }
         for (int y = 0; y < 4000 && !g_t257_done; y++) it_sys0(SYS_YIELD);
@@ -1001,12 +996,12 @@ void test_t257(void) {
         if (ok && it_lp_cmd(cmd, LP_CMD_CALL_BLOCK) != 0) { ok = 0; why = "cmd"; }
         if (ok) {
             struct IrisMsg m; it_iris_msg_zero(&m);
-            if (it_sys3(SYS_EP_RECV, (long)cmd, (long)&m, (long)S1_SLOT_B) != 0) { ok = 0; why = "recv child call"; }
+            if (it_invoke2((long)cmd, INV_EP_RECV, (long)&m, (long)S1_SLOT_B) != 0) { ok = 0; why = "recv child call"; }
         }
         if (ok && it_kill((long)proc) != 0) { ok = 0; why = "kill"; }
         if (ok) {
             struct IrisMsg rm; it_iris_msg_zero(&rm);
-            if (it_sys2(SYS_REPLY, (long)S1_SLOT_B, (long)&rm) != (long)IRIS_ERR_NOT_FOUND) {
+            if (it_invoke1((long)S1_SLOT_B, INV_REPLY_SEND, (long)&rm) != (long)IRIS_ERR_NOT_FOUND) {
                 ok = 0; why = "dead caller reply";
             }
         }
@@ -1022,13 +1017,13 @@ void test_t257(void) {
         else {
             for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);   /* caller queues */
             struct IrisMsg m; it_iris_msg_zero(&m);
-            if (it_sys3(SYS_EP_RECV, (long)S1_SLOT_A, (long)&m, 0) !=
+            if (it_invoke2((long)S1_SLOT_A, INV_EP_RECV, (long)&m, 0) !=
                 (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "implicit reply not retired (S22)"; }
             /* Serve it properly so the thread exits. */
             if (ok) {
-                if (it_sys3(SYS_EP_RECV, (long)S1_SLOT_A, (long)&m, (long)S1_SLOT_B) != 0) { ok = 0; why = "recv 3"; }
+                if (it_invoke2((long)S1_SLOT_A, INV_EP_RECV, (long)&m, (long)S1_SLOT_B) != 0) { ok = 0; why = "recv 3"; }
                 struct IrisMsg rm; it_iris_msg_zero(&rm);
-                if (ok && it_sys2(SYS_REPLY, (long)S1_SLOT_B, (long)&rm) != 0) { ok = 0; why = "reply 3"; }
+                if (ok && it_invoke1((long)S1_SLOT_B, INV_REPLY_SEND, (long)&rm) != 0) { ok = 0; why = "reply 3"; }
                 for (int y = 0; y < 4000 && !g_t257_done; y++) it_sys0(SYS_YIELD);
                 if (!g_t257_done) { ok = 0; why = "caller 3 stuck"; }
             }
@@ -1039,11 +1034,11 @@ void test_t257(void) {
     it_slot_delete(S1_SLOT_B);
     if (ok) {
         struct IrisMsg rm; it_iris_msg_zero(&rm);
-        long r = it_sys2(SYS_REPLY, (long)S1_SLOT_B, (long)&rm);
+        long r = it_invoke1((long)S1_SLOT_B, INV_REPLY_SEND, (long)&rm);
         if (r != (long)IRIS_ERR_NOT_FOUND && r != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "stale reply cap"; }
     }
     it_slot_delete(S1_SLOT_A);
-    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy"; }
+    if (ok && it_invoke0(su, INV_UNTYPED_RESET) != 0) { ok = 0; why = "reset busy"; }
     if (ok) {
         struct it_utq_objects oz;
         if (!it_utq_o(&oz) || oz.replies_live != o0.replies_live) { ok = 0; why = "reply leak"; }
@@ -1063,7 +1058,7 @@ static volatile long g_t258_res;
 static uint8_t       g_t258_stack[8192];
 static void t258_sender(void) {
     struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x258;
-    g_t258_res  = it_sys2(SYS_EP_SEND, (long)S1_SLOT_A, (long)&m);
+    g_t258_res  = it_invoke1((long)S1_SLOT_A, INV_EP_SEND, (long)&m);
     g_t258_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -1104,7 +1099,7 @@ void test_t258(void) {
         if (ok && it_lp_cmd(cmd, LP_CMD_CALL_BLOCK) != 0) { ok = 0; why = "cmd"; }
         if (ok) {
             struct IrisMsg m; it_iris_msg_zero(&m);
-            if (it_sys3(SYS_EP_RECV, (long)cmd, (long)&m, (long)S1_SLOT_B) != 0) { ok = 0; why = "recv call"; }
+            if (it_invoke2((long)cmd, INV_EP_RECV, (long)&m, (long)S1_SLOT_B) != 0) { ok = 0; why = "recv call"; }
         }
         if (ok) {
             it_slot_delete(S1_SLOT_B);         /* reply close → caller CLOSED */
@@ -1119,7 +1114,7 @@ void test_t258(void) {
     if (ok && (!it_utq_o(&oz) ||
                oz.endpoints_live != o0.endpoints_live ||
                oz.replies_live   != o0.replies_live)) { ok = 0; why = "object drift (S31)"; }
-    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy"; }
+    if (ok && it_invoke0(su, INV_UNTYPED_RESET) != 0) { ok = 0; why = "reset busy"; }
     it_close(&su_h);
     if (ok) it_pass("T258"); else it_fail("T258", why);
 }
@@ -1146,18 +1141,16 @@ void test_t259(void) {
     long h = -1;
     if (ok) {
         it_slot_delete(IT_SCRATCH_0);
-        if (it_sys3(SYS_CSPACE_MINT, (long)S1_SLOT_A,
-                    (long)((uint64_t)IT_SCRATCH_0 << 32),
-                    (long)RIGHT_SAME_RIGHTS) != 0) { ok = 0; why = "copy"; }
+        if (it_invoke2((long)S1_SLOT_A, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_0 << 32), (long)RIGHT_SAME_RIGHTS) != 0) { ok = 0; why = "copy"; }
         else h = (long)IT_SCRATCH_0;
     }
     it_slot_delete(S1_SLOT_A);
-    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != (long)IRIS_ERR_BUSY) {
+    if (ok && it_invoke0(su, INV_UNTYPED_RESET) != (long)IRIS_ERR_BUSY) {
         ok = 0; why = "live object did not retain region (S13)";
     }
     /* Drop the last cap → destroy → reset works and bumps the generation. */
     if (h >= 0) it_slot_delete((uint32_t)h);
-    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset after death"; }
+    if (ok && it_invoke0(su, INV_UNTYPED_RESET) != 0) { ok = 0; why = "reset after death"; }
     if (ok && (!it_utq_1(su, &q1) || q1.generation != q0.generation + 1u ||
                q1.used_bytes != 0u)) { ok = 0; why = "generation not bumped"; }
 
@@ -1171,7 +1164,7 @@ void test_t259(void) {
      *  - B carries no pending state from A's lifetime. */
     if (ok) {
         struct IrisMsg m; it_iris_msg_zero(&m);
-        if (it_sys2(SYS_EP_NB_SEND, (long)S1_SLOT_A, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) {
+        if (it_invoke1((long)S1_SLOT_A, INV_EP_NB_SEND, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) {
             ok = 0; why = "stale protocol reached B (S29)";
         }
     }
@@ -1183,7 +1176,7 @@ void test_t259(void) {
         }
     }
     it_slot_delete(S1_SLOT_A);
-    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "final reset"; }
+    if (ok && it_invoke0(su, INV_UNTYPED_RESET) != 0) { ok = 0; why = "final reset"; }
     it_close(&su_h);
     if (ok) it_pass("T259"); else it_fail("T259", why);
 }
@@ -1247,7 +1240,7 @@ void test_t261(void) {
             msg.label = IRIS_SVCMGR_EP_RESTART;
             msg.words[0] = (uint64_t)SVCMGR_SERVICE_VFS;
             msg.word_count = 1u;
-            long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TEST_SUPER, (long)&msg);
+            long r = it_invoke1((long)IRIS_CPTR_TEST_SUPER, INV_EP_CALL, (long)&msg);
             if (!(r == 0 && msg.label == IRIS_EP_REPLY_OK)) { ok = 0; why = "restart denied"; }
         }
         int recovered = 0;
@@ -1298,15 +1291,15 @@ void test_t262(void) {
             /* Type-appropriate probe. */
             if (type == IRIS_KOBJ_ENDPOINT) {
                 struct IrisMsg m; it_iris_msg_zero(&m);
-                if (it_sys2(SYS_EP_NB_RECV, (long)slot, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ep probe"; }
+                if (it_invoke1((long)slot, INV_EP_NB_RECV, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ep probe"; }
             } else if (type == IRIS_KOBJ_NOTIFICATION) {
                 uint64_t bits = 0;
-                if (it_sys2(SYS_NOTIFY_SIGNAL, (long)slot, 1u + round) != 0 ||
-                    it_sys2(SYS_NOTIFY_WAIT, (long)slot, (long)(uintptr_t)&bits) != 0 ||
+                if (it_invoke1((long)slot, INV_NOTIFY_SIGNAL, 1u + round) != 0 ||
+                    it_invoke1((long)slot, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
                     bits != (uint64_t)(1u + round)) { ok = 0; why = "notif probe"; }
             } else {
                 struct IrisMsg rm; it_iris_msg_zero(&rm);
-                if (it_sys2(SYS_REPLY, (long)slot, (long)&rm) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "reply probe"; }
+                if (it_invoke1((long)slot, INV_REPLY_SEND, (long)&rm) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "reply probe"; }
             }
         }
         /* Occasional forced failures — must not consume anything. */
@@ -1325,9 +1318,7 @@ void test_t262(void) {
          * which measured the same thing through the retiring namespace. */
         if (ok && (fz_rand() & 1u)) {
             it_slot_delete(IT_SCRATCH_0);
-            if (it_sys3(SYS_CSPACE_MINT, (long)S1_SLOT_A,
-                        (long)((uint64_t)IT_SCRATCH_0 << 32),
-                        (long)RIGHT_SAME_RIGHTS) != 0) { ok = 0; why = "copy"; }
+            if (it_invoke2((long)S1_SLOT_A, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_0 << 32), (long)RIGHT_SAME_RIGHTS) != 0) { ok = 0; why = "copy"; }
             it_slot_delete(IT_SCRATCH_0);
         }
         /* Exact shadow of child_count. */
@@ -1339,12 +1330,12 @@ void test_t262(void) {
         for (uint32_t i = 0; ok && i < nops; i++) it_slot_delete(S1_SLOT_A + i);
         if (ok) {
             struct IrisMsg m; it_iris_msg_zero(&m);
-            if (it_sys2(SYS_EP_NB_SEND, (long)S1_SLOT_A, (long)&m) != (long)IRIS_ERR_NOT_FOUND) {
+            if (it_invoke1((long)S1_SLOT_A, INV_EP_NB_SEND, (long)&m) != (long)IRIS_ERR_NOT_FOUND) {
                 ok = 0; why = "stale cptr";
             }
         }
         it_quiesce_reaper();
-        if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "round reset"; }
+        if (ok && it_invoke0(su, INV_UNTYPED_RESET) != 0) { ok = 0; why = "round reset"; }
         if (ok) {
             struct it_utq_one u;
             if (!it_utq_1(su, &u) || u.used_bytes != 0u || u.child_count != 0u) { ok = 0; why = "round reclaim"; }
@@ -1371,7 +1362,7 @@ void test_t262(void) {
     else { it_fz_note("T262", T262_SEED, round, op); it_fail("T262", why); }
 }
 int it_utq_t(struct it_utq_taskobj *q) {
-    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(4, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
+    return it_invoke2(IT_QARG(4, sizeof(*q)), INV_UNTYPED_QUERY, (long)(uintptr_t)q, 0) == 0;
 }
 
 /* ── T291 — RETIRED with SYS_BOOTCAP_RESTRICT (Stage 5 Step 2) ─────────
@@ -1421,31 +1412,31 @@ void test_t267(void) {
     long self_tcb = ok ? it_own_tcb_derived() : -1;
     handle_id_t self_h = (self_tcb >= 0) ? (handle_id_t)self_tcb : HANDLE_INVALID;
     if (ok && self_tcb < 0) { ok = 0; why = "tcb self"; }
-    if (ok && it_sys2(SYS_SC_BIND, (long)S1_SLOT_A, (long)self_h) != (long)IRIS_ERR_INVALID_ARG) {
+    if (ok && it_invoke1((long)S1_SLOT_A, INV_SC_BIND, (long)self_h) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "unconfigured bind allowed";
     }
     /* Configure validation (S2.8). */
-    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 5, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "configure"; }
-    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 0, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
+    if (ok && it_invoke((long)S1_SLOT_A, INV_SC_CONFIGURE, 5, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "configure"; }
+    if (ok && it_invoke((long)S1_SLOT_A, INV_SC_CONFIGURE, 0, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
     /* Phase S2: budget==period accepted (full reservation); budget>period not. */
-    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 100, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "budget==period rejected"; }
-    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 200, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget>period"; }
-    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 5, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "reconfigure A"; }
-    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)S1_SLOT_B, 5, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "configure B"; }
+    if (ok && it_invoke((long)S1_SLOT_A, INV_SC_CONFIGURE, 100, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "budget==period rejected"; }
+    if (ok && it_invoke((long)S1_SLOT_A, INV_SC_CONFIGURE, 200, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget>period"; }
+    if (ok && it_invoke((long)S1_SLOT_A, INV_SC_CONFIGURE, 5, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "reconfigure A"; }
+    if (ok && it_invoke((long)S1_SLOT_B, INV_SC_CONFIGURE, 5, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "configure B"; }
 
     /* Bind SC_A to our own TCB, then a SECOND SC to the same TCB must fail
      * BUSY (one-to-one: the target already holds SC_A).  Unbind immediately
      * (no yield in between — never let the tiny budget suspend iris_test). */
-    if (ok && it_sys2(SYS_SC_BIND, (long)S1_SLOT_A, (long)self_h) != 0) { ok = 0; why = "bind"; }
-    if (ok && it_sys2(SYS_SC_BIND, (long)S1_SLOT_B, (long)self_h) != (long)IRIS_ERR_BUSY) { ok = 0; why = "double bind (S2.9)"; }
-    if (ok && it_sys2(SYS_SC_BIND, (long)S1_SLOT_A, 0) != 0) { ok = 0; why = "unbind"; }
+    if (ok && it_invoke1((long)S1_SLOT_A, INV_SC_BIND, (long)self_h) != 0) { ok = 0; why = "bind"; }
+    if (ok && it_invoke1((long)S1_SLOT_B, INV_SC_BIND, (long)self_h) != (long)IRIS_ERR_BUSY) { ok = 0; why = "double bind (S2.9)"; }
+    if (ok && it_invoke1((long)S1_SLOT_A, INV_SC_BIND, 0) != 0) { ok = 0; why = "unbind"; }
     /* After unbind, SC_A is free again → SC_B binds, then unbind. */
-    if (ok && it_sys2(SYS_SC_BIND, (long)S1_SLOT_B, (long)self_h) != 0) { ok = 0; why = "rebind"; }
-    if (ok && it_sys2(SYS_SC_BIND, (long)S1_SLOT_B, 0) != 0) { ok = 0; why = "unbind 2"; }
+    if (ok && it_invoke1((long)S1_SLOT_B, INV_SC_BIND, (long)self_h) != 0) { ok = 0; why = "rebind"; }
+    if (ok && it_invoke1((long)S1_SLOT_B, INV_SC_BIND, 0) != 0) { ok = 0; why = "unbind 2"; }
 
     it_close(&self_h);
     it_slot_delete(S1_SLOT_A); it_slot_delete(S1_SLOT_B);
-    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy"; }
+    if (ok && it_invoke0(su, INV_UNTYPED_RESET) != 0) { ok = 0; why = "reset busy"; }
     if (ok) {
         struct it_utq_taskobj tz;
         if (!it_utq_t(&tz) || tz.sc_live != t0.sc_live) { ok = 0; why = "sc leak"; }
@@ -1477,11 +1468,10 @@ void test_t283(void) {
     /* QABI1 — exact current size (the real global struct). */
     QABI_RESET();
     struct it_utq_global gl;
-    if (it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, sizeof(struct it_utq_global)),
-                (long)(uintptr_t)&gl, 0) != 0) { ok = 0; why = "QABI1 exact"; }
+    if (it_invoke2(IT_QARG(1, sizeof(struct it_utq_global)), INV_UNTYPED_QUERY, (long)(uintptr_t)&gl, 0) != 0) { ok = 0; why = "QABI1 exact"; }
     /* QABI2 — valid older/shorter prefix: declare just the 8-byte header. */
     if (ok) { QABI_RESET();
-        long r = it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, 8u), buf, 0);
+        long r = it_invoke2(IT_QARG(1, 8u), INV_UNTYPED_QUERY, buf, 0);
         if (r != 0) { ok = 0; why = "QABI2 prefix"; }
         else if (!QABI_CANARY_OK()) { ok = 0; why = "QABI2 canary"; }
         else { /* only 8 bytes written; bytes >=8 stay zero */
@@ -1491,47 +1481,46 @@ void test_t283(void) {
     }
     /* QABI3 — size below the required header (4 < 8) → INVALID_ARG, no write. */
     if (ok) { QABI_RESET();
-        if (it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, 4u), buf, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "QABI3 subheader"; }
+        if (it_invoke2(IT_QARG(1, 4u), INV_UNTYPED_QUERY, buf, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "QABI3 subheader"; }
         else if (!QABI_CANARY_OK()) { ok = 0; why = "QABI3 canary"; }
     }
     /* QABI4 — one byte below minimum (7) → INVALID_ARG. */
     if (ok) { QABI_RESET();
-        if (it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, 7u), buf, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "QABI4 min-1"; }
+        if (it_invoke2(IT_QARG(1, 7u), INV_UNTYPED_QUERY, buf, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "QABI4 min-1"; }
         else if (!QABI_CANARY_OK()) { ok = 0; why = "QABI4 canary"; }
     }
     /* QABI5 — oversized declared buffer (256) → only kernel_size written,
      * canaries intact (kernel never writes past its own struct). */
     if (ok) { QABI_RESET();
-        if (it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, 256u), buf, 0) != 0) { ok = 0; why = "QABI5 oversize"; }
+        if (it_invoke2(IT_QARG(1, 256u), INV_UNTYPED_QUERY, buf, 0) != 0) { ok = 0; why = "QABI5 oversize"; }
         else if (!QABI_CANARY_OK()) { ok = 0; why = "QABI5 canary"; }
     }
     /* QABI6 — unknown version (0xFFFF) → INVALID_ARG, no write. */
     if (ok) { QABI_RESET();
         long a0 = (long)((uint64_t)1u | ((uint64_t)0xFFFFu << 16) |
                          ((uint64_t)(uint32_t)sizeof(struct it_utq_global) << 32));
-        if (it_sys3(SYS_UNTYPED_QUERY, a0, buf, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "QABI6 version"; }
+        if (it_invoke2(a0, INV_UNTYPED_QUERY, buf, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "QABI6 version"; }
         else if (!QABI_CANARY_OK()) { ok = 0; why = "QABI6 canary"; }
     }
     /* QABI7 — invalid user pointer → INVALID_ARG, no write. */
     if (ok) {
-        if (it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, sizeof(struct it_utq_global)),
-                    0x1L /* bogus */, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "QABI7 badptr"; }
+        if (it_invoke2(IT_QARG(1, sizeof(struct it_utq_global)), INV_UNTYPED_QUERY, 0x1L /* bogus */, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "QABI7 badptr"; }
     }
     /* QABI8 — guard bytes intact after a full legitimate write (kind 4, the
      * struct that grew and caused the original bug). */
     if (ok) { QABI_RESET();
         struct it_utq_taskobj tq;
-        if (it_sys3(SYS_UNTYPED_QUERY, IT_QARG(4, sizeof(tq)), (long)(uintptr_t)&tq, 0) != 0) { ok = 0; why = "QABI8 taskobj"; }
+        if (it_invoke2(IT_QARG(4, sizeof(tq)), INV_UNTYPED_QUERY, (long)(uintptr_t)&tq, 0) != 0) { ok = 0; why = "QABI8 taskobj"; }
         /* Now target the SHORT guarded buffer with a taskobj-sized declaration
          * that exceeds the guarded payload's safe region: declare exactly the
          * header so only 8 bytes land, canaries must hold. */
-        if (ok) { long r = it_sys3(SYS_UNTYPED_QUERY, IT_QARG(4, 8u), buf, 0);
+        if (ok) { long r = it_invoke2(IT_QARG(4, 8u), INV_UNTYPED_QUERY, buf, 0);
             if (r != 0 || !QABI_CANARY_OK()) { ok = 0; why = "QABI8 canary"; } }
     }
     /* QABI9 — reserved/trailing fields are zero: a prefix read leaves the
      * caller's untouched tail at its pre-call value (we pre-zeroed). */
     if (ok) { QABI_RESET();
-        if (it_sys3(SYS_UNTYPED_QUERY, IT_QARG(3, 8u), buf, 0) != 0) { ok = 0; why = "QABI9 write"; }
+        if (it_invoke2(IT_QARG(3, 8u), INV_UNTYPED_QUERY, buf, 0) != 0) { ok = 0; why = "QABI9 write"; }
         else for (uint32_t i = 8; i < 24 && ok; i++)
             if (g.payload[i] != 0) { ok = 0; why = "QABI9 tail dirty"; }
     }
@@ -1542,8 +1531,8 @@ void test_t283(void) {
         if (!it_utq_g(&b0)) { ok = 0; why = "QABI10 g0"; }
         for (int i = 0; ok && i < 8; i++) {
             QABI_RESET();
-            (void)it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, (i & 1) ? 8u : 256u), buf, 0);
-            (void)it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, 4u), buf, 0); /* rejected */
+            (void)it_invoke2(IT_QARG(1, (i & 1) ? 8u : 256u), INV_UNTYPED_QUERY, buf, 0);
+            (void)it_invoke2(IT_QARG(1, 4u), INV_UNTYPED_QUERY, buf, 0); /* rejected */
         }
         if (ok && !it_utq_g(&b1)) { ok = 0; why = "QABI10 g1"; }
         if (ok && (b1.live_untypeds != b0.live_untypeds)) { ok = 0; why = "QABI10 state drift"; }
@@ -1603,25 +1592,25 @@ void test_t284(void) {
     if (ok && u1.child_count != 1u) { ok = 0; why = "child count"; }
 
     /* Cap identity + observability. */
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)S1_SLOT_A)
+    if (ok && it_invoke0((long)S1_SLOT_A, INV_CAP_IDENTIFY)
               != (long)IRIS_HANDLE_TYPE_TCB) { ok = 0; why = "cap type"; }
     struct iris_tcb_info info;
-    if (ok && it_sys2(SYS_TCB_GET_INFO, (long)S1_SLOT_A, (long)(uintptr_t)&info) != 0) { ok = 0; why = "get info"; }
+    if (ok && it_invoke1((long)S1_SLOT_A, INV_TCB_GET_INFO, (long)(uintptr_t)&info) != 0) { ok = 0; why = "get info"; }
     if (ok && (info.state != (uint8_t)IT_TASK_SUSPENDED || info.task_id != 0u)) { ok = 0; why = "inactive state"; }
 
     /* Execution gate: an unconfigured TCB can NEVER run or bind. */
-    if (ok && it_sys1(SYS_TCB_RESUME,  (long)S1_SLOT_A) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "resume allowed"; }
-    if (ok && it_sys1(SYS_TCB_SUSPEND, (long)S1_SLOT_A) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "suspend allowed"; }
-    if (ok && it_sys1(SYS_TCB_EXIT,    (long)S1_SLOT_A) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "exit allowed"; }
+    if (ok && it_invoke0((long)S1_SLOT_A, INV_TCB_RESUME) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "resume allowed"; }
+    if (ok && it_invoke0((long)S1_SLOT_A, INV_TCB_SUSPEND) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "suspend allowed"; }
+    if (ok && it_invoke0((long)S1_SLOT_A, INV_TCB_EXIT) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "exit allowed"; }
     if (ok) {
         if (it_retype2_at(su, IRIS_KOBJ_SCHED_CONTEXT, S1_SLOT_B, 1u, 0) != 0 ||
-            it_sys4(SYS_SC_CONFIGURE, (long)S1_SLOT_B, 5, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc setup"; }
-        else if (it_sys2(SYS_SC_BIND, (long)S1_SLOT_B, (long)S1_SLOT_A) !=
+            it_invoke((long)S1_SLOT_B, INV_SC_CONFIGURE, 5, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc setup"; }
+        else if (it_invoke1((long)S1_SLOT_B, INV_SC_BIND, (long)S1_SLOT_A) !=
                  (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "bind to unconfigured allowed"; }
     }
     /* SET_PRIORITY works on an inactive TCB (seL4-style: stored for later). */
-    if (ok && it_sys2(SYS_TCB_SET_PRIORITY, (long)S1_SLOT_A, 7) != 0) { ok = 0; why = "set prio"; }
-    if (ok && (it_sys2(SYS_TCB_GET_INFO, (long)S1_SLOT_A, (long)(uintptr_t)&info) != 0 ||
+    if (ok && it_invoke1((long)S1_SLOT_A, INV_TCB_SET_PRIORITY, 7) != 0) { ok = 0; why = "set prio"; }
+    if (ok && (it_invoke1((long)S1_SLOT_A, INV_TCB_GET_INFO, (long)(uintptr_t)&info) != 0 ||
                info.priority != 7u)) { ok = 0; why = "prio roundtrip"; }
 
     /* Legacy handle-publishing birth is retired outright (Stage 4); it was
@@ -1630,21 +1619,21 @@ void test_t284(void) {
               (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy tcb retype alive"; }
 
     /* Lifecycle: RESET with live children refuses; last cap destroys. */
-    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != (long)IRIS_ERR_BUSY) { ok = 0; why = "reset with children"; }
+    if (ok && it_invoke0(su, INV_UNTYPED_RESET) != (long)IRIS_ERR_BUSY) { ok = 0; why = "reset with children"; }
     it_slot_delete(S1_SLOT_B);
     it_slot_delete(S1_SLOT_A);   /* last cap → destructor → region */
     if (ok && !it_utq_t(&t2)) { ok = 0; why = "query 3"; }
     if (ok && t2.tcb_live != t0.tcb_live) { ok = 0; why = "tcb leak"; }
     if (ok && t2.tcb_destroyed < t0.tcb_destroyed + 1u) { ok = 0; why = "destroy not counted"; }
-    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset after destroy"; }
+    if (ok && it_invoke0(su, INV_UNTYPED_RESET) != 0) { ok = 0; why = "reset after destroy"; }
 
     /* Region reusable; a deleted CPtr never resolves again. */
     if (ok && it_retype2_at(su, IRIS_KOBJ_TCB, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "re-retype"; }
     it_slot_delete(S1_SLOT_A);
     if (ok) {
-        if (it_sys1(SYS_CAP_IDENTIFY, (long)S1_SLOT_A) >= 0) { ok = 0; why = "stale cptr resolves"; }
+        if (it_invoke0((long)S1_SLOT_A, INV_CAP_IDENTIFY) >= 0) { ok = 0; why = "stale cptr resolves"; }
     }
-    (void)it_sys1(SYS_UNTYPED_RESET, su);
+    (void)it_invoke0(su, INV_UNTYPED_RESET);
 
     it_close(&su_h);
     if (ok) it_pass("T284"); else it_fail("T284", why);
@@ -1689,14 +1678,14 @@ void test_t285(void) {
      * object while it is alive instead of being whatever the creation call
      * happened to hand back. */
     struct iris_tcb_info alive; alive.task_id = 0u;
-    if (it_sys2(SYS_TCB_GET_INFO, (long)tcb_h, (long)(uintptr_t)&alive) != 0) {
+    if (it_invoke1((long)tcb_h, INV_TCB_GET_INFO, (long)(uintptr_t)&alive) != 0) {
         it_fail("T285", "info while alive"); return;
     }
 
     /* Wait for the reaper: execution ends, object survives (our cap pins it). */
     struct iris_tcb_info info; info.state = 0u;
     for (int i = 0; i < 200; i++) {
-        if (it_sys2(SYS_TCB_GET_INFO, (long)tcb_h, (long)(uintptr_t)&info) != 0) { ok = 0; why = "info during teardown"; break; }
+        if (it_invoke1((long)tcb_h, INV_TCB_GET_INFO, (long)(uintptr_t)&info) != 0) { ok = 0; why = "info during teardown"; break; }
         if (info.state == (uint8_t)IT_TASK_TERMINATED) break;
         it_settle(1);
     }
@@ -1711,7 +1700,7 @@ void test_t285(void) {
         }
     }
     /* No resurrection of a terminal TCB. */
-    if (ok && it_sys1(SYS_TCB_RESUME, (long)tcb_h) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "terminal resumed"; }
+    if (ok && it_invoke0((long)tcb_h, INV_TCB_RESUME) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "terminal resumed"; }
 
     it_close(&tcb_h);
     if (ok) it_pass("T285"); else it_fail("T285", why);
@@ -1740,29 +1729,27 @@ void test_t286(void) {
          * materialised handle; a CSpace copy proves the same lifetime rule in
          * the namespace that stays. */
         it_slot_delete(IT_SCRATCH_0);
-        if (it_sys3(SYS_CSPACE_MINT, (long)S1_SLOT_A,
-                    (long)((uint64_t)IT_SCRATCH_0 << 32),
-                    (long)RIGHT_SAME_RIGHTS) != 0) { ok = 0; why = "cycle copy"; break; }
+        if (it_invoke2((long)S1_SLOT_A, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_0 << 32), (long)RIGHT_SAME_RIGHTS) != 0) { ok = 0; why = "cycle copy"; break; }
         it_slot_delete(S1_SLOT_A);
-        if (it_sys1(SYS_CAP_IDENTIFY, (long)IT_SCRATCH_0) < 0) {
+        if (it_invoke0((long)IT_SCRATCH_0, INV_CAP_IDENTIFY) < 0) {
             ok = 0; why = "copy died with the original"; break;
         }
         it_slot_delete(IT_SCRATCH_0);       /* last ref → destructor → region */
-        if ((i % 5) == 4 && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "cycle reset"; break; }
+        if ((i % 5) == 4 && it_invoke0(su, INV_UNTYPED_RESET) != 0) { ok = 0; why = "cycle reset"; break; }
     }
-    (void)it_sys1(SYS_UNTYPED_RESET, su);
+    (void)it_invoke0(su, INV_UNTYPED_RESET);
 
     /* Atomic batch: two TCBs in one call, both real, both destroyed. */
     if (ok && it_retype2_at(su, IRIS_KOBJ_TCB, S1_SLOT_B, 2u, 0) != 0) { ok = 0; why = "batch"; }
     if (ok) {
         struct iris_tcb_info bi;
-        if (it_sys2(SYS_TCB_GET_INFO, (long)S1_SLOT_B, (long)(uintptr_t)&bi) != 0 ||
-            it_sys2(SYS_TCB_GET_INFO, (long)(S1_SLOT_B + 1u), (long)(uintptr_t)&bi) != 0) {
+        if (it_invoke1((long)S1_SLOT_B, INV_TCB_GET_INFO, (long)(uintptr_t)&bi) != 0 ||
+            it_invoke1((long)(S1_SLOT_B + 1u), INV_TCB_GET_INFO, (long)(uintptr_t)&bi) != 0) {
             ok = 0; why = "batch member dead";
         }
     }
     it_slot_delete(S1_SLOT_B); it_slot_delete(S1_SLOT_B + 1u);
-    (void)it_sys1(SYS_UNTYPED_RESET, su);
+    (void)it_invoke0(su, INV_UNTYPED_RESET);
 
     /* Failed publication (occupied slot): zero effect on the untyped. */
     if (ok && it_retype2_at(su, IRIS_KOBJ_TCB, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "occupy"; }
@@ -1775,7 +1762,7 @@ void test_t286(void) {
                    ua.child_count != ub.child_count)) { ok = 0; why = "failed pub consumed"; }
     }
     it_slot_delete(S1_SLOT_A);
-    (void)it_sys1(SYS_UNTYPED_RESET, su);
+    (void)it_invoke0(su, INV_UNTYPED_RESET);
 
     /* Capacity refusal: 8 TCBs (≥ 8×sizeof(struct task) ≫ 4 KiB) cannot fit
      * a 4 KiB region — zero effect.  count=8 keeps the destination window
@@ -1844,11 +1831,11 @@ void test_t287(void) {
      * from A's own object rather than from the value the creation returned. */
     struct iris_tcb_info ia; ia.state = 0u;
     uint32_t id_a = 0u;
-    if (it_sys2(SYS_TCB_GET_INFO, (long)a_h, (long)(uintptr_t)&ia) == 0)
+    if (it_invoke1((long)a_h, INV_TCB_GET_INFO, (long)(uintptr_t)&ia) == 0)
         id_a = ia.task_id;
     else { ok = 0; why = "A info"; }
     for (int i = 0; ok && i < 200; i++) {
-        if (it_sys2(SYS_TCB_GET_INFO, (long)a_h, (long)(uintptr_t)&ia) != 0) { ok = 0; why = "A info"; break; }
+        if (it_invoke1((long)a_h, INV_TCB_GET_INFO, (long)(uintptr_t)&ia) != 0) { ok = 0; why = "A info"; break; }
         if (ia.state == (uint8_t)IT_TASK_TERMINATED) break;
         it_settle(1);
     }
@@ -1868,7 +1855,7 @@ void test_t287(void) {
         if (ok) {
             b_h = (handle_id_t)g_t287_tcb;
             struct iris_tcb_info ib0;
-            if (it_sys2(SYS_TCB_GET_INFO, (long)b_h, (long)(uintptr_t)&ib0) == 0)
+            if (it_invoke1((long)b_h, INV_TCB_GET_INFO, (long)(uintptr_t)&ib0) == 0)
                 id_b = ib0.task_id;
             uint64_t before = g_t287_count;
             it_settle(3);
@@ -1877,18 +1864,18 @@ void test_t287(void) {
         /* A's cap still answers with A's identity — B did not alias it. */
         if (ok) {
             struct iris_tcb_info ia2;
-            if (it_sys2(SYS_TCB_GET_INFO, (long)a_h, (long)(uintptr_t)&ia2) != 0 ||
+            if (it_invoke1((long)a_h, INV_TCB_GET_INFO, (long)(uintptr_t)&ia2) != 0 ||
                 ia2.state != (uint8_t)IT_TASK_TERMINATED ||
                 ia2.task_id != id_a ||
                 ia2.task_id == id_b /* ids must differ */)
                 { ok = 0; why = "A identity aliased"; }
         }
         /* External kill of B through its cap; B must reach TERMINATED. */
-        if (ok && it_sys1(SYS_TCB_EXIT, (long)b_h) != 0) { ok = 0; why = "B kill"; }
+        if (ok && it_invoke0((long)b_h, INV_TCB_EXIT) != 0) { ok = 0; why = "B kill"; }
         if (ok) {
             struct iris_tcb_info ib; ib.state = 0u;
             for (int i = 0; i < 200; i++) {
-                if (it_sys2(SYS_TCB_GET_INFO, (long)b_h, (long)(uintptr_t)&ib) != 0) { ok = 0; why = "B info"; break; }
+                if (it_invoke1((long)b_h, INV_TCB_GET_INFO, (long)(uintptr_t)&ib) != 0) { ok = 0; why = "B info"; break; }
                 if (ib.state == (uint8_t)IT_TASK_TERMINATED) break;
                 it_settle(1);
             }
@@ -1914,12 +1901,10 @@ void test_t287(void) {
  * the caller's CSpace.  dest_cnode 0 = own root. */
 static long it_cs_mint(uint64_t src, uint32_t dslot, iris_rights_t rights,
                        uint64_t badge) {
-    return it_sys3(SYS_CSPACE_MINT, (long)src,
-                   (long)((uint64_t)0u | ((uint64_t)dslot << 32)),
-                   (long)((uint64_t)(uint32_t)rights | (badge << 32)));
+    return it_invoke2((long)src, INV_CSPACE_MINT, (long)((uint64_t)0u | ((uint64_t)dslot << 32)), (long)((uint64_t)(uint32_t)rights | (badge << 32)));
 }
 static long it_cs_revoke(uint64_t cptr) {
-    return it_sys1(SYS_CSPACE_REVOKE, (long)cptr);
+    return it_invoke0((long)cptr, INV_CSPACE_REVOKE);
 }
 /* Stage 7 Step 9: every caller of this named the suite's OWN process to reach
  * its OWN CSpace, which SYS_CSPACE_MINT has expressed as dest_cnode 0 all
@@ -1928,18 +1913,17 @@ static long it_cs_revoke(uint64_t cptr) {
 static long it_cs_mint_into(uint64_t proc, uint32_t dslot, uint64_t src,
                             iris_rights_t rights) {
     (void)proc;
-    return it_sys3(SYS_CSPACE_MINT, (long)src, IT_MINT_SELF(dslot),
-                   (long)(uint32_t)rights);
+    return it_invoke2((long)src, INV_CSPACE_MINT, IT_MINT_SELF(dslot), (long)(uint32_t)rights);
 }
 /* An endpoint is "alive" iff EP_NB_RECV resolves it (WOULD_BLOCK = no sender);
  * once its cap is revoked/deleted the CPtr no longer resolves (< 0, != WB). */
 static int it_ep_alive(uint32_t slot) {
     struct IrisMsg m; it_iris_msg_zero(&m);
-    return it_sys2(SYS_EP_NB_RECV, (long)slot, (long)&m) == (long)IRIS_ERR_WOULD_BLOCK;
+    return it_invoke1((long)slot, INV_EP_NB_RECV, (long)&m) == (long)IRIS_ERR_WOULD_BLOCK;
 }
 static int it_ep_dead(uint32_t slot) {
     struct IrisMsg m; it_iris_msg_zero(&m);
-    long r = it_sys2(SYS_EP_NB_RECV, (long)slot, (long)&m);
+    long r = it_invoke1((long)slot, INV_EP_NB_RECV, (long)&m);
     return r < 0 && r != (long)IRIS_ERR_WOULD_BLOCK;
 }
 
@@ -1993,7 +1977,7 @@ void test_t288(void) {
     if (ok && !(it_ep_alive(S1_SLOT_A) && it_ep_dead(S1_SLOT_C))) { ok = 0; why = "reparent revoke effect"; }
 
     it_slot_delete(S1_SLOT_A); it_slot_delete(S1_SLOT_D); it_slot_delete(S1_SLOT_E);
-    (void)it_sys1(SYS_UNTYPED_RESET, su);
+    (void)it_invoke0(su, INV_UNTYPED_RESET);
     it_close(&su_h);
     if (ok) it_pass("T288"); else it_fail("T288", why);
 }
@@ -2034,7 +2018,7 @@ void test_t289(void) {
     /* Cleanup: revoke the fresh cross child, then drop A. */
     if (ok) (void)it_cs_revoke(S1_SLOT_A);
     it_slot_delete(S1_SLOT_A);
-    (void)it_sys1(SYS_UNTYPED_RESET, su);
+    (void)it_invoke0(su, INV_UNTYPED_RESET);
     it_close(&su_h);
     if (ok) it_pass("T289"); else it_fail("T289", why);
 }
@@ -2056,7 +2040,7 @@ void test_t290(void) {
     if (ok && !(it_ep_alive(S1_SLOT_B) && it_ep_alive(S1_SLOT_C))) { ok = 0; why = "ep not alive"; }
 
     /* RESET of the sub-untyped must fail while its retyped objects live. */
-    if (ok && it_sys1(SYS_UNTYPED_RESET, (long)S1_SLOT_A) != (long)IRIS_ERR_BUSY) {
+    if (ok && it_invoke0((long)S1_SLOT_A, INV_UNTYPED_RESET) != (long)IRIS_ERR_BUSY) {
         ok = 0; why = "reset not busy with children";
     }
 
@@ -2068,12 +2052,12 @@ void test_t290(void) {
 
     /* With the descendance gone, the objects' destructors returned their
      * storage: RESET now succeeds and the region is reusable. */
-    if (ok && it_sys1(SYS_UNTYPED_RESET, (long)S1_SLOT_A) != 0) { ok = 0; why = "reset after revoke"; }
+    if (ok && it_invoke0((long)S1_SLOT_A, INV_UNTYPED_RESET) != 0) { ok = 0; why = "reset after revoke"; }
     if (ok && it_retype2_at((long)S1_SLOT_A, IRIS_KOBJ_ENDPOINT, S1_SLOT_B, 1u, 0) != 0) { ok = 0; why = "reuse"; }
 
     it_slot_delete(S1_SLOT_B);
     it_slot_delete(S1_SLOT_A);
-    (void)it_sys1(SYS_UNTYPED_RESET, su);
+    (void)it_invoke0(su, INV_UNTYPED_RESET);
     it_close(&su_h);
     if (ok) it_pass("T290"); else it_fail("T290", why);
 }
@@ -2099,13 +2083,13 @@ void test_t292(void) {
     if (ep < 0 || no < 0) { it_fail("T292", "fixture"); return; }
 
     /* (1) true type per family. */
-    if (it_sys1(SYS_CAP_IDENTIFY, ep) != (long)IRIS_KOBJ_ENDPOINT) {
+    if (it_invoke0(ep, INV_CAP_IDENTIFY) != (long)IRIS_KOBJ_ENDPOINT) {
         ok = 0; why = "endpoint type";
     }
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, no) != (long)IRIS_KOBJ_NOTIFICATION) {
+    if (ok && it_invoke0(no, INV_CAP_IDENTIFY) != (long)IRIS_KOBJ_NOTIFICATION) {
         ok = 0; why = "notification type";
     }
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_UNTYPED)
+    if (ok && it_invoke0((long)IRIS_CPTR_TEST_UNTYPED, INV_CAP_IDENTIFY)
               != (long)IRIS_KOBJ_UNTYPED) {
         ok = 0; why = "untyped type";
     }
@@ -2113,10 +2097,9 @@ void test_t292(void) {
     /* (2) no right is required: derive a read-only copy and identify it. */
     if (ok) {
         it_slot_delete(IT_SCRATCH_0);
-        if (it_sys3(SYS_CSPACE_MINT, ep,
-                    (long)((uint64_t)IT_SCRATCH_0 << 32), (long)RIGHT_READ) != 0) {
+        if (it_invoke2(ep, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_0 << 32), (long)RIGHT_READ) != 0) {
             ok = 0; why = "mint read-only";
-        } else if (it_sys1(SYS_CAP_IDENTIFY, (long)IT_SCRATCH_0)
+        } else if (it_invoke0((long)IT_SCRATCH_0, INV_CAP_IDENTIFY)
                    != (long)IRIS_KOBJ_ENDPOINT) {
             ok = 0; why = "identify needs rights";
         }
@@ -2124,13 +2107,13 @@ void test_t292(void) {
     }
 
     /* (3) an empty slot answers NOT_FOUND, not "empty". */
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)IT_SCRATCH_0)
+    if (ok && it_invoke0((long)IT_SCRATCH_0, INV_CAP_IDENTIFY)
               != (long)IRIS_ERR_NOT_FOUND) {
         ok = 0; why = "empty slot not NOT_FOUND";
     }
 
     /* (4) CPtr only — no handle leg, no fallback. */
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, 0) != (long)IRIS_ERR_INVALID_ARG) {
+    if (ok && it_invoke0(0, INV_CAP_IDENTIFY) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "null cptr accepted";
     }
     /* A value carrying the retired handle namespace's tag bit is not a CPtr
@@ -2138,7 +2121,7 @@ void test_t292(void) {
      * used to be a REAL handle from the materialising factory; with the
      * namespace gone the encoding is what is left to reject, and that is the
      * property worth pinning. */
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)(HANDLE_TAG | 0x401u))
+    if (ok && it_invoke0((long)(HANDLE_TAG | 0x401u), INV_CAP_IDENTIFY)
               != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "tagged value accepted";
     }
@@ -2166,35 +2149,33 @@ void test_t293(void) {
     if (a < 0 || b < 0) { it_fail("T293", "fixture"); return; }
 
     /* Distinct objects are distinct. */
-    if (it_sys2(SYS_CAP_SAME_OBJECT, a, b) != 0) { ok = 0; why = "distinct eps equal"; }
+    if (it_invoke1(a, INV_CAP_SAME_OBJECT, b) != 0) { ok = 0; why = "distinct eps equal"; }
     /* A slot is the same object as itself. */
-    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, a, a) != 1) { ok = 0; why = "self not equal"; }
+    if (ok && it_invoke1(a, INV_CAP_SAME_OBJECT, a) != 1) { ok = 0; why = "self not equal"; }
 
     /* A derived, rights-reduced, badged cap is the SAME object. */
     if (ok) {
         it_slot_delete(IT_SCRATCH_0);
-        if (it_sys3(SYS_CSPACE_MINT, a,
-                    (long)((uint64_t)IT_SCRATCH_0 << 32),
-                    (long)((uint64_t)RIGHT_READ | (0x5A5AULL << 32))) != 0) {
+        if (it_invoke2(a, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_0 << 32), (long)((uint64_t)RIGHT_READ | (0x5A5AULL << 32))) != 0) {
             ok = 0; why = "mint badged";
-        } else if (it_sys2(SYS_CAP_SAME_OBJECT, a, (long)IT_SCRATCH_0) != 1) {
+        } else if (it_invoke1(a, INV_CAP_SAME_OBJECT, (long)IT_SCRATCH_0) != 1) {
             ok = 0; why = "derived not same object";
-        } else if (it_sys2(SYS_CAP_SAME_OBJECT, (long)IT_SCRATCH_0, b) != 0) {
+        } else if (it_invoke1((long)IT_SCRATCH_0, INV_CAP_SAME_OBJECT, b) != 0) {
             ok = 0; why = "derived matches unrelated";
         }
         it_slot_delete(IT_SCRATCH_0);
     }
 
     /* Empty and null slots fail closed on either argument. */
-    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, a, (long)IT_SCRATCH_0)
+    if (ok && it_invoke1(a, INV_CAP_SAME_OBJECT, (long)IT_SCRATCH_0)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "empty b not NOT_FOUND"; }
-    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, (long)IT_SCRATCH_0, a)
+    if (ok && it_invoke1((long)IT_SCRATCH_0, INV_CAP_SAME_OBJECT, a)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "empty a not NOT_FOUND"; }
-    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, a, 0) != (long)IRIS_ERR_INVALID_ARG) {
+    if (ok && it_invoke1(a, INV_CAP_SAME_OBJECT, 0) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "null b accepted";
     }
     /* Same rule on the second argument: a tagged value is not a CPtr. */
-    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, a, (long)(HANDLE_TAG | 0x401u))
+    if (ok && it_invoke1(a, INV_CAP_SAME_OBJECT, (long)(HANDLE_TAG | 0x401u))
               != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "tagged value accepted";
     }
@@ -2217,7 +2198,7 @@ static void t294_sender(void) {
     m.label           = 0x94;
     m.attached_handle = (uint32_t)g_t294_cap;
     m.attached_rights = RIGHT_WRITE;
-    g_t294_s1 = (int)it_sys2(SYS_EP_SEND, (long)g_t294_cmd_ep, (long)&m);
+    g_t294_s1 = (int)it_invoke1((long)g_t294_cmd_ep, INV_EP_SEND, (long)&m);
     g_t294_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -2254,7 +2235,7 @@ void test_t294(void) {
 
     it_iris_msg_zero(&r);
     r.attached_cap = (uint32_t)T294_CPTR;
-    if (it_sys2(SYS_EP_RECV, (long)g_t294_cmd_ep, (long)&r) != 0) {
+    if (it_invoke1((long)g_t294_cmd_ep, INV_EP_RECV, (long)&r) != 0) {
         ok = 0; why = "recv";
     }
     /* Delivered AT the declared CPtr, and reported as a CPtr — not reclassified
@@ -2263,19 +2244,19 @@ void test_t294(void) {
     if (ok && !iris_msg_cap_is_cptr(r.attached_handle)) { ok = 0; why = "classified as handle"; }
 
     /* The capability is really there, is the right type, and works. */
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)T294_CPTR)
+    if (ok && it_invoke0((long)T294_CPTR, INV_CAP_IDENTIFY)
               != (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "not a notification"; }
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)T294_CPTR, 0x94) != 0) {
+    if (ok && it_invoke1((long)T294_CPTR, INV_NOTIFY_SIGNAL, 0x94) != 0) {
         ok = 0; why = "signal through deep slot";
     }
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 || bits != 0x94u) {
+        if (it_invoke1(n, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 || bits != 0x94u) {
             ok = 0; why = "wait";
         }
     }
     /* It is the SAME notification the sender held, not a look-alike. */
-    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, n, (long)T294_CPTR) != 1) {
+    if (ok && it_invoke1(n, INV_CAP_SAME_OBJECT, (long)T294_CPTR) != 1) {
         ok = 0; why = "not the same object";
     }
 
@@ -2284,7 +2265,7 @@ void test_t294(void) {
         struct IrisMsg r2;
         it_iris_msg_zero(&r2);
         r2.attached_cap = (uint32_t)T294_CPTR;
-        if (it_sys2(SYS_EP_NB_RECV, (long)g_t294_cmd_ep, (long)&r2)
+        if (it_invoke1((long)g_t294_cmd_ep, INV_EP_NB_RECV, (long)&r2)
             != (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "occupied deep slot"; }
     }
 
@@ -2350,23 +2331,23 @@ void test_t297(void) {
     }
 
     /* 2. inactive means inactive. */
-    if (ok && it_sys1(SYS_TCB_RESUME, tcb) != (long)IRIS_ERR_NOT_SUPPORTED) {
+    if (ok && it_invoke0(tcb, INV_TCB_RESUME) != (long)IRIS_ERR_NOT_SUPPORTED) {
         ok = 0; why = "unconfigured resumed";
     }
-    if (ok && it_sys4(SYS_TCB_WRITE_REGS, tcb, 0x8000200000L, 0x8000300000L, 0)
+    if (ok && it_invoke(tcb, INV_TCB_WRITE_REGS, 0x8000200000L, 0x8000300000L, 0)
               != (long)IRIS_ERR_NOT_SUPPORTED) {
         ok = 0; why = "unconfigured written";
     }
-    if (ok && it_sys1(SYS_TCB_EXIT, tcb) != (long)IRIS_ERR_NOT_SUPPORTED) {
+    if (ok && it_invoke0(tcb, INV_TCB_EXIT) != (long)IRIS_ERR_NOT_SUPPORTED) {
         ok = 0; why = "unconfigured exited";
     }
 
     /* 3. the arguments are capabilities, and their type and identity matter. */
-    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, IT_VS, IT_VS)
+    if (ok && it_invoke2(tcb, INV_TCB_CONFIGURE, IT_VS, IT_VS)
               != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "vspace accepted as cspace";
     }
-    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, cs, cs)
+    if (ok && it_invoke2(tcb, INV_TCB_CONFIGURE, cs, cs)
               != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "cnode accepted as vspace";
     }
@@ -2385,32 +2366,30 @@ void test_t297(void) {
      * actually resolve, which the two probes above (wrong type each way) and
      * the one below (CPTR_NULL) cover.
      */
-    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, 0, IT_VS)
+    if (ok && it_invoke2(tcb, INV_TCB_CONFIGURE, 0, IT_VS)
               != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "cptr_null accepted";
     }
 
     /* 4. configure once; write regs only before it runs. */
-    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, cs, IT_VS) != 0) {
+    if (ok && it_invoke2(tcb, INV_TCB_CONFIGURE, cs, IT_VS) != 0) {
         ok = 0; why = "configure";
     }
-    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, cs, IT_VS)
+    if (ok && it_invoke2(tcb, INV_TCB_CONFIGURE, cs, IT_VS)
               != (long)IRIS_ERR_ALREADY_EXISTS) {
         ok = 0; why = "configured twice";
     }
-    if (ok && it_sys4(SYS_TCB_WRITE_REGS, tcb,
-                      (long)(uintptr_t)t297_helper,
-                      (long)(((uint64_t)(uintptr_t)(g_t297_stack +
+    if (ok && it_invoke(tcb, INV_TCB_WRITE_REGS, (long)(uintptr_t)t297_helper, (long)(((uint64_t)(uintptr_t)(g_t297_stack +
                               sizeof(g_t297_stack))) & ~0xFULL), 0) != 0) {
         ok = 0; why = "write regs";
     }
     g_t297_ran = 0;
-    if (ok && it_sys1(SYS_TCB_RESUME, tcb) != 0) { ok = 0; why = "resume"; }
+    if (ok && it_invoke0(tcb, INV_TCB_RESUME) != 0) { ok = 0; why = "resume"; }
     for (int i = 0; ok && i < 200 && !g_t297_ran; i++) it_sys0(SYS_YIELD);
     if (ok && !g_t297_ran) { ok = 0; why = "never ran"; }
 
     /* Its entry frame is frozen now: it is standing on that kernel stack. */
-    if (ok && it_sys4(SYS_TCB_WRITE_REGS, tcb, 0x8000200000L, 0x8000300000L, 0)
+    if (ok && it_invoke(tcb, INV_TCB_WRITE_REGS, 0x8000200000L, 0x8000300000L, 0)
               != (long)IRIS_ERR_BUSY) {
         ok = 0; why = "regs rewritten after start";
     }

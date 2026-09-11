@@ -56,7 +56,7 @@ void test_t121(void) {
                 struct IrisMsg p;
                 it_iris_msg_zero(&p);
                 p.label = 0x121;
-                if (it_sys2(SYS_EP_NB_SEND, (long)ep_h, (long)&p) != (long)IRIS_ERR_WOULD_BLOCK) {
+                if (it_invoke1((long)ep_h, INV_EP_NB_SEND, (long)&p) != (long)IRIS_ERR_WOULD_BLOCK) {
                     ok = 0; why = "dead waiter";
                 }
             }
@@ -141,24 +141,24 @@ void test_t123(void) {
     if (ok && s2a[IT_S2_SCLIVE] != sc_base + 2u) { ok = 0; why = "sc not counted"; }
 
     /* SC_CONFIGURE validation (S10). */
-    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0)   { ok = 0; why = "configure valid"; }
-    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc, 0, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
-    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc, 10, 0, (long)IRIS_CPTR_SCHED_CONTROL)  != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "period 0"; }
+    if (ok && it_invoke((long)sc, INV_SC_CONFIGURE, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0)   { ok = 0; why = "configure valid"; }
+    if (ok && it_invoke((long)sc, INV_SC_CONFIGURE, 0, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
+    if (ok && it_invoke((long)sc, INV_SC_CONFIGURE, 10, 0, (long)IRIS_CPTR_SCHED_CONTROL)  != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "period 0"; }
     /* Phase S2 (fix I1): budget == period is a full CPU reservation, VALID
      * (MCS style).  Only budget > period is rejected. */
-    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc, 100, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "budget==period rejected"; }
-    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "reconfigure back"; }
-    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc, 200, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget>period"; }
+    if (ok && it_invoke((long)sc, INV_SC_CONFIGURE, 100, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "budget==period rejected"; }
+    if (ok && it_invoke((long)sc, INV_SC_CONFIGURE, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "reconfigure back"; }
+    if (ok && it_invoke((long)sc, INV_SC_CONFIGURE, 200, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget>period"; }
 
     /* Wrong object type: an endpoint handle is not a SchedContext. */
     if (ok) {
         long ep = it_ep_create();
         handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
         if (ep_h == HANDLE_INVALID) { ok = 0; why = "ep create"; }
-        if (ok && it_sys4(SYS_SC_CONFIGURE, (long)ep_h, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_WRONG_TYPE) {
+        if (ok && it_invoke((long)ep_h, INV_SC_CONFIGURE, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_WRONG_TYPE) {
             ok = 0; why = "wrong type";
         }
-        if (ok && it_sys1(SYS_THREAD_SET_SC, (long)ep_h) != (long)IRIS_ERR_WRONG_TYPE) {
+        if (ok && it_invoke0((long)ep_h, INV_SC_SET_ON_CALLER) != (long)IRIS_ERR_WRONG_TYPE) {
             ok = 0; why = "set_sc wrong type";
         }
         it_close(&ep_h);
@@ -169,17 +169,17 @@ void test_t123(void) {
         long ro = it_cs_reduce((long)sc, RIGHT_READ);
         handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
         if (ro_h == HANDLE_INVALID) { ok = 0; why = "ro dup"; }
-        if (ok && it_sys4(SYS_SC_CONFIGURE, (long)ro_h, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_ACCESS_DENIED) {
+        if (ok && it_invoke((long)ro_h, INV_SC_CONFIGURE, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_ACCESS_DENIED) {
             ok = 0; why = "rights not enforced";
         }
         it_close(&ro_h);
     }
 
     /* Bind / rebind / unbind on the main thread (S11 — no stale ref). */
-    if (ok && it_sys1(SYS_THREAD_SET_SC, (long)sc)  != 0) { ok = 0; why = "bind"; }
-    if (ok && it_sys1(SYS_THREAD_SET_SC, (long)sc2) != 0) { ok = 0; why = "rebind"; }
-    if (ok && it_sys1(SYS_THREAD_SET_SC, 0)         != 0) { ok = 0; why = "unbind"; }
-    if (ok && it_sys1(SYS_THREAD_SET_SC, 0)         != 0) { ok = 0; why = "unbind idempotent"; }
+    if (ok && it_invoke0((long)sc, INV_SC_SET_ON_CALLER)  != 0) { ok = 0; why = "bind"; }
+    if (ok && it_invoke0((long)sc2, INV_SC_SET_ON_CALLER) != 0) { ok = 0; why = "rebind"; }
+    if (ok && it_invoke0(0, INV_SC_SET_ON_CALLER)         != 0) { ok = 0; why = "unbind"; }
+    if (ok && it_invoke0(0, INV_SC_SET_ON_CALLER)         != 0) { ok = 0; why = "unbind idempotent"; }
 
     /* A worker thread binds an SC and self-exits; the reaper releases the ref. */
     if (ok) {
@@ -258,10 +258,7 @@ static long g_it_auth_ut = -1;
 long it_auth_ut(void) {
     if (g_it_auth_ut < 0) {
         it_slot_delete((uint32_t)IT_AUTH_UT_CPTR);
-        long r = it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
-                         (long)((uint64_t)IRIS_KOBJ_UNTYPED | (1ULL << 32)),
-                         (long)((uint64_t)IT_OBJ_CNODE_SLOT | (244ULL << 32)),
-                         2097152);
+        long r = it_invoke((long)IRIS_CPTR_TEST_UNTYPED, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_UNTYPED | (1ULL << 32)), (long)((uint64_t)IT_OBJ_CNODE_SLOT | (244ULL << 32)), 2097152);
         if (r == 0) g_it_auth_ut = (long)IT_AUTH_UT_CPTR;
     }
     return g_it_auth_ut;
@@ -270,7 +267,7 @@ long it_auth_ut(void) {
 /* Reset the authority-test untyped after a test drops all its children.
  * Returns 1 if the region is clean (child_count == 0 → RESET ok), 0 otherwise. */
 int it_ut_reset(void) {
-    return it_sys1(SYS_UNTYPED_RESET, IT_UT) == 0;
+    return it_invoke0(IT_UT, INV_UNTYPED_RESET) == 0;
 }
 
 /* ── T125: basic untyped retype authority ───────────────────────────────────
@@ -293,7 +290,7 @@ void test_t125(void) {
 
     /* The forwarded untyped must be present and non-trivially sized. */
     uint64_t avail = 0;
-    if (it_sys3(SYS_UNTYPED_INFO, IT_UT, 0, (long)(uintptr_t)&avail) != 0) {
+    if (it_invoke2(IT_UT, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&avail) != 0) {
         it_fail("T125", "untyped absent (boot-chain forward failed)"); return;
     }
     if (avail < 65536u) { it_fail("T125", "untyped too small"); return; }
@@ -317,23 +314,23 @@ void test_t125(void) {
 
     /* Each object exists and has the expected type, every one of them asked of
      * the slot it was born into. */
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)ep)  != (long)IT_KOBJ_ENDPOINT)     { ok = 0; why = "ep type"; }
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)nt)  != (long)IT_KOBJ_NOTIFICATION) { ok = 0; why = "nt type"; }
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)cn)  != (long)IT_KOBJ_CNODE)        { ok = 0; why = "cn type"; }
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)sc)  != (long)IT_KOBJ_SCHED_CONTEXT){ ok = 0; why = "sc type"; }
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)fr)  != (long)IT_KOBJ_FRAME)        { ok = 0; why = "fr type"; }
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)sub) != (long)IT_KOBJ_UNTYPED)      { ok = 0; why = "sub type"; }
+    if (ok && it_invoke0((long)ep, INV_CAP_IDENTIFY)  != (long)IT_KOBJ_ENDPOINT)     { ok = 0; why = "ep type"; }
+    if (ok && it_invoke0((long)nt, INV_CAP_IDENTIFY)  != (long)IT_KOBJ_NOTIFICATION) { ok = 0; why = "nt type"; }
+    if (ok && it_invoke0((long)cn, INV_CAP_IDENTIFY)  != (long)IT_KOBJ_CNODE)        { ok = 0; why = "cn type"; }
+    if (ok && it_invoke0((long)sc, INV_CAP_IDENTIFY)  != (long)IT_KOBJ_SCHED_CONTEXT){ ok = 0; why = "sc type"; }
+    if (ok && it_invoke0((long)fr, INV_CAP_IDENTIFY)  != (long)IT_KOBJ_FRAME)        { ok = 0; why = "fr type"; }
+    if (ok && it_invoke0((long)sub, INV_CAP_IDENTIFY) != (long)IT_KOBJ_UNTYPED)      { ok = 0; why = "sub type"; }
 
     /* Type-appropriate use: the retyped endpoint is a real rendezvous point
      * (empty → WOULD_BLOCK); the sub-untyped answers INFO; the SC configures. */
     if (ok) {
         struct IrisMsg m; it_iris_msg_zero(&m);
-        if (it_sys2(SYS_EP_NB_RECV, (long)ep, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) {
+        if (it_invoke1((long)ep, INV_EP_NB_RECV, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) {
             ok = 0; why = "ep not usable";
         }
     }
-    if (ok && it_sys3(SYS_UNTYPED_INFO, (long)sub, 0, 0) != 0) { ok = 0; why = "sub not usable"; }
-    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc not usable"; }
+    if (ok && it_invoke2((long)sub, INV_UNTYPED_INFO, 0, 0) != 0) { ok = 0; why = "sub not usable"; }
+    if (ok && it_invoke((long)sc, INV_SC_CONFIGURE, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc not usable"; }
 
     /* Live per-type counts rose by exactly the objects we made. */
     if (ok && !it_sched_ext3(s3a)) { ok = 0; why = "ext3 mid"; }
@@ -412,7 +409,7 @@ void test_t126(void) {
 
     /* NO_MEMORY: a sub-untyped larger than the whole region. */
     uint64_t avail = 0;
-    (void)it_sys3(SYS_UNTYPED_INFO, IT_UT, 0, (long)(uintptr_t)&avail);
+    (void)it_invoke2(IT_UT, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&avail);
     uint64_t huge = (avail + 0x100000u) & ~0xFFFULL;   /* page-aligned, > avail */
     struct { uint32_t type; uint64_t arg; long expect; const char *tag; } cases[] = {
         { IT_KOBJ_UNTYPED,     huge, (long)IRIS_ERR_NO_MEMORY,     "nomem" },
@@ -502,9 +499,9 @@ void test_t127(void) {
     if (ok && it_cdt_alive(gc1)) { ok = 0; why = "gc1 alive"; }
     if (ok && it_cdt_alive(c2))  { ok = 0; why = "c2 alive"; }
     if (ok && !it_cdt_alive(rootc)) { ok = 0; why = "root died"; }
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)root) < 0) { ok = 0; why = "root cap died"; }
+    if (ok && it_invoke0((long)root, INV_CAP_IDENTIFY) < 0) { ok = 0; why = "root cap died"; }
     /* Outsider outside the subtree is untouched. */
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)outsider) < 0) { ok = 0; why = "outsider died"; }
+    if (ok && it_invoke0((long)outsider, INV_CAP_IDENTIFY) < 0) { ok = 0; why = "outsider died"; }
 
     /* Idempotent: a second revoke finds an empty subtree and succeeds. */
     if (ok && it_cdt_revoke(rootc) < 0) { ok = 0; why = "revoke not idempotent"; }
@@ -566,7 +563,7 @@ void test_t128(void) {
     if (ok && frc < 0) { ok = 0; why = "root slot"; }
     long child = (frc >= 0) ? it_cdt_derive(frc, IT_SCRATCH_1, RIGHT_SAME_RIGHTS) : -1;
     if (ok && child < 0) { ok = 0; why = "derive"; }
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, child) != (long)IT_KOBJ_FRAME) {
+    if (ok && it_invoke0(child, INV_CAP_IDENTIFY) != (long)IT_KOBJ_FRAME) {
         ok = 0; why = "child type";
     }
     if (ok && it_cdt_revoke(frc) < 0) { ok = 0; why = "revoke"; }
@@ -574,7 +571,7 @@ void test_t128(void) {
     it_slot_delete(IT_SCRATCH_1);
     it_slot_delete(IT_SCRATCH_0);
     /* The frame object survives while the root cap is held. */
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)frame) != (long)IT_KOBJ_FRAME) { ok = 0; why = "frame died early"; }
+    if (ok && it_invoke0((long)frame, INV_CAP_IDENTIFY) != (long)IT_KOBJ_FRAME) { ok = 0; why = "frame died early"; }
     if (ok && !it_sched_ext3(mid)) { ok = 0; why = "ext3 mid2"; }
     if (ok && mid[IT_S3_FRAME] != s3b[IT_S3_FRAME] + 1u) { ok = 0; why = "frame miscounted after revoke"; }
 
@@ -601,7 +598,7 @@ void test_t128(void) {
 static volatile long g_t129_res;
 static void t129_worker(void) {
     struct IrisMsg m; it_iris_msg_zero(&m);
-    g_t129_res = it_sys2(SYS_EP_RECV, (long)g_sh_ep, (long)&m);
+    g_t129_res = it_invoke1((long)g_sh_ep, INV_EP_RECV, (long)&m);
     g_sh_done[0] = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -684,9 +681,7 @@ void test_t130(void) {
 
     /* A cap without DUPLICATE cannot be a derivation source — ACCESS_DENIED,
      * and nothing is installed (no fallback). */
-    if (ok && it_sys3(SYS_CSPACE_MINT, ro,
-                      (long)((uint64_t)IT_SCRATCH_2 << 32),
-                      (long)RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_ACCESS_DENIED) {
+    if (ok && it_invoke2(ro, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_2 << 32), (long)RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_ACCESS_DENIED) {
         ok = 0; why = "escalation via derive";
     }
     if (ok && it_cdt_alive((long)IT_SCRATCH_2)) { ok = 0; why = "denied derive installed"; }
@@ -700,9 +695,7 @@ void test_t130(void) {
          * only, so it cannot itself be a derivation source. */
         long up = it_cdt_derive(rootc, IT_SCRATCH_3, RIGHT_READ);
         if (up < 0) { ok = 0; why = "derive read"; }
-        if (ok && it_sys3(SYS_CSPACE_MINT, up,
-                          (long)((uint64_t)IT_SCRATCH_2 << 32),
-                          (long)RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_ACCESS_DENIED) {
+        if (ok && it_invoke2(up, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_2 << 32), (long)RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_ACCESS_DENIED) {
             ok = 0; why = "read child escalated";
         }
         it_slot_delete(IT_SCRATCH_3);
@@ -715,14 +708,10 @@ void test_t130(void) {
         long cnr = it_retype_slot_alloc(IT_UT, IT_KOBJ_CNODE, 4);
         handle_id_t cn = (cnr >= 0) ? (handle_id_t)cnr : HANDLE_INVALID;
         if (cnr < 0) { ok = 0; why = "retype cnode"; }
-        if (ok && it_sys3(SYS_CSPACE_MINT, rootc,
-                          (long)(((uint64_t)2u << 32) | (uint64_t)cnr),
-                          (long)RIGHT_READ) != 0) {
+        if (ok && it_invoke2(rootc, INV_CSPACE_MINT, (long)(((uint64_t)2u << 32) | (uint64_t)cnr), (long)RIGHT_READ) != 0) {
             ok = 0; why = "cnode mint";
         }
-        if (ok && it_sys3(SYS_CSPACE_MINT, rootc,
-                          (long)(((uint64_t)3u << 32) | (uint64_t)cnr),
-                          (long)RIGHT_MANAGE) != (long)IRIS_ERR_INVALID_ARG) {
+        if (ok && it_invoke2(rootc, INV_CSPACE_MINT, (long)(((uint64_t)3u << 32) | (uint64_t)cnr), (long)RIGHT_MANAGE) != (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "mint amplified";
         }
         it_close(&cn);
@@ -849,15 +838,15 @@ void test_t132(void) {
     if (fr == HANDLE_INVALID) { it_fail("T132", "retype frame"); return; }
 
     /* Valid: map + unmap through the self-VSpace cap. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T133_VA, (long)IT_MAP_W) != 0) {
+    if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)T133_VA, (long)IT_MAP_W) != 0) {
         ok = 0; why = "valid map";
     }
-    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T133_VA) != 0) {
+    if (ok && it_invoke2((long)fr, INV_FRAME_UNMAP, IT_VS, (long)T133_VA) != 0) {
         ok = 0; why = "valid unmap";
     }
 
     /* Wrong-type VSpace slot: the untyped cap is not a VSpace. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_UT, (long)T133_VA, (long)IT_MAP_W)
+    if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_UT, (long)T133_VA, (long)IT_MAP_W)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong-type not rejected"; }
 
     /* Missing rights: a read-only self-VSpace cap cannot install a PTE. */
@@ -865,18 +854,17 @@ void test_t132(void) {
         /* The read-only copy is a slot-to-slot derive of the self-VSpace slot,
          * so it is an MDB child of the cap it narrows. */
         it_slot_delete(IT_VS_RO);
-        if (it_sys3(SYS_CSPACE_MINT, IT_VS,
-                    (long)((uint64_t)IT_VS_RO << 32), (long)RIGHT_READ) != 0) {
+        if (it_invoke2(IT_VS, INV_CSPACE_MINT, (long)((uint64_t)IT_VS_RO << 32), (long)RIGHT_READ) != 0) {
             ok = 0; why = "ro mint";
         }
-        if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS_RO, (long)T133_VA, (long)IT_MAP_W)
+        if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS_RO, (long)T133_VA, (long)IT_MAP_W)
                   != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro not denied"; }
         /* No fallback: the denied map installed nothing (a following valid map
          * at the same VA still succeeds, proving the VA was left free). */
-        if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T133_VA, (long)IT_MAP_W) != 0) {
+        if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)T133_VA, (long)IT_MAP_W) != 0) {
             ok = 0; why = "post-deny map";
         }
-        if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T133_VA) != 0) { ok = 0; why = "post-deny unmap"; }
+        if (ok && it_invoke2((long)fr, INV_FRAME_UNMAP, IT_VS, (long)T133_VA) != 0) { ok = 0; why = "post-deny unmap"; }
     }
 
     it_close(&fr);
@@ -905,7 +893,7 @@ void test_t133(void) {
     handle_id_t fr = it_retype_frame();
     if (fr == HANDLE_INVALID) { it_fail("T133", "retype frame"); return; }
 
-    if (it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T133_VA, (long)IT_MAP_W) != 0) {
+    if (it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)T133_VA, (long)IT_MAP_W) != 0) {
         ok = 0; why = "map";
     }
     /* mapping is live: exactly one more mapping and one map-success. */
@@ -921,15 +909,15 @@ void test_t133(void) {
         if (*p != 0x19C0FFEEu) { ok = 0; why = "readback"; }
     }
 
-    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T133_VA) != 0) { ok = 0; why = "unmap"; }
+    if (ok && it_invoke2((long)fr, INV_FRAME_UNMAP, IT_VS, (long)T133_VA) != 0) { ok = 0; why = "unmap"; }
     if (ok && !it_sched_ext4(v1)) { ok = 0; why = "ext4 mid2"; }
     if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "maplive not restored"; }
     if (ok && v1[IT_S4_UNMAPOK] != v0[IT_S4_UNMAPOK] + 1u) { ok = 0; why = "unmapok"; }
     if (ok && v1[IT_S4_TLB]     <= v0[IT_S4_TLB])          { ok = 0; why = "no tlb invalidate"; }
 
     /* VA is free again: a fresh map at the same VA succeeds, then clean up. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T133_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "remap"; }
-    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T133_VA) != 0) { ok = 0; why = "reunmap"; }
+    if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)T133_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "remap"; }
+    if (ok && it_invoke2((long)fr, INV_FRAME_UNMAP, IT_VS, (long)T133_VA) != 0) { ok = 0; why = "reunmap"; }
 
     /* Close the frame — a clean close proves mapped_count == 0 (no assert). */
     it_close(&fr);
@@ -983,8 +971,7 @@ void test_t134(void) {
         { (long)fr, (long)IT_SCRATCH_2, T134_VA, IT_MAP_W, (long)IRIS_ERR_NOT_FOUND, "empty vspace slot" },
     };
     for (uint32_t c = 0; ok && c < 7u; c++) {
-        long got = it_sys4(SYS_FRAME_MAP, cases[c].frame, cases[c].vs,
-                           (long)cases[c].va, (long)cases[c].flags);
+        long got = it_invoke(cases[c].frame, INV_FRAME_MAP, cases[c].vs, (long)cases[c].va, (long)cases[c].flags);
         if (got != cases[c].expect) { ok = 0; why = cases[c].tag; break; }
         /* nothing installed by the failure */
         if (!it_sched_ext4(v1)) { ok = 0; why = "ext4 mid"; break; }
@@ -992,15 +979,15 @@ void test_t134(void) {
     }
 
     /* Occupied VA: a real map, then a duplicate at the same VA → BUSY. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T134_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "base map"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T134_VA, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) {
+    if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)T134_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "base map"; }
+    if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)T134_VA, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) {
         ok = 0; why = "occupied not busy";
     }
-    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T134_VA) != 0) { ok = 0; why = "cleanup unmap"; }
+    if (ok && it_invoke2((long)fr, INV_FRAME_UNMAP, IT_VS, (long)T134_VA) != 0) { ok = 0; why = "cleanup unmap"; }
 
     /* A valid map right after all failures still works. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T134_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "valid-after-fail"; }
-    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T134_VA) != 0) { ok = 0; why = "final unmap"; }
+    if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)T134_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "valid-after-fail"; }
+    if (ok && it_invoke2((long)fr, INV_FRAME_UNMAP, IT_VS, (long)T134_VA) != 0) { ok = 0; why = "final unmap"; }
 
     it_slot_delete(IT_SCRATCH_1);
     it_slot_delete(IT_SCRATCH_0);
@@ -1035,19 +1022,19 @@ void test_t135(void) {
     handle_id_t b = it_retype_frame();
     if (a == HANDLE_INVALID || b == HANDLE_INVALID) { it_close(&a); it_close(&b); it_fail("T135", "retype"); return; }
 
-    if (it_sys4(SYS_FRAME_MAP, (long)a, IT_VS, (long)T135_VA_X, (long)IT_MAP_W) != 0) { ok = 0; why = "map A@X"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)a, IT_VS, (long)T135_VA_X, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) { ok = 0; why = "dup A@X"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)b, IT_VS, (long)T135_VA_X, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) { ok = 0; why = "B over X"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)a, IT_VS, (long)T135_VA_Y, (long)IT_MAP_W) != 0) { ok = 0; why = "map A@Y"; }
+    if (it_invoke((long)a, INV_FRAME_MAP, IT_VS, (long)T135_VA_X, (long)IT_MAP_W) != 0) { ok = 0; why = "map A@X"; }
+    if (ok && it_invoke((long)a, INV_FRAME_MAP, IT_VS, (long)T135_VA_X, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) { ok = 0; why = "dup A@X"; }
+    if (ok && it_invoke((long)b, INV_FRAME_MAP, IT_VS, (long)T135_VA_X, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) { ok = 0; why = "B over X"; }
+    if (ok && it_invoke((long)a, INV_FRAME_MAP, IT_VS, (long)T135_VA_Y, (long)IT_MAP_W) != 0) { ok = 0; why = "map A@Y"; }
 
     /* Two live mappings of frame A. */
     if (ok && !it_sched_ext4(v1)) { ok = 0; why = "ext4 mid"; }
     if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE] + 2u) { ok = 0; why = "maplive != +2"; }
 
     /* Unmap Y first, then X (reverse order); absent unmap → NOT_FOUND. */
-    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)a, IT_VS, (long)T135_VA_Y) != 0) { ok = 0; why = "unmap A@Y"; }
-    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)a, IT_VS, (long)T135_VA_Y) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "absent unmap"; }
-    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)a, IT_VS, (long)T135_VA_X) != 0) { ok = 0; why = "unmap A@X"; }
+    if (ok && it_invoke2((long)a, INV_FRAME_UNMAP, IT_VS, (long)T135_VA_Y) != 0) { ok = 0; why = "unmap A@Y"; }
+    if (ok && it_invoke2((long)a, INV_FRAME_UNMAP, IT_VS, (long)T135_VA_Y) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "absent unmap"; }
+    if (ok && it_invoke2((long)a, INV_FRAME_UNMAP, IT_VS, (long)T135_VA_X) != 0) { ok = 0; why = "unmap A@X"; }
 
     if (ok && !it_sched_ext4(v1)) { ok = 0; why = "ext4 mid2"; }
     if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "maplive not restored"; }
@@ -1087,7 +1074,7 @@ void test_t136(void) {
                     if (it_kill((long)p_h) != 0) { ok = 0; why = "kill"; }
                 } else {
                     struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x136;
-                    (void)it_sys2(SYS_EP_SEND, (long)ep_h, (long)&m);
+                    (void)it_invoke1((long)ep_h, INV_EP_SEND, (long)&m);
                     (void)it_lp_wait_exit(p_h);
                 }
             }
@@ -1135,7 +1122,7 @@ void test_t137(void) {
     handle_id_t fr = it_retype_frame();
     if (fr == HANDLE_INVALID) { it_fail("T137", "retype frame"); return; }
 
-    if (it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T137_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; }
+    if (it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)T137_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; }
 
     /* Phase S4 (Step 3): derived cap, revoked while the frame is mapped. */
     long frc   = ok ? it_cdt_root(fr, IT_SCRATCH_0) : -1;
@@ -1157,10 +1144,10 @@ void test_t137(void) {
         if (*p != 0x137ABCDEu) { ok = 0; why = "frame unusable after revoke"; }
     }
     /* Frame object still alive (root cap held it). */
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)fr) != (long)IT_KOBJ_FRAME) { ok = 0; why = "frame died"; }
+    if (ok && it_invoke0((long)fr, INV_CAP_IDENTIFY) != (long)IT_KOBJ_FRAME) { ok = 0; why = "frame died"; }
 
     /* Now unmap, then close — clean close proves mapped_count == 0 (no assert). */
-    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T137_VA) != 0) { ok = 0; why = "unmap"; }
+    if (ok && it_invoke2((long)fr, INV_FRAME_UNMAP, IT_VS, (long)T137_VA) != 0) { ok = 0; why = "unmap"; }
     it_close(&fr);
     it_quiesce_reaper();
     if (ok && !it_ut_reset()) { ok = 0; why = "reset busy (frame still mapped?)"; }
@@ -1196,17 +1183,17 @@ void test_t138(void) {
     if (rr < 0) { ok = 0; why = "ro derive"; }
 
     /* Read-only cap: non-writable map ok, writable map denied. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_ro, IT_VS, (long)T138_VA, 0L) != 0) { ok = 0; why = "ro map"; }
-    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr_ro, IT_VS, (long)T138_VA) != 0) { ok = 0; why = "ro unmap"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_ro, IT_VS, (long)T138_VA, (long)IT_MAP_W)
+    if (ok && it_invoke((long)fr_ro, INV_FRAME_MAP, IT_VS, (long)T138_VA, 0L) != 0) { ok = 0; why = "ro map"; }
+    if (ok && it_invoke2((long)fr_ro, INV_FRAME_UNMAP, IT_VS, (long)T138_VA) != 0) { ok = 0; why = "ro unmap"; }
+    if (ok && it_invoke((long)fr_ro, INV_FRAME_MAP, IT_VS, (long)T138_VA, (long)IT_MAP_W)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable not denied"; }
 
     /* W^X rejected. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T138_VA, 3L) != (long)IRIS_ERR_INVALID_ARG) {
+    if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)T138_VA, 3L) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "w^x not rejected";
     }
     /* Kernel-range VA rejected (user cannot map kernel space). */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, 0xFFFF800000001000L, (long)IT_MAP_W)
+    if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, 0xFFFF800000001000L, (long)IT_MAP_W)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel va not rejected"; }
 
     it_slot_delete(IT_SCRATCH_1);
@@ -1235,14 +1222,14 @@ void test_t139(void) {
 
         /* Forced failures, deterministically interleaved. */
         if ((fz_rand() & 1u) &&
-            it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)(va | 0x40ULL), (long)IT_MAP_W) != (long)IRIS_ERR_INVALID_ARG) {
+            it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)(va | 0x40ULL), (long)IT_MAP_W) != (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "unaligned"; it_close(&fr); break;
         }
 
-        if (it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)va, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; it_close(&fr); break; }
+        if (it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)va, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; it_close(&fr); break; }
         /* Occupied VA is BUSY. */
         if ((fz_rand() & 1u) &&
-            it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)va, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) {
+            it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)va, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) {
             ok = 0; why = "occupied"; it_close(&fr); break;
         }
 
@@ -1257,7 +1244,7 @@ void test_t139(void) {
             it_slot_delete(IT_SCRATCH_0);
         }
 
-        if (it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)va) != 0) { ok = 0; why = "unmap"; it_close(&fr); break; }
+        if (it_invoke2((long)fr, INV_FRAME_UNMAP, IT_VS, (long)va) != 0) { ok = 0; why = "unmap"; it_close(&fr); break; }
         it_close(&fr);
 
         if ((i & 7u) == 7u) {
@@ -1316,7 +1303,7 @@ long it_lp_cmd_va(handle_id_t ep_h, uint32_t label, uint64_t va) {
     m.label      = label;
     m.words[0]   = va;
     m.word_count = 1u;
-    return it_sys2(SYS_EP_SEND, (long)ep_h, (long)&m);
+    return it_invoke1((long)ep_h, INV_EP_SEND, (long)&m);
 }
 
 /* Spawn a lifecycle_probe child wired for fault supervision: command endpoint,
@@ -1347,8 +1334,8 @@ static int it_fault_spawn_mbox(uint32_t mbox,
     *n_h = (fe >= 0) ? (handle_id_t)fe : HANDLE_INVALID;
     *w_h = (w  >= 0) ? (handle_id_t)w  : HANDLE_INVALID;
     if (fe < 0 || w < 0 ||
-        it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)*proc_h), fe, 0, 0) != 0 ||
-        it_sys3(SYS_TCB_WATCH, it_child_tcb((long)*proc_h), w, 1) != 0) {
+        it_invoke(it_child_tcb((long)*proc_h), INV_TCB_SET_FAULT_HANDLER, fe, 0, 0) != 0 ||
+        it_invoke2(it_child_tcb((long)*proc_h), INV_TCB_WATCH, w, 1) != 0) {
         (void)it_kill((long)*proc_h);
         it_close(n_h); it_close(w_h); it_close(proc_h); it_close(ep_h);
         *why = "wire handler/watch"; return 0;
@@ -1380,8 +1367,7 @@ int it_fault_wait_ep(long fault_ep, uint32_t mbox) {
     for (uint32_t tries = 0; tries < 3000u; tries++) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
-        if (it_sys3(SYS_EP_NB_RECV, fault_ep, (long)(uintptr_t)&m,
-                    IT_FAULT_CPTR(mbox)) == 0) {
+        if (it_invoke2(fault_ep, INV_EP_NB_RECV, (long)(uintptr_t)&m, IT_FAULT_CPTR(mbox)) == 0) {
             for (uint32_t b = 0; b < FAULT_MSG_LEN; b++)
                 g_it_fault_rec[mbox][b] = ((const uint8_t *)m.words)[b];
             g_it_fault_have[mbox]  = 1u;
@@ -1399,12 +1385,11 @@ long it_fault_resume(uint32_t mbox) {
     struct IrisMsg m;
     it_iris_msg_zero(&m);
     if (mbox < IT_FAULT_LEAVES) g_it_fault_have[mbox] = 0u;
-    long r = it_sys2(SYS_REPLY, IT_FAULT_CPTR(mbox), (long)(uintptr_t)&m);
+    long r = it_invoke1(IT_FAULT_CPTR(mbox), INV_REPLY_SEND, (long)(uintptr_t)&m);
     /* A reply object is ONE-SHOT: once spent it can never answer anything
      * again, so the capability is dropped here rather than left in a slot
      * where a later test would count it as live authority. */
-    if (r == 0) (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT,
-                              (long)IT_FAULT_LEAF(mbox));
+    if (r == 0) (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)IT_FAULT_LEAF(mbox));
     return r;
 }
 
@@ -1413,8 +1398,7 @@ long it_fault_resume(uint32_t mbox) {
  * faulting thread" is now — a supervisor with no reply to give. */
 long it_fault_kill(uint32_t mbox) {
     if (mbox < IT_FAULT_LEAVES) g_it_fault_have[mbox] = 0u;
-    return it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT,
-                   (long)IT_FAULT_LEAF(mbox));
+    return it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)IT_FAULT_LEAF(mbox));
 }
 
 static void it_fault_close4(handle_id_t *a, handle_id_t *b,
@@ -1464,18 +1448,18 @@ void test_t140(void) {
     handle_id_t w_h  = (w  >= 0) ? (handle_id_t)w  : HANDLE_INVALID;
     if (n1 < 0 || w < 0) { ok = 0; why = "notify create"; }
 
-    if (ok && it_sys3(SYS_TCB_WATCH, it_child_tcb((long)proc_h), w, 1) != 0) { ok = 0; why = "watch"; }
+    if (ok && it_invoke2(it_child_tcb((long)proc_h), INV_TCB_WATCH, w, 1) != 0) { ok = 0; why = "watch"; }
 
     /* Wrong types, both slots.  A-22: the handler is an ENDPOINT, so a
      * notification in that slot is WRONG_TYPE — it used to be the only thing
      * accepted there. */
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n1, 0, 0)
+    if (ok && it_invoke(it_child_tcb((long)proc_h), INV_TCB_SET_FAULT_HANDLER, n1, 0, 0)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "notif wrong-type"; }
     /* Stage 7 Step 12: the first argument names the THREAD, so the wrong-type
      * probe on that half passes a notification where a TCB belongs.  The TCB
      * family answers WRONG_TYPE there too — one is the object the syscall is
      * invoked ON, the other an object it is handed, and both are checked. */
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, n1, (long)ep_h, 0, 0)
+    if (ok && it_invoke(n1, INV_TCB_SET_FAULT_HANDLER, (long)ep_h, 0, 0)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "tcb wrong-type"; }
     /* Reduced rights, both slots — ACCESS_DENIED, no fallback.  Arming where
      * an execution's faults go is a WRITE to that execution, and arranging for
@@ -1485,23 +1469,20 @@ void test_t140(void) {
     handle_id_t pr_ro_h = (pr_ro >= 0) ? (handle_id_t)pr_ro : HANDLE_INVALID;
     handle_id_t n_ro_h  = (n_ro  >= 0) ? (handle_id_t)n_ro  : HANDLE_INVALID;
     if (ok && (pr_ro < 0 || n_ro < 0)) { ok = 0; why = "ro dups"; }
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, pr_ro, (long)ep_h, 0, 0)
+    if (ok && it_invoke(pr_ro, INV_TCB_SET_FAULT_HANDLER, (long)ep_h, 0, 0)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "tcb no-write not denied"; }
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n_ro, 0, 0)
+    if (ok && it_invoke(it_child_tcb((long)proc_h), INV_TCB_SET_FAULT_HANDLER, n_ro, 0, 0)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ep no-write not denied"; }
     /* The retired arguments are REFUSED.  Ignoring them would let the old
      * three-mechanism call keep compiling and keep "succeeding" while the
      * mailbox it names is never written. */
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h),
-                      (long)ep_h, 1, 0)
+    if (ok && it_invoke(it_child_tcb((long)proc_h), INV_TCB_SET_FAULT_HANDLER, (long)ep_h, 1, 0)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "signal mask accepted"; }
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h),
-                      (long)ep_h, 0,
-                      (long)(((uint64_t)IT_FAULT_LEAF(0) << 32) |
+    if (ok && it_invoke(it_child_tcb((long)proc_h), INV_TCB_SET_FAULT_HANDLER, (long)ep_h, 0, (long)(((uint64_t)IT_FAULT_LEAF(0) << 32) |
                              (uint64_t)IT_OBJ_CNODE_SLOT))
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "mailbox accepted"; }
     /* Empty slot. */
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), 9999L, 0, 0) >= 0) {
+    if (ok && it_invoke(it_child_tcb((long)proc_h), INV_TCB_SET_FAULT_HANDLER, 9999L, 0, 0) >= 0) {
         ok = 0; why = "empty slot accepted";
     }
 
@@ -1513,12 +1494,12 @@ void test_t140(void) {
         if (it_wait_timeout( w, (long)(uintptr_t)&bits,
                     2000000000LL) != 0 || !(bits & 1ull)) { ok = 0; why = "nohandler kill"; }
     }
-    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h)) != 0) { ok = 0; why = "kill exit code"; }
+    if (ok && it_invoke0(it_child_tcb((long)proc_h), INV_TCB_EXIT_CODE) != 0) { ok = 0; why = "kill exit code"; }
     if (ok && it_fault_info(0u, &(struct it_fault){0}) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "dead proc fault info";
     }
     /* Dead thread: registration must fail NOT_FOUND, not silently pin. */
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), (long)ep_h, 0, 0)
+    if (ok && it_invoke(it_child_tcb((long)proc_h), INV_TCB_SET_FAULT_HANDLER, (long)ep_h, 0, 0)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "dead reg not NOT_FOUND"; }
 
     it_close(&pr_ro_h); it_close(&n_ro_h);
@@ -1532,7 +1513,7 @@ void test_t140(void) {
         handle_id_t n2_h = (n2 >= 0) ? (handle_id_t)n2 : HANDLE_INVALID;
         if (n2 < 0) { ok = 0; why = "n2 create"; }
         /* Replace na with n2 — last registration wins. */
-        if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)pr2), n2, 0, 0) != 0) {
+        if (ok && it_invoke(it_child_tcb((long)pr2), INV_TCB_SET_FAULT_HANDLER, n2, 0, 0) != 0) {
             ok = 0; why = "re-register";
         }
         /*
@@ -1558,7 +1539,7 @@ void test_t140(void) {
         if (ok) {
             struct IrisMsg stale;
             it_iris_msg_zero(&stale);
-            if (it_sys3(SYS_EP_NB_RECV, (long)na, (long)(uintptr_t)&stale, 0L)
+            if (it_invoke2((long)na, INV_EP_NB_RECV, (long)(uintptr_t)&stale, 0L)
                 != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "old handler fired"; }
         }
         struct it_fault f;
@@ -1616,14 +1597,14 @@ void test_t141(void) {
 
     /* Suspended while pending: alive (EXIT_CODE blocks), no second signal, and
      * the record is stable across reads. */
-    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h))
+    if (ok && it_invoke0(it_child_tcb((long)proc_h), INV_TCB_EXIT_CODE)
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "child not suspended-alive"; }
     if (ok) {
         /* Exactly once: a blocked thread cannot fault again, so a second
          * receive on its endpoint finds nothing. */
         struct IrisMsg again;
         it_iris_msg_zero(&again);
-        if (it_sys3(SYS_EP_NB_RECV, (long)n_h, (long)(uintptr_t)&again, 0L)
+        if (it_invoke2((long)n_h, INV_EP_NB_RECV, (long)(uintptr_t)&again, 0L)
             != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "double delivery"; }
     }
     struct it_fault f2;
@@ -1710,7 +1691,7 @@ void test_t142(void) {
     if (ok && (g.rip != f.rip || g.cr2 != f.cr2 ||
                g.error != f.error)) { ok = 0; why = "refault mismatch"; }
     /* The child must NOT have exited (the store never retires). */
-    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h))
+    if (ok && it_invoke0(it_child_tcb((long)proc_h), INV_TCB_EXIT_CODE)
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "write retired"; }
 
     if (ok && it_fault_kill(0) != 0) {
@@ -1818,7 +1799,7 @@ void test_t144(void) {
         it_iris_msg_zero(&rm);
         long rp_ro = it_cs_reduce(IT_FAULT_CPTR(0), RIGHT_READ);
         if (ok && rp_ro < 0) { ok = 0; why = "ro reply dup"; }
-        if (ok && it_sys2(SYS_REPLY, rp_ro, (long)(uintptr_t)&rm)
+        if (ok && it_invoke1(rp_ro, INV_REPLY_SEND, (long)(uintptr_t)&rm)
                   != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-write not denied"; }
         if (rp_ro >= 0) { handle_id_t h = (handle_id_t)rp_ro; it_close(&h); }
     }
@@ -1829,9 +1810,9 @@ void test_t144(void) {
     {
         struct IrisMsg rm;
         it_iris_msg_zero(&rm);
-        if (ok && it_sys2(SYS_REPLY, (long)ep_h, (long)(uintptr_t)&rm)
+        if (ok && it_invoke1((long)ep_h, INV_REPLY_SEND, (long)(uintptr_t)&rm)
                   != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "non-reply not rejected"; }
-        if (ok && it_sys2(SYS_REPLY, it_child_tcb((long)proc_h), (long)(uintptr_t)&rm)
+        if (ok && it_invoke1(it_child_tcb((long)proc_h), INV_REPLY_SEND, (long)(uintptr_t)&rm)
                   != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "tcb accepted as reply"; }
     }
 
@@ -1897,7 +1878,7 @@ void test_t145(void) {
     struct it_fault f;
     if (ok && it_fault_info(0u, &f) != 0) { ok = 0; why = "fault info a"; }
     it_close(&n_h);                       /* handler endpoint gone */
-    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h))
+    if (ok && it_invoke0(it_child_tcb((long)proc_h), INV_TCB_EXIT_CODE)
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "child died on handler close"; }
     if (ok && it_fault_kill(0) != 0) {
         ok = 0; why = "post-close resume kill";

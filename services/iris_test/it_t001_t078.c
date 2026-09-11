@@ -49,7 +49,7 @@ void test_t002(void) {
     const char *why = "clock is a service";
     uint64_t t0 = 0, t1 = 0;
 
-    if (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TIMER_EP)
+    if (it_invoke0((long)IRIS_CPTR_TIMER_EP, INV_CAP_IDENTIFY)
         != (long)IRIS_HANDLE_TYPE_ENDPOINT) { it_fail("T002", "no clock granted"); return; }
 
     if (ok && it_timer_uptime(&t0) != 0) { ok = 0; why = "uptime"; }
@@ -85,7 +85,7 @@ void test_t008(void) {
     handle_id_t vmo_h = (handle_id_t)vmo_raw;
 
     /* Map writable (flag=1) at T008_VMO_ADDR */
-    long r = it_sys4(SYS_FRAME_MAP, vmo_raw, IT_VS, (long)T008_VMO_ADDR, 1);
+    long r = it_invoke(vmo_raw, INV_FRAME_MAP, IT_VS, (long)T008_VMO_ADDR, 1);
     if (r < 0) {
         it_close(&vmo_h);
         it_fail("T008", "vmo map"); return;
@@ -97,10 +97,10 @@ void test_t008(void) {
     uint64_t readback = *p;
 
     /* Verify VMO size */
-    long sz = it_sys1(SYS_FRAME_SIZE, vmo_raw);
+    long sz = it_invoke0(vmo_raw, INV_FRAME_SIZE);
 
     /* Unmap */
-    long ur = it_sys3(SYS_FRAME_UNMAP, vmo_raw, IT_VS, (long)T008_VMO_ADDR);
+    long ur = it_invoke2(vmo_raw, INV_FRAME_UNMAP, IT_VS, (long)T008_VMO_ADDR);
 
     it_close(&vmo_h);
 
@@ -120,14 +120,14 @@ void test_t009(void) {
     long n_raw = it_notify_create_slot();
     if (n_raw < 0) { it_fail("T009", "notify create"); return; }
 
-    long r = it_sys2(SYS_NOTIFY_SIGNAL, n_raw, 0x3u);
+    long r = it_invoke1(n_raw, INV_NOTIFY_SIGNAL, 0x3u);
     if (r < 0) {
         it_slot_delete((uint32_t)n_raw);
         it_fail("T009", "notify signal"); return;
     }
 
     uint64_t out_bits = 0;
-    r = it_sys2(SYS_NOTIFY_WAIT, n_raw, (long)(uintptr_t)&out_bits);
+    r = it_invoke1(n_raw, INV_NOTIFY_WAIT, (long)(uintptr_t)&out_bits);
 
     it_slot_delete((uint32_t)n_raw);
 
@@ -185,7 +185,7 @@ void test_t013(void) {
     it_iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
     /* EP_SEND on a read-only endpoint cap must fail with ACCESS_DENIED. */
-    long r = it_sys2(SYS_EP_SEND, ro_raw, (long)&msg);
+    long r = it_invoke1(ro_raw, INV_EP_SEND, (long)&msg);
 
     it_close(&ro_h);
     it_close(&ep_h);
@@ -204,7 +204,7 @@ void test_t014(void) {
 
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
-    long r = it_sys2(SYS_EP_NB_RECV, ep_raw, (long)&msg);
+    long r = it_invoke1(ep_raw, INV_EP_NB_RECV, (long)&msg);
 
     it_slot_delete((uint32_t)ep_raw);
 
@@ -224,7 +224,7 @@ static uint8_t      g_t015_stack[8192];
 static void t015_server(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
-    long r = it_sys2(SYS_EP_RECV, (long)g_t015_ep_h, (long)&msg);
+    long r = it_invoke1((long)g_t015_ep_h, INV_EP_RECV, (long)&msg);
     g_t015_ok   = (r == 0 && msg.label == 0xC0FFEEULL);
     g_t015_done = 1;
     it_sys1(SYS_EXIT, 0);
@@ -253,7 +253,7 @@ void test_t015(void) {
     it_iris_msg_zero(&msg);
     msg.label      = 0xC0FFEEULL;
     msg.word_count = 0;
-    long r = it_sys2(SYS_EP_SEND, ep_raw, (long)&msg);
+    long r = it_invoke1(ep_raw, INV_EP_SEND, (long)&msg);
 
     /* Poll for server to set done flag (it runs after rendezvous returns) */
     for (int i = 0; i < 200 && !g_t015_done; i++)
@@ -278,7 +278,7 @@ static uint8_t      g_t016_stack[8192];
 static void t016_server(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
-    long r = it_sys3(SYS_EP_RECV, (long)g_t016_ep_h, (long)&msg, 88);
+    long r = it_invoke2((long)g_t016_ep_h, INV_EP_RECV, (long)&msg, 88);
     if (r < 0 || msg.attached_handle == IRIS_MSG_NO_CAP) {
         g_t016_done = 1;
         it_sys1(SYS_EXIT, 0);
@@ -290,7 +290,7 @@ static void t016_server(void) {
     it_iris_msg_zero(&reply);
     reply.label      = 0xFEEDBEEFULL;
     reply.word_count = 0;
-    long rr = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
+    long rr = it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
     g_t016_ok   = (rr == 0);
     g_t016_done = 1;
     it_sys1(SYS_EXIT, 0);
@@ -328,7 +328,7 @@ void test_t016(void) {
     msg.label      = 0xABCDULL;
     msg.word_count = 0;
     msg.buf_uptr   = (uint64_t)(uintptr_t)reply_buf;
-    long r = it_sys2(SYS_EP_CALL, ep_raw, (long)&msg);
+    long r = it_invoke1(ep_raw, INV_EP_CALL, (long)&msg);
 
     /* After EP_CALL returns the server has already replied */
     for (int i = 0; i < 200 && !g_t016_done; i++)
@@ -353,7 +353,7 @@ void test_t018(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label = 0x1818ULL;
-    long r = it_sys2(SYS_EP_NB_SEND, ep_raw, (long)&msg);
+    long r = it_invoke1(ep_raw, INV_EP_NB_SEND, (long)&msg);
 
     it_slot_delete((uint32_t)ep_raw);
 
@@ -373,7 +373,7 @@ static uint8_t      g_t019_stack[8192];
 static void t019_thread(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
-    long r = it_sys2(SYS_EP_RECV, (long)g_t019_ep_h, (long)&msg);
+    long r = it_invoke1((long)g_t019_ep_h, INV_EP_RECV, (long)&msg);
     g_t019_result = (int)r;
     g_t019_done   = 1;
     it_sys1(SYS_EXIT, 0);
@@ -431,7 +431,7 @@ static void t020_thread(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label = 0x2020ULL;
-    long r = it_sys2(SYS_EP_SEND, (long)g_t020_ep_h, (long)&msg);
+    long r = it_invoke1((long)g_t020_ep_h, INV_EP_SEND, (long)&msg);
     g_t020_result = (int)r;
     g_t020_done   = 1;
     it_sys1(SYS_EXIT, 0);
@@ -496,7 +496,7 @@ static void t021_client(void) {
     it_iris_msg_zero(&msg);
     msg.label    = 0x2121ULL;
     msg.buf_uptr = (uint64_t)(uintptr_t)rbuf;
-    long r = it_sys2(SYS_EP_CALL, (long)g_t021_ep_h, (long)&msg);
+    long r = it_invoke1((long)g_t021_ep_h, INV_EP_CALL, (long)&msg);
     g_t021_ok   = (r == 0);
     g_t021_done = 1;
     it_sys1(SYS_EXIT, 0);
@@ -528,7 +528,7 @@ void test_t021(void) {
     }
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
-    long r = it_sys3(SYS_EP_RECV, ep_raw, (long)&msg, 89);
+    long r = it_invoke2(ep_raw, INV_EP_RECV, (long)&msg, 89);
     if (r < 0 || msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
         it_close(&tid_h);
         it_close(&g_t021_ep_h);
@@ -542,7 +542,7 @@ void test_t021(void) {
     struct IrisMsg reply;
     it_iris_msg_zero(&reply);
     reply.label = 0xCAFEULL;
-    long r1 = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
+    long r1 = it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
 
     /* Wait for client to record EP_CALL result */
     for (int i = 0; i < 200 && !g_t021_done; i++)
@@ -550,7 +550,7 @@ void test_t021(void) {
 
     /* Second SYS_REPLY on same handle → NOT_FOUND (caller pointer is NULL) */
     it_iris_msg_zero(&reply);
-    long r2 = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
+    long r2 = it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
 
     it_close(&tid_h);
     it_close(&g_t021_ep_h);
@@ -580,7 +580,7 @@ static void t022_server(void) {
      * says where that is — `buf_uptr` comes back as the registered address.
      * Naming a static array here would be a marshalling mistake the kernel
      * refuses, which is the point of it refusing. */
-    long r = it_sys3(SYS_EP_RECV, (long)g_t022_ep_h, (long)&rmsg, 90);
+    long r = it_invoke2((long)g_t022_ep_h, INV_EP_RECV, (long)&rmsg, 90);
     if (r < 0 || rmsg.buf_len != 4u || rmsg.buf_uptr == 0u ||
             rmsg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
         g_t022_done = 1;
@@ -603,7 +603,7 @@ static void t022_server(void) {
     repl.label   = 0xB01FULL;
     repl.buf_uptr = rmsg.buf_uptr;    /* its own buffer, which is accepted */
     repl.buf_len  = 4u;
-    long rr = it_sys2(SYS_REPLY, (long)reply_h, (long)&repl);
+    long rr = it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&repl);
 
     g_t022_ok   = (recv_ok && rr == 0);
     g_t022_done = 1;
@@ -640,7 +640,7 @@ void test_t022(void) {
     msg.label    = 0xCA11ULL;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = 4u;
-    long r = it_sys2(SYS_EP_CALL, ep_raw, (long)&msg);
+    long r = it_invoke1(ep_raw, INV_EP_CALL, (long)&msg);
 
     for (int i = 0; i < 200 && !g_t022_done; i++)
         it_settle(1);
@@ -676,7 +676,7 @@ void test_t023(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label = 0x2323ULL;
-    long r = it_sys2(SYS_EP_SEND, ro_raw, (long)&msg);
+    long r = it_invoke1(ro_raw, INV_EP_SEND, (long)&msg);
 
     it_close(&ro_h);
     it_close(&ep_h);
@@ -701,7 +701,7 @@ static void t024_client(void) {
      * handle materialisation is retired. */
     it_slot_delete((uint32_t)T024_GOT_SLOT);
     msg.attached_handle = (uint32_t)T024_GOT_SLOT;
-    long r = it_sys2(SYS_EP_CALL, (long)g_t024_ep_h, (long)&msg);
+    long r = it_invoke1((long)g_t024_ep_h, INV_EP_CALL, (long)&msg);
     g_t024_ok    = (r == 0 && msg.label == IRIS_EP_REPLY_OK);
     g_t024_got_h = msg.attached_handle;
     g_t024_done  = 1;
@@ -733,7 +733,7 @@ void test_t024(void) {
     }
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
-    long r = it_sys3(SYS_EP_RECV, ep_raw, (long)&msg, 91);
+    long r = it_invoke2(ep_raw, INV_EP_RECV, (long)&msg, 91);
     if (r < 0 || msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
         it_close(&tid_h);
         it_close(&g_t024_ep_h);
@@ -753,7 +753,7 @@ void test_t024(void) {
             reply.label           = IRIS_EP_REPLY_OK;
             reply.attached_handle = (uint32_t)src;
             reply.attached_rights = RIGHT_WRITE | RIGHT_WAIT;
-            rr = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
+            rr = it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
             it_xfer_release(src);
         }
         /* the master notification handle is ours regardless of the transfer */
@@ -766,7 +766,7 @@ void test_t024(void) {
 
     long ty = -1;
     if (g_t024_got_h != (uint32_t)IRIS_MSG_NO_CAP)
-        ty = it_sys1(SYS_CAP_IDENTIFY, (long)g_t024_got_h);
+        ty = it_invoke0((long)g_t024_got_h, INV_CAP_IDENTIFY);
 
     handle_id_t got_h = (handle_id_t)g_t024_got_h;
     it_close(&got_h);
@@ -794,7 +794,7 @@ static void t025_client(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label = 0x2525ULL;
-    long r = it_sys2(SYS_EP_CALL, (long)g_t025_ep_h, (long)&msg);
+    long r = it_invoke1((long)g_t025_ep_h, INV_EP_CALL, (long)&msg);
     g_t025_ok   = (r == 0 &&
                    msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP);
     g_t025_done = 1;
@@ -825,7 +825,7 @@ void test_t025(void) {
     }
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
-    long r = it_sys3(SYS_EP_RECV, ep_raw, (long)&msg, 92);
+    long r = it_invoke2(ep_raw, INV_EP_RECV, (long)&msg, 92);
     if (r < 0 || msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
         it_close(&tid_h);
         it_close(&g_t025_ep_h);
@@ -846,18 +846,16 @@ void test_t025(void) {
          * a slot-to-slot derive (SYS_CSPACE_MINT).  SYS_CNODE_MINT's source is
          * handle-only and would simply not resolve a CPtr. */
         it_slot_delete(IT_XFER_SLOT_C);
-        if (it_sys3(SYS_CSPACE_MINT, notif_raw,
-                    (long)((uint64_t)IT_XFER_SLOT_C << 32),
-                    (long)(RIGHT_WRITE | RIGHT_WAIT)) == 0) {
+        if (it_invoke2(notif_raw, INV_CSPACE_MINT, (long)((uint64_t)IT_XFER_SLOT_C << 32), (long)(RIGHT_WRITE | RIGHT_WAIT)) == 0) {
             struct IrisMsg reply;
             it_iris_msg_zero(&reply);
             reply.label           = IRIS_EP_REPLY_OK;
             reply.attached_handle = IT_XFER_SLOT_C;
             reply.attached_rights = RIGHT_WRITE | RIGHT_WAIT;
-            r1 = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
+            r1 = it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
             /* denied staging must NOT consume the source slot */
             src_preserved =
-                (it_sys1(SYS_CAP_IDENTIFY, (long)IT_XFER_SLOT_C) >= 0);
+                (it_invoke0((long)IT_XFER_SLOT_C, INV_CAP_IDENTIFY) >= 0);
             it_slot_delete(IT_XFER_SLOT_C);
         }
     }
@@ -866,7 +864,7 @@ void test_t025(void) {
     struct IrisMsg reply;
     it_iris_msg_zero(&reply);
     reply.label = IRIS_EP_REPLY_OK;
-    long r2 = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
+    long r2 = it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
 
     for (int i = 0; i < 200 && !g_t025_done; i++)
         it_settle(1);
@@ -938,7 +936,7 @@ static long it_lookup_ep(const char *name, uint32_t dest_cptr) {
     msg.buf_len         = len;
     msg.attached_handle = dest_cptr;      /* receive-slot declaration */
 
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
     if (r != 0 || msg.label != IRIS_EP_REPLY_OK) return -1;
     if (msg.attached_handle != dest_cptr) {
         /* Landed somewhere else (or nowhere): drop whatever arrived so the
@@ -949,7 +947,7 @@ static long it_lookup_ep(const char *name, uint32_t dest_cptr) {
         }
         return -1;
     }
-    if (it_sys1(SYS_CAP_IDENTIFY, (long)dest_cptr) != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
+    if (it_invoke0((long)dest_cptr, INV_CAP_IDENTIFY) != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
         it_slot_delete(dest_cptr);
         return -1;
     }
@@ -976,7 +974,7 @@ void test_t027(void) {
     it_iris_msg_zero(&msg);
     msg.label    = IRIS_EP_OP_PING;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    long r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)&msg);
+    long r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)&msg);
 
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
         it_pass("T027");
@@ -1003,7 +1001,7 @@ void test_t028(void) {
     msg.word_count = 2;
     msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len    = len;
-    long r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)&msg);
+    long r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)&msg);
 
     int ok = (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
               msg.words[1] == (uint64_t)expect_len &&
@@ -1026,7 +1024,7 @@ void test_t028(void) {
         msg.word_count = 2;
         msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
         msg.buf_len    = len;
-        r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)&msg);
+        r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)&msg);
         eof_ok = (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
                   msg.words[1] == 0 &&
                   msg.words[2] == (uint64_t)expect_len);
@@ -1049,7 +1047,7 @@ void test_t029(void) {
     it_iris_msg_zero(&msg);
     msg.label    = UINT64_C(0x0EEE);  /* not a VFS opcode */
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    long r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)&msg);
+    long r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)&msg);
     int unk_ok = (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
                   msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_SUPPORTED);
 
@@ -1058,7 +1056,7 @@ void test_t029(void) {
     msg.words[0]   = 999;
     msg.word_count = 1;
     msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
-    r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)&msg);
+    r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)&msg);
     int oob_ok = (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
                   msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND);
 
@@ -1071,7 +1069,7 @@ void test_t029(void) {
 /* ── T030: VFS EP malformed READ_AT paths → INVALID_ARG ─────────────────── */
 
 static int t030_expect_inval(struct IrisMsg *msg) {
-    long r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)msg);
+    long r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)msg);
     return (r == 0 && msg->label == IRIS_EP_REPLY_ERR &&
             msg->words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG);
 }
@@ -1143,7 +1141,7 @@ void test_t031(void) {
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
-    long r = it_sys2(SYS_EP_CALL, (long)g_svcmgr_ep_h, (long)&msg);
+    long r = it_invoke1((long)g_svcmgr_ep_h, INV_EP_CALL, (long)&msg);
 
     if (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
         msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND &&
@@ -1177,7 +1175,7 @@ void test_t032(void) {
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
-    long r = it_sys2(SYS_EP_CALL, (long)g_svcmgr_ep_h, (long)&msg);
+    long r = it_invoke1((long)g_svcmgr_ep_h, INV_EP_CALL, (long)&msg);
 
     if (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
         msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND &&
@@ -1202,7 +1200,7 @@ void test_t033(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label = VFS_EP_OP_STATUS;
-    long r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)&msg);
+    long r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)&msg);
 
     if (r != 0 || msg.label != IRIS_EP_REPLY_OK ||
         msg.words[1] < (uint64_t)VFS_BOOT_EXPORT_COUNT) {
@@ -1216,7 +1214,7 @@ void test_t033(void) {
     msg.label    = VFS_EP_OP_STATUS;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
-    r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)&msg);
+    r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)&msg);
 
     if (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
         msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG)
@@ -1240,7 +1238,7 @@ void test_t034(void) {
     long r;
     it_iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    r = it_sys2(SYS_EP_CALL, (long)g_kbd_ep_h, (long)&msg);
+    r = it_invoke1((long)g_kbd_ep_h, INV_EP_CALL, (long)&msg);
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
         it_pass("T034");
     else
@@ -1265,13 +1263,13 @@ void test_t035(void) {
     /* POLL on an idle keyboard (headless: no keys) → WOULD_BLOCK, clean */
     it_iris_msg_zero(&msg);
     msg.label = KBD_EP_OP_POLL;
-    if (it_sys2(SYS_EP_CALL, (long)g_kbd_ep_h, (long)&msg) != 0 ||
+    if (it_invoke1((long)g_kbd_ep_h, INV_EP_CALL, (long)&msg) != 0 ||
         !t035_expect_err(&msg, KBD_EP_E_WOULD_BLOCK)) ok = 0;
 
     /* unknown opcode → NOT_SUPPORTED */
     it_iris_msg_zero(&msg);
     msg.label = 0x7777;
-    if (it_sys2(SYS_EP_CALL, (long)g_kbd_ep_h, (long)&msg) != 0 ||
+    if (it_invoke1((long)g_kbd_ep_h, INV_EP_CALL, (long)&msg) != 0 ||
         !t035_expect_err(&msg, KBD_EP_E_NOT_SUPPORTED)) ok = 0;
 
     /* bulk payload on POLL → INVALID_ARG */
@@ -1280,7 +1278,7 @@ void test_t035(void) {
     msg.label    = KBD_EP_OP_POLL;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
-    if (it_sys2(SYS_EP_CALL, (long)g_kbd_ep_h, (long)&msg) != 0 ||
+    if (it_invoke1((long)g_kbd_ep_h, INV_EP_CALL, (long)&msg) != 0 ||
         !t035_expect_err(&msg, KBD_EP_E_INVALID_ARG)) ok = 0;
 
     if (ok)
@@ -1304,7 +1302,7 @@ void test_t036(void) {
     long r;
     it_iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    r = it_sys2(SYS_EP_CALL, (long)g_con_ep_h, (long)&msg);
+    r = it_invoke1((long)g_con_ep_h, INV_EP_CALL, (long)&msg);
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
         it_pass("T036");
     else
@@ -1327,7 +1325,7 @@ void test_t037(void) {
     msg.label    = CONSOLE_EP_OP_WRITE;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
-    long r = it_sys2(SYS_EP_CALL, (long)g_con_ep_h, (long)&msg);
+    long r = it_invoke1((long)g_con_ep_h, INV_EP_CALL, (long)&msg);
 
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
         it_pass("T037");
@@ -1348,7 +1346,7 @@ void test_t038(void) {
     /* SYNC: deterministic barrier, no payload */
     it_iris_msg_zero(&msg);
     msg.label = CONSOLE_EP_OP_SYNC;
-    if (it_sys2(SYS_EP_CALL, (long)g_con_ep_h, (long)&msg) != 0 ||
+    if (it_invoke1((long)g_con_ep_h, INV_EP_CALL, (long)&msg) != 0 ||
         msg.label != IRIS_EP_REPLY_OK) ok = 0;
 
     /* SYNC with bulk payload → INVALID_ARG */
@@ -1357,14 +1355,14 @@ void test_t038(void) {
     msg.label    = CONSOLE_EP_OP_SYNC;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
-    if (it_sys2(SYS_EP_CALL, (long)g_con_ep_h, (long)&msg) != 0 ||
+    if (it_invoke1((long)g_con_ep_h, INV_EP_CALL, (long)&msg) != 0 ||
         msg.label != IRIS_EP_REPLY_ERR ||
         (uint32_t)msg.words[0] != (uint32_t)IRIS_ERR_INVALID_ARG) ok = 0;
 
     /* unknown opcode → NOT_SUPPORTED */
     it_iris_msg_zero(&msg);
     msg.label = 0x6666;
-    if (it_sys2(SYS_EP_CALL, (long)g_con_ep_h, (long)&msg) != 0 ||
+    if (it_invoke1((long)g_con_ep_h, INV_EP_CALL, (long)&msg) != 0 ||
         msg.label != IRIS_EP_REPLY_ERR ||
         (uint32_t)msg.words[0] != (uint32_t)IRIS_ERR_NOT_SUPPORTED) ok = 0;
 
@@ -1386,7 +1384,7 @@ void test_t039(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
     if (r != 0 || msg.label != IRIS_EP_REPLY_OK) {
         it_fail("T039", "cptr ping");
         return;
@@ -1418,17 +1416,17 @@ void test_t040(void) {
 
     it_iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    long r = it_sys2(SYS_EP_CALL, 0L /* CPTR_NULL */, (long)&msg);
+    long r = it_invoke1(0L /* CPTR_NULL */, INV_EP_CALL, (long)&msg);
     if (r >= 0) ok = 0;
 
     it_iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TEST_FIX_A, (long)&msg);
+    r = it_invoke1((long)IRIS_CPTR_TEST_FIX_A, INV_EP_CALL, (long)&msg);
     if (r != (long)IRIS_ERR_WRONG_TYPE) ok = 0;
 
     it_iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TEST_FIX_B, (long)&msg);
+    r = it_invoke1((long)IRIS_CPTR_TEST_FIX_B, INV_EP_CALL, (long)&msg);
     if (r != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
 
     if (ok)
@@ -1450,11 +1448,11 @@ void test_t041(void) {
     };
     int ok = 1;
     for (uint32_t i = 0; i < 4u; i++) {
-        if (it_sys1(SYS_CAP_IDENTIFY, (long)slots[i])
+        if (it_invoke0((long)slots[i], INV_CAP_IDENTIFY)
             != (long)IRIS_HANDLE_TYPE_ENDPOINT) { ok = 0; break; }
     }
     /* unminted reserved slot fails cleanly (no crash, negative error) */
-    if (it_sys1(SYS_CAP_IDENTIFY, 29L) >= 0) ok = 0;
+    if (it_invoke0(29L, INV_CAP_IDENTIFY) >= 0) ok = 0;
 
     if (ok)
         it_pass("T041");
@@ -1477,7 +1475,7 @@ void test_t042(void) {
     msg.word_count = 2;
     msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len    = len;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_VFS_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_VFS_EP, INV_EP_CALL, (long)&msg);
 
     int ok = (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
               msg.words[1] == (uint64_t)expect_len &&
@@ -1506,7 +1504,7 @@ void test_t043(void) {
     msg.label    = CONSOLE_EP_OP_WRITE;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = line_len;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_CONSOLE_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_CONSOLE_EP, INV_EP_CALL, (long)&msg);
 
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
         it_pass("T043");
@@ -1520,7 +1518,7 @@ void test_t044(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_KBD_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_KBD_EP, INV_EP_CALL, (long)&msg);
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
         it_pass("T044");
     else
@@ -1538,7 +1536,7 @@ void test_t045(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    long r = it_sys2(SYS_EP_NB_RECV, (long)IRIS_CPTR_VFS_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_VFS_EP, INV_EP_NB_RECV, (long)&msg);
     if (r == (long)IRIS_ERR_ACCESS_DENIED)
         it_pass("T045");
     else
@@ -1566,7 +1564,7 @@ long it_ping_badge(long cptr, uint64_t *out_badge) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    long r = it_sys2(SYS_EP_CALL, cptr, (long)&msg);
+    long r = it_invoke1(cptr, INV_EP_CALL, (long)&msg);
     if (r != 0 || msg.label != IRIS_EP_REPLY_OK || msg.word_count < 2u)
         return -1;
     *out_badge = msg.words[1];
@@ -1620,7 +1618,7 @@ void test_t051(void) {
     it_iris_msg_zero(&msg);
     msg.label        = IRIS_EP_OP_PING;
     msg.sender_badge = 0xDEADBEEFu;          /* forged identity attempt */
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
         msg.word_count >= 2u && msg.words[1] == IRIS_BADGE_IRIS_TEST)
         it_pass("T051");
@@ -1642,7 +1640,7 @@ void test_t052(void) {
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
     msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
 
     int ok = 0;
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
@@ -1673,7 +1671,7 @@ void test_t053(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    if (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TEST_FIX_B, (long)&msg) !=
+    if (it_invoke1((long)IRIS_CPTR_TEST_FIX_B, INV_EP_CALL, (long)&msg) !=
         (long)IRIS_ERR_ACCESS_DENIED)
         ok = 0;
 
@@ -1698,7 +1696,7 @@ long it_status(const char *name, uint32_t *alive, uint32_t *gen) {
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
     msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
     if (r != 0 || msg.label != IRIS_EP_REPLY_OK || msg.word_count < 2u)
         return -1;
     if (alive) *alive = (uint32_t)msg.words[0];
@@ -1732,7 +1730,7 @@ long it_register_ep(const char *name, handle_id_t ep) {
     msg.buf_len             = len;
     msg.attached_cap        = (uint32_t)d;
     msg.attached_cap_rights = (uint32_t)mr;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
     it_xfer_release(d);
     if (r != 0) return r;
     if (msg.label != IRIS_EP_REPLY_OK) return -(long)(uint32_t)msg.words[0];
@@ -1774,7 +1772,7 @@ void test_t055(void) {
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
     msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
     int ok = 0;
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
         msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
@@ -1782,14 +1780,12 @@ void test_t055(void) {
         struct IrisMsg p;
         it_iris_msg_zero(&p);
         p.label = IRIS_EP_OP_PING;
-        long pr  = it_sys2(SYS_EP_CALL, (long)cap, (long)&p);          /* WRITE works */
+        long pr  = it_invoke1((long)cap, INV_EP_CALL, (long)&p);          /* WRITE works */
         /* The grant carries no RIGHT_DUPLICATE, so it cannot be derived from.
          * Asked of the slot: SYS_CSPACE_MINT is the derive, and it needs
          * RIGHT_DUPLICATE on the source exactly as the handle dup did. */
         it_slot_delete(IT_SCRATCH_0);
-        long dup = it_sys3(SYS_CSPACE_MINT, (long)cap,
-                           (long)((uint64_t)IT_SCRATCH_0 << 32),
-                           (long)RIGHT_WRITE);
+        long dup = it_invoke2((long)cap, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_0 << 32), (long)RIGHT_WRITE);
         if (pr == 0 && p.label == IRIS_EP_REPLY_OK &&
             dup == (long)IRIS_ERR_ACCESS_DENIED)
             ok = 1;
@@ -1824,7 +1820,7 @@ void test_t057(void) {
     msg.label = IRIS_SVCMGR_EP_RESTART;
     msg.words[0] = (uint64_t)SVCMGR_SERVICE_VFS;
     msg.word_count = 1u;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TEST_SUPER, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_TEST_SUPER, INV_EP_CALL, (long)&msg);
     if (!(r == 0 && msg.label == IRIS_EP_REPLY_OK)) {
         it_fail("T057", "restart request denied"); return;
     }
@@ -1847,7 +1843,7 @@ void test_t058(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_KBD_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_KBD_EP, INV_EP_CALL, (long)&msg);
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
         it_pass("T058");
     else
@@ -1879,7 +1875,7 @@ void test_t060(void) {
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
     msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
     int ok = 0;
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
         msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
@@ -1887,7 +1883,7 @@ void test_t060(void) {
         struct IrisMsg p;
         it_iris_msg_zero(&p);
         p.label = IRIS_EP_OP_PING;
-        long pr = it_sys2(SYS_EP_CALL, (long)cap, (long)&p);
+        long pr = it_invoke1((long)cap, INV_EP_CALL, (long)&p);
         if (pr == 0 && p.label == IRIS_EP_REPLY_OK) ok = 1;
         it_close(&cap);
     }
@@ -1908,7 +1904,7 @@ void test_t061(void) {
         msg.label    = IRIS_SVCMGR_EP_REGISTER;
         msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
         msg.buf_len  = len;
-        long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+        long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
         if (!(r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
               msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_ACCESS_DENIED))
             ok = 0;
@@ -1947,13 +1943,13 @@ void test_t063(void) {
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
     msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
     int ok = 0;
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
         msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
         handle_id_t got = (handle_id_t)msg.attached_handle;
-        long ty   = it_sys1(SYS_CAP_IDENTIFY, (long)got);
-        long same = it_sys2(SYS_CAP_SAME_OBJECT, (long)got, (long)g_ltst_ep);
+        long ty   = it_invoke0((long)got, INV_CAP_IDENTIFY);
+        long same = it_invoke1((long)got, INV_CAP_SAME_OBJECT, (long)g_ltst_ep);
         if (ty == (long)IRIS_HANDLE_TYPE_ENDPOINT && same == 1) ok = 1;
         it_close(&got);
     }
@@ -1971,7 +1967,7 @@ void test_t064(void) {
     msg.label    = IRIS_SVCMGR_EP_REGISTER;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;                        /* attached_cap = NO_CAP */
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
     if (!(r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
           msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG)) ok = 0;
 
@@ -1989,7 +1985,7 @@ void test_t064(void) {
     msg.buf_len             = len;
     msg.attached_cap        = (uint32_t)d;
     msg.attached_cap_rights = (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER);
-    r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
     it_xfer_release(d);
     if (!(r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
           msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG)) ok = 0;
@@ -2008,7 +2004,7 @@ void test_t065(void) {
     msg.label      = IRIS_SVCMGR_EP_UNREGISTER;
     msg.words[0]   = g_ltst_id;
     msg.word_count = 1u;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TEST_FIX_C, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_TEST_FIX_C, INV_EP_CALL, (long)&msg);
     if (!(r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
           msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_ACCESS_DENIED)) ok = 0;
 
@@ -2017,7 +2013,7 @@ void test_t065(void) {
     msg.label      = IRIS_SVCMGR_EP_UNREGISTER;
     msg.words[0]   = g_ltst_id;
     msg.word_count = 1u;
-    r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
     if (!(r == 0 && msg.label == IRIS_EP_REPLY_OK)) ok = 0;
 
     if (ok) it_pass("T065"); else it_fail("T065", "unregister owner policy");
@@ -2036,7 +2032,7 @@ void test_t066(void) {
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
     msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
     int ok = (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
               msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND);
     if (g_ltst_ep != (handle_id_t)0) it_close(&g_ltst_ep);
@@ -2051,7 +2047,7 @@ void test_t067(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label = IRIS_SVCMGR_EP_DIAG;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK && msg.word_count >= 4u &&
         msg.words[0] == 3u &&                       /* catalog: kbd/vfs/sh */
         msg.words[1] >= 3u &&                       /* all core services ready */
@@ -2067,7 +2063,7 @@ void test_t068(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label = UINT64_C(0xF0FE);                   /* not a real svcmgr opcode */
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
     if (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
         msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG)
         it_pass("T068");
@@ -2188,9 +2184,7 @@ void test_t072(void) {
     long ro = it_cdt_derive(root, IT_SCRATCH_1, RIGHT_READ);
     /* Deriving from a cap without RIGHT_DUPLICATE must be denied. */
     long escalate = (ro >= 0)
-                  ? it_sys3(SYS_CSPACE_MINT, ro,
-                            (long)((uint64_t)IT_SCRATCH_2 << 32),
-                            (long)RIGHT_SAME_RIGHTS)
+                  ? it_invoke2(ro, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_2 << 32), (long)RIGHT_SAME_RIGHTS)
                   : 0;
 
     /* Revoking an EMPTY slot → clean negative error, no panic. */
@@ -2237,8 +2231,7 @@ void test_t073(void) {
      * Stage 4: the fixture is a slot, so the reduced copy is a slot-to-slot
      * derive; SYS_CNODE_MINT's source is handle-only. */
     it_slot_delete(IT_XFER_SLOT_C);
-    if (it_sys3(SYS_CSPACE_MINT, ep,
-                (long)((uint64_t)IT_XFER_SLOT_C << 32), (long)RIGHT_READ) != 0) {
+    if (it_invoke2(ep, INV_CSPACE_MINT, (long)((uint64_t)IT_XFER_SLOT_C << 32), (long)RIGHT_READ) != 0) {
         it_close(&ep_h); it_fail("T073", "mint notrans"); return;
     }
     struct IrisMsg msg;
@@ -2246,19 +2239,19 @@ void test_t073(void) {
     msg.label           = 0x73;
     msg.attached_handle = IT_XFER_SLOT_C;
     msg.attached_rights = (uint32_t)RIGHT_READ;
-    long a = it_sys2(SYS_EP_NB_SEND, ep, (long)&msg);
+    long a = it_invoke1(ep, INV_EP_NB_SEND, (long)&msg);
     int  denied = (a == (long)IRIS_ERR_ACCESS_DENIED);
     /* not consumed: the slot still resolves */
-    int  preserved = (it_sys1(SYS_CAP_IDENTIFY, (long)IT_XFER_SLOT_C) >= 0);
+    int  preserved = (it_invoke0((long)IT_XFER_SLOT_C, INV_CAP_IDENTIFY) >= 0);
 
     /* (b) An EMPTY source slot → clean NOT_FOUND (no cap, nothing staged). */
-    (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)IT_XFER_SLOT_D);
+    (void)it_invoke1((long)root, INV_CNODE_DELETE, (long)IT_XFER_SLOT_D);
     struct IrisMsg msg2;
     it_iris_msg_zero(&msg2);
     msg2.label           = 0x73;
     msg2.attached_handle = IT_XFER_SLOT_D;
     msg2.attached_rights = (uint32_t)RIGHT_TRANSFER;
-    long b = it_sys2(SYS_EP_NB_SEND, ep, (long)&msg2);
+    long b = it_invoke1(ep, INV_EP_NB_SEND, (long)&msg2);
     int  empty_clean = (b == (long)IRIS_ERR_NOT_FOUND);
 
     /* (c) A MALFORMED source CPtr → INVALID_ARG, with nothing staged.  This
@@ -2270,7 +2263,7 @@ void test_t073(void) {
     msg3.label           = 0x73;
     msg3.attached_handle = (uint32_t)(IT_XFER_SLOT_C | (1u << 16));  /* alias */
     msg3.attached_rights = (uint32_t)RIGHT_TRANSFER;
-    int handle_rejected = (it_sys2(SYS_EP_NB_SEND, ep, (long)&msg3) ==
+    int handle_rejected = (it_invoke1(ep, INV_EP_NB_SEND, (long)&msg3) ==
                            (long)IRIS_ERR_INVALID_ARG);
 
     it_slot_delete(IT_XFER_SLOT_C);
@@ -2299,18 +2292,18 @@ static uint8_t      g_t074_stack[8192];
 static void t074_server(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
-    long rr = it_sys3(SYS_EP_RECV, (long)g_t074_ep_h, (long)&msg, 93);
+    long rr = it_invoke2((long)g_t074_ep_h, INV_EP_RECV, (long)&msg, 93);
     if (rr == 0) {
         handle_id_t reply_h = (handle_id_t)msg.attached_handle;
         struct IrisMsg rmsg;
         it_iris_msg_zero(&rmsg);
         rmsg.label = 0x74;
-        g_t074_r1 = (int)it_sys2(SYS_REPLY, (long)reply_h, (long)&rmsg);
+        g_t074_r1 = (int)it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&rmsg);
         /* Second reply on the consumed one-shot cap must be rejected. */
         struct IrisMsg rmsg2;
         it_iris_msg_zero(&rmsg2);
         rmsg2.label = 0x74;
-        g_t074_r2 = (int)it_sys2(SYS_REPLY, (long)reply_h, (long)&rmsg2);
+        g_t074_r2 = (int)it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&rmsg2);
     } else {
         g_t074_r1 = (int)rr;
     }
@@ -2343,7 +2336,7 @@ void test_t074(void) {
     it_iris_msg_zero(&msg);
     msg.label    = 0x74;
     msg.buf_uptr = (uint64_t)(uintptr_t)reply_buf;
-    long r = it_sys2(SYS_EP_CALL, ep, (long)&msg);
+    long r = it_invoke1(ep, INV_EP_CALL, (long)&msg);
 
     for (int i = 0; i < 200 && !g_t074_done; i++)
         it_settle(1);
@@ -2431,7 +2424,7 @@ void test_t075(void) {
     long n = it_notify_create();
     handle_id_t watch_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
     int watch_ok = (watch_h != HANDLE_INVALID) &&
-                   (it_sys3(SYS_TCB_WATCH, it_child_tcb((long)proc_h), (long)watch_h, 1) == 0);
+                   (it_invoke2(it_child_tcb((long)proc_h), INV_TCB_WATCH, (long)watch_h, 1) == 0);
 
     /* Drive the child: EP_NB_SEND until it is blocked in EP_RECV (bounded). */
     struct IrisMsg msg;
@@ -2439,7 +2432,7 @@ void test_t075(void) {
     msg.label = 0x75;
     int sent = 0;
     for (int i = 0; i < 300 && !sent; i++) {
-        if (it_sys2(SYS_EP_NB_SEND, (long)cmd_ep_h, (long)&msg) == 0) sent = 1;
+        if (it_invoke1((long)cmd_ep_h, INV_EP_NB_SEND, (long)&msg) == 0) sent = 1;
         else it_settle(1);
     }
 
@@ -2448,7 +2441,7 @@ void test_t075(void) {
     long ws = watch_ok
         ? it_wait_timeout( (long)watch_h, (long)(uintptr_t)&bits, 2000000000L)
         : -1;
-    long code = it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h));
+    long code = it_invoke0(it_child_tcb((long)proc_h), INV_TCB_EXIT_CODE);
 
     it_close(&watch_h);
     it_close(&proc_h);
@@ -2487,7 +2480,7 @@ void test_t077(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label = 0x77;
-    long s = it_sys2(SYS_EP_NB_SEND, (long)cmd_ep_h, (long)&msg);
+    long s = it_invoke1((long)cmd_ep_h, INV_EP_NB_SEND, (long)&msg);
     int  ep_clean = (s == (long)IRIS_ERR_WOULD_BLOCK);
 
     it_close(&proc_h);
@@ -2524,7 +2517,7 @@ void test_t078(void) {
     it_iris_msg_zero(&msg);
     msg.label    = 0x78;
     msg.buf_uptr = (uint64_t)(uintptr_t)reply_buf;
-    long r = it_sys2(SYS_EP_CALL, (long)cmd_ep_h, (long)&msg);
+    long r = it_invoke1((long)cmd_ep_h, INV_EP_CALL, (long)&msg);
 
     /* Confirm the child actually died (bounded). */
     int dead = 0;
@@ -2559,8 +2552,7 @@ void test_t076(void) {
     long vmo = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096);
     handle_id_t vmo_h = (vmo >= 0) ? (handle_id_t)vmo : HANDLE_INVALID;
     long mi = (vmo_h != HANDLE_INVALID)
-        ? it_sys4(SYS_FRAME_MAP, (long)vmo_h, it_child_vspace(proc_h),
-                  (long)LP_MAP_VA, 1)
+        ? it_invoke((long)vmo_h, INV_FRAME_MAP, it_child_vspace(proc_h), (long)LP_MAP_VA, 1)
         : -1;
 
     /* Let the child reach EP_RECV and block (mapping stays live). */
@@ -2572,12 +2564,12 @@ void test_t076(void) {
 
     /* VMO must have survived intact: re-map into the PARENT and read/write it. */
     int reusable = 0;
-    long pm = it_sys4(SYS_FRAME_MAP, (long)vmo_h, IT_VS, (long)LP_MAP_VA, 1);
+    long pm = it_invoke((long)vmo_h, INV_FRAME_MAP, IT_VS, (long)LP_MAP_VA, 1);
     if (pm == 0) {
         volatile uint8_t *p = (volatile uint8_t *)(uintptr_t)LP_MAP_VA;
         p[0] = 0xA5; p[4095] = 0x5A;
         reusable = (p[0] == 0xA5 && p[4095] == 0x5A);
-        it_sys3(SYS_FRAME_UNMAP, (long)vmo_h, IT_VS, (long)LP_MAP_VA);
+        it_invoke2((long)vmo_h, INV_FRAME_UNMAP, IT_VS, (long)LP_MAP_VA);
     }
 
     it_child_drop_vspace(proc_h);   /* Step 15: give the child's back */

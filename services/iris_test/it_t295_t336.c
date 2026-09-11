@@ -38,7 +38,7 @@ void test_t326(void) {
     for (int i = 0; ok && i < 6000 && g_t326_ran < made; i++) (void)it_sys0(SYS_YIELD);
     if (ok && g_t326_ran != made) { ok = 0; why = "a thread never ran"; }
 
-    for (uint32_t i = 0; i < made; i++) (void)it_sys1(SYS_TCB_EXIT, tids[i]);
+    for (uint32_t i = 0; i < made; i++) (void)it_invoke0(tids[i], INV_TCB_EXIT);
     it_quiesce_reaper();
 
     if (ok && !it_utq_t(&t1)) { ok = 0; why = "query"; }
@@ -83,15 +83,13 @@ void test_t327(void) {
                                    IRIS_KOBJ_SCHED_CONTEXT, 0);
     if (sc < 0) { it_fail("T327", "sc"); return; }
 
-    if (ok && it_sys4(SYS_SC_CONFIGURE, sc, 10, 100, 0L)
+    if (ok && it_invoke(sc, INV_SC_CONFIGURE, 10, 100, 0L)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "budget with no authority"; }
     /* ...and a capability that is not the SchedControl does not stand in for
      * it, however much else it authorises. */
-    if (ok && it_sys4(SYS_SC_CONFIGURE, sc, 10, 100,
-                      (long)IRIS_CPTR_DEBUG_CONTROL)
+    if (ok && it_invoke(sc, INV_SC_CONFIGURE, 10, 100, (long)IRIS_CPTR_DEBUG_CONTROL)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "wrong authority accepted"; }
-    if (ok && it_sys4(SYS_SC_CONFIGURE, sc, 10, 100,
-                      (long)IRIS_CPTR_SCHED_CONTROL) != 0) {
+    if (ok && it_invoke(sc, INV_SC_CONFIGURE, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) {
         ok = 0; why = "the granted authority was refused";
     }
 
@@ -116,23 +114,22 @@ void test_t327(void) {
                                                IRIS_KOBJ_TCB, 0) : -1;
     if (ok && (victim < 0 || zero_auth < 0)) { ok = 0; why = "tcbs"; }
 
-    if (ok && it_sys3(SYS_TCB_SET_PRIORITY, victim, 1, zero_auth)
+    if (ok && it_invoke2(victim, INV_TCB_SET_PRIORITY, 1, zero_auth)
               != (long)IRIS_ERR_ACCESS_DENIED) {
         ok = 0; why = "a priority above the authority's ceiling was granted";
     }
     /* ...and 0 is within even that ceiling, so the refusal is the BOUND and
      * not the authority being rejected outright. */
-    if (ok && it_sys3(SYS_TCB_SET_PRIORITY, victim, 0, zero_auth) != 0) {
+    if (ok && it_invoke2(victim, INV_TCB_SET_PRIORITY, 0, zero_auth) != 0) {
         ok = 0; why = "a priority within the ceiling was refused";
     }
     /* This thread's own ceiling is what its spawner had, so it can still grant
      * what it holds — the bound delegates downward, it does not forbid. */
-    if (ok && it_sys3(SYS_TCB_SET_PRIORITY, victim, 128, 0L) != 0) {
+    if (ok && it_invoke2(victim, INV_TCB_SET_PRIORITY, 128, 0L) != 0) {
         ok = 0; why = "own ceiling did not authorise";
     }
     /* An authority that is not a TCB is not an authority. */
-    if (ok && it_sys3(SYS_TCB_SET_PRIORITY, victim, 100,
-                      (long)IRIS_CPTR_TEST_FIX_A) != (long)IRIS_ERR_WRONG_TYPE) {
+    if (ok && it_invoke2(victim, INV_TCB_SET_PRIORITY, 100, (long)IRIS_CPTR_TEST_FIX_A) != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "a non-TCB authority was accepted";
     }
     if (victim >= 0)    it_slot_delete((uint32_t)victim);
@@ -156,7 +153,7 @@ void test_t328(void) {
 
     /* The pool init minted us.  Not the CONTROL — carving a pool is a
      * different grant, and T251 witnesses that this suite is refused it. */
-    if (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_ASID_POOL) !=
+    if (it_invoke0((long)IRIS_CPTR_ASID_POOL, INV_CAP_IDENTIFY) !=
         (long)IRIS_HANDLE_TYPE_ASID_POOL) {
         it_fail("T328", "no pool granted"); return;
     }
@@ -170,41 +167,41 @@ void test_t328(void) {
     if (vs < 0 || cs < 0 || tcb < 0) { it_fail("T328", "objects"); return; }
 
     /* 1. unnamed, so unusable. */
-    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, cs, vs)
+    if (ok && it_invoke2(tcb, INV_TCB_CONFIGURE, cs, vs)
               != (long)IRIS_ERR_ACCESS_DENIED) {
         ok = 0; why = "unnamed vspace accepted";
     }
 
     /* 4. the authority is a capability, checked as one — before the assign
      *    that succeeds, so a pass here cannot be an already-named space. */
-    if (ok && it_sys2(SYS_ASID_POOL_ASSIGN, (long)IRIS_CPTR_DEBUG_CONTROL, vs)
+    if (ok && it_invoke1((long)IRIS_CPTR_DEBUG_CONTROL, INV_ASID_POOL_ASSIGN, vs)
               != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "non-pool accepted as pool";
     }
     if (ok) {
         long ro = it_cs_reduce((long)IRIS_CPTR_ASID_POOL, RIGHT_READ);
         if (ro < 0) { ok = 0; why = "reduce"; }
-        else if (it_sys2(SYS_ASID_POOL_ASSIGN, ro, vs)
+        else if (it_invoke1(ro, INV_ASID_POOL_ASSIGN, vs)
                  != (long)IRIS_ERR_ACCESS_DENIED) {
             ok = 0; why = "read-only pool issued a name";
         }
     }
     /* ...and so is the space: naming something that is not one is refused. */
-    if (ok && it_sys2(SYS_ASID_POOL_ASSIGN, (long)IRIS_CPTR_ASID_POOL, cs)
+    if (ok && it_invoke1((long)IRIS_CPTR_ASID_POOL, INV_ASID_POOL_ASSIGN, cs)
               != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "cnode named as a vspace";
     }
 
     /* 2. named, so bindable. */
-    if (ok && it_sys2(SYS_ASID_POOL_ASSIGN, (long)IRIS_CPTR_ASID_POOL, vs) != 0) {
+    if (ok && it_invoke1((long)IRIS_CPTR_ASID_POOL, INV_ASID_POOL_ASSIGN, vs) != 0) {
         ok = 0; why = "assign refused";
     }
     /* 3. and named once. */
-    if (ok && it_sys2(SYS_ASID_POOL_ASSIGN, (long)IRIS_CPTR_ASID_POOL, vs)
+    if (ok && it_invoke1((long)IRIS_CPTR_ASID_POOL, INV_ASID_POOL_ASSIGN, vs)
               != (long)IRIS_ERR_ALREADY_EXISTS) {
         ok = 0; why = "renamed a live space";
     }
-    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, cs, vs) != 0) {
+    if (ok && it_invoke2(tcb, INV_TCB_CONFIGURE, cs, vs) != 0) {
         ok = 0; why = "named vspace refused";
     }
 
@@ -222,8 +219,7 @@ void test_t328(void) {
                           T328_SLOT_VS, 1u, 4096) != 0) {
             ok = 0; why = "vspace carve"; break;
         }
-        if (it_sys2(SYS_ASID_POOL_ASSIGN, (long)IRIS_CPTR_ASID_POOL,
-                    (long)T328_SLOT_VS) != 0) {
+        if (it_invoke1((long)IRIS_CPTR_ASID_POOL, INV_ASID_POOL_ASSIGN, (long)T328_SLOT_VS) != 0) {
             ok = 0; why = "pool ran dry"; break;
         }
         made++;
@@ -267,8 +263,7 @@ void test_t329(void) {
     for (uint32_t i = 0; ok && i < 2u; i++) {
         long bep = it_cs_badge(fep, RIGHT_READ | RIGHT_WRITE, i + 1u);
         if (bep < 0) { ok = 0; why = "badge"; break; }
-        if (it_sys4(SYS_TCB_SET_FAULT_HANDLER,
-                    it_child_tcb((long)(i ? pb : pa)), bep, 0, 0) != 0) {
+        if (it_invoke(it_child_tcb((long)(i ? pb : pa)), INV_TCB_SET_FAULT_HANDLER, bep, 0, 0) != 0) {
             ok = 0; why = "arm";
         }
         it_slot_delete((uint32_t)bep);
@@ -281,7 +276,7 @@ void test_t329(void) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
         if (wo < 0) { ok = 0; why = "write-only copy"; }
-        else if (it_sys3(SYS_EP_NB_RECV, wo, (long)(uintptr_t)&m, 0L)
+        else if (it_invoke2(wo, INV_EP_NB_RECV, (long)(uintptr_t)&m, 0L)
                  != (long)IRIS_ERR_ACCESS_DENIED) {
             ok = 0; why = "write-only cap received a fault";
         }
@@ -328,7 +323,7 @@ void test_t329(void) {
     if (ok) {
         struct IrisMsg rm;
         it_iris_msg_zero(&rm);
-        if (it_sys2(SYS_REPLY, it_child_tcb((long)pa), (long)(uintptr_t)&rm)
+        if (it_invoke1(it_child_tcb((long)pa), INV_REPLY_SEND, (long)(uintptr_t)&rm)
             != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "tcb answered a fault"; }
     }
     if (ok && it_fault_kill(T329_LEAF_A) != 0) { ok = 0; why = "answer a"; }
@@ -384,40 +379,40 @@ void test_t330(void) {
     if (self < 0) { it_fail("T330", "self tcb"); return; }
 
     /* 1. the arguments are capabilities, checked as such. */
-    if (ok && it_sys2(SYS_TCB_BIND_NOTIFICATION, self, ep)
+    if (ok && it_invoke1(self, INV_TCB_BIND_NOTIFICATION, ep)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "endpoint bound as notification"; }
-    if (ok && it_sys2(SYS_TCB_BIND_NOTIFICATION, n1, n1)
+    if (ok && it_invoke1(n1, INV_TCB_BIND_NOTIFICATION, n1)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "notification bound as thread"; }
     if (ok) {
         long ro = it_cs_reduce(n1, RIGHT_READ);
         if (ro < 0) { ok = 0; why = "ro dup"; }
-        else if (it_sys2(SYS_TCB_BIND_NOTIFICATION, self, ro)
+        else if (it_invoke1(self, INV_TCB_BIND_NOTIFICATION, ro)
                  != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read-only bound"; }
         if (ro >= 0) it_slot_delete((uint32_t)ro);
     }
 
     /* ...and the bind itself. */
-    if (ok && it_sys2(SYS_TCB_BIND_NOTIFICATION, self, n1) != 0) { ok = 0; why = "bind"; }
+    if (ok && it_invoke1(self, INV_TCB_BIND_NOTIFICATION, n1) != 0) { ok = 0; why = "bind"; }
 
     /* 2. exactly one answer, in both directions. */
-    if (ok && it_sys2(SYS_TCB_BIND_NOTIFICATION, self, n2)
+    if (ok && it_invoke1(self, INV_TCB_BIND_NOTIFICATION, n2)
               != (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "second notification bound"; }
     if (ok) {
         long other = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
                                           IRIS_KOBJ_TCB, 0);
         if (other < 0) { ok = 0; why = "other tcb"; }
-        else if (it_sys2(SYS_TCB_BIND_NOTIFICATION, other, n1)
+        else if (it_invoke1(other, INV_TCB_BIND_NOTIFICATION, n1)
                  != (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "second thread bound"; }
         if (other >= 0) it_slot_delete((uint32_t)other);
     }
 
     /* 3 + 4. signal FIRST, then receive: the pending signal is consulted on the
      *        way in, and arrives labelled. */
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, n1, 0x5u) != 0) { ok = 0; why = "signal"; }
+    if (ok && it_invoke1(n1, INV_NOTIFY_SIGNAL, 0x5u) != 0) { ok = 0; why = "signal"; }
     if (ok) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
-        if (it_sys3(SYS_EP_RECV, ep, (long)(uintptr_t)&m, 0L) != 0) {
+        if (it_invoke2(ep, INV_EP_RECV, (long)(uintptr_t)&m, 0L) != 0) {
             ok = 0; why = "recv did not take the signal";
         } else if (m.label != IRIS_MSG_LABEL_NOTIFICATION) {
             ok = 0; why = "signal not labelled";
@@ -428,12 +423,12 @@ void test_t330(void) {
 
     /* 5. unbind, and the same signal no longer reaches a receive — the bits
      *    stay pending on the notification for whoever waits on it directly. */
-    if (ok && it_sys2(SYS_TCB_BIND_NOTIFICATION, self, 0L) != 0) { ok = 0; why = "unbind"; }
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, n1, 0x9u) != 0) { ok = 0; why = "signal 2"; }
+    if (ok && it_invoke1(self, INV_TCB_BIND_NOTIFICATION, 0L) != 0) { ok = 0; why = "unbind"; }
+    if (ok && it_invoke1(n1, INV_NOTIFY_SIGNAL, 0x9u) != 0) { ok = 0; why = "signal 2"; }
     if (ok) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
-        if (it_sys3(SYS_EP_NB_RECV, ep, (long)(uintptr_t)&m, 0L)
+        if (it_invoke2(ep, INV_EP_NB_RECV, (long)(uintptr_t)&m, 0L)
             != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "unbound thread still took it"; }
     }
     if (ok) {
@@ -480,7 +475,7 @@ void test_t331(void) {
     const char *why = "waiting is a service";
 
     /* 2. the authority is the endpoint we were granted. */
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TIMER_EP)
+    if (ok && it_invoke0((long)IRIS_CPTR_TIMER_EP, INV_CAP_IDENTIFY)
               != (long)IRIS_HANDLE_TYPE_ENDPOINT) { ok = 0; why = "no timer granted"; }
 
     long n = it_notify_create();
@@ -509,7 +504,7 @@ void test_t331(void) {
     }
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0) {
+        if (it_invoke1(n, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0) {
             ok = 0; why = "wait";
         } else if ((bits & 0x4ull) == 0) {
             ok = 0; why = "wrong bits";
@@ -528,7 +523,7 @@ void test_t331(void) {
     if (ok) {
         uint64_t bits = 0;
         for (uint32_t i = 0; ok && i < 20u; i++) {
-            if (it_sys2(SYS_NOTIFY_POLL, n, (long)(uintptr_t)&bits) == 0 && bits) {
+            if (it_invoke1(n, INV_NOTIFY_POLL, (long)(uintptr_t)&bits) == 0 && bits) {
                 ok = 0; why = "fired early"; break;
             }
             (void)it_sys1(SYS_YIELD, 0);
@@ -544,7 +539,7 @@ void test_t331(void) {
         m.words[0]   = 1000ull;
         m.words[1]   = 1ull;
         m.word_count = 2u;
-        if (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TIMER_EP, (long)(uintptr_t)&m) != 0) {
+        if (it_invoke1((long)IRIS_CPTR_TIMER_EP, INV_EP_CALL, (long)(uintptr_t)&m) != 0) {
             ok = 0; why = "capless call";
         } else if (m.words[0] == 0u) {
             ok = 0; why = "armed with no notification";
@@ -585,7 +580,7 @@ static void t332_sender_a(void) {
     struct IrisMsg m;
     it_iris_msg_zero(&m);
     m.label = 0x332;
-    long r = it_sys2(SYS_EP_SEND, g_t332_ep_a, (long)(uintptr_t)&m);
+    long r = it_invoke1(g_t332_ep_a, INV_EP_SEND, (long)(uintptr_t)&m);
     g_t332_err_a = r;
     __atomic_fetch_add((int *)&g_t332_done, 1, __ATOMIC_RELAXED);
     for (;;) (void)it_sys1(SYS_YIELD, 0);
@@ -595,7 +590,7 @@ static void t332_sender_b(void) {
     struct IrisMsg m;
     it_iris_msg_zero(&m);
     m.label = 0x332;
-    (void)it_sys2(SYS_EP_SEND, g_t332_ep_b, (long)(uintptr_t)&m);
+    (void)it_invoke1(g_t332_ep_b, INV_EP_SEND, (long)(uintptr_t)&m);
     g_t332_done_b = 1;
     for (;;) (void)it_sys1(SYS_YIELD, 0);
 }
@@ -636,19 +631,19 @@ void test_t332(void) {
     if (b1 < 0 || b2 < 0) { it_fail("T332", "badges"); return; }
 
     /* 4. a badged capability cannot cancel by badge. */
-    if (ok && it_sys2(SYS_EP_CANCEL_BADGED_SENDS, b1, 0x22u)
+    if (ok && it_invoke1(b1, INV_EP_CANCEL_BADGED_SENDS, 0x22u)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "badged cap cancelled"; }
     /* ...and it takes RIGHT_WRITE on the endpoint. */
     if (ok) {
         long ro = it_cs_reduce(ep, RIGHT_READ);
         if (ro < 0) { ok = 0; why = "ro dup"; }
-        else if (it_sys2(SYS_EP_CANCEL_BADGED_SENDS, ro, 0x11u)
+        else if (it_invoke1(ro, INV_EP_CANCEL_BADGED_SENDS, 0x11u)
                  != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read-only cancelled"; }
         if (ro >= 0) it_slot_delete((uint32_t)ro);
     }
 
     /* Nothing queued: cancelling is a clean zero, not an error. */
-    if (ok && it_sys2(SYS_EP_CANCEL_BADGED_SENDS, ep, 0x11u) != 0) {
+    if (ok && it_invoke1(ep, INV_EP_CANCEL_BADGED_SENDS, 0x11u) != 0) {
         ok = 0; why = "empty queue not zero";
     }
 
@@ -670,7 +665,7 @@ void test_t332(void) {
 
     /* 1 + 2: exactly the two under 0x11 are cancelled. */
     if (ok) {
-        long n = it_sys2(SYS_EP_CANCEL_BADGED_SENDS, ep, 0x11u);
+        long n = it_invoke1(ep, INV_EP_CANCEL_BADGED_SENDS, 0x11u);
         if (n != 2) { it_fz_note("T332", (uint32_t)n, 2u, 0u); ok = 0; why = "wrong cancel count"; }
     }
     /* 3: they learned it did not happen. */
@@ -685,7 +680,7 @@ void test_t332(void) {
     if (ok) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
-        if (it_sys3(SYS_EP_NB_RECV, ep, (long)(uintptr_t)&m, 0L) != 0) {
+        if (it_invoke2(ep, INV_EP_NB_RECV, (long)(uintptr_t)&m, 0L) != 0) {
             ok = 0; why = "survivor not receivable";
         } else if (m.sender_badge != 0x22u) {
             ok = 0; why = "wrong survivor";
@@ -693,7 +688,7 @@ void test_t332(void) {
     }
 
     for (uint32_t i = 0; i < 3u; i++)
-        if (g_t332_tcb[i] > 0) (void)it_sys1(SYS_TCB_EXIT, g_t332_tcb[i]);
+        if (g_t332_tcb[i] > 0) (void)it_invoke0(g_t332_tcb[i], INV_TCB_EXIT);
     it_quiesce_reaper();
     for (uint32_t i = 0; i < 3u; i++)
         if (g_t332_tcb[i] > 0) it_slot_delete((uint32_t)g_t332_tcb[i]);
@@ -753,8 +748,8 @@ void test_t333(void) {
         /* Let it run and then stop it: a RUNNING thread's registers are in the
          * CPU, which is the case the syscall refuses. */
         for (uint32_t i = 0; i < 200u && !g_t333_ran; i++) (void)it_sys1(SYS_YIELD, 0);
-        if (ok && it_sys1(SYS_TCB_SUSPEND, tcb) != 0) { ok = 0; why = "suspend"; }
-        if (ok && it_sys2(SYS_TCB_READ_REGS, tcb, (long)(uintptr_t)&ctx) != 0) {
+        if (ok && it_invoke0(tcb, INV_TCB_SUSPEND) != 0) { ok = 0; why = "suspend"; }
+        if (ok && it_invoke1(tcb, INV_TCB_READ_REGS, (long)(uintptr_t)&ctx) != 0) {
             ok = 0; why = "read regs";
         }
         /* It was running our victim, so its rip is inside this image and its
@@ -771,7 +766,7 @@ void test_t333(void) {
         if (ok) {
             long self = it_own_tcb_derived();
             if (self < 0) { ok = 0; why = "self tcb"; }
-            else if (it_sys2(SYS_TCB_READ_REGS, self, (long)(uintptr_t)&ctx)
+            else if (it_invoke1(self, INV_TCB_READ_REGS, (long)(uintptr_t)&ctx)
                      != (long)IRIS_ERR_BUSY) { ok = 0; why = "read self"; }
             if (self >= 0) it_slot_delete((uint32_t)self);
         }
@@ -783,11 +778,11 @@ void test_t333(void) {
              * spend that budget on three rights-reduced copies. */
             long wo = it_cdt_derive(tcb, IT_SCRATCH_0, RIGHT_WRITE);
             if (wo < 0) { ok = 0; why = "write-only dup"; }
-            else if (it_sys2(SYS_TCB_READ_REGS, wo, (long)(uintptr_t)&ctx)
+            else if (it_invoke1(wo, INV_TCB_READ_REGS, (long)(uintptr_t)&ctx)
                      != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "write-only read"; }
             it_slot_delete(IT_SCRATCH_0);
         }
-        (void)it_sys1(SYS_TCB_EXIT, tcb);
+        (void)it_invoke0(tcb, INV_TCB_EXIT);
         it_quiesce_reaper();
         if (tcb > 0) it_slot_delete((uint32_t)tcb);
     }
@@ -800,23 +795,20 @@ void test_t333(void) {
             /* The badge travels, which is the reason a move is not a mint: a
              * badged capability can never be re-badged (A8). */
             it_slot_delete(IT_SCRATCH_1);
-            long src = (it_sys3(SYS_CSPACE_MINT, n,
-                                (long)((uint64_t)IT_SCRATCH_1 << 32),
-                                (long)((uint64_t)(RIGHT_READ | RIGHT_WRITE) |
+            long src = (it_invoke2(n, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_1 << 32), (long)((uint64_t)(RIGHT_READ | RIGHT_WRITE) |
                                        (0x5Aull << 32))) == 0)
                        ? (long)IT_SCRATCH_1 : -1;
             if (src < 0) { ok = 0; why = "badged source"; }
             else {
                 it_slot_delete(T333_DST_SLOT);
-                if (it_sys2(SYS_CSPACE_MOVE, src,
-                            (long)((uint64_t)T333_DST_SLOT << 32)) != 0) {
+                if (it_invoke1(src, INV_CSPACE_MOVE, (long)((uint64_t)T333_DST_SLOT << 32)) != 0) {
                     ok = 0; why = "move";
                 }
                 /* The source slot is EMPTY and the destination holds it. */
-                if (ok && it_sys1(SYS_CAP_IDENTIFY, src) >= 0) {
+                if (ok && it_invoke0(src, INV_CAP_IDENTIFY) >= 0) {
                     ok = 0; why = "source survived the move";
                 }
-                if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)T333_DST_SLOT)
+                if (ok && it_invoke0((long)T333_DST_SLOT, INV_CAP_IDENTIFY)
                           != (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
                     ok = 0; why = "destination empty";
                 }
@@ -830,14 +822,11 @@ void test_t333(void) {
                 /* An OCCUPIED destination is refused, not overwritten. */
                 if (ok) {
                     it_slot_delete(IT_SCRATCH_2);
-                    long again = (it_sys3(SYS_CSPACE_MINT, n,
-                                          (long)((uint64_t)IT_SCRATCH_2 << 32),
-                                          (long)((uint64_t)(RIGHT_READ | RIGHT_WRITE) |
+                    long again = (it_invoke2(n, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_2 << 32), (long)((uint64_t)(RIGHT_READ | RIGHT_WRITE) |
                                                  (0x5Bull << 32))) == 0)
                                  ? (long)IT_SCRATCH_2 : -1;
                     if (again >= 0 &&
-                        it_sys2(SYS_CSPACE_MOVE, again,
-                                (long)((uint64_t)T333_DST_SLOT << 32))
+                        it_invoke1(again, INV_CSPACE_MOVE, (long)((uint64_t)T333_DST_SLOT << 32))
                         != (long)IRIS_ERR_ALREADY_EXISTS) {
                         ok = 0; why = "move over an occupied slot";
                     }
@@ -856,23 +845,22 @@ void test_t333(void) {
         uint64_t spent = 0;
         if (sc < 0) { ok = 0; why = "sc"; }
         else {
-            if (it_sys4(SYS_SC_CONFIGURE, sc, 10, 100,
-                        (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "configure"; }
+            if (it_invoke(sc, INV_SC_CONFIGURE, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "configure"; }
             /* Nothing has run on it, so nothing was spent — and the read is a
              * READ: a write-only copy cannot ask. */
-            if (ok && it_sys2(SYS_SC_CONSUMED, sc, (long)(uintptr_t)&spent) != 0) {
+            if (ok && it_invoke1(sc, INV_SC_CONSUMED, (long)(uintptr_t)&spent) != 0) {
                 ok = 0; why = "consumed";
             }
             if (ok && spent != 0u) { ok = 0; why = "unused context spent time"; }
             if (ok) {
                 long wo = it_cdt_derive(sc, IT_SCRATCH_0, RIGHT_WRITE);
-                if (wo >= 0 && it_sys2(SYS_SC_CONSUMED, wo, (long)(uintptr_t)&spent)
+                if (wo >= 0 && it_invoke1(wo, INV_SC_CONSUMED, (long)(uintptr_t)&spent)
                     != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "write-only consumed"; }
                 it_slot_delete(IT_SCRATCH_0);
             }
             /* 4. yielding to a context with NO thread bound is INVALID_ARG —
              *    there is nobody to yield to. */
-            if (ok && it_sys2(SYS_SC_YIELD_TO, sc, 0L) != (long)IRIS_ERR_INVALID_ARG) {
+            if (ok && it_invoke1(sc, INV_SC_YIELD_TO, 0L) != (long)IRIS_ERR_INVALID_ARG) {
                 ok = 0; why = "yield to an unbound context";
             }
             it_slot_delete((uint32_t)sc);
@@ -884,12 +872,12 @@ void test_t333(void) {
         /* This suite holds no IRQ capability, and that IS the assertion: the
          * authority to clear a route is the authority to install one, so a task
          * that cannot route cannot un-route either. */
-        if (it_sys1(SYS_IRQ_CLEAR, (long)IRIS_CPTR_IRQ_CAP) >= 0) {
+        if (it_invoke0((long)IRIS_CPTR_IRQ_CAP, INV_IRQ_CLEAR) >= 0) {
             ok = 0; why = "cleared a route with no IRQ capability";
         }
         /* ...and a capability that is not an IRQ capability is refused by type,
          * not by rights. */
-        if (ok && it_sys1(SYS_IRQ_CLEAR, (long)IRIS_CPTR_TEST_UNTYPED)
+        if (ok && it_invoke0((long)IRIS_CPTR_TEST_UNTYPED, INV_IRQ_CLEAR)
                   != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "untyped cleared a route"; }
     }
 
@@ -909,7 +897,7 @@ static void t334_sender(void) {
     m.label           = 0x334;
     m.attached_handle = (uint32_t)g_t334_src;
     m.attached_rights = RIGHT_WRITE;
-    g_t334_res  = (int)it_sys2(SYS_EP_SEND, (long)g_t334_ep, (long)&m);
+    g_t334_res  = (int)it_invoke1((long)g_t334_ep, INV_EP_SEND, (long)&m);
     g_t334_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -932,7 +920,7 @@ static int t334_transfer(long n, const char **why) {
     struct IrisMsg m;
     it_iris_msg_zero(&m);
     m.attached_cap = T334_DST_SLOT;          /* declared receive slot */
-    if (it_sys2(SYS_EP_RECV, (long)g_t334_ep, (long)&m) != 0) { *why = "recv"; return 0; }
+    if (it_invoke1((long)g_t334_ep, INV_EP_RECV, (long)&m) != 0) { *why = "recv"; return 0; }
     if (m.attached_handle != T334_DST_SLOT)  { *why = "landing"; return 0; }
     for (int i = 0; i < 400 && !g_t334_done; i++) it_settle(1);
     if (!g_t334_done || g_t334_res != 0)     { *why = "send"; return 0; }
@@ -953,28 +941,28 @@ void test_t334(void) {
 
     /* ── 1. the sender still holds what it sent ── */
     if (ok && !t334_transfer(n, &why)) ok = 0;
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)T334_SRC_SLOT)
+    if (ok && it_invoke0((long)T334_SRC_SLOT, INV_CAP_IDENTIFY)
               != (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
         ok = 0; why = "sender lost its capability";
     }
     /* ...and it is a capability, not a husk: signal through it and observe on
      * the master.  A slot that resolves but cannot act would pass the check
      * above and mean nothing. */
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)T334_SRC_SLOT, 0x1u) != 0) {
+    if (ok && it_invoke1((long)T334_SRC_SLOT, INV_NOTIFY_SIGNAL, 0x1u) != 0) {
         ok = 0; why = "sender's capability is dead";
     }
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_POLL, n, (long)(uintptr_t)&bits) != 0 ||
+        if (it_invoke1(n, INV_NOTIFY_POLL, (long)(uintptr_t)&bits) != 0 ||
             (bits & 0x1u) == 0u) { ok = 0; why = "signal did not reach the object"; }
     }
     /* The receiver's copy is the same object, reached from its own slot. */
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)T334_DST_SLOT, 0x2u) != 0) {
+    if (ok && it_invoke1((long)T334_DST_SLOT, INV_NOTIFY_SIGNAL, 0x2u) != 0) {
         ok = 0; why = "delivered capability is dead";
     }
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_POLL, n, (long)(uintptr_t)&bits) != 0 ||
+        if (it_invoke1(n, INV_NOTIFY_POLL, (long)(uintptr_t)&bits) != 0 ||
             (bits & 0x2u) == 0u) { ok = 0; why = "delivered capability is not the object"; }
     }
 
@@ -985,7 +973,7 @@ void test_t334(void) {
     }
     /* Revoke takes the descendants and leaves the invoked slot: the sender is
      * still holding its own capability afterwards. */
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)T334_SRC_SLOT)
+    if (ok && it_invoke0((long)T334_SRC_SLOT, INV_CAP_IDENTIFY)
               != (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
         ok = 0; why = "revoke ate the slot it was invoked on";
     }
@@ -1000,12 +988,12 @@ void test_t334(void) {
     if (ok && !it_cdt_alive((long)T334_DST_SLOT)) {
         ok = 0; why = "deleting the sender's slot took the receiver's copy";
     }
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)T334_DST_SLOT, 0x4u) != 0) {
+    if (ok && it_invoke1((long)T334_DST_SLOT, INV_NOTIFY_SIGNAL, 0x4u) != 0) {
         ok = 0; why = "the given-away capability stopped working";
     }
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_POLL, n, (long)(uintptr_t)&bits) != 0 ||
+        if (it_invoke1(n, INV_NOTIFY_POLL, (long)(uintptr_t)&bits) != 0 ||
             (bits & 0x4u) == 0u) { ok = 0; why = "given-away signal lost"; }
     }
 
@@ -1068,64 +1056,62 @@ void test_t335(void) {
     /* ── the sixteen that said INVALID_ARG ── */
 
     /* scheduling: the context argument, and the one THREAD_SET_SC takes. */
-    if (ok && it_sys4(SYS_SC_CONFIGURE, ep, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL)
+    if (ok && it_invoke(ep, INV_SC_CONFIGURE, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "sc_configure"; }
-    if (ok && it_sys1(SYS_THREAD_SET_SC, ep) != (long)IRIS_ERR_WRONG_TYPE) {
+    if (ok && it_invoke0(ep, INV_SC_SET_ON_CALLER) != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "thread_set_sc";
     }
-    if (ok && it_sys2(SYS_SC_BIND, sc, ep) != (long)IRIS_ERR_WRONG_TYPE) {
+    if (ok && it_invoke1(sc, INV_SC_BIND, ep) != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "sc_bind (the TCB argument)";
     }
-    if (ok && it_sys2(SYS_SC_BIND, ep, (long)IRIS_CPTR_OWN_TCB)
+    if (ok && it_invoke1(ep, INV_SC_BIND, (long)IRIS_CPTR_OWN_TCB)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "sc_bind (the SC argument)"; }
 
     /* threads: the CSpace and VSpace a TCB is configured with, its IPC frame,
      * and the notification a watch signals. */
-    if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, (long)IRIS_CPTR_OWN_TCB, UT, 0x8000600000L)
+    if (ok && it_invoke2((long)IRIS_CPTR_OWN_TCB, INV_TCB_SET_IPC_BUFFER, UT, 0x8000600000L)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "set_ipc_buffer frame"; }
-    if (ok && it_sys3(SYS_TCB_WATCH, (long)IRIS_CPTR_OWN_TCB, ep, 1)
+    if (ok && it_invoke2((long)IRIS_CPTR_OWN_TCB, INV_TCB_WATCH, ep, 1)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "tcb_watch notification"; }
 
     /* CNodes: the CNode a delete or a swap is invoked on. */
-    if (ok && it_sys3(SYS_CNODE_DELETE, ep, 1, 0) != (long)IRIS_ERR_WRONG_TYPE) {
+    if (ok && it_invoke2(ep, INV_CNODE_DELETE, 1, 0) != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "cnode_delete";
     }
-    if (ok && it_sys3(SYS_CNODE_SWAP, ep, 1, 2) != (long)IRIS_ERR_WRONG_TYPE) {
+    if (ok && it_invoke2(ep, INV_CNODE_SWAP, 1, 2) != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "cnode_swap";
     }
 
     /* CSpace: the destination CNode of a mint and of a move. */
-    if (ok && it_sys3(SYS_CSPACE_MINT, nt, IT_MINT_INTO(ep, 1u), (long)RIGHT_READ)
+    if (ok && it_invoke2(nt, INV_CSPACE_MINT, IT_MINT_INTO(ep, 1u), (long)RIGHT_READ)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "mint destination"; }
-    if (ok && it_sys2(SYS_CSPACE_MOVE, nt, IT_MINT_INTO(ep, 1u))
+    if (ok && it_invoke1(nt, INV_CSPACE_MOVE, IT_MINT_INTO(ep, 1u))
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "move destination"; }
 
     /* Untyped: the destination CNode of a retype, and the budget arguments. */
-    if (ok && it_sys4(SYS_UNTYPED_RETYPE2, UT,
-                      (long)((uint64_t)IRIS_KOBJ_ENDPOINT | (1ULL << 32)),
-                      (long)((uint64_t)(uint32_t)ep | (1ULL << 32)), 0)
+    if (ok && it_invoke(UT, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_ENDPOINT | (1ULL << 32)), (long)((uint64_t)(uint32_t)ep | (1ULL << 32)), 0)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "retype destination"; }
-    if (ok && it_sys2(SYS_UNTYPED_SET_DEVICE_BUDGET, ep, UT)
+    if (ok && it_invoke1(ep, INV_UNTYPED_SET_DEVICE_BUDGET, UT)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "device budget (device)"; }
-    if (ok && it_sys2(SYS_UNTYPED_SET_DEVICE_BUDGET, UT, ep)
+    if (ok && it_invoke1(UT, INV_UNTYPED_SET_DEVICE_BUDGET, ep)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "device budget (ram)"; }
 
     /* Virtual memory: the page table and the address space it is hung in. */
-    if (ok && it_sys3(SYS_VSPACE_MAP_TABLE, ep, IT_VS, 0x8000700000L)
+    if (ok && it_invoke2(ep, INV_PAGE_TABLE_MAP, IT_VS, 0x8000700000L)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "map_table page table"; }
-    if (ok && it_sys3(SYS_VSPACE_MAP_TABLE, fr, ep, 0x8000700000L)
+    if (ok && it_invoke2(fr, INV_PAGE_TABLE_MAP, ep, 0x8000700000L)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "map_table vspace"; }
 
     /* ── the three that said ACCESS_DENIED ──
      * An authority argument is still a capability with a type.  Presenting a
      * notification where a bootstrap capability belongs is not a failed
      * authority check — the check never ran. */
-    if (ok && it_sys3(SYS_INITRD_COUNT, nt, 0, 0) != (long)IRIS_ERR_WRONG_TYPE) {
+    if (ok && it_invoke2(nt, INV_BOOT_INITRD_COUNT, 0, 0) != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "initrd_count authority";
     }
     if (ok) {
         struct iris_fb_params fb;
-        if (it_sys3(SYS_FRAMEBUFFER_INFO, nt, (long)(uintptr_t)&fb, 0)
+        if (it_invoke2(nt, INV_BOOT_FRAMEBUFFER_INFO, (long)(uintptr_t)&fb, 0)
             != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "framebuffer authority"; }
     }
 
@@ -1137,19 +1123,19 @@ void test_t335(void) {
         it_slot_delete((uint32_t)fr);   /* the map_table checks are done with it */
         long ro = it_cdt_derive(sc, (uint32_t)fr, RIGHT_READ);
         if (ro < 0) { ok = 0; why = "read-only derive"; }
-        if (ok && it_sys4(SYS_SC_CONFIGURE, ro, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL)
+        if (ok && it_invoke(ro, INV_SC_CONFIGURE, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL)
                   != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights answer moved"; }
     }
     /* A real bootstrap capability of the wrong FLAVOUR is likewise an
      * authority answer: the framebuffer control capability cannot read the
      * initrd, and being the right TYPE is exactly why. */
-    if (ok && it_sys3(SYS_INITRD_COUNT, (long)IRIS_CPTR_FB_CONTROL, 0, 0)
+    if (ok && it_invoke2((long)IRIS_CPTR_FB_CONTROL, INV_BOOT_INITRD_COUNT, 0, 0)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "flavour answer moved"; }
 
     /* ...and nothing here is a secret: the caller can name every one of those
      * types itself, for free, which is why flattening bought no confidentiality
      * in the first place. */
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, ep) != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
+    if (ok && it_invoke0(ep, INV_CAP_IDENTIFY) != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
         ok = 0; why = "identify is the free answer flattening was hiding";
     }
 
@@ -1213,42 +1199,41 @@ void test_t336(void) {
         (iris_rights_t)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_WAIT);
 
     /* ── 1. two occupants exchange, by identity ── */
-    if (ok && it_sys3(SYS_CSPACE_MINT, ep, IT_MINT_INTO(CN, 1u), (long)FULL) != 0) {
+    if (ok && it_invoke2(ep, INV_CSPACE_MINT, IT_MINT_INTO(CN, 1u), (long)FULL) != 0) {
         ok = 0; why = "mint ep";
     }
-    if (ok && it_sys3(SYS_CSPACE_MINT, nt, IT_MINT_INTO(CN, 2u), (long)FULL) != 0) {
+    if (ok && it_invoke2(nt, INV_CSPACE_MINT, IT_MINT_INTO(CN, 2u), (long)FULL) != 0) {
         ok = 0; why = "mint nt";
     }
-    if (ok && it_sys3(SYS_CNODE_SWAP, CN, 1, 2) != 0) { ok = 0; why = "swap"; }
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, T336_AT(1))
+    if (ok && it_invoke2(CN, INV_CNODE_SWAP, 1, 2) != 0) { ok = 0; why = "swap"; }
+    if (ok && it_invoke0(T336_AT(1), INV_CAP_IDENTIFY)
               != (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "slot 1 type"; }
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, T336_AT(2))
+    if (ok && it_invoke0(T336_AT(2), INV_CAP_IDENTIFY)
               != (long)IRIS_HANDLE_TYPE_ENDPOINT) { ok = 0; why = "slot 2 type"; }
     /* Type is not identity: two notifications would pass the check above. */
-    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, T336_AT(1), nt) != 1) {
+    if (ok && it_invoke1(T336_AT(1), INV_CAP_SAME_OBJECT, nt) != 1) {
         ok = 0; why = "slot 1 is not the notification we put there";
     }
-    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, T336_AT(2), ep) != 1) {
+    if (ok && it_invoke1(T336_AT(2), INV_CAP_SAME_OBJECT, ep) != 1) {
         ok = 0; why = "slot 2 is not the endpoint we put there";
     }
     /* And it still works from its new address. */
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, T336_AT(1), 0x1u) != 0) {
+    if (ok && it_invoke1(T336_AT(1), INV_NOTIFY_SIGNAL, 0x1u) != 0) {
         ok = 0; why = "moved capability is dead";
     }
 
     /* ── 2. against an empty slot, a swap is a move ── */
-    if (ok && it_sys3(SYS_CNODE_SWAP, CN, 1, 5) != 0) { ok = 0; why = "move"; }
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, T336_AT(1)) >= 0) {
+    if (ok && it_invoke2(CN, INV_CNODE_SWAP, 1, 5) != 0) { ok = 0; why = "move"; }
+    if (ok && it_invoke0(T336_AT(1), INV_CAP_IDENTIFY) >= 0) {
         ok = 0; why = "the source slot kept a ghost";
     }
-    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, T336_AT(5), nt) != 1) {
+    if (ok && it_invoke1(T336_AT(5), INV_CAP_SAME_OBJECT, nt) != 1) {
         ok = 0; why = "move lost the capability";
     }
 
     /* ── 3. the tree travels with the capability, not the slot ── */
-    if (ok && it_sys3(SYS_CSPACE_MINT, T336_AT(5), IT_MINT_INTO(CN, 6u),
-                      (long)RIGHT_WRITE) != 0) { ok = 0; why = "derive child"; }
-    if (ok && it_sys3(SYS_CNODE_SWAP, CN, 5, 9) != 0) { ok = 0; why = "swap parent away"; }
+    if (ok && it_invoke2(T336_AT(5), INV_CSPACE_MINT, IT_MINT_INTO(CN, 6u), (long)RIGHT_WRITE) != 0) { ok = 0; why = "derive child"; }
+    if (ok && it_invoke2(CN, INV_CNODE_SWAP, 5, 9) != 0) { ok = 0; why = "swap parent away"; }
     /* Revoking the slot the parent LEFT reaches nothing: the slot is empty and
      * the child's parent pointer went with the capability. */
     if (ok && it_cdt_alive(T336_AT(5))) { ok = 0; why = "the parent left a copy behind"; }
@@ -1261,9 +1246,8 @@ void test_t336(void) {
     /* ── 4. a parent swapped with its own child ──
      * The case the implementation's stack temporary exists for: relocating A
      * onto B while B's parent pointer still names A. */
-    if (ok && it_sys3(SYS_CSPACE_MINT, T336_AT(9), IT_MINT_INTO(CN, 10u),
-                      (long)RIGHT_WRITE) != 0) { ok = 0; why = "derive for parent swap"; }
-    if (ok && it_sys3(SYS_CNODE_SWAP, CN, 9, 10) != 0) { ok = 0; why = "parent-child swap"; }
+    if (ok && it_invoke2(T336_AT(9), INV_CSPACE_MINT, IT_MINT_INTO(CN, 10u), (long)RIGHT_WRITE) != 0) { ok = 0; why = "derive for parent swap"; }
+    if (ok && it_invoke2(CN, INV_CNODE_SWAP, 9, 10) != 0) { ok = 0; why = "parent-child swap"; }
     if (ok && (!it_cdt_alive(T336_AT(9)) || !it_cdt_alive(T336_AT(10)))) {
         ok = 0; why = "parent-child swap lost a capability";
     }
@@ -1275,13 +1259,13 @@ void test_t336(void) {
     if (ok && !it_cdt_alive(T336_AT(10))) { ok = 0; why = "the parent did not survive its own revoke"; }
 
     /* ── 5. the refusals ── */
-    if (ok && it_sys3(SYS_CNODE_SWAP, CN, 3, 3) != (long)IRIS_ERR_INVALID_ARG) {
+    if (ok && it_invoke2(CN, INV_CNODE_SWAP, 3, 3) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "a slot swapped with itself";
     }
-    if (ok && it_sys3(SYS_CNODE_SWAP, CN, 1, 16) != (long)IRIS_ERR_INVALID_ARG) {
+    if (ok && it_invoke2(CN, INV_CNODE_SWAP, 1, 16) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "a slot past the end of the CNode";
     }
-    if (ok && it_sys3(SYS_CNODE_SWAP, 0, 1, 2) != (long)IRIS_ERR_INVALID_ARG) {
+    if (ok && it_invoke2(0, INV_CNODE_SWAP, 1, 2) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "swap with no CNode named";
     }
     if (ok) {
@@ -1290,7 +1274,7 @@ void test_t336(void) {
          * not on holding the CNode at all. */
         long ro = it_cdt_derive(CN, IT_SCRATCH_1, RIGHT_READ);
         if (ro < 0) { ok = 0; why = "read-only cnode derive"; }
-        if (ok && it_sys3(SYS_CNODE_SWAP, ro, 1, 2) != (long)IRIS_ERR_ACCESS_DENIED) {
+        if (ok && it_invoke2(ro, INV_CNODE_SWAP, 1, 2) != (long)IRIS_ERR_ACCESS_DENIED) {
             ok = 0; why = "a read-only CNode capability rearranged a CSpace";
         }
         it_slot_delete(IT_SCRATCH_1);
@@ -1312,7 +1296,7 @@ void test_t324(void) {
     uint32_t by_type[20] = { 0 };
 
     for (uint32_t leaf = IT_OBJ_POOL_FIRST; leaf < IT_OBJ_SLOT_SPAN; leaf++) {
-        long t = it_sys1(SYS_CAP_IDENTIFY, (long)IT_OBJ_CPTR(leaf));
+        long t = it_invoke0((long)IT_OBJ_CPTR(leaf), INV_CAP_IDENTIFY);
         if (t < 0) continue;                     /* empty slot */
         if (occupied == 0u) { first_leaf = leaf; first_type = t; }
         if (t < 20) by_type[t]++;
@@ -1401,16 +1385,13 @@ void test_t296(void) {
      * capability nor what is left of the monolith substitutes for it. */
     {
         uint64_t sched_buf[24] = { 0 };
-        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)sched_buf, 96,
-                          (long)IRIS_CPTR_DEBUG_CONTROL) < 0) {
+        if (ok && it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)sched_buf, 96) < 0) {
             ok = 0; why = "debug control denied";
         }
-        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)sched_buf, 96,
-                          (long)IRIS_CPTR_IOPORT_CONTROL) >= 0) {
+        if (ok && it_invoke2((long)IRIS_CPTR_IOPORT_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)sched_buf, 96) >= 0) {
             ok = 0; why = "ioport cap read sched info";
         }
-        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)sched_buf, 96,
-                          (long)IRIS_CPTR_PROC_CONTROL) >= 0) {
+        if (ok && it_invoke2((long)IRIS_CPTR_PROC_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)sched_buf, 96) >= 0) {
             ok = 0; why = "proc control read sched info";
         }
         /* ...and debug authority creates no devices. */
@@ -1460,16 +1441,16 @@ void test_t295(void) {
     const long root_ok    = (long)IRIS_CPTR_TEST_UNTYPED;
     const long root_alias = root_ok + 256;
 
-    if (it_sys1(SYS_CAP_IDENTIFY, root_ok) != (long)IRIS_KOBJ_UNTYPED) {
+    if (it_invoke0(root_ok, INV_CAP_IDENTIFY) != (long)IRIS_KOBJ_UNTYPED) {
         ok = 0; why = "fixture untyped";
     }
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, root_alias) != (long)IRIS_ERR_INVALID_ARG) {
+    if (ok && it_invoke0(root_alias, INV_CAP_IDENTIFY) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "root alias resolved";
     }
 
     /* The serial port at root slot 255 is what the old fuzz constant 4095
      * (255 + 15*256) aliased — the suite's own output device. */
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, 4095) != (long)IRIS_ERR_INVALID_ARG) {
+    if (ok && it_invoke0(4095, INV_CAP_IDENTIFY) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "4095 aliased the serial port";
     }
 
@@ -1480,26 +1461,24 @@ void test_t295(void) {
     if (ok) {
         const long deep_alias = ep | (1L << 16);
 
-        if (it_sys1(SYS_CAP_IDENTIFY, ep) != (long)IRIS_KOBJ_ENDPOINT) {
+        if (it_invoke0(ep, INV_CAP_IDENTIFY) != (long)IRIS_KOBJ_ENDPOINT) {
             ok = 0; why = "deep fixture";
         }
-        if (ok && it_sys1(SYS_CAP_IDENTIFY, deep_alias) != (long)IRIS_ERR_INVALID_ARG) {
+        if (ok && it_invoke0(deep_alias, INV_CAP_IDENTIFY) != (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "deep alias resolved";
         }
 
         /* Invocation path: an aliased endpoint CPtr must not send. */
         if (ok) {
             struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x95;
-            if (it_sys2(SYS_EP_NB_SEND, deep_alias, (long)&m)
+            if (it_invoke1(deep_alias, INV_EP_NB_SEND, (long)&m)
                 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "alias invoked"; }
         }
 
         /* MDB source path: an aliased source must not derive. */
         if (ok) {
             it_slot_delete(IT_SCRATCH_0);
-            if (it_sys3(SYS_CSPACE_MINT, deep_alias,
-                        (long)((uint64_t)IT_SCRATCH_0 << 32),
-                        (long)RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_INVALID_ARG) {
+            if (it_invoke2(deep_alias, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_0 << 32), (long)RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_INVALID_ARG) {
                 ok = 0; why = "alias minted";
             }
             it_slot_delete(IT_SCRATCH_0);
@@ -1512,7 +1491,7 @@ void test_t295(void) {
             else {
                 struct IrisMsg r; it_iris_msg_zero(&r);
                 r.attached_cap = (uint32_t)(root_ok | (1L << 16));
-                if (it_sys2(SYS_EP_NB_RECV, cmd, (long)&r)
+                if (it_invoke1(cmd, INV_EP_NB_RECV, (long)&r)
                     != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "alias declared"; }
                 handle_id_t ch = (handle_id_t)cmd;
                 it_close(&ch);
@@ -1577,22 +1556,28 @@ void test_t337(void) {
                       T337_NOTIF, 1u, 0) != 0) { it_fail("T337", "notif"); return; }
     long n = (long)T337_NOTIF;
 
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, n) !=
+    /* The numbered half is spelled with the RAW wrapper on purpose.  The
+     * suite's own helpers invoke now (stage D), so asking them for the
+     * numbered door would compare it with itself — which is what a mechanical
+     * conversion of this test did, leaving the claim standing and empty. */
+    if (ok && iris_syscall4(SYS_CAP_IDENTIFY, n, 0, 0, 0) !=
               iris_invoke0(n, INV_CAP_IDENTIFY)) { ok = 0; why = "identify differs"; }
     if (ok && iris_invoke0(n, INV_CAP_IDENTIFY) !=
               (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "identify wrong"; }
 
-    /* ── 1b. a state change, observed through the OTHER door ── */
-    if (ok && iris_invoke2(n, INV_NOTIFY_SIGNAL, 0x21, 0) != 0) {
+    /* ── 1b. a state change made at one door, seen at the other ── */
+    if (ok && iris_invoke1(n, INV_NOTIFY_SIGNAL, 0x21) != 0) {
         ok = 0; why = "invoked signal";
     }
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_POLL, n, (long)(uintptr_t)&bits) != 0 ||
+        if (iris_syscall4(SYS_NOTIFY_POLL, n, (long)(uintptr_t)&bits, 0, 0) != 0 ||
             (bits & 0x21u) == 0u) { ok = 0; why = "invoked signal did not land"; }
     }
     /* ...and the reverse: signalled by number, observed by invocation. */
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, n, 0x42) != 0) { ok = 0; why = "numbered signal"; }
+    if (ok && iris_syscall4(SYS_NOTIFY_SIGNAL, n, 0x42, 0, 0) != 0) {
+        ok = 0; why = "numbered signal";
+    }
     if (ok) {
         uint64_t bits = 0;
         if (iris_invoke1(n, INV_NOTIFY_POLL, (long)(uintptr_t)&bits) != 0 ||
@@ -1604,8 +1589,8 @@ void test_t337(void) {
         long ro = it_cdt_derive(n, T337_RO, RIGHT_READ); /* no WRITE: cannot signal */
         if (ro < 0) { ok = 0; why = "reduce"; }
         else {
-            long a = it_sys2(SYS_NOTIFY_SIGNAL, ro, 1);
-            long b = iris_invoke2(ro, INV_NOTIFY_SIGNAL, 1, 0);
+            long a = iris_syscall4(SYS_NOTIFY_SIGNAL, ro, 1, 0, 0);
+            long b = iris_invoke1(ro, INV_NOTIFY_SIGNAL, 1);
             if (a != (long)IRIS_ERR_ACCESS_DENIED || b != a) {
                 ok = 0; why = "refusal differs";
             }
@@ -1677,7 +1662,7 @@ void test_t337(void) {
                              (long)(((uint64_t)IT_SCRATCH_0 << 32) | 0u),
                              4);                    /* obj_arg: 4 slots */
         if (r != 0) { ok = 0; why = "invoked retype"; }
-        if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)IT_SCRATCH_0)
+        if (ok && it_invoke0((long)IT_SCRATCH_0, INV_CAP_IDENTIFY)
                   != (long)IT_KOBJ_CNODE) {
             ok = 0; why = "the third method argument was lost";
         }
@@ -1685,31 +1670,49 @@ void test_t337(void) {
     }
 
     /* ── the instrument ──
-     * Every it_sysN above went through the numbered door, so the counter must
-     * have moved.  Nothing asserts a VALUE: what this pins is that the gauge
-     * exists and is live, so that stage E can assert it reached zero and the
-     * stages before it can watch it fall. */
+     * The gauge counts what still comes through the numbered door, and the
+     * migration is finished when it stops moving.  Two halves:
+     *
+     *   - it still COUNTS.  Three deliberate numbered calls, three counts.  A
+     *     gauge that had quietly stopped incrementing would otherwise read
+     *     exactly like a migration that had finished;
+     *   - an invocation does NOT count, which is what makes the number a
+     *     measure of the migration rather than of traffic.
+     *
+     * `it_utq_g` invokes now, so the query itself no longer disturbs what it
+     * is measuring — which is why the arithmetic below is exact rather than
+     * off by the cost of asking. */
     if (ok) {
-        struct it_utq_global g0, g1;
+        struct it_utq_global g0, g1, g2;
         if (!it_utq_g(&g0)) { ok = 0; why = "query"; }
-        if (ok && it_sys0(SYS_YIELD) != 0) { ok = 0; why = "yield"; }
+        if (ok) {
+            (void)iris_syscall4(SYS_CAP_IDENTIFY, n, 0, 0, 0);
+            (void)iris_syscall4(SYS_CAP_IDENTIFY, n, 0, 0, 0);
+            (void)iris_syscall4(SYS_CAP_IDENTIFY, n, 0, 0, 0);
+        }
         if (ok && !it_utq_g(&g1)) { ok = 0; why = "query 2"; }
-        if (ok && g1.syscall_numbered_calls <= g0.syscall_numbered_calls) {
+        if (ok && g1.syscall_numbered_calls != g0.syscall_numbered_calls + 3u) {
             ok = 0; why = "the numbered-door gauge is not counting";
         }
-        /* ...and an invocation does NOT advance it: that is what makes the
-         * number meaningful as a migration measure rather than a call count. */
         if (ok) {
-            struct it_utq_global g2;
-            uint64_t base = g1.syscall_numbered_calls;
             (void)iris_invoke0(n, INV_CAP_IDENTIFY);
             (void)iris_invoke0(n, INV_CAP_IDENTIFY);
             if (!it_utq_g(&g2)) { ok = 0; why = "query 3"; }
-            /* it_utq_g itself is a numbered call, so the gauge moves by that
-             * one and not by the two invocations. */
-            else if (g2.syscall_numbered_calls != base + 1u) {
+            else if (g2.syscall_numbered_calls != g1.syscall_numbered_calls) {
                 ok = 0; why = "an invocation was counted as a numbered call";
             }
+        }
+    }
+
+    /* And the number itself, printed rather than only asserted: the migration
+     * is a quantity that has to fall, and a quantity nobody can see is one
+     * that stops falling without anyone noticing. */
+    if (ok) {
+        struct it_utq_global g;
+        if (it_utq_g(&g)) {
+            it_serial_write("[IRIS][TEST] T337 numbered-door calls this run: ");
+            it_log_num((uint32_t)g.syscall_numbered_calls);
+            it_serial_write("\n");
         }
     }
 

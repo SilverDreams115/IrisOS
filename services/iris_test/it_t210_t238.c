@@ -48,7 +48,7 @@ void test_t210(void) {
             if (!t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; break; }
             if (it_kill((long)p.proc) != 0 || it_lp_wait_exit(p.proc) != 0) { ok = 0; why = "op1 pager death"; }
             it_close(&p.proc); it_close(&p.ctrl_ep);
-            if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_AT(vmo, 0x1000ULL), (long)g.vs, (long)T27_VA_A, (long)(0u)) != 0) { ok = 0; why = "op1 map"; }
+            if (ok && it_invoke((long)T26_AT(vmo, 0x1000ULL), INV_FRAME_MAP, (long)g.vs, (long)T27_VA_A, (long)(0u)) != 0) { ok = 0; why = "op1 map"; }
             if (ok && t25_resume_seq(&g, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op1 resume"; }
             if (ok && it_lp_wait_exit(g.proc) != (long)(LP_EXIT_MARKER ^ (word & 0xFFu))) { ok = 0; why = "op1 target"; }
             break;
@@ -64,7 +64,7 @@ void test_t210(void) {
             /* Stage 7-proc: the target's address space outlives the target
              * while this test holds a capability to it, so the late map
              * SUCCEEDS into a space with nothing running in it. */
-            if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_AT(vmo, 0x1000ULL), (long)g.vs, (long)T27_VA_A, (long)(0u))
+            if (ok && it_invoke((long)T26_AT(vmo, 0x1000ULL), INV_FRAME_MAP, (long)g.vs, (long)T27_VA_A, (long)(0u))
                       != 0) { ok = 0; why = "op2 late map"; }
             t27_pager_reap(&p);
             break;
@@ -131,7 +131,7 @@ void test_t211(void) {
     int ok = b.ok;
     const char *why = "initrd count boundary";
 
-    long n = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_INITRD_CONTROL);
+    long n = it_invoke0((long)IRIS_CPTR_INITRD_CONTROL, INV_BOOT_INITRD_COUNT);
     if (n < (long)T2_MIN_IMAGES) { ok = 0; why = "count below catalog"; }
 
     /* Every in-range index yields a live VMO with a positive size. */
@@ -167,7 +167,7 @@ void test_t212(void) {
     int ok = b.ok && it_setup_self_vspace();
     const char *why = "initrd size boundary";
 
-    long n = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_INITRD_CONTROL);
+    long n = it_invoke0((long)IRIS_CPTR_INITRD_CONTROL, INV_BOOT_INITRD_COUNT);
     if (n < (long)T2_MIN_IMAGES) { ok = 0; why = "count"; }
 
     for (long i = 0; ok && i < n; i++) {
@@ -180,9 +180,9 @@ void test_t212(void) {
          * image with a real backing proves the bounds are honest.  One map
          * covers the whole frame (D-10), where a VMO needed a page at a
          * time. */
-        if (ok && it_sys4(SYS_FRAME_MAP, v, IT_VS, (long)T26_SELF_VA, 0) != 0) {
+        if (ok && it_invoke(v, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 0) != 0) {
             ok = 0; why = "map"; }
-        if (ok && it_sys3(SYS_FRAME_UNMAP, v, IT_VS, (long)T26_SELF_VA) != 0) { ok = 0; why = "unmap"; }
+        if (ok && it_invoke2(v, INV_FRAME_UNMAP, IT_VS, (long)T26_SELF_VA) != 0) { ok = 0; why = "unmap"; }
         it_close(&vh);
     }
 
@@ -376,7 +376,7 @@ void test_t216(void) {
     const char *why = "boot-growth stress";
     uint32_t round = 0u, op = 0u;
 
-    long n = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_INITRD_CONTROL);
+    long n = it_invoke0((long)IRIS_CPTR_INITRD_CONTROL, INV_BOOT_INITRD_COUNT);
     if (n < (long)T2_MIN_IMAGES) { it_fail("T216", "count"); return; }
 
     for (round = 0; ok && round < T216_ROUNDS; round++) {
@@ -389,8 +389,8 @@ void test_t216(void) {
             if (v < 0) { ok = 0; why = "map vmo"; break; }
             handle_id_t vh = (handle_id_t)v;
             /* D-5: a frame, mapped whole (D-10). */
-            if (it_sys4(SYS_FRAME_MAP, v, IT_VS, (long)T26_SELF_VA, 0) != 0) { ok = 0; why = "map"; }
-            if (ok) (void)it_sys3(SYS_FRAME_UNMAP, v, IT_VS, (long)T26_SELF_VA);
+            if (it_invoke(v, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 0) != 0) { ok = 0; why = "map"; }
+            if (ok) (void)it_invoke2(v, INV_FRAME_UNMAP, IT_VS, (long)T26_SELF_VA);
             it_close(&vh);
             break;
         }
@@ -448,7 +448,7 @@ static long t28_cmd_read_seq(handle_id_t cmd, uint64_t base, uint32_t count, uin
     m.label = LP_CMD_FAULT_READ_SEQ;
     m.words[0] = base; m.words[1] = (uint64_t)count; m.words[2] = order;
     m.word_count = 3u;
-    return it_sys2(SYS_EP_SEND, (long)cmd, (long)&m);
+    return it_invoke1((long)cmd, INV_EP_SEND, (long)&m);
 }
 /* Two-offset fault-read: read base+off0 and (count==2) base+off1. */
 static long t28_cmd_read_offs(handle_id_t cmd, uint64_t base, uint32_t count,
@@ -457,7 +457,7 @@ static long t28_cmd_read_offs(handle_id_t cmd, uint64_t base, uint32_t count,
     m.label = LP_CMD_FAULT_READ_OFFS_M;
     m.words[0] = base; m.words[1] = (uint64_t)count; m.words[2] = off0; m.words[3] = off1;
     m.word_count = 4u;
-    return it_sys2(SYS_EP_SEND, (long)cmd, (long)&m);
+    return it_invoke1((long)cmd, INV_EP_SEND, (long)&m);
 }
 
 /* Materialize the two supervisor-side file-grant caps init pre-minted:
@@ -475,11 +475,11 @@ static long t28_cmd_read_offs(handle_id_t cmd, uint64_t base, uint32_t count,
  * materialised into handles for every use and closed again; every syscall they
  * are passed to resolves a CPtr, so the round trip bought nothing. */
 static handle_id_t t28_vfs_cap(void) {
-    return (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_VFS_MINT) >= 0)
+    return (it_invoke0((long)IRIS_CPTR_TEST_VFS_MINT, INV_CAP_IDENTIFY) >= 0)
            ? (handle_id_t)IRIS_CPTR_TEST_VFS_MINT : HANDLE_INVALID;
 }
 static handle_id_t t28_admin_cap(void) {
-    return (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_VFS_DUP) >= 0)
+    return (it_invoke0((long)IRIS_CPTR_TEST_VFS_DUP, INV_CAP_IDENTIFY) >= 0)
            ? (handle_id_t)IRIS_CPTR_TEST_VFS_DUP : HANDLE_INVALID;
 }
 static handle_id_t t28_session_cap(uint32_t session) {
@@ -487,11 +487,11 @@ static handle_id_t t28_session_cap(uint32_t session) {
     handle_id_t src = t28_vfs_cap();
     if (src == HANDLE_INVALID) return HANDLE_INVALID;
     handle_id_t root = T28_OWN_ROOT_CNODE;
-    (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)T28_FG_SLOT(session));
-    long mr = it_sys3(SYS_CSPACE_MINT, (long)src, IT_MINT_SELF((long)T28_FG_SLOT(session)), (long)((IRIS_BADGE_FILEGRANT_S(session) << 32) | RIGHT_WRITE));
+    (void)it_invoke1((long)root, INV_CNODE_DELETE, (long)T28_FG_SLOT(session));
+    long mr = it_invoke2((long)src, INV_CSPACE_MINT, IT_MINT_SELF((long)T28_FG_SLOT(session)), (long)((IRIS_BADGE_FILEGRANT_S(session) << 32) | RIGHT_WRITE));
     it_close(&src);
     if (mr != 0) return HANDLE_INVALID;
-    return (it_sys1(SYS_CAP_IDENTIFY, (long)T28_FG_SLOT(session)) >= 0)
+    return (it_invoke0((long)T28_FG_SLOT(session), INV_CAP_IDENTIFY) >= 0)
            ? (handle_id_t)T28_FG_SLOT(session) : HANDLE_INVALID;
 }
 
@@ -502,7 +502,7 @@ long t28_stat(handle_id_t vfs_cap, const char *name) {
     uint32_t n = 0; while (name[n] && n + 1u < IT_EP_IO_CAP) { g_ep_io_buf[n] = (uint8_t)name[n]; n++; }
     g_ep_io_buf[n] = 0;
     m.label = VFS_EP_OP_STAT; m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf; m.buf_len = n + 1u;
-    if (it_sys2(SYS_EP_CALL, (long)vfs_cap, (long)&m) != 0) return -1;
+    if (it_invoke1((long)vfs_cap, INV_EP_CALL, (long)&m) != 0) return -1;
     if (m.label != IRIS_EP_REPLY_OK) return -1;
     return (long)m.words[1];
 }
@@ -524,7 +524,7 @@ static long t28_gcall(handle_id_t cap, uint64_t label, uint64_t w0, uint64_t w1,
         g_ep_io_buf[n] = 0;
         m.buf_len = n + 1u;
     }
-    long r = it_sys2(SYS_EP_CALL, (long)cap, (long)&m);
+    long r = it_invoke1((long)cap, INV_EP_CALL, (long)&m);
     if (r != 0) return r;
     if (m.label != IRIS_EP_REPLY_OK) return (long)(int32_t)(uint32_t)m.words[0];
     if (out) *out = m;
@@ -623,8 +623,7 @@ int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt,
         long bep = it_cs_badge((long)targets[0].notif,
                                RIGHT_READ | RIGHT_WRITE, i + 1u);
         int wired = (bep >= 0 &&
-                     it_sys4(SYS_TCB_SET_FAULT_HANDLER,
-                             it_child_tcb((long)targets[i].proc), bep, 0, 0) == 0);
+                     it_invoke(it_child_tcb((long)targets[i].proc), INV_TCB_SET_FAULT_HANDLER, bep, 0, 0) == 0);
         if (bep >= 0) it_slot_delete((uint32_t)bep);
         if (!wired) {
             it_close(&ctrl); it_close(&vfs); it_close(&adm);
@@ -699,7 +698,7 @@ int t28_backing_setup(struct t28_fbk *f, uint32_t bidx, const char *name,
 static long t28_ctrl_words(handle_id_t ctrl, uint32_t op, uint64_t w1, uint64_t w2) {
     struct IrisMsg m; it_iris_msg_zero(&m);
     m.words[0] = (uint64_t)op; m.words[1] = w1; m.words[2] = w2; m.word_count = 3u;
-    long r = it_sys2(SYS_EP_CALL, (long)ctrl, (long)&m);
+    long r = it_invoke1((long)ctrl, INV_EP_CALL, (long)&m);
     if (r != 0) return r;
     if (m.label != IRIS_EP_REPLY_OK) return -100000L;
     return (long)m.words[0];
@@ -708,7 +707,7 @@ static long t28_map_region(handle_id_t ctrl, uint32_t tidx) {
     struct IrisMsg m; it_iris_msg_zero(&m);
     m.words[0] = (uint64_t)FBK_OP_MAP_REGION | ((uint64_t)tidx << 8);
     m.word_count = 1u;
-    long r = it_sys2(SYS_EP_CALL, (long)ctrl, (long)&m);
+    long r = it_invoke1((long)ctrl, INV_EP_CALL, (long)&m);
     if (r != 0) return r;
     if (m.label != IRIS_EP_REPLY_OK) return -100000L;
     return (long)m.words[0];
@@ -724,7 +723,7 @@ static long t28_reg_backing_raw(handle_id_t ctrl, uint32_t idx, uint32_t grant_i
     struct IrisMsg m; it_iris_msg_zero(&m);
     m.words[0] = (uint64_t)FBK_OP_REGISTER_BACKING; m.word_count = 1u;
     m.buf_uptr = (uint64_t)(uintptr_t)g_t28_buf; m.buf_len = (uint32_t)sizeof(*rq);
-    long r = it_sys2(SYS_EP_CALL, (long)ctrl, (long)&m);
+    long r = it_invoke1((long)ctrl, INV_EP_CALL, (long)&m);
     if (r != 0) return r;
     if (m.label != IRIS_EP_REPLY_OK) return -100000L;
     return (long)m.words[0];
@@ -740,7 +739,7 @@ long t28_reg_region(handle_id_t ctrl, const struct pgr_region_req *src) {
     struct IrisMsg m; it_iris_msg_zero(&m);
     m.words[0] = (uint64_t)FBK_OP_REGISTER_REGION; m.word_count = 1u;
     m.buf_uptr = (uint64_t)(uintptr_t)g_t28_buf; m.buf_len = (uint32_t)sizeof(*rq);
-    long r = it_sys2(SYS_EP_CALL, (long)ctrl, (long)&m);
+    long r = it_invoke1((long)ctrl, INV_EP_CALL, (long)&m);
     if (r != 0) return r;
     if (m.label != IRIS_EP_REPLY_OK) return -100000L;
     return (long)m.words[0];
@@ -749,7 +748,7 @@ static int t28_diag(handle_id_t ctrl, struct pgr_diag *out) {
     struct IrisMsg m; it_iris_msg_zero(&m);
     m.words[0] = (uint64_t)FBK_OP_DIAG; m.word_count = 1u;
     m.buf_uptr = (uint64_t)(uintptr_t)g_t28_buf;
-    if (it_sys2(SYS_EP_CALL, (long)ctrl, (long)&m) != 0) return 0;
+    if (it_invoke1((long)ctrl, INV_EP_CALL, (long)&m) != 0) return 0;
     if (m.label != IRIS_EP_REPLY_OK || m.buf_len < sizeof(*out)) return 0;
     for (uint32_t i = 0; i < sizeof(*out); i++) ((uint8_t *)out)[i] = g_t28_buf[i];
     return 1;
@@ -2081,12 +2080,11 @@ static int t28_multi_spawn(struct t28_multi *m, uint32_t nt, const char **why) {
             long bep = it_cs_badge((long)m->fault_notif,
                                    RIGHT_READ | RIGHT_WRITE, i + 1u);
             int wired = (bep >= 0 &&
-                         it_sys4(SYS_TCB_SET_FAULT_HANDLER,
-                                 it_child_tcb((long)m->proc[i]), bep, 0, 0) == 0);
+                         it_invoke(it_child_tcb((long)m->proc[i]), INV_TCB_SET_FAULT_HANDLER, bep, 0, 0) == 0);
             if (bep >= 0) it_slot_delete((uint32_t)bep);
             if (!wired) { *why = "wire"; t28_multi_close(m); return 0; }
         }
-        if (it_sys3(SYS_TCB_WATCH, it_child_tcb((long)m->proc[i]), (long)m->exit_notif,  (long)(1u << i)) != 0) {
+        if (it_invoke2(it_child_tcb((long)m->proc[i]), INV_TCB_WATCH, (long)m->exit_notif, (long)(1u << i)) != 0) {
             *why = "wire"; t28_multi_close(m); return 0;
         }
         m->n++;
@@ -2202,7 +2200,7 @@ static int t237_run(uint32_t nt, const char **why) {
     for (uint32_t i = 0; ok && i < nt; i++) {
         uint64_t foff = (uint64_t)((i % 4u) + 1u) * 0x1000ULL;
         if (!t28_multi_wait_exit(&m, i)) { ok = 0; *why = "target exit"; }
-        else if (it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)m.proc[i])) != (long)(LP_EXIT_MARKER ^ (uint32_t)t28_pat(foff))) { ok = 0; *why = "wrong byte"; }
+        else if (it_invoke0(it_child_tcb((long)m.proc[i]), INV_TCB_EXIT_CODE) != (long)(LP_EXIT_MARKER ^ (uint32_t)t28_pat(foff))) { ok = 0; *why = "wrong byte"; }
     }
     /* Diagnostics: the pager multiplexed all nt faults over ONE shared
      * notification.  The wait-any accumulator means a single wakeup can carry
@@ -2240,16 +2238,16 @@ void test_t237(void) {
     if (ok) it_pass("T237"); else it_fail("T237", why);
 }
 int it_utq_g(struct it_utq_global *q) {
-    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
+    return it_invoke2(IT_QARG(1, sizeof(*q)), INV_UNTYPED_QUERY, (long)(uintptr_t)q, 0) == 0;
 }
 int it_utq_1(long ut, struct it_utq_one *q) {
-    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(2, sizeof(*q)), (long)(uintptr_t)q, ut) == 0;
+    return it_invoke2(IT_QARG(2, sizeof(*q)), INV_UNTYPED_QUERY, (long)(uintptr_t)q, ut) == 0;
 }
 int it_utq_o(struct it_utq_objects *q) {
-    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(3, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
+    return it_invoke2(IT_QARG(3, sizeof(*q)), INV_UNTYPED_QUERY, (long)(uintptr_t)q, 0) == 0;
 }
 int it_utq_mdb(struct it_utq_mdb *q) {
-    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(4, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
+    return it_invoke2(IT_QARG(4, sizeof(*q)), INV_UNTYPED_QUERY, (long)(uintptr_t)q, 0) == 0;
 }
 
 /* Carve a fresh page-multiple sub-untyped for one S1 test, into a slot. */
@@ -2340,7 +2338,7 @@ void test_t238(void) {
             for (uint32_t i = 0; ok && i < nt; i++) {
                 uint64_t foff = (uint64_t)(i + 1u) * 0x1000ULL;
                 if (!t28_multi_wait_exit(&m, i)) { ok = 0; why = "s2 exit"; }
-                else if (it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)m.proc[i])) != (long)(LP_EXIT_MARKER ^ (uint32_t)t28_pat(foff))) { ok = 0; why = "s2 byte"; }
+                else if (it_invoke0(it_child_tcb((long)m.proc[i]), INV_TCB_EXIT_CODE) != (long)(LP_EXIT_MARKER ^ (uint32_t)t28_pat(foff))) { ok = 0; why = "s2 byte"; }
             }
             t28_fbk_reap(&f);
             t28_multi_reap(&m);

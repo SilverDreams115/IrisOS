@@ -24,13 +24,13 @@ void test_t298(void) {
     if (sub < 0) { it_fail("T298", "sub-untyped"); return; }
 
     uint64_t before = 0, after = 0;
-    if (it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&before) != 0) {
+    if (it_invoke2(sub, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&before) != 0) {
         it_fail("T298", "info"); return;
     }
 
     long fr = it_frame_create_slot(sub, 4096u);
     if (fr < 0) { it_fail("T298", "frame retype"); return; }
-    if (it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&after) != 0) {
+    if (it_invoke2(sub, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&after) != 0) {
         it_fail("T298", "info2"); return;
     }
 
@@ -46,7 +46,7 @@ void test_t298(void) {
             long f2 = it_frame_create_slot(sub, 4096u);
             if (f2 < 0) { ok = 0; why = "frame retype n"; }
         }
-        if (ok && it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&after) != 0) {
+        if (ok && it_invoke2(sub, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&after) != 0) {
             ok = 0; why = "info3";
         }
         uint64_t cost3 = base - after;
@@ -55,8 +55,7 @@ void test_t298(void) {
     }
 
     /* 3. the frame is a real frame: map it, write, read back, unmap. */
-    if (ok && it_sys4(SYS_FRAME_MAP, fr, IT_VS, (long)T298_VA,
-                      (long)IT_MAP_W) != 0) {
+    if (ok && it_invoke(fr, INV_FRAME_MAP, IT_VS, (long)T298_VA, (long)IT_MAP_W) != 0) {
         ok = 0; why = "map";
     } else if (ok) {
         volatile uint64_t *pg = (volatile uint64_t *)(uintptr_t)T298_VA;
@@ -67,7 +66,7 @@ void test_t298(void) {
             pg[0] = 0xA5A5A5A5A5A5A5A5ULL;
             if (pg[0] != 0xA5A5A5A5A5A5A5A5ULL) { ok = 0; why = "frame not writable"; }
         }
-        if (it_sys3(SYS_FRAME_UNMAP, fr, IT_VS, (long)T298_VA) != 0) {
+        if (it_invoke2(fr, INV_FRAME_UNMAP, IT_VS, (long)T298_VA) != 0) {
             ok = 0; why = "unmap";
         }
     }
@@ -101,7 +100,7 @@ void test_t299(void) {
     }
 
     uint64_t before = 0, after = 0;
-    if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&before) != 0) {
+    if (ok && it_invoke2(pool, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&before) != 0) {
         ok = 0; why = "info";
     }
 
@@ -134,7 +133,7 @@ void test_t299(void) {
      * used to be kernel memory. */
     if (ok) {
         uint64_t created = 0;
-        if (it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&created) != 0) {
+        if (it_invoke2(pool, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&created) != 0) {
             ok = 0; why = "info created";
         } else if (before - created < 4096u) {
             ok = 0; why = "vspace not charged";
@@ -166,8 +165,8 @@ void test_t299(void) {
      * what a loader holding its child's budget does.
      */
     if (ok) {
-        long mr = iris_syscall4(SYS_FRAME_MAP, vmo, t299_vs,
-                                (long)0x80C0000000ULL, 1);
+        long mr = iris_invoke(vmo, INV_FRAME_MAP, t299_vs,
+                              (long)0x80C0000000ULL, 1);
         if (mr == (long)IRIS_ERR_MISSING_TABLE)
             mr = iris_vspace_fixup(INV_FRAME_MAP, vmo, t299_vs,
                                    (long)0x80C0000000ULL, 1,
@@ -184,7 +183,7 @@ void test_t299(void) {
      * the budget — alive past the death.  Naming the address space to map into
      * it (Stage 7 Step 9) means the caller must also let go of it. */
     if (t299_vs >= 0) { handle_id_t h = (handle_id_t)t299_vs; it_close(&h); }
-    if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&after) != 0) {
+    if (ok && it_invoke2(pool, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&after) != 0) {
         ok = 0; why = "info2";
     }
     /* The levels came out of the budget — page-sized, and more than one. */
@@ -192,7 +191,7 @@ void test_t299(void) {
 
     /* ...and while they are live the budget cannot be reclaimed under them:
      * a page table counts as a child of the Untyped that paid for it. */
-    if (ok && it_sys1(SYS_UNTYPED_RESET, pool) == 0) {
+    if (ok && it_invoke0(pool, INV_UNTYPED_RESET) == 0) {
         ok = 0; why = "budget reset while bound";
     }
 
@@ -209,13 +208,13 @@ void test_t299(void) {
         if (cvs >= 0) it_slot_delete((uint32_t)cvs);
         if (ccn >= 0) it_slot_delete((uint32_t)ccn);
         it_quiesce_reaper();
-        long rr = it_sys1(SYS_UNTYPED_RESET, pool);
+        long rr = it_invoke0(pool, INV_UNTYPED_RESET);
         if (ok && rr == (long)IRIS_ERR_BUSY) { ok = 0; why = "budget still bound after death"; }
         else if (ok && rr != 0)              { ok = 0; why = "reclaim failed"; }
         /* And the reclaimed region really is reusable. */
         if (ok) {
             uint64_t fresh = 0;
-            (void)it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&fresh);
+            (void)it_invoke2(pool, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&fresh);
             if (fresh < before) { ok = 0; why = "reset did not reclaim"; }
         }
     }
@@ -236,7 +235,7 @@ void test_t300(void) {
     if (pool < 0) { it_fail("T300", "pool carve"); return; }
 
     uint64_t before = 0, after = 0;
-    if (it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&before) != 0) {
+    if (it_invoke2(pool, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&before) != 0) {
         it_fail("T300", "info"); return;
     }
 
@@ -256,10 +255,10 @@ void test_t300(void) {
         } else vmo = (long)S1_SLOT_E;
     }
     /* Pages are populated at map time, so map first, then measure. */
-    if (ok && it_sys4(SYS_FRAME_MAP, vmo, IT_VS, (long)T300_VA, 1) != 0) {
+    if (ok && it_invoke(vmo, INV_FRAME_MAP, IT_VS, (long)T300_VA, 1) != 0) {
         ok = 0; why = "map";
     }
-    if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&after) != 0) {
+    if (ok && it_invoke2(pool, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&after) != 0) {
         ok = 0; why = "info2";
     }
     if (ok && before - after < 3u * 4096u) { ok = 0; why = "pages not charged"; }
@@ -275,14 +274,14 @@ void test_t300(void) {
     }
 
     /* 4. while it lives the budget is bound; once it is gone, reclaimable. */
-    if (ok && it_sys1(SYS_UNTYPED_RESET, pool) == 0) {
+    if (ok && it_invoke0(pool, INV_UNTYPED_RESET) == 0) {
         ok = 0; why = "budget reset while bound";
     }
     if (ok) {
-        (void)it_sys3(SYS_FRAME_UNMAP, vmo, IT_VS, (long)T300_VA);
+        (void)it_invoke2(vmo, INV_FRAME_UNMAP, IT_VS, (long)T300_VA);
         it_slot_delete(S1_SLOT_E);
         it_quiesce_reaper();
-        if (it_sys1(SYS_UNTYPED_RESET, pool) != 0) {
+        if (it_invoke0(pool, INV_UNTYPED_RESET) != 0) {
             ok = 0; why = "budget not reclaimable";
         }
     }
@@ -321,7 +320,7 @@ void test_t301(void) {
                 ok = 0; why = "refused retype left a child";
             }
             /* 3. and the region is still whole. */
-            if (ok && it_sys1(SYS_UNTYPED_RESET, pool) != 0) {
+            if (ok && it_invoke0(pool, INV_UNTYPED_RESET) != 0) {
                 ok = 0; why = "budget not reclaimable after refusal";
             }
         } else {
@@ -358,7 +357,7 @@ void test_t302(void) {
     it_slot_delete(T302_SLOT_PT);
 
     uint64_t before = 0, after = 0;
-    if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&before) != 0) {
+    if (ok && it_invoke2(pool, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&before) != 0) {
         ok = 0; why = "info";
     }
 
@@ -368,17 +367,17 @@ void test_t302(void) {
         pt = it_retype_slot_alloc(pool, IRIS_KOBJ_PAGE_TABLE, 4096);
         if (pt < 0) { ok = 0; why = "retype"; }
     }
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, pt) != (long)IRIS_HANDLE_TYPE_PAGE_TABLE) {
+    if (ok && it_invoke0(pt, INV_CAP_IDENTIFY) != (long)IRIS_HANDLE_TYPE_PAGE_TABLE) {
         ok = 0; why = "wrong type reported";
     }
 
     /* 5. the address is authority, not a hint.  Probed BEFORE the productive
      *    installs so a refusal cannot be confused with "already complete". */
-    if (ok && it_sys3(SYS_VSPACE_MAP_TABLE, pt, IT_VS, (long)0xFFFF800000000000ULL)
+    if (ok && it_invoke2(pt, INV_PAGE_TABLE_MAP, IT_VS, (long)0xFFFF800000000000ULL)
               != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "kernel-half install accepted";
     }
-    if (ok && it_sys3(SYS_VSPACE_MAP_TABLE, pt, IT_VS, 0x1000L)
+    if (ok && it_invoke2(pt, INV_PAGE_TABLE_MAP, IT_VS, 0x1000L)
               != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "low address install accepted";
     }
@@ -390,7 +389,7 @@ void test_t302(void) {
      *    before.  What is asserted is the contract — each install fills
      *    exactly one level, and the run ends with the walk reporting complete. */
     uint32_t installed = 0;
-    if (ok && it_sys3(SYS_VSPACE_MAP_TABLE, pt, IT_VS, (long)T302_VA) != 0) {
+    if (ok && it_invoke2(pt, INV_PAGE_TABLE_MAP, IT_VS, (long)T302_VA) != 0) {
         ok = 0; why = "first install";
     } else if (ok) {
         installed = 1;
@@ -399,7 +398,7 @@ void test_t302(void) {
      *    ALREADY_EXISTS — a client loop has to tell "this object is spent, get
      *    another" from "this level is already there, stop", and one code for
      *    both left it unable to act on either. */
-    if (ok && it_sys3(SYS_VSPACE_MAP_TABLE, pt, IT_VS, (long)(T302_VA + 0x40000000ULL))
+    if (ok && it_invoke2(pt, INV_PAGE_TABLE_MAP, IT_VS, (long)(T302_VA + 0x40000000ULL))
               != (long)IRIS_ERR_BUSY) {
         ok = 0; why = "spent table not refused as BUSY";
     }
@@ -408,7 +407,7 @@ void test_t302(void) {
     for (int lvl = 0; ok && lvl < 4 && !complete; lvl++) {
         long more = it_retype_slot_alloc(pool, IRIS_KOBJ_PAGE_TABLE, 4096);
         if (more < 0) { ok = 0; why = "retype level"; break; }
-        long mr = it_sys3(SYS_VSPACE_MAP_TABLE, more, IT_VS, (long)T302_VA);
+        long mr = it_invoke2(more, INV_PAGE_TABLE_MAP, IT_VS, (long)T302_VA);
         if (mr == 0)                                  installed++;
         else if (mr == (long)IRIS_ERR_ALREADY_EXISTS) complete = 1;
         else if (mr == (long)IRIS_ERR_BUSY)           { ok = 0; why = "fresh table reported spent"; }
@@ -418,7 +417,7 @@ void test_t302(void) {
     if (ok && installed == 0){ ok = 0; why = "nothing was ever installed"; }
 
     /* 6. every level came out of the budget the holder named. */
-    if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&after) != 0) {
+    if (ok && it_invoke2(pool, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&after) != 0) {
         ok = 0; why = "info2";
     }
     if (ok && before - after < (uint64_t)installed * 4096u) {
@@ -432,7 +431,7 @@ void test_t302(void) {
     if (ok) {
         long vmo = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096);
         if (vmo < 0) { ok = 0; why = "vmo"; }
-        else if (it_sys4(SYS_FRAME_MAP, vmo, IT_VS, (long)T302_VA, 1) != 0) {
+        else if (it_invoke(vmo, INV_FRAME_MAP, IT_VS, (long)T302_VA, 1) != 0) {
             ok = 0; why = "map through holder-built walk";
         } else {
             volatile uint64_t *pg = (volatile uint64_t *)(uintptr_t)T302_VA;
@@ -441,7 +440,7 @@ void test_t302(void) {
                 pg[0] = 0xA5A5A5A5A5A5A5A5ULL;
                 if (pg[0] != 0xA5A5A5A5A5A5A5A5ULL) { ok = 0; why = "not writable"; }
             }
-            (void)it_sys3(SYS_FRAME_UNMAP, vmo, IT_VS, (long)T302_VA);
+            (void)it_invoke2(vmo, INV_FRAME_UNMAP, IT_VS, (long)T302_VA);
         }
     }
 
@@ -485,7 +484,7 @@ static void t303_thread(void) {
         g_t303_ticks++;
         it_sys0(SYS_YIELD);
     }
-    it_sys1(SYS_TCB_EXIT, 0);
+    it_invoke0(0, INV_TCB_EXIT);
     for (;;) it_sys0(SYS_YIELD);
 }
 
@@ -514,13 +513,13 @@ void test_t303(void) {
     uint64_t entry = (uint64_t)(uintptr_t)t303_thread;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t303_stack + sizeof(g_t303_stack)))
                      & ~0xFULL;
-    if (it_sys4(SYS_TCB_CONFIGURE, tcb, cs, IT_VS, 0) != 0) {
+    if (it_invoke(tcb, INV_TCB_CONFIGURE, cs, IT_VS, 0) != 0) {
         ok = 0; why = "configure";
     }
-    if (ok && it_sys4(SYS_TCB_WRITE_REGS, tcb, (long)entry, (long)(rsp - 8), 0) != 0) {
+    if (ok && it_invoke(tcb, INV_TCB_WRITE_REGS, (long)entry, (long)(rsp - 8), 0) != 0) {
         ok = 0; why = "write regs";
     }
-    if (ok && it_sys1(SYS_TCB_RESUME, tcb) != 0) { ok = 0; why = "resume"; }
+    if (ok && it_invoke0(tcb, INV_TCB_RESUME) != 0) { ok = 0; why = "resume"; }
 
     /* 1. it runs. */
     if (ok) {
@@ -571,9 +570,7 @@ void test_t304(void) {
 
     /* The process capabilities need somewhere to live that is not the rotating
      * object pool — 80 of them are held at once, which that pool would wrap. */
-    if (it_sys4(SYS_UNTYPED_RETYPE2, pool,
-                (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
-                (long)((uint64_t)T304_CN_SLOT << 32), 128) != 0) {
+    if (it_invoke(pool, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)), (long)((uint64_t)T304_CN_SLOT << 32), 128) != 0) {
         it_fail("T304", "cnode carve"); return;
     }
 
@@ -588,9 +585,7 @@ void test_t304(void) {
      * so the loop retypes TCBs and the answer must be "the budget, cleanly".
      */
     for (uint32_t i = 0; i < T304_MAX; i++) {
-        long r = it_sys4(SYS_UNTYPED_RETYPE2, pool,
-                         (long)((uint64_t)IRIS_KOBJ_TCB | (1ULL << 32)),
-                         (long)((uint64_t)T304_CN_SLOT | ((uint64_t)(i + 1u) << 32)), 0);
+        long r = it_invoke(pool, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_TCB | (1ULL << 32)), (long)((uint64_t)T304_CN_SLOT | ((uint64_t)(i + 1u) << 32)), 0);
         if (r != 0) { fail_rc = r; break; }
         got++;
     }
@@ -604,13 +599,13 @@ void test_t304(void) {
      *    reclamation — then the region must RESET, which it refuses while a
      *    single child of it is still alive. */
     for (uint32_t i = 0; i < got; i++)
-        (void)it_sys2(SYS_CNODE_DELETE, (long)T304_CN_SLOT, (long)(i + 1u));
+        (void)it_invoke1((long)T304_CN_SLOT, INV_CNODE_DELETE, (long)(i + 1u));
     it_slot_delete(T304_VS_SLOT);
     it_slot_delete(T304_CS_SLOT);
     it_slot_delete(T304_CN_SLOT);
     it_quiesce_reaper();
 
-    if (ok && it_sys1(SYS_UNTYPED_RESET, pool) != 0) {
+    if (ok && it_invoke0(pool, INV_UNTYPED_RESET) != 0) {
         ok = 0; why = "budget not fully returned";
     }
     it_slot_delete((uint32_t)pool);
@@ -713,7 +708,7 @@ void test_t305(void) {
         else {
             long d = it_cs_reduce(n, RIGHT_READ);
             if (d < 0) { ok = 0; why = "mint"; }
-            else if (it_sys1(SYS_CSPACE_REVOKE, n) < 0) { ok = 0; why = "revoke"; }
+            else if (it_invoke0(n, INV_CSPACE_REVOKE) < 0) { ok = 0; why = "revoke"; }
             handle_id_t nh = (handle_id_t)n; it_close(&nh);
         }
     }
@@ -806,9 +801,7 @@ void test_t306(void) {
 
     /* Something to find on the far side of it: a copy of our own root CNode
      * capability, minted into slot 3 of the new CNode. */
-    if (ok && it_sys3(SYS_CSPACE_MINT, (long)IRIS_CPTR_TEST_UNTYPED,
-                      (long)((uint64_t)cn | ((uint64_t)3u << 32)),
-                      (long)RIGHT_READ) != 0) {
+    if (ok && it_invoke2((long)IRIS_CPTR_TEST_UNTYPED, INV_CSPACE_MINT, (long)((uint64_t)cn | ((uint64_t)3u << 32)), (long)RIGHT_READ) != 0) {
         ok = 0; why = "mint into guarded cnode";
     }
 
@@ -816,46 +809,45 @@ void test_t306(void) {
      * addresses the first two levels; slot 3 sits above them at bit 16. */
     const long deep_plain = cn | (3L << 16);
 
-    if (ok && it_sys3(SYS_CAP_IDENTIFY, deep_plain, 0, 0) < 0) {
+    if (ok && it_invoke2(deep_plain, INV_CAP_IDENTIFY, 0, 0) < 0) {
         ok = 0; why = "plain address before guard";
     }
 
     /* Install a 2-bit guard of 0b10 on the CNode CAPABILITY (the slot `cn`
      * addresses), then re-derive the address with the guard above slot 3. */
-    if (ok && it_sys3(SYS_CSPACE_SET_GUARD, cn, 0x2L, 2L) != 0) {
+    if (ok && it_invoke2(cn, INV_CSPACE_SET_GUARD, 0x2L, 2L) != 0) {
         ok = 0; why = "set guard";
     }
     const long deep_guarded = cn | (3L << 16) | (0x2L << 19);
     const long deep_wrong   = cn | (3L << 16) | (0x1L << 19);
 
-    if (ok && it_sys3(SYS_CAP_IDENTIFY, deep_guarded, 0, 0) < 0) {
+    if (ok && it_invoke2(deep_guarded, INV_CAP_IDENTIFY, 0, 0) < 0) {
         ok = 0; why = "guarded address rejected";
     }
-    if (ok && it_sys3(SYS_CAP_IDENTIFY, deep_plain, 0, 0) >= 0) {
+    if (ok && it_invoke2(deep_plain, INV_CAP_IDENTIFY, 0, 0) >= 0) {
         ok = 0; why = "plain address still resolves under a guard";
     }
-    if (ok && it_sys3(SYS_CAP_IDENTIFY, deep_wrong, 0, 0) >= 0) {
+    if (ok && it_invoke2(deep_wrong, INV_CAP_IDENTIFY, 0, 0) >= 0) {
         ok = 0; why = "wrong guard resolved";
     }
 
     /* Width 0 removes it; the address the CSpace had before guards existed
      * comes back unchanged. */
-    if (ok && it_sys3(SYS_CSPACE_SET_GUARD, cn, 0L, 0L) != 0) {
+    if (ok && it_invoke2(cn, INV_CSPACE_SET_GUARD, 0L, 0L) != 0) {
         ok = 0; why = "clear guard";
     }
-    if (ok && it_sys3(SYS_CAP_IDENTIFY, deep_plain, 0, 0) < 0) {
+    if (ok && it_invoke2(deep_plain, INV_CAP_IDENTIFY, 0, 0) < 0) {
         ok = 0; why = "plain address not restored";
     }
 
     /* A guard on a non-CNode capability has no meaning and is refused, so it
      * can never make a slot lie about how it resolves. */
-    if (ok && it_sys3(SYS_CSPACE_SET_GUARD, deep_plain, 0x1L, 1L)
+    if (ok && it_invoke2(deep_plain, INV_CSPACE_SET_GUARD, 0x1L, 1L)
               != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "guard accepted on non-cnode";
     }
 
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT,
-                  (long)((uint32_t)cn >> 8));
+    (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)((uint32_t)cn >> 8));
     it_quiesce_reaper();
 
     /* The CNode is gone and nothing else was created, so every gauge must be
@@ -921,12 +913,12 @@ void test_t307(void) {
     long sc = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
                                    IRIS_KOBJ_SCHED_CONTEXT, 0);
     if (sc < 0) { it_fail("T307", "sc"); return; }
-    if (ok && it_sys4(SYS_SC_CONFIGURE, sc, 1, 1000, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc configure"; }
-    if (ok && it_sys2(SYS_SC_BIND, sc, tcb) != 0)          { ok = 0; why = "sc bind"; }
+    if (ok && it_invoke(sc, INV_SC_CONFIGURE, 1, 1000, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc configure"; }
+    if (ok && it_invoke1(sc, INV_SC_BIND, tcb) != 0)          { ok = 0; why = "sc bind"; }
 
     /* Arm the timeout handler at that endpoint. */
     const uint32_t leaf = 3u;
-    if (ok && it_sys4(SYS_TCB_SET_TIMEOUT_HANDLER, tcb, notif, 0L, 0L) != 0) {
+    if (ok && it_invoke(tcb, INV_TCB_SET_TIMEOUT_HANDLER, notif, 0L, 0L) != 0) {
         ok = 0; why = "arm timeout handler";
     }
 
@@ -995,7 +987,7 @@ static void t308_server(void) {
     struct IrisMsg m;
     it_iris_msg_zero(&m);
     /* Passive: no SC.  Blocks here until a client donates the time to run. */
-    (void)it_sys3(SYS_EP_RECV, (long)g_t308_ep, (long)&m, (long)g_t308_reply);
+    (void)it_invoke2((long)g_t308_ep, INV_EP_RECV, (long)&m, (long)g_t308_reply);
     g_t308_served = 1;
     /* Spin on the borrowed budget.  With donation this is bounded by the
      * client's budget and ends in a timeout fault; without it, it is not
@@ -1007,7 +999,7 @@ static void t308_client(void) {
     struct IrisMsg m;
     it_iris_msg_zero(&m);
     m.label = 0x8CULL;
-    (void)it_sys2(SYS_EP_CALL, (long)g_t308_ep, (long)&m);
+    (void)it_invoke1((long)g_t308_ep, INV_EP_CALL, (long)&m);
     it_sys1(SYS_EXIT, 0);
     for (;;) { }
 }
@@ -1032,7 +1024,7 @@ void test_t308(void) {
     /* Arm the server's timeout handler BEFORE it can overrun, so the fault
      * cannot be missed between exhaustion and registration. */
     const uint32_t leaf = 2u;
-    if (ok && it_sys4(SYS_TCB_SET_TIMEOUT_HANDLER, srv, notif, 0L, 0L) != 0) {
+    if (ok && it_invoke(srv, INV_TCB_SET_TIMEOUT_HANDLER, notif, 0L, 0L) != 0) {
         ok = 0; why = "arm server timeout";
     }
 
@@ -1049,8 +1041,8 @@ void test_t308(void) {
     long sc = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
                                    IRIS_KOBJ_SCHED_CONTEXT, 0);
     if (sc < 0) { it_fail("T308", "sc"); return; }
-    if (ok && it_sys4(SYS_SC_CONFIGURE, sc, 3, 4000, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc configure"; }
-    if (ok && it_sys2(SYS_SC_BIND, sc, cli) != 0)          { ok = 0; why = "sc bind"; }
+    if (ok && it_invoke(sc, INV_SC_CONFIGURE, 3, 4000, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc configure"; }
+    if (ok && it_invoke1(sc, INV_SC_BIND, cli) != 0)          { ok = 0; why = "sc bind"; }
 
     /*
      * The assertion.  A timeout fault on the SERVER can only happen if the
@@ -1068,9 +1060,9 @@ void test_t308(void) {
     /* Tear down: killing the server cancels the reply binding, which is the
      * path that returns the loan to a client that never got its reply. */
     (void)it_fault_kill(leaf);
-    (void)it_sys2(SYS_SC_BIND, sc, 0L);
-    (void)it_sys1(SYS_TCB_EXIT, cli);
-    (void)it_sys1(SYS_TCB_EXIT, srv);
+    (void)it_invoke1(sc, INV_SC_BIND, 0L);
+    (void)it_invoke0(cli, INV_TCB_EXIT);
+    (void)it_invoke0(srv, INV_TCB_EXIT);
     it_quiesce_reaper();
     /* Release what this test made.  It used to leave all of it in the rotating
      * pool, where the allocator would delete it under a later test. */
@@ -1093,14 +1085,13 @@ static void t309_server(void) {
     struct IrisMsg m;
     it_iris_msg_zero(&m);
     /* Passive: no SC of its own.  Blocks until a client donates the time. */
-    if (it_sys3(SYS_EP_RECV, (long)g_t309_ep, (long)&m, (long)g_t309_reply) != 0) {
+    if (it_invoke2((long)g_t309_ep, INV_EP_RECV, (long)&m, (long)g_t309_reply) != 0) {
         for (;;) { }
     }
     for (;;) {
         /* Answer this one and wait for the next, atomically. */
         m.label = m.label + 1ULL;              /* the service: n -> n+1 */
-        if (it_sys3(SYS_REPLY_RECV, (long)g_t309_reply, (long)&m,
-                    (long)g_t309_ep) != 0)
+        if (it_invoke2((long)g_t309_ep, INV_EP_REPLY_RECV, (long)g_t309_reply, (long)&m) != 0)
             break;
     }
     for (;;) { }
@@ -1111,7 +1102,7 @@ static void t309_client(void) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
         m.label = (uint64_t)(0x300 + i);
-        if (it_sys2(SYS_EP_CALL, (long)g_t309_ep, (long)&m) != 0) { g_t309_bad = 1; break; }
+        if (it_invoke1((long)g_t309_ep, INV_EP_CALL, (long)&m) != 0) { g_t309_bad = 1; break; }
         if (m.label != (uint64_t)(0x300 + i + 1)) { g_t309_bad = 1; break; }
         g_t309_replies++;
     }
@@ -1146,8 +1137,8 @@ void test_t309(void) {
     long sc = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
                                    IRIS_KOBJ_SCHED_CONTEXT, 0);
     if (sc < 0) { it_fail("T309", "sc"); return; }
-    if (ok && it_sys4(SYS_SC_CONFIGURE, sc, 200, 400, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc configure"; }
-    if (ok && it_sys2(SYS_SC_BIND, sc, cli) != 0)           { ok = 0; why = "sc bind"; }
+    if (ok && it_invoke(sc, INV_SC_CONFIGURE, 200, 400, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc configure"; }
+    if (ok && it_invoke1(sc, INV_SC_BIND, cli) != 0)           { ok = 0; why = "sc bind"; }
 
     /* Bounded: a server that stops after one request never sets done. */
     for (int i = 0; ok && i < 4000 && !g_t309_done; i++) (void)it_sys0(SYS_YIELD);
@@ -1161,9 +1152,9 @@ void test_t309(void) {
     if (ok && g_t309_bad)                   { ok = 0; why = "wrong reply payload"; }
     if (ok && g_t309_replies != T309_ROUNDS) { ok = 0; why = "server stopped early"; }
 
-    (void)it_sys2(SYS_SC_BIND, sc, 0L);
-    (void)it_sys1(SYS_TCB_EXIT, srv);
-    (void)it_sys1(SYS_TCB_EXIT, cli);
+    (void)it_invoke1(sc, INV_SC_BIND, 0L);
+    (void)it_invoke0(srv, INV_TCB_EXIT);
+    (void)it_invoke0(cli, INV_TCB_EXIT);
     it_quiesce_reaper();
     it_slot_delete((uint32_t)sc);
     it_slot_delete((uint32_t)rp);
@@ -1210,10 +1201,10 @@ void test_t310(void) {
     if (!it_utq_g(&g0)) { it_fail("T310", "query"); return; }
 
     /* (3) a wait that needs no blocking must not restart. */
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, n, 0x2u) != 0) { ok = 0; why = "signal"; }
+    if (ok && it_invoke1(n, INV_NOTIFY_SIGNAL, 0x2u) != 0) { ok = 0; why = "signal"; }
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 || bits != 0x2u) {
+        if (it_invoke1(n, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 || bits != 0x2u) {
             ok = 0; why = "pending wait failed";
         }
     }
@@ -1234,7 +1225,7 @@ void test_t310(void) {
     }
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+        if (it_invoke1(n, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
             (bits & 0x4ull) == 0) { ok = 0; why = "blocking wait failed"; }
     }
     if (ok && !it_utq_g(&g2))             { ok = 0; why = "query"; }
@@ -1271,10 +1262,8 @@ void test_t311(void) {
     uint32_t made = 0;
     for (uint32_t i = 0; ok && i < T311_COPIES; i++) {
         uint32_t leaf = T311_LEAF_BASE + i;
-        (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
-        if (it_sys3(SYS_CSPACE_MINT, src,
-                    (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
-                    (long)RIGHT_SAME_RIGHTS) == 0)
+        (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)leaf);
+        if (it_invoke2(src, INV_CSPACE_MINT, (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT), (long)RIGHT_SAME_RIGHTS) == 0)
             made++;
     }
     if (ok && made < T311_COPIES) { ok = 0; why = "could not build the subtree"; }
@@ -1283,7 +1272,7 @@ void test_t311(void) {
     if (ok && !it_utq_g(&g0)) { ok = 0; why = "query"; }
 
     long revoked = 0;
-    if (ok) revoked = it_sys1(SYS_CSPACE_REVOKE, src);
+    if (ok) revoked = it_invoke0(src, INV_CSPACE_REVOKE);
     if (ok && revoked < 0) { ok = 0; why = "revoke failed"; }
 
     if (ok && !it_utq_g(&g1)) { ok = 0; why = "query"; }
@@ -1299,7 +1288,7 @@ void test_t311(void) {
     /* the subtree is actually gone */
     if (ok) {
         for (uint32_t i = 0; ok && i < T311_COPIES; i++) {
-            if (it_sys3(SYS_CAP_IDENTIFY, (long)IT_OBJ_CPTR(T311_LEAF_BASE + i), 0, 0) >= 0) {
+            if (it_invoke2((long)IT_OBJ_CPTR(T311_LEAF_BASE + i), INV_CAP_IDENTIFY, 0, 0) >= 0) {
                 ok = 0; why = "descendant survived the revoke";
             }
         }
@@ -1335,8 +1324,8 @@ static volatile int g_t312_guarded_ok;  /* did the GUARDED address resolve?   */
 static void t312_child(void) {
     /* Configured with a root guard: the plain address must NOT resolve and the
      * guarded one must. */
-    g_t312_plain_ok   = (it_sys3(SYS_CAP_IDENTIFY, T312_PROBE,   0, 0) >= 0);
-    g_t312_guarded_ok = (it_sys3(SYS_CAP_IDENTIFY, T312_PROBE_G, 0, 0) >= 0);
+    g_t312_plain_ok   = (it_invoke2(T312_PROBE, INV_CAP_IDENTIFY, 0, 0) >= 0);
+    g_t312_guarded_ok = (it_invoke2(T312_PROBE_G, INV_CAP_IDENTIFY, 0, 0) >= 0);
     g_t312_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) { }
@@ -1350,10 +1339,10 @@ void test_t312(void) {
     /* The PARENT has no root guard: its plain address resolves and the guarded
      * one does not.  Establish that first, so the child's opposite answers
      * cannot be explained by anything but the guard. */
-    if (ok && it_sys3(SYS_CAP_IDENTIFY, T312_PROBE, 0, 0) < 0) {
+    if (ok && it_invoke2(T312_PROBE, INV_CAP_IDENTIFY, 0, 0) < 0) {
         ok = 0; why = "parent lost its own plain address";
     }
-    if (ok && it_sys3(SYS_CAP_IDENTIFY, T312_PROBE_G, 0, 0) >= 0) {
+    if (ok && it_invoke2(T312_PROBE_G, INV_CAP_IDENTIFY, 0, 0) >= 0) {
         ok = 0; why = "parent resolved a guarded address it has no guard for";
     }
 
@@ -1365,8 +1354,7 @@ void test_t312(void) {
         tcb = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_TCB, 0);
         if (tcb < 0) { ok = 0; why = "retype tcb"; }
     }
-    if (ok && it_sys4(SYS_TCB_CONFIGURE, tcb, cs, IT_VS,
-                      (long)(((uint64_t)T312_GUARD_BITS << 32) |
+    if (ok && it_invoke(tcb, INV_TCB_CONFIGURE, cs, IT_VS, (long)(((uint64_t)T312_GUARD_BITS << 32) |
                              (uint64_t)T312_GUARD)) != 0) {
         ok = 0; why = "configure with root guard";
     }
@@ -1374,9 +1362,8 @@ void test_t312(void) {
         uint64_t rsp = ((uint64_t)(uintptr_t)(g_t312_stack +
                         sizeof(g_t312_stack))) & ~0xFULL;
         g_t312_done = 0;
-        if (it_sys4(SYS_TCB_WRITE_REGS, tcb,
-                    (long)(uintptr_t)t312_child, (long)rsp, 0) != 0 ||
-            it_sys1(SYS_TCB_RESUME, tcb) != 0) {
+        if (it_invoke(tcb, INV_TCB_WRITE_REGS, (long)(uintptr_t)t312_child, (long)rsp, 0) != 0 ||
+            it_invoke0(tcb, INV_TCB_RESUME) != 0) {
             ok = 0; why = "start child";
         }
     }
@@ -1398,8 +1385,7 @@ void test_t312(void) {
     if (ok && tcb >= 0) {
         long t2 = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_TCB, 0);
         if (t2 >= 0 &&
-            it_sys4(SYS_TCB_CONFIGURE, t2, cs, IT_VS,
-                    (long)(((uint64_t)2 << 32) | (uint64_t)0x7)) !=
+            it_invoke(t2, INV_TCB_CONFIGURE, cs, IT_VS, (long)(((uint64_t)2 << 32) | (uint64_t)0x7)) !=
             (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "oversized root guard accepted";
         }
@@ -1419,15 +1405,14 @@ static volatile int  g_t313_srv_len, g_t313_srv_uptr_ok, g_t313_rounds;
 static void t313_server(uint64_t self_tcb) {
     long self = (long)self_tcb;
     if (self <= 0) { g_t313_srv_err = 1; g_t313_srv_ready = 1; for (;;) { } }
-    if (it_sys3(SYS_TCB_SET_IPC_BUFFER, self, (long)g_t313_srv_frame,
-                (long)T313_SRV_VA) != 0) {
+    if (it_invoke2(self, INV_TCB_SET_IPC_BUFFER, (long)g_t313_srv_frame, (long)T313_SRV_VA) != 0) {
         g_t313_srv_err = 2; g_t313_srv_ready = 1; for (;;) { }
     }
     g_t313_srv_ready = 1;
 
     struct IrisMsg m;
     it_iris_msg_zero(&m);
-    if (it_sys3(SYS_EP_RECV, (long)g_t313_ep, (long)&m, (long)g_t313_reply) != 0) {
+    if (it_invoke2((long)g_t313_ep, INV_EP_RECV, (long)&m, (long)g_t313_reply) != 0) {
         g_t313_srv_err = 3; for (;;) { }
     }
     for (;;) {
@@ -1439,8 +1424,7 @@ static void t313_server(uint64_t self_tcb) {
             b[i] = (uint8_t)(b[i] ^ 0xFFu);
         g_t313_rounds++;
         m.buf_uptr = 0;              /* naming nothing, on purpose */
-        if (it_sys3(SYS_REPLY_RECV, (long)g_t313_reply, (long)&m,
-                    (long)g_t313_ep) != 0)
+        if (it_invoke2((long)g_t313_ep, INV_EP_REPLY_RECV, (long)g_t313_reply, (long)&m) != 0)
             break;
     }
     for (;;) { }
@@ -1459,42 +1443,37 @@ void test_t313(void) {
     long cfr  = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096u);
     long sfr  = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096u);
     if (self < 0 || cfr < 0 || sfr < 0) { it_fail("T313", "objects"); return; }
-    if (it_sys4(SYS_FRAME_MAP, cfr, IT_VS, (long)T313_CLI_VA, (long)IT_MAP_W) != 0 ||
-        it_sys4(SYS_FRAME_MAP, sfr, IT_VS, (long)T313_SRV_VA, (long)IT_MAP_W) != 0) {
+    if (it_invoke(cfr, INV_FRAME_MAP, IT_VS, (long)T313_CLI_VA, (long)IT_MAP_W) != 0 ||
+        it_invoke(sfr, INV_FRAME_MAP, IT_VS, (long)T313_SRV_VA, (long)IT_MAP_W) != 0) {
         it_fail("T313", "map"); return;
     }
 
     /* ── 1. registration is authority-checked ───────────────────────────*/
-    if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, (long)IRIS_CPTR_TEST_UNTYPED, cfr,
-                      (long)T313_CLI_VA) != (long)IRIS_ERR_WRONG_TYPE) {
+    if (ok && it_invoke2((long)IRIS_CPTR_TEST_UNTYPED, INV_TCB_SET_IPC_BUFFER, cfr, (long)T313_CLI_VA) != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "non-TCB accepted";
     }
     /* A-30: the same syscall used to answer WRONG_TYPE for arg0 and
      * INVALID_ARG for arg1 — one call, two answers for one kind of mistake.
      * Both are WRONG_TYPE now. */
-    if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, (long)IRIS_CPTR_TEST_UNTYPED,
-                      (long)T313_CLI_VA) != (long)IRIS_ERR_WRONG_TYPE) {
+    if (ok && it_invoke2(self, INV_TCB_SET_IPC_BUFFER, (long)IRIS_CPTR_TEST_UNTYPED, (long)T313_CLI_VA) != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "non-frame accepted";
     }
-    if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, cfr,
-                      (long)(T313_CLI_VA + 8u)) != (long)IRIS_ERR_INVALID_ARG) {
+    if (ok && it_invoke2(self, INV_TCB_SET_IPC_BUFFER, cfr, (long)(T313_CLI_VA + 8u)) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "unaligned address accepted";
     }
-    if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, cfr,
-                      (long)0xFFFF800000000000ULL) != (long)IRIS_ERR_INVALID_ARG) {
+    if (ok && it_invoke2(self, INV_TCB_SET_IPC_BUFFER, cfr, (long)0xFFFF800000000000ULL) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "kernel address accepted";
     }
     /* Unregistering names no address — otherwise "give it back" and "move it"
      * would be the same call with a field nobody reads. */
-    if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, 0L,
-                      (long)T313_CLI_VA) != (long)IRIS_ERR_INVALID_ARG) {
+    if (ok && it_invoke2(self, INV_TCB_SET_IPC_BUFFER, 0L, (long)T313_CLI_VA) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "unregister with an address accepted";
     }
     /* A frame cap without WRITE cannot become a buffer the kernel writes. */
     if (ok) {
         long ro = it_cs_reduce(cfr, RIGHT_READ);
         if (ro < 0) { ok = 0; why = "reduce"; }
-        else if (it_sys3(SYS_TCB_SET_IPC_BUFFER, self, ro, (long)T313_CLI_VA)
+        else if (it_invoke2(self, INV_TCB_SET_IPC_BUFFER, ro, (long)T313_CLI_VA)
                  != (long)IRIS_ERR_ACCESS_DENIED) {
             ok = 0; why = "read-only frame accepted";
         }
@@ -1515,10 +1494,10 @@ void test_t313(void) {
      * so give it up first: registering over an existing one is a REPLACEMENT
      * and the gauge is a live count, not a tally.  Measuring the move means
      * measuring an actual arrival. */
-    (void)it_sys3(SYS_TCB_SET_IPC_BUFFER, self, 0L, 0);
+    (void)it_invoke2(self, INV_TCB_SET_IPC_BUFFER, 0L, 0);
     if (!it_utq_g(&gb0)) { it_fail("T313", "query"); return; }
 
-    if (it_sys3(SYS_TCB_SET_IPC_BUFFER, self, cfr, (long)T313_CLI_VA) != 0) {
+    if (it_invoke2(self, INV_TCB_SET_IPC_BUFFER, cfr, (long)T313_CLI_VA) != 0) {
         it_fail("T313", "register self"); return;
     }
     /* ── 5. the SERVICES really registered, and so did we ────────────────
@@ -1560,7 +1539,7 @@ void test_t313(void) {
         m.label    = 0x313;
         m.buf_len  = T313_LEN;
         m.buf_uptr = 0;                  /* the point: no address is named */
-        if (it_sys2(SYS_EP_CALL, (long)g_t313_ep, (long)&m) != 0) {
+        if (it_invoke1((long)g_t313_ep, INV_EP_CALL, (long)&m) != 0) {
             ok = 0; why = "call failed";
         }
         if (ok && g_t313_srv_len != (int)T313_LEN) {
@@ -1600,7 +1579,7 @@ void test_t313(void) {
         m.label    = 0x315;
         m.buf_len  = 8u;
         m.buf_uptr = (uint64_t)(uintptr_t)g_t313_stage_buf;   /* not the buffer */
-        if (it_sys2(SYS_EP_CALL, (long)g_t313_ep, (long)&m)
+        if (it_invoke1((long)g_t313_ep, INV_EP_CALL, (long)&m)
             != (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "a foreign payload pointer was accepted";
         }
@@ -1613,7 +1592,7 @@ void test_t313(void) {
         m.label    = 0x316;
         m.buf_len  = 8u;
         m.buf_uptr = T313_CLI_VA;
-        if (it_sys2(SYS_EP_CALL, (long)g_t313_ep, (long)&m) != 0) {
+        if (it_invoke1((long)g_t313_ep, INV_EP_CALL, (long)&m) != 0) {
             ok = 0; why = "the buffer's own address was refused";
         }
     }
@@ -1629,7 +1608,7 @@ void test_t313(void) {
      * answer, and a test still expecting a clamp would be pinning the very
      * thing the row was opened to remove.
      */
-    if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, 0L, 0) != 0) {
+    if (ok && it_invoke2(self, INV_TCB_SET_IPC_BUFFER, 0L, 0) != 0) {
         ok = 0; why = "unregister";
     }
     if (ok) {
@@ -1637,7 +1616,7 @@ void test_t313(void) {
         it_iris_msg_zero(&m);
         m.label   = 0x314;
         m.buf_len = 8u;
-        if (it_sys2(SYS_EP_CALL, (long)g_t313_ep, (long)&m)
+        if (it_invoke1((long)g_t313_ep, INV_EP_CALL, (long)&m)
             != (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "a payload with no buffer was accepted";
         }
@@ -1645,7 +1624,7 @@ void test_t313(void) {
          * the buffer, and losing one must not cost the other. */
         it_iris_msg_zero(&m);
         m.label = 0x318;
-        if (ok && it_sys2(SYS_EP_CALL, (long)g_t313_ep, (long)&m) != 0) {
+        if (ok && it_invoke1((long)g_t313_ep, INV_EP_CALL, (long)&m) != 0) {
             ok = 0; why = "a register-only message was refused";
         }
         if (ok && g_t313_rounds != 3) { ok = 0; why = "server missed a round"; }
@@ -1661,11 +1640,9 @@ void test_t313(void) {
         long probe_fr = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096u);
         long probe_va = (long)(T313_CLI_VA + 0x10000ULL);
         if (probe_fr < 0) { ok = 0; why = "probe frame"; }
-        else if (it_sys4(SYS_FRAME_MAP, probe_fr, IT_VS, probe_va,
-                         (long)IT_MAP_W) != 0) {
+        else if (it_invoke(probe_fr, INV_FRAME_MAP, IT_VS, probe_va, (long)IT_MAP_W) != 0) {
             ok = 0; why = "probe map";
-        } else if (it_sys3(SYS_TCB_SET_IPC_BUFFER, self, probe_fr,
-                           probe_va) != 0) {
+        } else if (it_invoke2(self, INV_TCB_SET_IPC_BUFFER, probe_fr, probe_va) != 0) {
             ok = 0; why = "probe register";
         } else {
             /* The capability goes; the buffer must not. */
@@ -1674,15 +1651,14 @@ void test_t313(void) {
             it_iris_msg_zero(&m);
             m.label   = 0x317;
             m.buf_len = 8u;
-            if (it_sys2(SYS_EP_CALL, (long)g_t313_ep, (long)&m) != 0) {
+            if (it_invoke1((long)g_t313_ep, INV_EP_CALL, (long)&m) != 0) {
                 ok = 0; why = "a buffer died with its capability";
             }
-            (void)it_sys3(SYS_TCB_SET_IPC_BUFFER, self, 0L, 0);
-            (void)it_sys3(SYS_FRAME_UNMAP, probe_fr, IT_VS, probe_va);
+            (void)it_invoke2(self, INV_TCB_SET_IPC_BUFFER, 0L, 0);
+            (void)it_invoke2(probe_fr, INV_FRAME_UNMAP, IT_VS, probe_va);
         }
         /* Put the real buffer back for the legs below. */
-        if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, cfr,
-                          (long)T313_CLI_VA) != 0) {
+        if (ok && it_invoke2(self, INV_TCB_SET_IPC_BUFFER, cfr, (long)T313_CLI_VA) != 0) {
             ok = 0; why = "re-register";
         }
     }
@@ -1696,7 +1672,7 @@ void test_t313(void) {
      * it broke the moment the suite started giving every thread a buffer,
      * which is a fact about the suite and not about the gauge. */
     if (ok && !it_utq_g(&gb2)) { ok = 0; why = "query"; }
-    (void)it_sys3(SYS_TCB_SET_IPC_BUFFER, self, 0L, 0);
+    (void)it_invoke2(self, INV_TCB_SET_IPC_BUFFER, 0L, 0);
     if (ok) {
         struct it_utq_global gb3;
         if (!it_utq_g(&gb3) || gb3.ipc_buffers + 1u != gb2.ipc_buffers) {
@@ -1704,10 +1680,10 @@ void test_t313(void) {
         }
     }
 
-    (void)it_sys1(SYS_TCB_EXIT, srv);
+    (void)it_invoke0(srv, INV_TCB_EXIT);
     it_quiesce_reaper();
-    (void)it_sys3(SYS_FRAME_UNMAP, cfr, IT_VS, (long)T313_CLI_VA);
-    (void)it_sys3(SYS_FRAME_UNMAP, sfr, IT_VS, (long)T313_SRV_VA);
+    (void)it_invoke2(cfr, INV_FRAME_UNMAP, IT_VS, (long)T313_CLI_VA);
+    (void)it_invoke2(sfr, INV_FRAME_UNMAP, IT_VS, (long)T313_SRV_VA);
     /* Give this thread its own buffer back: every test after this one sends
      * through it, and a thread without one can no longer send a payload. */
     {
@@ -1827,21 +1803,21 @@ void test_t315(void) {
     /* ── 2. a deeper context costs more ─────────────────────────────────*/
     uint64_t a0 = 0, a1 = 0, a2 = 0;
     long shallow = -1, deep = -1;
-    if (ok && it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&a0) != 0) {
+    if (ok && it_invoke2(sub, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&a0) != 0) {
         ok = 0; why = "info";
     }
     if (ok) {
         shallow = it_retype_slot_alloc(sub, IRIS_KOBJ_SCHED_CONTEXT, 2);
         if (shallow < 0) { ok = 0; why = "shallow retype"; }
     }
-    if (ok && it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&a1) != 0) {
+    if (ok && it_invoke2(sub, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&a1) != 0) {
         ok = 0; why = "info2";
     }
     if (ok) {
         deep = it_retype_slot_alloc(sub, IRIS_KOBJ_SCHED_CONTEXT, 64);
         if (deep < 0) { ok = 0; why = "deep retype"; }
     }
-    if (ok && it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&a2) != 0) {
+    if (ok && it_invoke2(sub, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&a2) != 0) {
         ok = 0; why = "info3";
     }
     if (ok) {
@@ -1860,10 +1836,10 @@ void test_t315(void) {
     }
 
     /* ── 3. and it is a working scheduling context ──────────────────────*/
-    if (ok && it_sys4(SYS_SC_CONFIGURE, deep, 40, 200, (long)IRIS_CPTR_SCHED_CONTROL) != 0) {
+    if (ok && it_invoke(deep, INV_SC_CONFIGURE, 40, 200, (long)IRIS_CPTR_SCHED_CONTROL) != 0) {
         ok = 0; why = "configure";
     }
-    if (ok && it_sys4(SYS_SC_CONFIGURE, shallow, 40, 200, (long)IRIS_CPTR_SCHED_CONTROL) != 0) {
+    if (ok && it_invoke(shallow, INV_SC_CONFIGURE, 40, 200, (long)IRIS_CPTR_SCHED_CONTROL) != 0) {
         ok = 0; why = "configure shallow";
     }
 
@@ -1940,17 +1916,17 @@ void test_t316(void) {
     long ram = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
                                     IRIS_KOBJ_UNTYPED, 8u * 1024u);
     if (ok && ram < 0) { ok = 0; why = "budget"; }
-    if (ok && it_sys2(SYS_UNTYPED_SET_DEVICE_BUDGET, dev, ram)
+    if (ok && it_invoke1(dev, INV_UNTYPED_SET_DEVICE_BUDGET, ram)
               != (long)IRIS_ERR_ALREADY_EXISTS) {
         ok = 0; why = "the pairing moved";
     }
     /* A DEVICE region cannot pay for headers, not even its own. */
-    if (ok && it_sys2(SYS_UNTYPED_SET_DEVICE_BUDGET, dev, dev)
+    if (ok && it_invoke1(dev, INV_UNTYPED_SET_DEVICE_BUDGET, dev)
               != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "a device region was accepted as a header budget";
     }
     /* Nor is a RAM Untyped something to pair: it carves its own headers. */
-    if (ok && it_sys2(SYS_UNTYPED_SET_DEVICE_BUDGET, ram, ram)
+    if (ok && it_invoke1(ram, INV_UNTYPED_SET_DEVICE_BUDGET, ram)
               != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "a RAM untyped accepted a header budget";
     }
@@ -1972,12 +1948,12 @@ void test_t317(void) {
 
     /* ── 1. it retypes, and it costs what it is ─────────────────────────*/
     uint64_t before = 0, after = 0;
-    if (it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&before) != 0) {
+    if (it_invoke2(sub, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&before) != 0) {
         it_fail("T317", "info"); return;
     }
     long fr = it_frame_create_slot(sub, T317_SIZE);
     if (fr < 0) { it_fail("T317", "retype"); return; }
-    if (it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&after) != 0) {
+    if (it_invoke2(sub, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&after) != 0) {
         it_fail("T317", "info2"); return;
     }
     if (ok && (before - after) < T317_SIZE) {
@@ -1985,8 +1961,7 @@ void test_t317(void) {
     }
 
     /* ── 2. every page of it is there after ONE map ─────────────────────*/
-    if (ok && it_sys4(SYS_FRAME_MAP, fr, IT_VS, (long)T317_VA,
-                      (long)IT_MAP_W) != 0) {
+    if (ok && it_invoke(fr, INV_FRAME_MAP, IT_VS, (long)T317_VA, (long)IT_MAP_W) != 0) {
         ok = 0; why = "map";
     }
     if (ok) {
@@ -2012,22 +1987,20 @@ void test_t317(void) {
      * Asserted while the frame is still mapped: a second map one page into
      * the window overlaps on three of its four pages.  If the occupancy check
      * ran per page as it installed, the first page would be left behind. */
-    if (ok && it_sys4(SYS_FRAME_MAP, fr, IT_VS, (long)(T317_VA + 4096u),
-                      (long)IT_MAP_W) == 0) {
+    if (ok && it_invoke(fr, INV_FRAME_MAP, IT_VS, (long)(T317_VA + 4096u), (long)IT_MAP_W) == 0) {
         ok = 0; why = "an overlapping map was allowed";
     }
 
     /* ── 3. one unmap removes all of it ─────────────────────────────────*/
-    if (ok && it_sys3(SYS_FRAME_UNMAP, fr, IT_VS, (long)T317_VA) != 0) {
+    if (ok && it_invoke2(fr, INV_FRAME_UNMAP, IT_VS, (long)T317_VA) != 0) {
         ok = 0; why = "unmap";
     }
     /* Re-mapping the same window proves every PTE went: the map refuses a VA
      * that is already occupied, so a leftover anywhere in the range fails. */
-    if (ok && it_sys4(SYS_FRAME_MAP, fr, IT_VS, (long)T317_VA,
-                      (long)IT_MAP_W) != 0) {
+    if (ok && it_invoke(fr, INV_FRAME_MAP, IT_VS, (long)T317_VA, (long)IT_MAP_W) != 0) {
         ok = 0; why = "unmap left pages behind";
     }
-    if (ok && it_sys3(SYS_FRAME_UNMAP, fr, IT_VS, (long)T317_VA) != 0) {
+    if (ok && it_invoke2(fr, INV_FRAME_UNMAP, IT_VS, (long)T317_VA) != 0) {
         ok = 0; why = "unmap2";
     }
 
@@ -2090,7 +2063,7 @@ void test_t318(void) {
         }
     }
 
-    for (uint32_t i = 0; i < made; i++) (void)it_sys1(SYS_TCB_EXIT, tids[i]);
+    for (uint32_t i = 0; i < made; i++) (void)it_invoke0(tids[i], INV_TCB_EXIT);
     it_quiesce_reaper();
     if (ok) it_pass("T318"); else it_fail("T318", why);
 }
@@ -2141,17 +2114,17 @@ void test_t320(void) {
     const long wrong = (long)IRIS_CPTR_TEST_FIX_B;
 
     /* Frame resolver — SYS_FRAME_MAP wants RIGHT_READ on a KFrame. */
-    if (ok && it_sys4(SYS_FRAME_MAP, wrong, IT_VS, (long)T26_SELF_VA, 0L)
+    if (ok && it_invoke(wrong, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 0L)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "frame slot"; }
     /* ...and SYS_FRAME_SIZE, which wants RIGHT_READ too. */
-    if (ok && it_sys1(SYS_FRAME_SIZE, wrong)
+    if (ok && it_invoke0(wrong, INV_FRAME_SIZE)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "frame size"; }
 
     /* VSpace resolver — a map target wants RIGHT_WRITE on a KVSpace. */
     long fr = ok ? it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096) : -1;
     handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
     if (ok && fr < 0) { ok = 0; why = "frame"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, fr, wrong, (long)T26_SELF_VA, 0L)
+    if (ok && it_invoke(fr, INV_FRAME_MAP, wrong, (long)T26_SELF_VA, 0L)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "vspace slot"; }
 
     /* Untyped resolver — a budget wants RIGHT_WRITE on a KUntyped. */
@@ -2170,7 +2143,7 @@ void test_t320(void) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
         m.label = 0x320;
-        if (it_sys2(SYS_EP_NB_SEND, n_ro, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) {
+        if (it_invoke1(n_ro, INV_EP_NB_SEND, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) {
             ok = 0; why = "endpoint slot";
         }
     }
@@ -2180,7 +2153,7 @@ void test_t320(void) {
     long fr_ro = ok ? it_cs_reduce(fr, RIGHT_READ) : -1;
     handle_id_t fr_ro_h = (fr_ro >= 0) ? (handle_id_t)fr_ro : HANDLE_INVALID;
     if (ok && fr_ro < 0) { ok = 0; why = "frame ro"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, fr_ro, IT_VS, (long)T26_SELF_VA, 1L)
+    if (ok && it_invoke(fr_ro, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 1L)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights no longer checked"; }
 
     it_close(&fr_ro_h); it_close(&n_ro_h); it_close(&n_h); it_close(&fr_h);
@@ -2220,7 +2193,7 @@ void test_t321(void) {
     if (pool < 0) { it_fail("T321", "pool"); return; }
 
     uint64_t before = 0, after = 0;
-    if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&before) != 0) {
+    if (ok && it_invoke2(pool, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&before) != 0) {
         ok = 0; why = "info"; }
 
     /* Two CNodes out of that budget, and a capability to each in the suite. */
@@ -2229,10 +2202,8 @@ void test_t321(void) {
     if (ok && (ca < 0 || cb < 0)) { ok = 0; why = "cnodes"; }
 
     /* The cycle: A holds a capability to B, B holds one to A. */
-    if (ok && it_sys3(SYS_CSPACE_MINT, cb, IT_MINT_INTO(ca, 1),
-                      (long)(RIGHT_READ | RIGHT_WRITE)) != 0) { ok = 0; why = "A names B"; }
-    if (ok && it_sys3(SYS_CSPACE_MINT, ca, IT_MINT_INTO(cb, 1),
-                      (long)(RIGHT_READ | RIGHT_WRITE)) != 0) { ok = 0; why = "B names A"; }
+    if (ok && it_invoke2(cb, INV_CSPACE_MINT, IT_MINT_INTO(ca, 1), (long)(RIGHT_READ | RIGHT_WRITE)) != 0) { ok = 0; why = "A names B"; }
+    if (ok && it_invoke2(ca, INV_CSPACE_MINT, IT_MINT_INTO(cb, 1), (long)(RIGHT_READ | RIGHT_WRITE)) != 0) { ok = 0; why = "B names A"; }
 
     struct it_utq_mdb m0, m1;
     if (ok && !it_utq_mdb(&m0)) { ok = 0; why = "mdb0"; }
@@ -2254,16 +2225,16 @@ void test_t321(void) {
     }
 
     /* 1. Nothing collected them: the budget still has live children. */
-    if (ok && it_sys1(SYS_UNTYPED_RESET, pool) != (long)IRIS_ERR_BUSY) {
+    if (ok && it_invoke0(pool, INV_UNTYPED_RESET) != (long)IRIS_ERR_BUSY) {
         ok = 0; why = "an unreachable cycle was collected"; }
-    if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&after) != 0) {
+    if (ok && it_invoke2(pool, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&after) != 0) {
         ok = 0; why = "info2"; }
     if (ok && before <= after) { ok = 0; why = "the cycle cost nothing"; }
 
     /* 2. Revoking the Untyped's subtree reaches them regardless, because the
      *    MDB parent of each CNode capability is the slot holding `pool` — not
      *    the slot inside the other CNode. */
-    long revoked = ok ? it_sys1(SYS_CSPACE_REVOKE, pool) : -1;
+    long revoked = ok ? it_invoke0(pool, INV_CSPACE_REVOKE) : -1;
     /* One is enough, and the count is honest at one: destroying the capability
      * to A destroys A, whose close empties A's slots — and the capability to B
      * lived in one of them.  A revoke reports what IT destroyed, not what died
@@ -2275,7 +2246,7 @@ void test_t321(void) {
     it_quiesce_reaper();
 
     /* 3. ...and the memory is genuinely back. */
-    if (ok && it_sys1(SYS_UNTYPED_RESET, pool) != 0) { ok = 0; why = "region not reclaimed"; }
+    if (ok && it_invoke0(pool, INV_UNTYPED_RESET) != 0) { ok = 0; why = "region not reclaimed"; }
 
     it_slot_delete((uint32_t)pool);
     it_quiesce_reaper();
@@ -2319,7 +2290,7 @@ void test_t322(void) {
         if (ok) {
             it_slot_delete((uint32_t)a);
             it_quiesce_reaper();
-            if (it_sys1(SYS_UNTYPED_RESET, pool) != (long)IRIS_ERR_BUSY) {
+            if (it_invoke0(pool, INV_UNTYPED_RESET) != (long)IRIS_ERR_BUSY) {
                 ok = 0; why = cases[i].name;
                 it_fz_note("T322-early", cases[i].type, i, 0u);
             }
@@ -2328,7 +2299,7 @@ void test_t322(void) {
         if (ok) {
             it_slot_delete((uint32_t)c);
             it_quiesce_reaper();
-            if (it_sys1(SYS_UNTYPED_RESET, pool) != 0) {
+            if (it_invoke0(pool, INV_UNTYPED_RESET) != 0) {
                 ok = 0; why = cases[i].name;
                 it_fz_note("T322-late", cases[i].type, i, 0u);
             }
@@ -2400,7 +2371,7 @@ void test_t323(void) {
         for (step = 0; ok && step < made; step++) {
             it_slot_delete((uint32_t)caps[step]);
             it_quiesce_reaper();
-            long r = it_sys1(SYS_UNTYPED_RESET, pool);
+            long r = it_invoke0(pool, INV_UNTYPED_RESET);
             int last = (step + 1u == made);
             if (!last && r != (long)IRIS_ERR_BUSY) {
                 ok = 0; why = "destroyed while a capability still named it";
@@ -2436,7 +2407,7 @@ static uint8_t           g_t325_stacks[T325_THREADS][4096];
 static void t325_body(void) {
     uint64_t bits = 0;
     __atomic_fetch_add(&g_t325_blocked, 1u, __ATOMIC_RELAXED);
-    if (it_sys2(SYS_NOTIFY_WAIT, (long)g_t325_notif, (long)(uintptr_t)&bits) == 0)
+    if (it_invoke1((long)g_t325_notif, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) == 0)
         __atomic_fetch_add(&g_t325_woke, 1u, __ATOMIC_RELAXED);
     for (;;) it_sys0(SYS_YIELD);
 }
@@ -2471,7 +2442,7 @@ void test_t325(void) {
     /* One signal per waiter: a wait clears every pending bit, so a signal
      * wakes exactly one. */
     for (uint32_t i = 0; ok && i < T325_THREADS; i++) {
-        if (it_sys2(SYS_NOTIFY_SIGNAL, n, 1) != 0) { ok = 0; why = "signal"; break; }
+        if (it_invoke1(n, INV_NOTIFY_SIGNAL, 1) != 0) { ok = 0; why = "signal"; break; }
         for (int k = 0; k < 400 && g_t325_woke < i + 1u; k++) (void)it_sys0(SYS_YIELD);
     }
     if (ok && g_t325_woke != T325_THREADS) {
@@ -2479,7 +2450,7 @@ void test_t325(void) {
         ok = 0; why = "a waiter past the old ceiling never woke";
     }
 
-    for (uint32_t i = 0; i < made; i++) (void)it_sys1(SYS_TCB_EXIT, tids[i]);
+    for (uint32_t i = 0; i < made; i++) (void)it_invoke0(tids[i], INV_TCB_EXIT);
     it_quiesce_reaper();
     it_slot_delete((uint32_t)n);
     if (ok) it_pass("T325"); else it_fail("T325", why);

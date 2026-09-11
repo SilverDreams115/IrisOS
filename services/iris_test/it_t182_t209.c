@@ -200,7 +200,7 @@ void test_t184(void) {
     struct it_fault fa2;
     if (ok && (it_fault_info(va.fault_leaf, &fa2) != 0 || fa2.seq != fa.seq ||
                fa2.task_id != fa.task_id || fa2.cr2 != fa.cr2)) { ok = 0; why = "record disturbed"; }
-    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)va.proc))
+    if (ok && it_invoke0(it_child_tcb((long)va.proc), INV_TCB_EXIT_CODE)
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "victim not suspended"; }
 
     /*
@@ -230,10 +230,10 @@ void test_t184(void) {
         /* A thread capability is not reply authority, whatever its rights. */
         struct IrisMsg rm;
         it_iris_msg_zero(&rm);
-        if (it_sys2(SYS_REPLY, atcb, (long)(uintptr_t)&rm)
+        if (it_invoke1(atcb, INV_REPLY_SEND, (long)(uintptr_t)&rm)
             != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "read tcb resumed"; }
     }
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, atcb, (long)va.notif, 0, 0)
+    if (ok && it_invoke(atcb, INV_TCB_SET_FAULT_HANDLER, (long)va.notif, 0, 0)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read cap registered"; }
 
     /* Proper authority resolves. */
@@ -312,7 +312,7 @@ void test_t185(void) {
     if (ok && r1dup >= 0) {
         struct IrisMsg rm;
         it_iris_msg_zero(&rm);
-        if (it_sys2(SYS_REPLY, r1dup, (long)(uintptr_t)&rm)
+        if (it_invoke1(r1dup, INV_REPLY_SEND, (long)(uintptr_t)&rm)
             != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "stale resume accepted"; }
     }
     /* ...and destroying it resolves nothing either — a fault is ended by the
@@ -321,7 +321,7 @@ void test_t185(void) {
         it_slot_delete((uint32_t)r1dup);
         r1dup = -1;
         it_quiesce_reaper();
-        if (it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)g.proc))
+        if (it_invoke0(it_child_tcb((long)g.proc), INV_TCB_EXIT_CODE)
             != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "stale kill accepted"; }
     }
     struct it_fault fx3;
@@ -330,7 +330,7 @@ void test_t185(void) {
     }
 
     /* Resolve the CURRENT generation for real: map writable + seq-resume. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_D, 1) != 0) {
+    if (ok && it_invoke((long)fr_h, INV_FRAME_MAP, tvs_c, (long)T25_VA_D, 1) != 0) {
         ok = 0; why = "map at fault";
     }
     if (ok && t25_resume_seq(&g, fx2.task_id, fx2.seq, 0) != 0) { ok = 0; why = "resume F2"; }
@@ -397,7 +397,7 @@ void test_t186(void) {
     it_quiesce_reaper();
 
     /* No zombie: suspended-alive, record and generation intact. */
-    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)g.proc))
+    if (ok && it_invoke0(it_child_tcb((long)g.proc), INV_TCB_EXIT_CODE)
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "target not suspended"; }
     /* A-22: that the fault SURVIVED its handler's death is proved by the next
      * pager serving it, below — which is a stronger claim than reading a
@@ -408,7 +408,7 @@ void test_t186(void) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
         m.label = 0x186;
-        if (it_sys2(SYS_EP_NB_SEND, (long)p1cmd, (long)&m)
+        if (it_invoke1((long)p1cmd, INV_EP_NB_SEND, (long)&m)
             != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "phantom pager receiver"; }
     }
     t25_reap(&p1proc); it_close(&p1cmd);
@@ -477,10 +477,10 @@ void test_t187(void) {
     /* Stage 7-proc: the address space outlives its threads while a capability
      * to it lives, so this succeeds — and is undone below so the baseline
      * still has to hold. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_A, 0) != 0) {
+    if (ok && it_invoke((long)fr_h, INV_FRAME_MAP, tvs_c, (long)T25_VA_A, 0) != 0) {
         ok = 0; why = "late map into a live address space refused";
     }
-    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr_h, tvs_c, (long)T25_VA_A) != 0) {
+    if (ok && it_invoke2((long)fr_h, INV_FRAME_UNMAP, tvs_c, (long)T25_VA_A) != 0) {
         ok = 0; why = "late unmap refused";
     }
     if (ok && t25_resume_seq(&g, f.task_id, f.seq, 0)
@@ -537,33 +537,32 @@ void test_t188(void) {
     if (ok && tvs_ro < 0)          { ok = 0; why = "tvs ro dup"; }
 
     /* Rights monotonicity and namespace limits — all denied, no fallback. */
-    if (ok && it_sys4(SYS_FRAME_MAP, fro, tvs_c, (long)T25_VA_B, 1)
+    if (ok && it_invoke(fro, INV_FRAME_MAP, tvs_c, (long)T25_VA_B, 1)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "RO frame mapped W"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_ro, (long)T25_VA_B, 0)
+    if (ok && it_invoke(fr, INV_FRAME_MAP, tvs_ro, (long)T25_VA_B, 0)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "RO vspace installed"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_c, (long)T25_VA_B, 3)
+    if (ok && it_invoke(fr, INV_FRAME_MAP, tvs_c, (long)T25_VA_B, 3)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "W^X accepted"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_c,
-                      (long)0xFFFF800000000000ULL, 0)
+    if (ok && it_invoke(fr, INV_FRAME_MAP, tvs_c, (long)0xFFFF800000000000ULL, 0)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel VA accepted"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_c, 0x1000L, 0)
+    if (ok && it_invoke(fr, INV_FRAME_MAP, tvs_c, 0x1000L, 0)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "low VA accepted"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_c, (long)(T25_VA_B | 0x123u), 0)
+    if (ok && it_invoke(fr, INV_FRAME_MAP, tvs_c, (long)(T25_VA_B | 0x123u), 0)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "unaligned accepted"; }
     /* No partial PTE from any denial. */
-    if (ok && it_sys3(SYS_FRAME_UNMAP, fr, tvs_c, (long)T25_VA_B)
+    if (ok && it_invoke2(fr, INV_FRAME_UNMAP, tvs_c, (long)T25_VA_B)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "partial PTE"; }
 
     /* Occupied-VA and W^X-compliant exec map contracts. */
-    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_c, (long)T25_VA_B, 0) != 0) {
+    if (ok && it_invoke(fr, INV_FRAME_MAP, tvs_c, (long)T25_VA_B, 0) != 0) {
         ok = 0; why = "RO map";
     }
-    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_c, (long)T25_VA_B, 0)
+    if (ok && it_invoke(fr, INV_FRAME_MAP, tvs_c, (long)T25_VA_B, 0)
               != (long)IRIS_ERR_BUSY) { ok = 0; why = "occupied VA remapped"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_c, (long)T25_VA_C, 2) != 0) {
+    if (ok && it_invoke(fr, INV_FRAME_MAP, tvs_c, (long)T25_VA_C, 2) != 0) {
         ok = 0; why = "r-x map denied";
     }
-    if (ok && it_sys3(SYS_FRAME_UNMAP, fr, tvs_c, (long)T25_VA_C) != 0) {
+    if (ok && it_invoke2(fr, INV_FRAME_UNMAP, tvs_c, (long)T25_VA_C) != 0) {
         ok = 0; why = "r-x unmap";
     }
 
@@ -587,7 +586,7 @@ void test_t188(void) {
      * swept it, because nothing died that owned it.  Unmapping it is the
      * holder's job and it succeeds; what the frame's reuse check below proves
      * is that mapped_count came back either way. */
-    if (ok && it_sys3(SYS_FRAME_UNMAP, fr, tvs_c, (long)T25_VA_B) != 0) {
+    if (ok && it_invoke2(fr, INV_FRAME_UNMAP, tvs_c, (long)T25_VA_B) != 0) {
         ok = 0; why = "late unmap";
     }
     /* Frame reusable, mapped_count back at zero. */
@@ -649,7 +648,7 @@ void test_t189(void) {
      * still resolvable — which the surviving generation below proves by
      * serving it.  A-22: a supervisor cannot read the record of a fault it
      * means somebody else to answer, so what it checks is the thread. */
-    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)g.proc))
+    if (ok && it_invoke0(it_child_tcb((long)g.proc), INV_TCB_EXIT_CODE)
               != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "fault lost across pager generations";
     }
@@ -784,7 +783,7 @@ void test_t190(void) {
             long tvs_c = (long)g2.vs;
             if (ok && t25_resume_seq(&g1, f1.task_id, f1.seq, 1) != 0) { ok = 0; why = "op2 g1 kill"; }
             if (ok && it_lp_wait_exit(g1.proc) != 0) { ok = 0; why = "op2 g1 exit"; }
-            if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_B, 1) != 0) { ok = 0; why = "op2 map"; }
+            if (ok && it_invoke((long)fr_h, INV_FRAME_MAP, tvs_c, (long)T25_VA_B, 1) != 0) { ok = 0; why = "op2 map"; }
             if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq, 0) != 0) { ok = 0; why = "op2 resume"; }
             if (ok && it_lp_wait_exit(g2.proc) != LP_EXIT_MARKER) { ok = 0; why = "op2 g2 exit"; }
             break;
@@ -823,12 +822,12 @@ void test_t190(void) {
                 it_iris_msg_zero(&rm);
                 long rr = it_cs_reduce(IT_FAULT_CPTR(g1.fault_leaf), RIGHT_READ);
                 if (rr < 0) { ok = 0; why = "op4 caps"; }
-                else if (it_sys2(SYS_REPLY, rr, (long)(uintptr_t)&rm)
+                else if (it_invoke1(rr, INV_REPLY_SEND, (long)(uintptr_t)&rm)
                          != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op4 ro resume"; }
             }
-            if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, rvs, (long)T25_VA_A, 0)
+            if (ok && it_invoke((long)fr_h, INV_FRAME_MAP, rvs, (long)T25_VA_A, 0)
                       != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op4 ro map"; }
-            if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr_h, rvs, (long)T25_VA_A)
+            if (ok && it_invoke2((long)fr_h, INV_FRAME_UNMAP, rvs, (long)T25_VA_A)
                       != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op4 ro unmap"; }
             it_close(&rp_h); it_close(&rvs_h);
             if (ok && t25_resume_seq(&g1, f1.task_id, f1.seq, 1) != 0) { ok = 0; why = "op4 g1 kill"; }
@@ -843,8 +842,8 @@ void test_t190(void) {
              * resumed store now write-protection-faults (P|W|U) as a NEW
              * generation, then dies by it. */
             long tvs_c = (long)g2.vs;
-            if (it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_B, 0) != 0) { ok = 0; why = "op5 map"; }
-            if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_B, 0)
+            if (it_invoke((long)fr_h, INV_FRAME_MAP, tvs_c, (long)T25_VA_B, 0) != 0) { ok = 0; why = "op5 map"; }
+            if (ok && it_invoke((long)fr_h, INV_FRAME_MAP, tvs_c, (long)T25_VA_B, 0)
                       != (long)IRIS_ERR_BUSY) { ok = 0; why = "op5 busy"; }
             struct it_fault f2b;
             if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq, 0) != 0) { ok = 0; why = "op5 resume"; }
@@ -887,7 +886,7 @@ void test_t190(void) {
  * Returns -1 on failure. */
 long it_frame_live(void) {
     uint8_t buf[136];
-    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 136, (long)IRIS_CPTR_DEBUG_CONTROL);
+    long r = it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 136);
     if (r != 0) return -1;
     return (long)((uint32_t)buf[116] | ((uint32_t)buf[117] << 8) |
                   ((uint32_t)buf[118] << 16) | ((uint32_t)buf[119] << 24));
@@ -899,14 +898,11 @@ static long t26_grant_create(void) {
                     (__atomic_fetch_add(&g_it_obj_slot_next, T26_GRANT_PAGES,
                                         __ATOMIC_RELAXED) % span);
     for (uint32_t i = 0; i < T26_GRANT_PAGES; i++) {
-        (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)(base + i));
-        if (it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
-                    (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
-                    (long)((uint64_t)IT_OBJ_CNODE_SLOT |
+        (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)(base + i));
+        if (it_invoke((long)IRIS_CPTR_TEST_UNTYPED, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)), (long)((uint64_t)IT_OBJ_CNODE_SLOT |
                            ((uint64_t)(base + i) << 32)), 4096) != 0) {
             while (i-- > 0)
-                (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT,
-                              (long)(base + i));
+                (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)(base + i));
             return -1;
         }
     }
@@ -930,12 +926,11 @@ handle_id_t t26_grant(void) {
  * (IT_VS).  Lets the supervisor prep and inspect what a pager will hand over. */
 int t26_page_word(handle_id_t page, uint32_t *val, int write) {
     if (!it_setup_self_vspace()) return -1;
-    long r = it_sys4(SYS_FRAME_MAP, (long)page, IT_VS, (long)T26_SELF_VA,
-                     write ? 1L : 0L);
+    long r = it_invoke((long)page, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, write ? 1L : 0L);
     if (r != 0) return (int)r;
     volatile uint32_t *p = (volatile uint32_t *)(uintptr_t)T26_SELF_VA;
     if (write) *p = *val; else *val = *p;
-    return (int)it_sys3(SYS_FRAME_UNMAP, (long)page, IT_VS, (long)T26_SELF_VA);
+    return (int)it_invoke2((long)page, INV_FRAME_UNMAP, IT_VS, (long)T26_SELF_VA);
 }
 
 /* ── T191: granted-page authority ───────────────────────────────────────────
@@ -967,21 +962,21 @@ void test_t191(void) {
 
     /* Every page of the run is a real, separate, one-page capability. */
     for (uint32_t i = 0; ok && i < T26_GRANT_PAGES; i++)
-        if (it_sys1(SYS_FRAME_SIZE, (long)T26_PAGE(g, i)) != 4096L) {
+        if (it_invoke0((long)T26_PAGE(g, i), INV_FRAME_SIZE) != 4096L) {
             ok = 0; why = "page size"; }
-    if (ok && it_sys1(SYS_FRAME_SIZE, (long)g) != 4096L) { ok = 0; why = "size unstable"; }
+    if (ok && it_invoke0((long)g, INV_FRAME_SIZE) != 4096L) { ok = 0; why = "size unstable"; }
 
     /* A READ-only derivation cannot map writable (rights monotonicity). */
     long ro = it_cs_reduce((long)g, RIGHT_READ | RIGHT_DUPLICATE);
     handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
     if (ok && ro < 0) { ok = 0; why = "ro dup"; }
     if (ok && it_setup_self_vspace()) {
-        if (it_sys4(SYS_FRAME_MAP, ro, IT_VS, (long)T26_SELF_VA, 1L)
+        if (it_invoke(ro, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 1L)
             != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro mapped writable"; }
         /* READ-only can still map read-only. */
-        if (ok && it_sys4(SYS_FRAME_MAP, ro, IT_VS, (long)T26_SELF_VA, 0L)
+        if (ok && it_invoke(ro, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 0L)
             != 0) { ok = 0; why = "ro map denied"; }
-        if (ok && it_sys3(SYS_FRAME_UNMAP, ro, IT_VS, (long)T26_SELF_VA) != 0) {
+        if (ok && it_invoke2(ro, INV_FRAME_UNMAP, IT_VS, (long)T26_SELF_VA) != 0) {
             ok = 0; why = "ro unmap"; }
     } else if (ok) { ok = 0; why = "self vspace"; }
 
@@ -989,16 +984,16 @@ void test_t191(void) {
     long n = it_notify_create();
     handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
     if (ok && n < 0) { ok = 0; why = "notif"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, n, IT_VS, (long)T26_SELF_VA, 0L)
+    if (ok && it_invoke(n, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 0L)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "frame wrong-type"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)g, n, (long)T26_SELF_VA, 0L)
+    if (ok && it_invoke((long)g, INV_FRAME_MAP, n, (long)T26_SELF_VA, 0L)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "vspace wrong-type"; }
 
     /* Stale (deleted) page cap fails clean. */
     it_close(&ro_h);
-    if (ok && it_sys4(SYS_FRAME_MAP, ro, IT_VS, (long)T26_SELF_VA, 0L)
+    if (ok && it_invoke(ro, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 0L)
               >= 0) { ok = 0; why = "stale cap mapped"; }
-    if (ok && it_sys1(SYS_FRAME_SIZE, ro) >= 0) { ok = 0; why = "stale size"; }
+    if (ok && it_invoke0(ro, INV_FRAME_SIZE) >= 0) { ok = 0; why = "stale size"; }
 
     it_close(&n_h);
     t26_grant_close(&g);
@@ -1030,26 +1025,21 @@ void test_t192(void) {
     if (g == HANDLE_INVALID) { it_fail("T192", "grant"); return; }
 
     /* Kernel VA. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)g, IT_VS,
-                      (long)0xFFFF800000000000ULL, 0L)
+    if (ok && it_invoke((long)g, INV_FRAME_MAP, IT_VS, (long)0xFFFF800000000000ULL, 0L)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel VA"; }
     /* Unaligned VA. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)g, IT_VS,
-                      (long)(T26_SELF_VA | 0x800ULL), 0L)
+    if (ok && it_invoke((long)g, INV_FRAME_MAP, IT_VS, (long)(T26_SELF_VA | 0x800ULL), 0L)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "unaligned VA"; }
     /* Bad flags (W^X). */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)g, IT_VS, (long)T26_SELF_VA, 3L)
+    if (ok && it_invoke((long)g, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 3L)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "W^X"; }
 
     /* None of the above installed a PTE — a valid map now succeeds. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_PAGE(g, 2), IT_VS,
-                      (long)T26_SELF_VA, 0L) != 0) { ok = 0; why = "valid map"; }
+    if (ok && it_invoke((long)T26_PAGE(g, 2), INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 0L) != 0) { ok = 0; why = "valid map"; }
     /* Occupied VA — a DIFFERENT page of the grant cannot take it. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_PAGE(g, 1), IT_VS,
-                      (long)T26_SELF_VA, 0L)
+    if (ok && it_invoke((long)T26_PAGE(g, 1), INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 0L)
               != (long)IRIS_ERR_BUSY) { ok = 0; why = "occupied VA"; }
-    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)T26_PAGE(g, 2), IT_VS,
-                      (long)T26_SELF_VA) != 0) { ok = 0; why = "unmap"; }
+    if (ok && it_invoke2((long)T26_PAGE(g, 2), INV_FRAME_UNMAP, IT_VS, (long)T26_SELF_VA) != 0) { ok = 0; why = "unmap"; }
 
     t26_grant_close(&g);
     it_quiesce_reaper();
@@ -1154,19 +1144,19 @@ void test_t194(void) {
     long vro = it_cs_reduce((long)vmo, RIGHT_READ | RIGHT_DUPLICATE);
     handle_id_t vro_h = (vro >= 0) ? (handle_id_t)vro : HANDLE_INVALID;
     if (ok && vro < 0) { ok = 0; why = "vro dup"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_AT(vro, 0), (long)g.vs, (long)T26_TVA_A, (long)(1u))
+    if (ok && it_invoke((long)T26_AT(vro, 0), INV_FRAME_MAP, (long)g.vs, (long)T26_TVA_A, (long)(1u))
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro vmo writable into target"; }
 
     /* A READ-only VSpace derivation cannot install ANY PTE. */
     long vsro = it_cs_reduce((long)g.vs, RIGHT_READ | RIGHT_DUPLICATE);
     handle_id_t vsro_h = (vsro >= 0) ? (handle_id_t)vsro : HANDLE_INVALID;
     if (ok && vsro < 0) { ok = 0; why = "vsro dup"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_AT(vmo, 0), vsro, (long)T26_TVA_A, (long)(0))
+    if (ok && it_invoke((long)T26_AT(vmo, 0), INV_FRAME_MAP, vsro, (long)T26_TVA_A, (long)(0))
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro vspace installed"; }
 
     /* Correct authority DOES install (proves the denials were the rights, not
      * some unrelated failure), then unmap through the target VSpace cap. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_AT(vmo, 0), (long)g.vs, (long)T26_TVA_A, (long)(1u))
+    if (ok && it_invoke((long)T26_AT(vmo, 0), INV_FRAME_MAP, (long)g.vs, (long)T26_TVA_A, (long)(1u))
               != 0) { ok = 0; why = "authorized map denied"; }
     /* The authorized mapping is swept when the target dies below. */
 
@@ -1313,7 +1303,7 @@ void test_t196(void) {
         ok = 0; why = "the mapping did not hold it";
     }
     /* The released capability fails clean even though the object is alive. */
-    if (ok && it_sys1(SYS_FRAME_SIZE, (long)vcopy) >= 0) { ok = 0; why = "stale size"; }
+    if (ok && it_invoke0((long)vcopy, INV_FRAME_SIZE) >= 0) { ok = 0; why = "stale size"; }
 
     /* Let go of the address space: the mapping goes, and so does the page. */
     it_close(&t.vs);
@@ -1364,13 +1354,13 @@ void test_t197(void) {
 
     /* Fault survives; VMO stays live.  A-22: survival is proved by the next
      * generation serving it, at the end of this test. */
-    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)g.proc))
+    if (ok && it_invoke0(it_child_tcb((long)g.proc), INV_TCB_EXIT_CODE)
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "fault lost"; }
     /* The VMO survived the pager's death — verified functionally (the target is
      * still SUSPENDED here, so an absolute vmo_live count would also see its
      * live segment/stack VMOs; the leak guard is the final vlive0 check after
      * everything is reaped). */
-    if (ok && it_sys1(SYS_FRAME_SIZE, (long)T26_AT(vmo, 0x2000ULL)) != 4096L) {
+    if (ok && it_invoke0((long)T26_AT(vmo, 0x2000ULL), INV_FRAME_SIZE) != 4096L) {
         ok = 0; why = "grant lost with pager"; }
 
     /* Post-restart manifest is exactly the declaration (slot-14 = VMO source). */
@@ -1439,7 +1429,7 @@ void test_t198(void) {
     it_close(&vstale_h);   /* now stale */
 
     /* Anchor map at page 0 so "occupied VA" has a real occupant. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)g, IT_VS, (long)T26_SELF_VA, 0L) != 0) {
+    if (ok && it_invoke((long)g, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 0L) != 0) {
         ok = 0; why = "anchor map"; }
 
     /* Failure battery — every one must be rejected with no side effect. */
@@ -1457,17 +1447,15 @@ void test_t198(void) {
         { vstale,             IT_VS, T26_SELF_VA + 0x10000ULL, 0L, (long)IRIS_ERR_NOT_FOUND,    "stale page" },
     };
     for (uint32_t i = 0; ok && i < 6u; i++) {
-        long r = it_sys4(SYS_FRAME_MAP, bad[i].fr_c, bad[i].vs_c, (long)bad[i].va, bad[i].fl);
+        long r = it_invoke(bad[i].fr_c, INV_FRAME_MAP, bad[i].vs_c, (long)bad[i].va, bad[i].fl);
         if (r != bad[i].want) { ok = 0; why = bad[i].tag; }
     }
 
     /* The space is intact: unmap the anchor, remap elsewhere, unmap. */
-    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)g, IT_VS, (long)T26_SELF_VA) != 0) {
+    if (ok && it_invoke2((long)g, INV_FRAME_UNMAP, IT_VS, (long)T26_SELF_VA) != 0) {
         ok = 0; why = "anchor unmap"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_PAGE(g, 2), IT_VS,
-                      (long)T26_SELF_VA, 1L) != 0) { ok = 0; why = "post-batch map"; }
-    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)T26_PAGE(g, 2), IT_VS,
-                      (long)T26_SELF_VA) != 0) { ok = 0; why = "post unmap"; }
+    if (ok && it_invoke((long)T26_PAGE(g, 2), INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 1L) != 0) { ok = 0; why = "post-batch map"; }
+    if (ok && it_invoke2((long)T26_PAGE(g, 2), INV_FRAME_UNMAP, IT_VS, (long)T26_SELF_VA) != 0) { ok = 0; why = "post unmap"; }
 
     it_close(&vro_h);
     t26_grant_close(&g);
@@ -1499,10 +1487,10 @@ void test_t199(void) {
      * must still fault write-protection (the PTE is RO, cap ceiling irrelevant). */
     struct t25_tgt g;
     if (ok && !t25_tgt_spawn(&g, &why)) { t26_grant_close(&vmo); it_fail("T199", why); return; }
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_AT(vmo, 0), (long)g.vs, (long)T26_TVA_A, (long)(0)) != 0) {
+    if (ok && it_invoke((long)T26_AT(vmo, 0), INV_FRAME_MAP, (long)g.vs, (long)T26_TVA_A, (long)(0)) != 0) {
         ok = 0; why = "ro map"; }
     /* Occupied VA remap rejected. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_AT(vmo, 0x1000ULL), (long)g.vs, (long)T26_TVA_A, (long)(0))
+    if (ok && it_invoke((long)T26_AT(vmo, 0x1000ULL), INV_FRAME_MAP, (long)g.vs, (long)T26_TVA_A, (long)(0))
               != (long)IRIS_ERR_BUSY) { ok = 0; why = "occupied remap"; }
 
     struct it_fault f;
@@ -1584,7 +1572,7 @@ void test_t200(void) {
             if (it_kill((long)pp) != 0 || it_lp_wait_exit(pp) != 0) { ok = 0; why = "op2 pager death"; }
             t25_reap(&pp); it_close(&pc);
             /* Supervisor resolves from the VMO via its own VSpace handle. */
-            if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_AT(vmo, ofs), (long)g.vs, (long)T26_TVA_A, (long)(0)) != 0) { ok = 0; why = "op2 map"; }
+            if (ok && it_invoke((long)T26_AT(vmo, ofs), INV_FRAME_MAP, (long)g.vs, (long)T26_TVA_A, (long)(0)) != 0) { ok = 0; why = "op2 map"; }
             if (ok && t25_resume_seq(&g, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op2 resume"; }
             if (ok && it_lp_wait_exit(g.proc) !=
                       (long)(LP_EXIT_MARKER ^ (word & 0xFFu))) { ok = 0; why = "op2 target"; }
@@ -1596,7 +1584,7 @@ void test_t200(void) {
             if (!t25_wait_fault(&g, &f)) { ok = 0; why = "op3 pending"; break; }
             if (it_kill((long)g.proc) != 0 || it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "op3 kill"; }
             it_quiesce_reaper();
-            if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_AT(vmo, ofs), (long)g.vs, (long)T26_TVA_A, (long)(0))
+            if (ok && it_invoke((long)T26_AT(vmo, ofs), INV_FRAME_MAP, (long)g.vs, (long)T26_TVA_A, (long)(0))
                       != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "op3 late map"; }
             if (ok && t25_resume_seq(&g, f.task_id, f.seq, 0) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "op3 late resume"; }
             break;
@@ -1613,16 +1601,15 @@ void test_t200(void) {
              * T26_TVA_A.  Ledger D-5: "beyond size" used to be the kernel
              * range-checking an offset; it is an empty CSpace slot now, which
              * is a stronger statement and a cheaper check. */
-            if (it_sys4(SYS_FRAME_MAP, vro, (long)g.vs, (long)T26_TVA_A, 1L)
+            if (it_invoke(vro, INV_FRAME_MAP, (long)g.vs, (long)T26_TVA_A, 1L)
                 != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op4 ro writable"; }
-            if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_PAGE(vmo, T26_GRANT_PAGES),
-                              (long)g.vs, (long)T26_TVA_A, 0L)
+            if (ok && it_invoke((long)T26_PAGE(vmo, T26_GRANT_PAGES), INV_FRAME_MAP, (long)g.vs, (long)T26_TVA_A, 0L)
                 != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "op4 past the grant"; }
             it_close(&vro_h);
             /* Drive the real fault, then map + resume from the VMO. */
             if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T26_TVA_A) != 0) { ok = 0; why = "op4 fault"; }
             if (ok && !t25_wait_fault(&g, &f)) { ok = 0; why = "op4 pending"; }
-            if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_AT(vmo, ofs), (long)g.vs, (long)T26_TVA_A, (long)(0)) != 0) { ok = 0; why = "op4 map"; }
+            if (ok && it_invoke((long)T26_AT(vmo, ofs), INV_FRAME_MAP, (long)g.vs, (long)T26_TVA_A, (long)(0)) != 0) { ok = 0; why = "op4 map"; }
             if (ok && t25_resume_seq(&g, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op4 resume"; }
             if (ok && it_lp_wait_exit(g.proc) !=
                       (long)(LP_EXIT_MARKER ^ (word & 0xFFu))) { ok = 0; why = "op4 target"; }
@@ -1683,8 +1670,7 @@ int t27_pager_spawn(struct t27_pager *p,
         long bep = it_cs_badge((long)targets[0].notif,
                                RIGHT_READ | RIGHT_WRITE, i + 1u);
         int wired = (bep >= 0 &&
-                     it_sys4(SYS_TCB_SET_FAULT_HANDLER,
-                             it_child_tcb((long)targets[i].proc), bep, 0, 0) == 0);
+                     it_invoke(it_child_tcb((long)targets[i].proc), INV_TCB_SET_FAULT_HANDLER, bep, 0, 0) == 0);
         /* The badge is COPIED into the registration, so the capability that
          * carried it has done its job and is dropped — leaving it in the
          * rotating pool would keep the endpoint alive past the test's own
@@ -1769,7 +1755,7 @@ long t27_pager_call(handle_id_t ctrl_ep, uint32_t op, uint32_t tidx,
     m.words[1] = offset;
     m.words[2] = expect;
     m.word_count = 3u;
-    long r = it_sys2(SYS_EP_CALL, (long)ctrl_ep, (long)&m);
+    long r = it_invoke1((long)ctrl_ep, INV_EP_CALL, (long)&m);
     if (r != 0) return r;
     if (m.label != IRIS_EP_REPLY_OK) return -100000L;
     return (long)m.words[0];
@@ -1988,7 +1974,7 @@ void test_t203(void) {
      * NOT_FOUND; mapping the VMO into A's VSpace does not touch B. */
     if (ok && t25_resume_seq(&ga, fb.task_id, fb.seq, 0) != (long)IRIS_ERR_NOT_FOUND) {
         ok = 0; why = "A cap resolved B"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_AT(vmo, 0x1000ULL), (long)ga.vs, (long)T27_VA_B, 0)
+    if (ok && it_invoke((long)T26_AT(vmo, 0x1000ULL), INV_FRAME_MAP, (long)ga.vs, (long)T27_VA_B, 0)
         == 0) {
         /* This installs into A's VSpace at T27_VA_B — legal for A, but it must
          * NOT affect B.  Verify B still faults (unchanged) below; unmap via A's
@@ -1997,7 +1983,7 @@ void test_t203(void) {
     /* B's fault is intact: same generation, still suspended. */
     struct it_fault fb2;
     if (ok && (it_fault_info(gb.fault_leaf, &fb2) != 0 || fb2.seq != fb.seq)) { ok = 0; why = "B fault disturbed"; }
-    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)gb.proc)) != (long)IRIS_ERR_WOULD_BLOCK) {
+    if (ok && it_invoke0(it_child_tcb((long)gb.proc), INV_TCB_EXIT_CODE) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "B not suspended"; }
 
     /* B is resolved only by B's own authority. */
@@ -2051,22 +2037,20 @@ void test_t204(void) {
     long vro = it_cs_reduce((long)T26_AT(vmo, 0x2000ULL), RIGHT_READ | RIGHT_DUPLICATE);
     handle_id_t vro_h = (vro >= 0) ? (handle_id_t)vro : HANDLE_INVALID;
     if (ok && vro < 0) { ok = 0; why = "ro dup"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, vro, (long)g.vs, (long)T27_VA_A, 1L)
+    if (ok && it_invoke(vro, INV_FRAME_MAP, (long)g.vs, (long)T27_VA_A, 1L)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable not denied"; }
     /* A page past the end of the grant, and a kernel VA, are both refused with
      * no PTE installed.  Ledger D-5: "bad offset" is an empty CSpace slot now,
      * because the page a caller names IS a capability. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_PAGE(vmo, T26_GRANT_PAGES),
-                      (long)g.vs, (long)T27_VA_A, 0L)
+    if (ok && it_invoke((long)T26_PAGE(vmo, T26_GRANT_PAGES), INV_FRAME_MAP, (long)g.vs, (long)T27_VA_A, 0L)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "past the grant"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)vmo, (long)g.vs,
-                      (long)0xFFFF800000000000ULL, 0L)
+    if (ok && it_invoke((long)vmo, INV_FRAME_MAP, (long)g.vs, (long)0xFFFF800000000000ULL, 0L)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel VA"; }
     it_close(&vro_h);
 
     /* A valid RO resolution afterwards works (space uncorrupted): map RO at the
      * fault VA and seq-resume — the store will re-fault WP, so kill instead. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_AT(vmo, 0x2000ULL), (long)g.vs, (long)T27_VA_A, (long)(0u)) != 0) {
+    if (ok && it_invoke((long)T26_AT(vmo, 0x2000ULL), INV_FRAME_MAP, (long)g.vs, (long)T27_VA_A, (long)(0u)) != 0) {
         ok = 0; why = "valid ro map"; }
     if (ok && t25_resume_seq(&g, f.task_id, f.seq, 1) != 0) { ok = 0; why = "kill"; }
     if (ok && it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "exit"; }
@@ -2361,7 +2345,7 @@ void test_t209(void) {
     it_quiesce_reaper();
 
     /* Target not a zombie: suspended-alive, record + generation intact. */
-    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)g.proc)) != (long)IRIS_ERR_WOULD_BLOCK) {
+    if (ok && it_invoke0(it_child_tcb((long)g.proc), INV_TCB_EXIT_CODE) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "target not suspended"; }
     /* A-22: the fault outliving its handler is proved by the restart serving
      * it, below. */
@@ -2371,7 +2355,7 @@ void test_t209(void) {
         it_iris_msg_zero(&m);
         m.words[0] = PGR_PACK(PGR_OP_PING, 0, 0, 0);
         m.word_count = 1u;
-        if (it_sys2(SYS_EP_NB_SEND, (long)p1ctrl, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) {
+        if (it_invoke1((long)p1ctrl, INV_EP_NB_SEND, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) {
             ok = 0; why = "phantom receiver"; }
     }
     it_close(&p1.ctrl_ep);

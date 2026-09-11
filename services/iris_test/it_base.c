@@ -21,9 +21,9 @@ void it_serial_write(const char *s) {
     while (*s) {
         long v;
         do {
-            v = it_sys2(SYS_IOPORT_IN, (long)g_serial_h, 5);
+            v = it_invoke1((long)g_serial_h, INV_IOPORT_IN, 5);
         } while (v < 0 || !((uint8_t)v & 0x20u));
-        (void)it_sys3(SYS_IOPORT_OUT, (long)g_serial_h, 0, (long)(uint8_t)*s++);
+        (void)it_invoke2((long)g_serial_h, INV_IOPORT_OUT, 0, (long)(uint8_t)*s++);
     }
 }
 
@@ -101,7 +101,7 @@ static uint32_t it_child_pending_leaf(void) {
     if (!g_it_child_pending) {
         uint32_t leaf = IT_CHILD_TCB_LEAF(
             __atomic_load_n(&g_it_child_next, __ATOMIC_RELAXED) % IT_CHILD_MAX);
-        (void)it_sys2(SYS_CNODE_DELETE, (long)IT_CHILD_CN_SLOT, (long)leaf);
+        (void)it_invoke1((long)IT_CHILD_CN_SLOT, INV_CNODE_DELETE, (long)leaf);
         g_it_child_pending = leaf;
     }
     return g_it_child_pending;
@@ -117,7 +117,7 @@ long it_child_vs_dest(void) {
      * previous child's address space at the moment a new one is created, and
      * the two cancel in the live-VSpace gauge — which T136 reads as "the child
      * I just spawned was not counted".  A recycle must not be invisible. */
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_CHILD_CN_SLOT, (long)vs_leaf);
+    (void)it_invoke1((long)IT_CHILD_CN_SLOT, INV_CNODE_DELETE, (long)vs_leaf);
     return (long)IT_CHILD_CN_DEST_(vs_leaf);
 }
 
@@ -161,8 +161,7 @@ long it_child_vspace(handle_id_t proc_h) {
 void it_child_drop_vspace(handle_id_t proc_h) {
     for (uint32_t k = 0; k < IT_CHILD_MAX; k++)
         if (g_it_children[k].proc == (uint32_t)proc_h && g_it_children[k].leaf)
-            (void)it_sys2(SYS_CNODE_DELETE, (long)IT_CHILD_CN_SLOT,
-                          (long)(g_it_children[k].leaf + IT_CHILD_MAX));
+            (void)it_invoke1((long)IT_CHILD_CN_SLOT, INV_CNODE_DELETE, (long)(g_it_children[k].leaf + IT_CHILD_MAX));
 }
 /*
  * Stage 7 Step 13 — killing a child is stopping the EXECUTION you hold.
@@ -178,7 +177,7 @@ void it_child_drop_vspace(handle_id_t proc_h) {
  * CPTR_NULL, so this reports INVALID_ARG rather than pretending to kill.
  */
 long it_kill(long proc_cptr) {
-    return it_sys1(SYS_TCB_EXIT, it_child_tcb((handle_id_t)proc_cptr));
+    return it_invoke0(it_child_tcb((handle_id_t)proc_cptr), INV_TCB_EXIT);
 }
 
 /*
@@ -194,7 +193,7 @@ long it_kill(long proc_cptr) {
 long it_tcb_alive(long tcb_cptr) {
     struct iris_tcb_info info;
     info.state = 0u;
-    long r = it_sys2(SYS_TCB_GET_INFO, tcb_cptr, (long)(uintptr_t)&info);
+    long r = it_invoke1(tcb_cptr, INV_TCB_GET_INFO, (long)(uintptr_t)&info);
     if (r != 0) return r;
     return (info.state == IT_TASK_TERMINATED || info.state == IT_TASK_DEAD) ? 0 : 1;
 }
@@ -205,11 +204,8 @@ long it_alive(long proc_cptr) {
 /* Fresh reply authority for target `i`: the object is one-shot, so a test that
  * serves several faults retypes one per fault.  1 on success. */
 int it_fault_reply_fresh(uint32_t i) {
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT,
-                  (long)IT_FAULT_LEAF(i));
-    return it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
-                   (long)((uint64_t)IRIS_KOBJ_REPLY | (1ULL << 32)),
-                   (long)((uint64_t)IT_OBJ_CNODE_SLOT |
+    (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)IT_FAULT_LEAF(i));
+    return it_invoke((long)IRIS_CPTR_TEST_UNTYPED, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_REPLY | (1ULL << 32)), (long)((uint64_t)IT_OBJ_CNODE_SLOT |
                           ((uint64_t)IT_FAULT_LEAF(i) << 32)), 0) == 0;
 }
 
@@ -224,16 +220,11 @@ int it_fault_reply_fresh(uint32_t i) {
  * receive the victim's fault even though both travel on endpoints.
  */
 int it_pgr_mbox_fresh(uint32_t nleaves) {
-    (void)it_sys2(SYS_CNODE_DELETE, 0, (long)IT_PGR_MBOX_SLOT);
-    if (it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
-                (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
-                (long)((uint64_t)IT_PGR_MBOX_SLOT << 32),
-                (long)IT_PGR_MBOX_SLOTS) != 0) return 0;
+    (void)it_invoke1(0, INV_CNODE_DELETE, (long)IT_PGR_MBOX_SLOT);
+    if (it_invoke((long)IRIS_CPTR_TEST_UNTYPED, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)), (long)((uint64_t)IT_PGR_MBOX_SLOT << 32), (long)IT_PGR_MBOX_SLOTS) != 0) return 0;
     /* Leaf 0 is the CNode's guard slot. */
     for (uint32_t leaf = 1; leaf <= nleaves; leaf++) {
-        if (it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
-                    (long)((uint64_t)IRIS_KOBJ_REPLY | (1ULL << 32)),
-                    (long)((uint64_t)IT_PGR_MBOX_SLOT |
+        if (it_invoke((long)IRIS_CPTR_TEST_UNTYPED, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_REPLY | (1ULL << 32)), (long)((uint64_t)IT_PGR_MBOX_SLOT |
                            ((uint64_t)leaf << 32)), 0) != 0) return 0;
     }
     return 1;
@@ -242,9 +233,7 @@ uint32_t g_it_obj_slot_next;
 
 long it_retype2_at(long ut, uint32_t obj_type, uint32_t slot,
                           uint32_t count, long obj_arg) {
-    return it_sys4(SYS_UNTYPED_RETYPE2, ut,
-                   (long)((uint64_t)obj_type | ((uint64_t)count << 32)),
-                   (long)((uint64_t)slot << 32), obj_arg);
+    return it_invoke(ut, INV_UNTYPED_RETYPE, (long)((uint64_t)obj_type | ((uint64_t)count << 32)), (long)((uint64_t)slot << 32), obj_arg);
 }
 
 /*
@@ -270,23 +259,20 @@ static uint32_t it_pool_leaf_take(void) {
                     (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
                                         __ATOMIC_RELAXED) %
                      (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
-    long t = it_sys1(SYS_CAP_IDENTIFY, (long)IT_OBJ_CPTR(leaf));
+    long t = it_invoke0((long)IT_OBJ_CPTR(leaf), INV_CAP_IDENTIFY);
     if (t >= 0) {
         __atomic_fetch_add(&g_it_pool_evictions, 1u, __ATOMIC_RELAXED);
         if (t < 20) __atomic_fetch_add(&g_it_pool_evict_by_type[t], 1u,
                                        __ATOMIC_RELAXED);
     }
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)leaf);
     return leaf;
 }
 
 long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
     uint32_t leaf = it_pool_leaf_take();
-    long r = it_sys4(SYS_UNTYPED_RETYPE2, ut,
-                     (long)((uint64_t)obj_type | (1ULL << 32)),
-                     (long)((uint64_t)IT_OBJ_CNODE_SLOT |
-                            ((uint64_t)leaf << 32)),
-                     obj_arg);
+    long r = it_invoke(ut, INV_UNTYPED_RETYPE, (long)((uint64_t)obj_type | (1ULL << 32)), (long)((uint64_t)IT_OBJ_CNODE_SLOT |
+                            ((uint64_t)leaf << 32)), obj_arg);
     return (r < 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
@@ -302,17 +288,13 @@ long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
  * WHICH target a fault came from). */
 long it_cs_badge(long src_cptr, uint32_t rights, uint32_t badge) {
     uint32_t leaf = it_pool_leaf_take();
-    long r = it_sys3(SYS_CSPACE_MINT, src_cptr,
-                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
-                     (long)((uint64_t)rights | ((uint64_t)badge << 32)));
+    long r = it_invoke2(src_cptr, INV_CSPACE_MINT, (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT), (long)((uint64_t)rights | ((uint64_t)badge << 32)));
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
 long it_cs_reduce(long src_cptr, uint32_t rights) {
     uint32_t leaf = it_pool_leaf_take();
-    long r = it_sys3(SYS_CSPACE_MINT, src_cptr,
-                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
-                     (long)rights);
+    long r = it_invoke2(src_cptr, INV_CSPACE_MINT, (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT), (long)rights);
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
@@ -349,7 +331,7 @@ long it_timer_uptime(uint64_t *out_ns) {
     struct IrisMsg m;
     it_iris_msg_zero(&m);
     m.label = TMR_OP_UPTIME;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TIMER_EP, (long)(uintptr_t)&m);
+    long r = it_invoke1((long)IRIS_CPTR_TIMER_EP, INV_EP_CALL, (long)(uintptr_t)&m);
     if (r != 0) return r;
     if (out_ns) *out_ns = m.words[0];
     return 0;
@@ -371,7 +353,7 @@ long it_wait_timeout(long notif, long out_bits_uptr, long ns) {
     uint64_t *out = (uint64_t *)(uintptr_t)out_bits_uptr;
     uint64_t  bits = 0;
 
-    if (it_sys2(SYS_NOTIFY_POLL, notif, (long)(uintptr_t)&bits) == 0) {
+    if (it_invoke1(notif, INV_NOTIFY_POLL, (long)(uintptr_t)&bits) == 0) {
         bits &= ~IRIS_TIMER_BIT;
         if (bits) { if (out) *out = bits; return 0; }
     }
@@ -396,7 +378,7 @@ long it_wait_timeout(long notif, long out_bits_uptr, long ns) {
 
     for (;;) {
         bits = 0;
-        long r = it_sys2(SYS_NOTIFY_WAIT, notif, (long)(uintptr_t)&bits);
+        long r = it_invoke1(notif, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits);
         if (r != 0) { (void)iris_timer_cancel((long)IRIS_CPTR_TIMER_EP, token); return r; }
         if (bits & ~IRIS_TIMER_BIT) {
             /* The event won.  Take the timer back rather than leaving the
@@ -431,26 +413,21 @@ long it_wait_timeout(long notif, long out_bits_uptr, long ns) {
  * standard destination packing (cnode | slot<<32), so the wrapper does the
  * shift and the eighteen call sites keep saying which slot they mean. */
 long it_ioport_create(long auth, long base, long count, long dest) {
-    return it_sys4(SYS_CAP_CREATE_IOPORT, auth,
-                   (long)((uint64_t)(uint16_t)base |
-                          ((uint64_t)(uint16_t)count << 16)),
-                   (long)IRIS_CPTR_TEST_UNTYPED, (long)((uint64_t)dest << 32));
+    return it_invoke(auth, INV_BOOT_CREATE_IOPORT, (long)((uint64_t)(uint16_t)base |
+                          ((uint64_t)(uint16_t)count << 16)), (long)IRIS_CPTR_TEST_UNTYPED, (long)((uint64_t)dest << 32));
 }
 /* Derive a narrowed I/O-port CONTROL capability into `dest` (Stage 5).  The
  * kernel has no port whitelist any more; the range that bounds what a holder
  * may claim travels on the authority, and this is how a holder hands out a
  * piece of its own. */
 long it_ioport_narrow(long auth, long first, long last, uint32_t dest) {
-    (void)it_sys2(SYS_CNODE_DELETE, 0, (long)dest);
-    return it_sys4(SYS_IOPORT_CONTROL_NARROW, auth,
-                   (long)((uint64_t)(uint16_t)first |
-                          ((uint64_t)(uint16_t)last << 16)),
-                   (long)IRIS_CPTR_TEST_UNTYPED, (long)((uint64_t)dest << 32));
+    (void)it_invoke1(0, INV_CNODE_DELETE, (long)dest);
+    return it_invoke(auth, INV_BOOT_IOPORT_NARROW, (long)((uint64_t)(uint16_t)first |
+                          ((uint64_t)(uint16_t)last << 16)), (long)IRIS_CPTR_TEST_UNTYPED, (long)((uint64_t)dest << 32));
 }
 
 long it_irqcap_create(long auth, long irq, long dest) {
-    return it_sys4(SYS_CAP_CREATE_IRQCAP, auth, irq,
-                   (long)IRIS_CPTR_TEST_UNTYPED, (long)((uint64_t)dest << 32));
+    return it_invoke(auth, INV_BOOT_CREATE_IRQCAP, irq, (long)IRIS_CPTR_TEST_UNTYPED, (long)((uint64_t)dest << 32));
 }
 
 /* An initrd image published into a CSpace slot as a FRAME (ledger D-5).  Same
@@ -466,9 +443,7 @@ long it_initrd_vmo_slot(long auth_cptr, long index) {
     uint32_t leaf = it_pool_leaf_take();
     /* Stage 6 Step 5: the image copy is charged to the suite's own budget,
      * not to the small per-child pool its address space came from. */
-    long r = it_sys4(SYS_INITRD_FRAME, auth_cptr, index,
-                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
-                     (long)IRIS_CPTR_TEST_UNTYPED);
+    long r = it_invoke(auth_cptr, INV_BOOT_INITRD_FRAME, index, (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT), (long)IRIS_CPTR_TEST_UNTYPED);
     if (r <= 0) return (r == 0) ? (long)IRIS_ERR_NOT_FOUND : r;
     g_it_initrd_size = r;
     return (long)IT_OBJ_CPTR(leaf);
@@ -600,7 +575,7 @@ static int it_root_slot_is_load_bearing(uint32_t s) {
 
 void it_slot_delete(uint32_t slot) {
     if (slot >= 256u) {
-        (void)it_sys2(SYS_CNODE_DELETE, (long)(slot & 0xFFu), (long)(slot >> 8));
+        (void)it_invoke1((long)(slot & 0xFFu), INV_CNODE_DELETE, (long)(slot >> 8));
         return;
     }
     if (it_root_slot_is_load_bearing(slot)) {
@@ -611,7 +586,7 @@ void it_slot_delete(uint32_t slot) {
         it_serial_write("\n");
         return;
     }
-    (void)it_sys2(SYS_CNODE_DELETE, 0, (long)slot);
+    (void)it_invoke1(0, INV_CNODE_DELETE, (long)slot);
 }
 
 /* A transfer source is a slot-to-slot mint, which also installs the result as
@@ -619,21 +594,18 @@ void it_slot_delete(uint32_t slot) {
  * for handle sources is gone with the namespace. */
 long it_xfer_slot(handle_id_t src_h, uint32_t slot, uint32_t rights) {
     it_slot_delete(slot);
-    long r = it_sys3(SYS_CSPACE_MINT, (long)src_h,
-                     (long)((uint64_t)slot << 32),
-                     (long)(rights | RIGHT_TRANSFER));
+    long r = it_invoke2((long)src_h, INV_CSPACE_MINT, (long)((uint64_t)slot << 32), (long)(rights | RIGHT_TRANSFER));
     return (r != 0) ? r : (long)slot;
 }
 int it_slot_is_notif(long slot) {
-    return it_sys1(SYS_CAP_IDENTIFY, slot) == (long)IRIS_HANDLE_TYPE_NOTIFICATION;
+    return it_invoke0(slot, INV_CAP_IDENTIFY) == (long)IRIS_HANDLE_TYPE_NOTIFICATION;
 }
 
 /* Mint a source slot with EXACTLY the requested rights (no implicit
  * RIGHT_TRANSFER) — used by the negative tests that must be denied. */
 long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights) {
     it_slot_delete(slot);
-    long r = it_sys3(SYS_CSPACE_MINT, src_h,
-                     (long)((uint64_t)slot << 32), (long)rights);
+    long r = it_invoke2(src_h, INV_CSPACE_MINT, (long)((uint64_t)slot << 32), (long)rights);
     return (r != 0) ? r : (long)slot;
 }
 
@@ -652,15 +624,13 @@ long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights) {
  * it_cdt_revoke— revoke the slot's descendants (>= 0 on success). */
 long it_cdt_root(handle_id_t src_h, uint32_t slot) {
     it_slot_delete(slot);
-    long r = it_sys3(SYS_CSPACE_MINT, (long)src_h,
-                     (long)((uint64_t)slot << 32), (long)RIGHT_SAME_RIGHTS);
+    long r = it_invoke2((long)src_h, INV_CSPACE_MINT, (long)((uint64_t)slot << 32), (long)RIGHT_SAME_RIGHTS);
     return (r != 0) ? r : (long)slot;
 }
 
 long it_cdt_derive(long src_cptr, uint32_t dest_slot, uint32_t rights) {
     it_slot_delete(dest_slot);
-    long r = it_sys3(SYS_CSPACE_MINT, src_cptr,
-                     (long)((uint64_t)dest_slot << 32), (long)rights);
+    long r = it_invoke2(src_cptr, INV_CSPACE_MINT, (long)((uint64_t)dest_slot << 32), (long)rights);
     return (r != 0) ? r : (long)dest_slot;
 }
 
@@ -675,11 +645,11 @@ long it_cdt_reduced(handle_id_t src_h, uint32_t root_slot,
 }
 
 int it_cdt_alive(long cptr) {
-    return it_sys1(SYS_CAP_IDENTIFY, cptr) >= 0;
+    return it_invoke0(cptr, INV_CAP_IDENTIFY) >= 0;
 }
 
 long it_cdt_revoke(long cptr) {
-    return it_sys1(SYS_CSPACE_REVOKE, cptr);
+    return it_invoke0(cptr, INV_CSPACE_REVOKE);
 }
 static uint32_t g_it_xfer_next;
 long it_xfer_dup(long src_h, uint32_t rights) {

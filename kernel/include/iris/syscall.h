@@ -2057,7 +2057,10 @@ struct iris_untyped_query_global {
      * Ledger A-31 — calls that still came through the NUMBERED door.
      *
      * A total, not a live count, and it must be FALLING while the invocation
-     * ABI is adopted and ZERO when it closes.  It exists because that
+     * ABI is adopted and ZERO when it closes.  It does NOT count the calls
+     * that are meant to stay numbers — `SYS_EXIT`, `SYS_YIELD`,
+     * `SYS_CLOCK_GET` — because a gauge that cannot reach zero measures
+     * traffic rather than migration.  It exists because that
      * migration fails silently by construction: a caller that was never
      * converted keeps working, every test passes, and nothing says which door
      * it took.  D-4's IPC-buffer migration had exactly this shape and the

@@ -27,18 +27,13 @@ void iris_test_main(handle_id_t rbx_unused) {
     /* Second-level CNode for the objects the suite fabricates and HOLDS.  The
      * root CNode is full, so this is the only place they can live — and it is
      * only addressable because handles moved out of the low CPtr range. */
-    (void)it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
-                  (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
-                  (long)((uint64_t)IT_OBJ_CNODE_SLOT << 32), 256);
+    (void)it_invoke((long)IRIS_CPTR_TEST_UNTYPED, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)), (long)((uint64_t)IT_OBJ_CNODE_SLOT << 32), 256);
 
     /* Stage 7 Step 13: and one for the child threads the suite supervises.
      * Separate from the objects CNode because it must hold as many entries as
      * the suite holds children — 48 in T240 — which is more leaves than the
      * objects CNode has spare. */
-    (void)it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
-                  (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
-                  (long)((uint64_t)IT_CHILD_CN_SLOT << 32),
-                  (long)IT_CHILD_CN_SLOTS);
+    (void)it_invoke((long)IRIS_CPTR_TEST_UNTYPED, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)), (long)((uint64_t)IT_CHILD_CN_SLOT << 32), (long)IT_CHILD_CN_SLOTS);
 
     {
         /* Phase S4: device caps are published into a CSpace slot as MDB

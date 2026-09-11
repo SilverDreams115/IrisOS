@@ -2630,6 +2630,7 @@ int it_sched_ext4(uint32_t w4[5]);
 int it_sched_ext5(uint32_t w5[5]);
 int it_setup_self_vspace(void);
 long it_map_fixup(long nr, long a0, long a1, long a2, long a3);
+long it_map_fixup_inv(unsigned long label, long c, long a1, long a2, long a3);
 long it_cspace_self(void);
 long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg);
 long it_thread_ipc_buffer(long tcb);
@@ -2989,6 +2990,29 @@ static inline long it_sys4(long nr, long a0, long a1, long a2, long a3) {
     if (r == (long)IRIS_ERR_MISSING_TABLE) r = it_map_fixup(nr, a0, a1, a2, a3);
     return r;
 }
+
+/*
+ * ── Ledger A-31: the suite invokes capabilities ──────────────────────────
+ *
+ * `it_sysN(SYS_X, cap, …)` becomes `it_invokeN(cap, INV_X, …)`.  The shape of
+ * a call site changes in one way that is the whole point of the conversion:
+ * the capability is no longer an argument that happens to come first, it is
+ * what is being invoked, and the method cannot be named without it.
+ *
+ * The MISSING_TABLE fixup rides along unchanged — a map into a window with no
+ * paging levels under it is answered by supplying them and retrying, and that
+ * is a property of mapping rather than of how the map was named.
+ */
+static inline long it_invoke(long c, unsigned long label,
+                             long a1, long a2, long a3) {
+    long r = iris_invoke(c, label, a1, a2, a3);
+    if (r == (long)IRIS_ERR_MISSING_TABLE)
+        r = it_map_fixup_inv(label, c, a1, a2, a3);
+    return r;
+}
+static inline long it_invoke0(long c, unsigned long l) { return it_invoke(c, l, 0, 0, 0); }
+static inline long it_invoke1(long c, unsigned long l, long a1) { return it_invoke(c, l, a1, 0, 0); }
+static inline long it_invoke2(long c, unsigned long l, long a1, long a2) { return it_invoke(c, l, a1, a2, 0); }
 static inline uint8_t t28_pat(uint64_t i)    { return (uint8_t)((i * 31u + 7u) & 0xFFu); }
 static inline uint8_t t28_pat2(uint64_t i)   { return (uint8_t)((i * 17u + 101u) & 0xFFu); }
 static inline uint8_t t28_patseg(uint64_t i) { return (uint8_t)((i * 13u + 0x40u) & 0xFFu); }

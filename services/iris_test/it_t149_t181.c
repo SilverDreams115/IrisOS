@@ -34,12 +34,12 @@ void test_t149(void) {
     struct IrisMsg m; it_iris_msg_zero(&m);
 
     /* Wrong-type: endpoint op on a notification and vice-versa. */
-    if (ok && it_sys2(SYS_EP_SEND, no, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "ep_send on notif"; }
-    if (ok && it_sys2(SYS_EP_NB_SEND, no, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "nb_send on notif"; }
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, ep, 1) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "signal on ep"; }
+    if (ok && it_invoke1(no, INV_EP_SEND, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "ep_send on notif"; }
+    if (ok && it_invoke1(no, INV_EP_NB_SEND, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "nb_send on notif"; }
+    if (ok && it_invoke1(ep, INV_NOTIFY_SIGNAL, 1) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "signal on ep"; }
     /* Stage 7 Step 13: killing names a THREAD, and the TCB family answers
      * INVALID_ARG for an argument that is not one. */
-    if (ok && it_sys1(SYS_TCB_EXIT, ep) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "kill on ep"; }
+    if (ok && it_invoke0(ep, INV_TCB_EXIT) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "kill on ep"; }
     if (ok && it_retype_slot_alloc(no, IT_KOBJ_FRAME, 4096) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "retype on notif"; }
     /* (frame_map wrong-type coverage against a real VSpace is in T151/T152.) */
 
@@ -48,12 +48,11 @@ void test_t149(void) {
      * a NON-NEGATIVE return would mean a hostile handle was honoured. */
     for (int i = 0; ok && i < IT_FZ_BAD_H_N; i++) {
         long h = it_fz_bad_handles[i];
-        if (it_sys1(SYS_CAP_IDENTIFY, h) >= 0)                { ok = 0; why = "identify honoured bad"; break; }
-        if (it_sys2(SYS_NOTIFY_SIGNAL, h, 1) >= 0)            { ok = 0; why = "signal honoured bad"; break; }
-        if (it_sys2(SYS_EP_SEND, h, (long)&m) >= 0)           { ok = 0; why = "ep_send honoured bad"; break; }
-        if (it_sys1(SYS_TCB_EXIT, h) >= 0)                    { ok = 0; why = "kill honoured bad"; break; }
-        if (it_sys3(SYS_CSPACE_MINT, h, (long)((uint64_t)IT_SCRATCH_0 << 32),
-                    (long)RIGHT_READ) >= 0)                   { ok = 0; why = "mint honoured bad"; break; }
+        if (it_invoke0(h, INV_CAP_IDENTIFY) >= 0)                { ok = 0; why = "identify honoured bad"; break; }
+        if (it_invoke1(h, INV_NOTIFY_SIGNAL, 1) >= 0)            { ok = 0; why = "signal honoured bad"; break; }
+        if (it_invoke1(h, INV_EP_SEND, (long)&m) >= 0)           { ok = 0; why = "ep_send honoured bad"; break; }
+        if (it_invoke0(h, INV_TCB_EXIT) >= 0)                    { ok = 0; why = "kill honoured bad"; break; }
+        if (it_invoke2(h, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_0 << 32), (long)RIGHT_READ) >= 0)                   { ok = 0; why = "mint honoured bad"; break; }
         if (it_retype_slot_alloc(h, IT_KOBJ_FRAME, 4096) >= 0) { ok = 0; why = "retype honoured bad"; break; }
     }
 
@@ -65,7 +64,7 @@ void test_t149(void) {
         if (d < 0) { ok = 0; why = "derive for stale"; }
         else {
             it_slot_delete((uint32_t)d);
-            if (it_sys1(SYS_CAP_IDENTIFY, d) != (long)IRIS_ERR_NOT_FOUND) {
+            if (it_invoke0(d, INV_CAP_IDENTIFY) != (long)IRIS_ERR_NOT_FOUND) {
                 ok = 0; why = "released cap still resolves";
             }
         }
@@ -109,7 +108,7 @@ void test_t150(void) {
 
     /* SYS_SCHED_INFO writes a buffer: every hostile dst → INVALID_ARG. */
     for (int i = 0; ok && i < NB; i++) {
-        if (it_sys3(SYS_SCHED_INFO, bad_ptr[i], 184, (long)IRIS_CPTR_DEBUG_CONTROL) != (long)IRIS_ERR_INVALID_ARG) {
+        if (it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, bad_ptr[i], 184) != (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "sched_info bad dst"; break;
         }
     }
@@ -133,12 +132,12 @@ void test_t150(void) {
      * "skip this field" and is legal), so only a NON-NULL hostile pointer must
      * fail INVALID_ARG.  Index 0 is the null case and is skipped. */
     for (int i = 1; ok && i < NB; i++) {
-        if (it_sys3(SYS_UNTYPED_INFO, IT_UT, 0, bad_ptr[i]) != (long)IRIS_ERR_INVALID_ARG) {
+        if (it_invoke2(IT_UT, INV_UNTYPED_INFO, 0, bad_ptr[i]) != (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "untyped_info bad dst"; break;
         }
     }
     /* Both-null is the legal "just validate the cap" call → success. */
-    if (ok && it_sys3(SYS_UNTYPED_INFO, IT_UT, 0, 0) != 0) { ok = 0; why = "untyped_info null-null not ok"; }
+    if (ok && it_invoke2(IT_UT, INV_UNTYPED_INFO, 0, 0) != 0) { ok = 0; why = "untyped_info null-null not ok"; }
     /* A-24: SYS_NOTIFY_WAIT and SYS_NOTIFY_POLL write out_bits, and both
      * validate the pointer BEFORE they block or consume anything — so a
      * hostile destination costs a waiter neither its signal nor its slot.  The
@@ -150,9 +149,9 @@ void test_t150(void) {
         handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
         if (no < 0) { ok = 0; why = "notif fixture"; }
         for (int i = 0; ok && i < NB; i++) {
-            if (it_sys2(SYS_NOTIFY_POLL, no, bad_ptr[i])
+            if (it_invoke1(no, INV_NOTIFY_POLL, bad_ptr[i])
                 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "notify_wait bad out"; break; }
-            if (it_sys2(SYS_NOTIFY_WAIT, no, bad_ptr[i])
+            if (it_invoke1(no, INV_NOTIFY_WAIT, bad_ptr[i])
                 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "notify_wait bad out"; break; }
         }
         it_close(&no_h);
@@ -163,7 +162,7 @@ void test_t150(void) {
         handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
         if (ep < 0) { ok = 0; why = "ep fixture"; }
         for (int i = 0; ok && i < NB; i++) {
-            if (it_sys2(SYS_EP_NB_SEND, ep, bad_ptr[i]) != (long)IRIS_ERR_INVALID_ARG) {
+            if (it_invoke1(ep, INV_EP_NB_SEND, bad_ptr[i]) != (long)IRIS_ERR_INVALID_ARG) {
                 ok = 0; why = "ep_send bad msg"; break;
             }
         }
@@ -175,11 +174,11 @@ void test_t150(void) {
      * buffer. */
     if (ok) {
         uint8_t buf[184];
-        if (it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 0, (long)IRIS_CPTR_DEBUG_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size 0"; }
-        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 8, (long)IRIS_CPTR_DEBUG_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size below base"; }
-        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 0x7FFFFFFFL, (long)IRIS_CPTR_DEBUG_CONTROL) != 0) { ok = 0; why = "huge size not clamped"; }
+        if (it_invoke1((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size 0"; }
+        if (ok && it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 8) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size below base"; }
+        if (ok && it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 0x7FFFFFFFL) != 0) { ok = 0; why = "huge size not clamped"; }
         /* A valid call still works — reject paths left nothing wedged. */
-        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 184, (long)IRIS_CPTR_DEBUG_CONTROL) != 0) { ok = 0; why = "valid after fuzz"; }
+        if (ok && it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 184) != 0) { ok = 0; why = "valid after fuzz"; }
     }
 
     it_quiesce_reaper();
@@ -206,22 +205,18 @@ void test_t151(void) {
         op = 1;
         if (it_retype_slot_alloc(IT_UT, 0x7777u, 4096) >= 0) { ok = 0; why = "bad-type retype ok"; break; }
         op = 2;
-        if (it_sys4(SYS_FRAME_MAP, IT_UT, IT_VS, (long)va, (long)IT_MAP_W) >= 0) { ok = 0; why = "map wrong-type ok"; break; }
+        if (it_invoke(IT_UT, INV_FRAME_MAP, IT_VS, (long)va, (long)IT_MAP_W) >= 0) { ok = 0; why = "map wrong-type ok"; break; }
         op = 3;
         /* Phase S4 (Step 3): the CSpace forms must reject a stale/empty slot
          * just as cleanly, and a HANDLE value outright (namespace split). */
         it_slot_delete(IT_SCRATCH_3);
-        if (it_sys3(SYS_CSPACE_MINT, (long)IT_SCRATCH_3,
-                    (long)((uint64_t)IT_SCRATCH_2 << 32),
-                    (long)RIGHT_READ) >= 0) { ok = 0; why = "derive stale ok"; break; }
-        if (it_sys3(SYS_CSPACE_MINT, 9000L,
-                    (long)((uint64_t)IT_SCRATCH_2 << 32),
-                    (long)RIGHT_READ) >= 0) { ok = 0; why = "derive by handle ok"; break; }
+        if (it_invoke2((long)IT_SCRATCH_3, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_2 << 32), (long)RIGHT_READ) >= 0) { ok = 0; why = "derive stale ok"; break; }
+        if (it_invoke2(9000L, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_2 << 32), (long)RIGHT_READ) >= 0) { ok = 0; why = "derive by handle ok"; break; }
         op = 4;
-        if (it_sys1(SYS_CSPACE_REVOKE, (long)IT_SCRATCH_3) >= 0) { ok = 0; why = "revoke stale ok"; break; }
+        if (it_invoke0((long)IT_SCRATCH_3, INV_CSPACE_REVOKE) >= 0) { ok = 0; why = "revoke stale ok"; break; }
         /* A HANDLE value must be refused: build a well-formed one rather than
          * a bare large integer, which is a legitimate CPtr now. */
-        if (it_sys1(SYS_CSPACE_REVOKE, (long)handle_id_make(8u, 1u)) >= 0) { ok = 0; why = "revoke by handle ok"; break; }
+        if (it_invoke0((long)handle_id_make(8u, 1u), INV_CSPACE_REVOKE) >= 0) { ok = 0; why = "revoke by handle ok"; break; }
         op = 5;
         /* Stage 7 Step 7: a random CPTR, not a random id.  An unoccupied slot
          * resolves to NOT_FOUND and an occupied one to the wrong type, and
@@ -233,8 +228,7 @@ void test_t151(void) {
              * resume a thread. */
             struct IrisMsg rm;
             it_iris_msg_zero(&rm);
-            long rr = it_sys2(SYS_REPLY, (long)(fz_rand() & 0x3FFu),
-                              (long)(uintptr_t)&rm);
+            long rr = it_invoke1((long)(fz_rand() & 0x3FFu), INV_REPLY_SEND, (long)(uintptr_t)&rm);
             if (rr >= 0) { ok = 0; why = "random cptr resumed something"; break; }
         }
         op = 6;
@@ -258,14 +252,14 @@ void test_t151(void) {
 
         op = 12;
         if ((fz_rand() & 1u)) {
-            if (it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)va, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; }
+            if (it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)va, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; }
             /* occupied VA is BUSY, not a silent overwrite */
-            if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)va, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) { ok = 0; why = "occupied not BUSY"; }
-            if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)va) != 0) { ok = 0; why = "unmap"; }
+            if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)va, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) { ok = 0; why = "occupied not BUSY"; }
+            if (ok && it_invoke2((long)fr, INV_FRAME_UNMAP, IT_VS, (long)va) != 0) { ok = 0; why = "unmap"; }
         }
         op = 13;
         if (ok && (fz_rand() & 1u)) {
-            if (it_sys2(SYS_NOTIFY_SIGNAL, (long)no, 1) != 0) { ok = 0; why = "signal"; }
+            if (it_invoke1((long)no, INV_NOTIFY_SIGNAL, 1) != 0) { ok = 0; why = "signal"; }
             uint64_t bits = 0;
             if (ok && it_wait_timeout( (long)no, (long)(uintptr_t)&bits, 500000000L) != 0) { ok = 0; why = "wait"; }
         }
@@ -303,13 +297,13 @@ void test_t152(void) {
     handle_id_t fr = (r != HANDLE_INVALID) ? (handle_id_t)r : HANDLE_INVALID;
     if (fr == HANDLE_INVALID) { it_fail("T152", "retype"); return; }
     struct it_snap mid;
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)VA, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; }
+    if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)VA, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; }
     mid = it_snap_take();
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)VA, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) { ok = 0; why = "occupied not BUSY"; }
+    if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)VA, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) { ok = 0; why = "occupied not BUSY"; }
     /* BUSY must have changed nothing since mid. */
     { struct it_snap now = it_snap_take(); const char *w2;
       if (ok && !it_snap_baseline(&mid, &now, &w2)) { ok = 0; why = "BUSY mutated state"; } }
-    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)VA) != 0) { ok = 0; why = "unmap"; }
+    if (ok && it_invoke2((long)fr, INV_FRAME_UNMAP, IT_VS, (long)VA) != 0) { ok = 0; why = "unmap"; }
 
     /* Missing rights: RIGHT_READ frame cap cannot map writable — ACCESS_DENIED,
      * no PTE born; a following writable map with a full cap works. */
@@ -317,19 +311,19 @@ void test_t152(void) {
         long rd = it_cdt_reduced(fr, IT_SCRATCH_0, IT_SCRATCH_1, RIGHT_READ);
         handle_id_t fr_ro = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
         if (rd < 0) { ok = 0; why = "ro derive"; }
-        if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_ro, IT_VS, (long)VA, (long)IT_MAP_W) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable not denied"; }
-        if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)VA, (long)IT_MAP_W) != 0) { ok = 0; why = "valid map after deny"; }
-        if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)VA) != 0) { ok = 0; why = "unmap 2"; }
+        if (ok && it_invoke((long)fr_ro, INV_FRAME_MAP, IT_VS, (long)VA, (long)IT_MAP_W) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable not denied"; }
+        if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)VA, (long)IT_MAP_W) != 0) { ok = 0; why = "valid map after deny"; }
+        if (ok && it_invoke2((long)fr, INV_FRAME_UNMAP, IT_VS, (long)VA) != 0) { ok = 0; why = "unmap 2"; }
         it_slot_delete(IT_SCRATCH_1);
         it_slot_delete(IT_SCRATCH_0);
     }
 
     /* Invalid VA / bad size / bad pointer — each INVALID_ARG, nothing born. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)(VA | 0x40ULL), (long)IT_MAP_W) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "unaligned VA"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, 0xFFFF800000001000L, (long)IT_MAP_W) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel VA"; }
+    if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)(VA | 0x40ULL), (long)IT_MAP_W) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "unaligned VA"; }
+    if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, 0xFFFF800000001000L, (long)IT_MAP_W) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel VA"; }
     if (ok && it_retype_slot_alloc(IT_UT, IT_KOBJ_FRAME, 3) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad frame size"; }
     /* Non-null hostile out pointer (kernel half) → INVALID_ARG, nothing written. */
-    if (ok && it_sys3(SYS_UNTYPED_INFO, IT_UT, 0, 0xFFFF800000001000L) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel out ptr"; }
+    if (ok && it_invoke2(IT_UT, INV_UNTYPED_INFO, 0, 0xFFFF800000001000L) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel out ptr"; }
     /* Resume mismatch — NOT_FOUND, no state touched.  Ledger A-22: answering
      * a fault is SYS_REPLY, and an empty slot holds no reply capability.  Leaf
      * 233 is above every fault leaf in the objects CNode and nothing else
@@ -337,7 +331,7 @@ void test_t152(void) {
     {
         struct IrisMsg rm;
         it_iris_msg_zero(&rm);
-        if (ok && it_sys2(SYS_REPLY, (long)IT_OBJ_CPTR(233u), (long)(uintptr_t)&rm)
+        if (ok && it_invoke1((long)IT_OBJ_CPTR(233u), INV_REPLY_SEND, (long)(uintptr_t)&rm)
                   != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "resume mismatch"; }
     }
 
@@ -369,7 +363,7 @@ void test_t153(void) {
             /* Fault-pending waiter: register a handler, drive an invalid-VA fault. */
             long n = it_ep_create();   /* A-22: faults go to an ENDPOINT */
             n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
-            if (n < 0 || it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n, 0, 0) != 0) { ok = 0; why = "reg handler"; }
+            if (n < 0 || it_invoke(it_child_tcb((long)proc_h), INV_TCB_SET_FAULT_HANDLER, n, 0, 0) != 0) { ok = 0; why = "reg handler"; }
             if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
             if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no fault"; }
         } else {
@@ -428,20 +422,20 @@ void test_t154(void) {
     long rd = it_cs_reduce(no, RIGHT_READ);
     handle_id_t rd_h = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
     if (rd < 0) { ok = 0; why = "read dup"; }
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, rd, 1) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read cap signalled"; }
+    if (ok && it_invoke1(rd, INV_NOTIFY_SIGNAL, 1) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read cap signalled"; }
     /* Re-deriving from the reduced cap cannot recover RIGHT_WRITE: either the
      * derive is rejected, or it yields a cap that STILL cannot signal. */
     if (ok) {
         long wr = it_cs_reduce(rd, RIGHT_READ | RIGHT_WRITE);
         if (wr >= 0) {
             handle_id_t wr_h = (handle_id_t)wr;
-            if (it_sys2(SYS_NOTIFY_SIGNAL, wr, 1) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights amplified via re-derive"; }
+            if (it_invoke1(wr, INV_NOTIFY_SIGNAL, 1) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights amplified via re-derive"; }
             it_close(&wr_h);
         }
     }
     /* The original full cap still signals — the reduced cap's failures did not
      * corrupt the object. */
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, no, 1) != 0) { ok = 0; why = "full cap broken"; }
+    if (ok && it_invoke1(no, INV_NOTIFY_SIGNAL, 1) != 0) { ok = 0; why = "full cap broken"; }
     if (ok) { uint64_t bits = 0; (void)it_wait_timeout( no, (long)(uintptr_t)&bits, 100000000L); }
 
     /* Frame rights: RIGHT_READ frame cap maps non-writable but is denied a
@@ -454,9 +448,9 @@ void test_t154(void) {
         long dr = ok ? it_cdt_reduced(fr, IT_SCRATCH_0, IT_SCRATCH_1, RIGHT_READ) : -1;
         handle_id_t fr_ro = (dr >= 0) ? (handle_id_t)dr : HANDLE_INVALID;
         if (ok && dr < 0) { ok = 0; why = "ro derive"; }
-        if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_ro, IT_VS, (long)VA, (long)IT_MAP_W) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable map"; }
-        if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_ro, IT_VS, (long)VA, 0L) != 0) { ok = 0; why = "ro readable map"; }
-        if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr_ro, IT_VS, (long)VA) != 0) { ok = 0; why = "ro unmap"; }
+        if (ok && it_invoke((long)fr_ro, INV_FRAME_MAP, IT_VS, (long)VA, (long)IT_MAP_W) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable map"; }
+        if (ok && it_invoke((long)fr_ro, INV_FRAME_MAP, IT_VS, (long)VA, 0L) != 0) { ok = 0; why = "ro readable map"; }
+        if (ok && it_invoke2((long)fr_ro, INV_FRAME_UNMAP, IT_VS, (long)VA) != 0) { ok = 0; why = "ro unmap"; }
         it_slot_delete(IT_SCRATCH_1);
         it_slot_delete(IT_SCRATCH_0);
         it_close(&fr);
@@ -488,7 +482,7 @@ void test_t155(void) {
         if (fr == HANDLE_INVALID) { ok = 0; why = "retype"; break; }
         uint64_t va = 0x80B0000000ULL + (uint64_t)(fz_rand() % 4u) * 0x1000ULL;
         op = 2;
-        if (it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)va, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; it_close(&fr); break; }
+        if (it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)va, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; it_close(&fr); break; }
         op = 3;
         if (fz_rand() & 1u) {
             long frc = it_cdt_root(fr, IT_SCRATCH_0);
@@ -499,7 +493,7 @@ void test_t155(void) {
             it_slot_delete(IT_SCRATCH_0);
         }
         op = 4;
-        if (it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)va) != 0) { ok = 0; why = "unmap"; it_close(&fr); break; }
+        if (it_invoke2((long)fr, INV_FRAME_UNMAP, IT_VS, (long)va) != 0) { ok = 0; why = "unmap"; it_close(&fr); break; }
         it_close(&fr);
 
         /* Notification rendezvous. */
@@ -507,7 +501,7 @@ void test_t155(void) {
         long nn = it_notify_create();
         handle_id_t no = (nn >= 0) ? (handle_id_t)nn : HANDLE_INVALID;
         if (no != HANDLE_INVALID && (fz_rand() & 1u)) {
-            if (it_sys2(SYS_NOTIFY_SIGNAL, (long)no, 3) != 0) { ok = 0; why = "signal"; }
+            if (it_invoke1((long)no, INV_NOTIFY_SIGNAL, 3) != 0) { ok = 0; why = "signal"; }
             uint64_t bits = 0;
             if (ok && it_wait_timeout( (long)no, (long)(uintptr_t)&bits, 500000000L) != 0) { ok = 0; why = "wait"; }
         }
@@ -533,7 +527,7 @@ void test_t155(void) {
             } else {                             /* controlled fault → kill */
                 long n = it_ep_create();   /* A-22: faults go to an ENDPOINT */
                 handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
-                if (n < 0 || it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n, 0, 0) != 0) { ok = 0; why = "reg handler"; }
+                if (n < 0 || it_invoke(it_child_tcb((long)proc_h), INV_TCB_SET_FAULT_HANDLER, n, 0, 0) != 0) { ok = 0; why = "reg handler"; }
                 if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
                 if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no fault"; }
                 struct it_fault f;
@@ -604,7 +598,7 @@ long it_lookup_rights(long svcmgr_cptr, const char *name) {
     m.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     m.buf_len  = len;
-    if (it_sys2(SYS_EP_CALL, svcmgr_cptr, (long)&m) != 0) return -1;
+    if (it_invoke1(svcmgr_cptr, INV_EP_CALL, (long)&m) != 0) return -1;
     if (m.label != IRIS_EP_REPLY_OK) return -(long)(uint32_t)m.words[0];
     if (m.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
         handle_id_t h = (handle_id_t)m.attached_handle;
@@ -621,7 +615,7 @@ static long it_svcmgr_active_slots(void) {
     it_iris_msg_zero(&m);
     m.label    = IRIS_SVCMGR_EP_DIAG;
     m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    if (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&m) != 0) return -1;
+    if (it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m) != 0) return -1;
     if (m.label != IRIS_EP_REPLY_OK || m.word_count < 2u) return -1;
     return (long)(uint32_t)m.words[1];
 }
@@ -718,7 +712,7 @@ void test_t158(void) {
     it_iris_msg_zero(&m);
     m.label    = IRIS_EP_OP_PING;
     m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    if (ok && (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_VFS_EP, (long)&m) != 0 ||
+    if (ok && (it_invoke1((long)IRIS_CPTR_VFS_EP, INV_EP_CALL, (long)&m) != 0 ||
                m.label != IRIS_EP_REPLY_OK)) { ok = 0; why = "vfs ping"; }
 
     /* A foreign registry opcode to vfs.ep must NOT be honoured as a registry
@@ -727,7 +721,7 @@ void test_t158(void) {
     m.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     m.buf_len  = it_stage_path("vfs.ep");
-    if (ok && it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_VFS_EP, (long)&m) == 0 &&
+    if (ok && it_invoke1((long)IRIS_CPTR_VFS_EP, INV_EP_CALL, (long)&m) == 0 &&
         m.label == IRIS_EP_REPLY_OK && m.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
         ok = 0; why = "vfs served a registry op";
         handle_id_t h = (handle_id_t)m.attached_handle; it_close(&h);
@@ -762,7 +756,7 @@ void test_t159(void) {
         it_iris_msg_zero(&m);
         m.label    = IRIS_EP_OP_PING;
         m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-        if (it_sys2(SYS_EP_CALL, eps[i], (long)&m) != 0 || m.label != IRIS_EP_REPLY_OK) {
+        if (it_invoke1(eps[i], INV_EP_CALL, (long)&m) != 0 || m.label != IRIS_EP_REPLY_OK) {
             ok = 0; why = "driver ping"; break;
         }
         /* Foreign registry op → must not hand back a cap. */
@@ -770,7 +764,7 @@ void test_t159(void) {
         m.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
         m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
         m.buf_len  = it_stage_path("vfs.ep");
-        if (it_sys2(SYS_EP_CALL, eps[i], (long)&m) == 0 &&
+        if (it_invoke1(eps[i], INV_EP_CALL, (long)&m) == 0 &&
             m.label == IRIS_EP_REPLY_OK && m.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
             ok = 0; why = "driver served registry op";
             handle_id_t h = (handle_id_t)m.attached_handle; it_close(&h); break;
@@ -809,7 +803,7 @@ void test_t160(void) {
     const char *const caps_why[3] = { "no proc control cap", "no test untyped",
                                       "no self proc" };
     for (int s = 0; ok && s < 3; s++) {
-        if (it_sys1(SYS_CAP_IDENTIFY, test_caps[s]) < 0) {
+        if (it_invoke0(test_caps[s], INV_CAP_IDENTIFY) < 0) {
             ok = 0; why = caps_why[s]; break;
         }
     }
@@ -852,7 +846,7 @@ void test_t161(void) {
         m.label      = IRIS_SVCMGR_EP_UNREGISTER;
         m.words[0]   = (uint32_t)id;
         m.word_count = 1u;
-        if (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&m) != 0 ||
+        if (it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m) != 0 ||
             m.label != IRIS_EP_REPLY_OK) { ok = 0; why = "unregister"; }
     }
     if (ok && it_lookup_rights((long)IRIS_CPTR_SVCMGR_EP, "t161.svc")
@@ -929,7 +923,7 @@ void test_t163(void) {
             m.label = IRIS_SVCMGR_EP_UNREGISTER;
             m.words[0] = 0x4000u + (fz_rand() & 0xFFu);
             m.word_count = 1u;
-            long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&m);
+            long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m);
             if (r == 0 && m.label == IRIS_EP_REPLY_OK) { ok = 0; why = "stale unregister accepted"; break; }
         }
         op = 3;   /* register a reserved name → ACCESS_DENIED */
@@ -940,7 +934,7 @@ void test_t163(void) {
             m.label = IRIS_SVCMGR_EP_REGISTER;
             m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
             m.buf_len = len;
-            long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&m);
+            long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m);
             if (r == 0 && m.label == IRIS_EP_REPLY_OK) { ok = 0; why = "reserved register accepted"; break; }
         }
 
@@ -960,7 +954,7 @@ void test_t163(void) {
             m.label = IRIS_SVCMGR_EP_UNREGISTER;
             m.words[0] = (uint32_t)id;
             m.word_count = 1u;
-            if (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&m) != 0 ||
+            if (it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m) != 0 ||
                 m.label != IRIS_EP_REPLY_OK) { ok = 0; why = "unregister"; it_close(&svc_ep); break; }
         }
         it_close(&svc_ep);
@@ -988,8 +982,7 @@ static uint32_t g_it_dev_next;
  * destination CPtr, or the negative error. */
 static long it_dev_mint(long src_cptr, uint32_t dest_slot, uint32_t rights) {
     it_slot_delete(dest_slot);
-    long r = it_sys3(SYS_CSPACE_MINT, src_cptr,
-                     (long)((uint64_t)dest_slot << 32), (long)rights);
+    long r = it_invoke2(src_cptr, INV_CSPACE_MINT, (long)((uint64_t)dest_slot << 32), (long)rights);
     return (r != 0) ? r : (long)dest_slot;
 }
 
@@ -1065,19 +1058,19 @@ void test_t164(void) {
     if (io == HANDLE_INVALID) { it_fail("T164", "com2 cap"); return; }
 
     /* In-range access works (COM2 is unwired: IN returns a byte, OUT is a no-op). */
-    if (ok && it_sys2(SYS_IOPORT_IN, (long)io, 5) < 0) { ok = 0; why = "in-range IN"; }
-    if (ok && it_sys3(SYS_IOPORT_OUT, (long)io, 0, 0) != 0) { ok = 0; why = "in-range OUT"; }
+    if (ok && it_invoke1((long)io, INV_IOPORT_IN, 5) < 0) { ok = 0; why = "in-range IN"; }
+    if (ok && it_invoke2((long)io, INV_IOPORT_OUT, 0, 0) != 0) { ok = 0; why = "in-range OUT"; }
     /* Out-of-range offsets → INVALID_ARG (cannot cross the granted range). */
-    if (ok && it_sys2(SYS_IOPORT_IN, (long)io, IT_COM2_COUNT) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "offset==count IN"; }
-    if (ok && it_sys2(SYS_IOPORT_IN, (long)io, 1000) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "big offset IN"; }
-    if (ok && it_sys3(SYS_IOPORT_OUT, (long)io, 1000, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "big offset OUT"; }
+    if (ok && it_invoke1((long)io, INV_IOPORT_IN, IT_COM2_COUNT) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "offset==count IN"; }
+    if (ok && it_invoke1((long)io, INV_IOPORT_IN, 1000) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "big offset IN"; }
+    if (ok && it_invoke2((long)io, INV_IOPORT_OUT, 1000, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "big offset OUT"; }
 
     /* Wrong-type cap: a notification is not a KIoPort. */
     if (ok) {
         long n = it_notify_create();
         handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
         if (n < 0) { ok = 0; why = "notif fixture"; }
-        if (ok && it_sys2(SYS_IOPORT_IN, n, 0) >= 0) { ok = 0; why = "wrong-type IN honoured"; }
+        if (ok && it_invoke1(n, INV_IOPORT_IN, 0) >= 0) { ok = 0; why = "wrong-type IN honoured"; }
         it_close(&n_h);
     }
 
@@ -1086,13 +1079,13 @@ void test_t164(void) {
         long rr = it_dev_mint((long)io, IT_DEV_MINT_A, RIGHT_READ);
         handle_id_t ro = (rr >= 0) ? (handle_id_t)rr : HANDLE_INVALID;
         if (rr < 0) { ok = 0; why = "read derive"; }
-        if (ok && it_sys3(SYS_IOPORT_OUT, ro, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "RO OUT not denied"; }
-        if (ok && it_sys2(SYS_IOPORT_IN, ro, 0) < 0) { ok = 0; why = "RO IN broken"; }
+        if (ok && it_invoke2(ro, INV_IOPORT_OUT, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "RO OUT not denied"; }
+        if (ok && it_invoke1(ro, INV_IOPORT_IN, 0) < 0) { ok = 0; why = "RO IN broken"; }
         it_close(&ro);
         long wr = it_dev_mint((long)io, IT_DEV_MINT_B, RIGHT_WRITE);
         handle_id_t wo = (wr >= 0) ? (handle_id_t)wr : HANDLE_INVALID;
         if (ok && wr < 0) { ok = 0; why = "write derive"; }
-        if (ok && it_sys2(SYS_IOPORT_IN, wo, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "WO IN not denied"; }
+        if (ok && it_invoke1(wo, INV_IOPORT_IN, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "WO IN not denied"; }
         it_close(&wo);
     }
 
@@ -1103,7 +1096,7 @@ void test_t164(void) {
         if (d < 0) { ok = 0; why = "stale mint"; }
         else {
             it_slot_delete((uint32_t)d);
-            if (it_sys2(SYS_IOPORT_IN, d, 0) >= 0) { ok = 0; why = "stale cap honoured"; }
+            if (it_invoke1(d, INV_IOPORT_IN, 0) >= 0) { ok = 0; why = "stale cap honoured"; }
         }
     }
 
@@ -1149,11 +1142,8 @@ void test_t164(void) {
          * A syscall that let ring 3 spend the KERNEL's would open a charter M3
          * hole in the same change that closed a policy one, so the budget is
          * required and is checked as a capability rather than taken on trust. */
-        if (ok && it_sys4(SYS_IOPORT_CONTROL_NARROW,
-                          (long)IRIS_CPTR_IOPORT_CONTROL,
-                          (long)((uint64_t)IT_COM2_BASE |
-                                 ((uint64_t)(IT_COM2_BASE + IT_COM2_COUNT - 1) << 16)),
-                          0L, (long)((uint64_t)IT_DEV_SLOT_B << 32))
+        if (ok && it_invoke((long)IRIS_CPTR_IOPORT_CONTROL, INV_BOOT_IOPORT_NARROW, (long)((uint64_t)IT_COM2_BASE |
+                                 ((uint64_t)(IT_COM2_BASE + IT_COM2_COUNT - 1) << 16)), 0L, (long)((uint64_t)IT_DEV_SLOT_B << 32))
                   != (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "narrowing without a budget was accepted";
         }
@@ -1165,12 +1155,8 @@ void test_t164(void) {
          * capability of the wrong kind was refused for lacking rights on a
          * kind it does not have.  seL4 checks type first, and so does the
          * resolver now: rights are a property OF a type. */
-        if (ok && it_sys4(SYS_IOPORT_CONTROL_NARROW,
-                          (long)IRIS_CPTR_IOPORT_CONTROL,
-                          (long)((uint64_t)IT_COM2_BASE |
-                                 ((uint64_t)(IT_COM2_BASE + IT_COM2_COUNT - 1) << 16)),
-                          (long)IRIS_CPTR_IOPORT_CONTROL,
-                          (long)((uint64_t)IT_DEV_SLOT_B << 32))
+        if (ok && it_invoke((long)IRIS_CPTR_IOPORT_CONTROL, INV_BOOT_IOPORT_NARROW, (long)((uint64_t)IT_COM2_BASE |
+                                 ((uint64_t)(IT_COM2_BASE + IT_COM2_COUNT - 1) << 16)), (long)IRIS_CPTR_IOPORT_CONTROL, (long)((uint64_t)IT_DEV_SLOT_B << 32))
                   != (long)IRIS_ERR_WRONG_TYPE) {
             ok = 0; why = "a non-untyped budget was accepted";
         }
@@ -1282,18 +1268,18 @@ void test_t167(void) {
 
     /* ACK with the valid IRQ cap (RIGHT_ROUTE) succeeds — unmasks the unused
      * line, harmless. */
-    if (ok && it_sys1(SYS_IRQ_ACK, (long)irq) != 0) { ok = 0; why = "valid ack"; }
+    if (ok && it_invoke0((long)irq, INV_IRQ_ACK) != 0) { ok = 0; why = "valid ack"; }
     /* ACK failure paths. */
-    if (ok && it_sys1(SYS_IRQ_ACK, (long)notif) >= 0) { ok = 0; why = "ack wrong-type honoured"; }
+    if (ok && it_invoke0((long)notif, INV_IRQ_ACK) >= 0) { ok = 0; why = "ack wrong-type honoured"; }
     if (ok) {
         /* IRQ caps carry ROUTE|DUPLICATE|TRANSFER; derive DUPLICATE-only to get
          * a cap that lacks ROUTE (a subset — never amplified). */
         long rd = it_dev_mint((long)irq, IT_DEV_MINT_A, RIGHT_DUPLICATE);
         handle_id_t irq_ro = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
         if (rd < 0) { ok = 0; why = "irq derive"; }
-        if (ok && it_sys1(SYS_IRQ_ACK, irq_ro) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-route ack not denied"; }
+        if (ok && it_invoke0(irq_ro, INV_IRQ_ACK) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-route ack not denied"; }
         /* Route with an IRQ cap lacking ROUTE → ACCESS_DENIED. */
-        if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, irq_ro, (long)notif, 0)
+        if (ok && it_invoke2(irq_ro, INV_IRQ_SET_NOTIFICATION, (long)notif, 0)
                   != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-route route not denied"; }
         it_close(&irq_ro);
     }
@@ -1302,7 +1288,7 @@ void test_t167(void) {
         long e = it_ep_create_slot();
         handle_id_t ep_h = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
         if (e < 0) { ok = 0; why = "ep fixture"; }
-        if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, (long)ep_h, 0)
+        if (ok && it_invoke2((long)irq, INV_IRQ_SET_NOTIFICATION, (long)ep_h, 0)
                   != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "route wrong-type notif"; }
         it_close(&ep_h);
     }
@@ -1311,7 +1297,7 @@ void test_t167(void) {
         long nrd = it_cs_reduce((long)notif, RIGHT_READ);
         handle_id_t n_ro = (nrd >= 0) ? (handle_id_t)nrd : HANDLE_INVALID;
         if (nrd < 0) { ok = 0; why = "notif read dup"; }
-        if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, n_ro, 0)
+        if (ok && it_invoke2((long)irq, INV_IRQ_SET_NOTIFICATION, n_ro, 0)
                   != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "route no-write notif"; }
         it_close(&n_ro);
     }
@@ -1326,7 +1312,7 @@ void test_t167(void) {
      * would keep the notification object alive, which the baseline check at
      * the end of this test sees as a notification leak.
      */
-    if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, (long)notif, 0) != 0) {
+    if (ok && it_invoke2((long)irq, INV_IRQ_SET_NOTIFICATION, (long)notif, 0) != 0) {
         ok = 0; why = "valid route denied";
     }
 
@@ -1364,12 +1350,10 @@ void test_t168(void) {
 
     struct iris_fb_params fb1, fb2;
     /* Asking twice gives the same answer: it is a question, not a claim. */
-    if (ok && it_sys3(SYS_FRAMEBUFFER_INFO, (long)IRIS_CPTR_FB_CONTROL,
-                      (long)(uintptr_t)&fb1, 0) != 0) {
+    if (ok && it_invoke2((long)IRIS_CPTR_FB_CONTROL, INV_BOOT_FRAMEBUFFER_INFO, (long)(uintptr_t)&fb1, 0) != 0) {
         ok = 0; why = "framebuffer info refused";
     }
-    if (ok && it_sys3(SYS_FRAMEBUFFER_INFO, (long)IRIS_CPTR_FB_CONTROL,
-                      (long)(uintptr_t)&fb2, 0) != 0) {
+    if (ok && it_invoke2((long)IRIS_CPTR_FB_CONTROL, INV_BOOT_FRAMEBUFFER_INFO, (long)(uintptr_t)&fb2, 0) != 0) {
         ok = 0; why = "framebuffer info was one-shot";
     }
     if (ok && (fb1.phys != fb2.phys || fb1.size != fb2.size ||
@@ -1389,7 +1373,7 @@ void test_t168(void) {
         long n = it_notify_create();
         handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
         if (n < 0) { ok = 0; why = "notif fixture"; }
-        if (ok && it_sys3(SYS_FRAMEBUFFER_INFO, n, (long)(uintptr_t)&fb1, 0)
+        if (ok && it_invoke2(n, INV_BOOT_FRAMEBUFFER_INFO, (long)(uintptr_t)&fb1, 0)
                   != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong-type got framebuffer"; }
         it_close(&n_h);
     }
@@ -1430,13 +1414,13 @@ void test_t169(void) {
         long wr = it_dev_mint((long)ro, IT_DEV_MINT_B, RIGHT_READ | RIGHT_WRITE);
         if (wr >= 0) {
             handle_id_t w_h = (handle_id_t)wr;
-            if (it_sys3(SYS_IOPORT_OUT, wr, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights amplified via re-derive"; }
+            if (it_invoke2(wr, INV_IOPORT_OUT, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights amplified via re-derive"; }
             it_close(&w_h);
         }
     }
     /* Revoke children; the READ cap must be dead afterward. */
-    if (ok && it_sys1(SYS_CSPACE_REVOKE, (long)io) < 0) { ok = 0; why = "revoke"; }
-    if (ok && it_sys2(SYS_IOPORT_IN, ro, 0) >= 0) { ok = 0; why = "revoked cap usable"; }
+    if (ok && it_invoke0((long)io, INV_CSPACE_REVOKE) < 0) { ok = 0; why = "revoke"; }
+    if (ok && it_invoke1(ro, INV_IOPORT_IN, 0) >= 0) { ok = 0; why = "revoked cap usable"; }
     it_close(&ro);
 
     /* IRQ cap: a ROUTE-less derivation cannot ack. */
@@ -1447,7 +1431,7 @@ void test_t169(void) {
         long rd = ok ? it_dev_mint((long)irq, IT_DEV_MINT_A, RIGHT_DUPLICATE) : -1;
         handle_id_t irq_ro = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
         if (ok && rd < 0) { ok = 0; why = "irq derive"; }
-        if (ok && it_sys1(SYS_IRQ_ACK, irq_ro) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "route-less ack not denied"; }
+        if (ok && it_invoke0(irq_ro, INV_IRQ_ACK) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "route-less ack not denied"; }
         it_close(&irq_ro); it_close(&irq);
     }
 
@@ -1532,7 +1516,7 @@ void test_t171(void) {
         handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
         if (io == HANDLE_INVALID) { ok = 0; why = "io cap"; break; }
         uint32_t off = fz_rand() % 32u;
-        long rin = it_sys2(SYS_IOPORT_IN, (long)io, (long)off);
+        long rin = it_invoke1((long)io, INV_IOPORT_IN, (long)off);
         if (off < (uint32_t)IT_COM2_COUNT) { if (rin < 0) { ok = 0; why = "in-range IN failed"; } }
         else { if (rin != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "out-range IN honoured"; } }
         if (!ok) { it_close(&io); break; }
@@ -1543,9 +1527,9 @@ void test_t171(void) {
             long rr = it_dev_mint((long)io, IT_DEV_MINT_A, RIGHT_READ);
             if (rr >= 0) {
                 handle_id_t ro = (handle_id_t)rr;
-                if (it_sys3(SYS_IOPORT_OUT, rr, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "RO OUT honoured"; }
-                if (ok && it_sys1(SYS_CSPACE_REVOKE, (long)io) < 0) { ok = 0; why = "revoke"; }
-                if (ok && it_sys2(SYS_IOPORT_IN, rr, 0) >= 0) { ok = 0; why = "revoked usable"; }
+                if (it_invoke2(rr, INV_IOPORT_OUT, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "RO OUT honoured"; }
+                if (ok && it_invoke0((long)io, INV_CSPACE_REVOKE) < 0) { ok = 0; why = "revoke"; }
+                if (ok && it_invoke1(rr, INV_IOPORT_IN, 0) >= 0) { ok = 0; why = "revoked usable"; }
                 it_close(&ro);
             }
         }
@@ -1568,7 +1552,7 @@ void test_t171(void) {
             long n = it_notify_create();
             if (n >= 0) {
                 handle_id_t n_h = (handle_id_t)n;
-                if (it_sys1(SYS_IRQ_ACK, n) >= 0) { ok = 0; why = "ack wrong-type honoured"; }
+                if (it_invoke0(n, INV_IRQ_ACK) >= 0) { ok = 0; why = "ack wrong-type honoured"; }
                 it_close(&n_h);
             }
         }
@@ -1596,7 +1580,7 @@ static long it_policy(const char *name, uint32_t p[6]) {
     m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     m.buf_len  = len;
     for (uint32_t i = 0; i < 6u; i++) p[i] = 0u;
-    if (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&m) != 0) return -1;
+    if (it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m) != 0) return -1;
     if (m.label != IRIS_EP_REPLY_OK) return -1;
     p[0] = (uint32_t)m.words[0];   /* alive */
     p[1] = (uint32_t)m.words[1];   /* generation */
@@ -1619,7 +1603,7 @@ long it_unregister(uint32_t dyn_id) {
     m.label      = IRIS_SVCMGR_EP_UNREGISTER;
     m.words[0]   = dyn_id;
     m.word_count = 1u;
-    if (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&m) != 0) return -1;
+    if (it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m) != 0) return -1;
     if (m.label != IRIS_EP_REPLY_OK) return -(long)(uint32_t)m.words[0];
     return 0;
 }
@@ -1680,7 +1664,7 @@ void test_t173(void) {
     msg.label = IRIS_SVCMGR_EP_RESTART;
     msg.words[0] = (uint64_t)SVCMGR_SERVICE_KBD;
     msg.word_count = 1u;
-    if (ok && (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TEST_SUPER, (long)&msg) != 0 ||
+    if (ok && (it_invoke1((long)IRIS_CPTR_TEST_SUPER, INV_EP_CALL, (long)&msg) != 0 ||
                msg.label != IRIS_EP_REPLY_OK)) { ok = 0; why = "restart denied"; }
 
     /* Poll (bounded, no sleep — each EP_CALL yields) until the new generation. */
@@ -1699,7 +1683,7 @@ void test_t173(void) {
         struct IrisMsg pm;
         it_iris_msg_zero(&pm);
         pm.label = IRIS_EP_OP_PING;
-        if (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_KBD_EP, (long)&pm) != 0 ||
+        if (it_invoke1((long)IRIS_CPTR_KBD_EP, INV_EP_CALL, (long)&pm) != 0 ||
             pm.label != IRIS_EP_REPLY_OK) { ok = 0; why = "kbd.ep dead after restart"; }
     }
 
@@ -1828,7 +1812,7 @@ void test_t176(void) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
         m.label = 0x176;
-        long r = it_sys2(SYS_EP_NB_SEND, (long)cmd, (long)&m);
+        long r = it_invoke1((long)cmd, INV_EP_NB_SEND, (long)&m);
         if (r != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "phantom receiver after death"; }
     }
 
@@ -1985,7 +1969,7 @@ void test_t180(void) {
             m.label = IRIS_SVCMGR_EP_UNREGISTER;
             m.words[0] = 0x4000u + (fz_rand() & 0xFFu);
             m.word_count = 1u;
-            long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&m);
+            long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m);
             if (r == 0 && m.label == IRIS_EP_REPLY_OK) { ok = 0; why = "stale unregister accepted"; break; }
         }
 
@@ -2095,10 +2079,9 @@ static int t25_tgt_spawn_dest(struct t25_tgt *g, const char **why) {
      */
     long bn = (n >= 0) ? it_cs_badge(n, RIGHT_READ | RIGHT_WRITE, 1u) : -1;
     if (vs < 0 || n < 0 || w < 0 || bn < 0 ||
-        (eh = it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)g->proc),
-                      bn, 0, 0)) != 0 ||
+        (eh = it_invoke(it_child_tcb((long)g->proc), INV_TCB_SET_FAULT_HANDLER, bn, 0, 0)) != 0 ||
         (it_slot_delete((uint32_t)bn), 0) ||
-        (wt = it_sys3(SYS_TCB_WATCH, it_child_tcb((long)g->proc), w, 1)) != 0) {
+        (wt = it_invoke2(it_child_tcb((long)g->proc), INV_TCB_WATCH, w, 1)) != 0) {
         it_serial_write("[IRIS][TEST] t25 wire vs="); it_log_num((uint32_t)-vs);
         it_serial_write(" n="); it_log_num((uint32_t)-n);
         it_serial_write(" w="); it_log_num((uint32_t)-w);
@@ -2120,8 +2103,7 @@ int t25_tgt_spawn(struct t25_tgt *g, const char **why) {
     uint32_t leaf = 4u + (__atomic_fetch_add(&g_t25_fault_leaf, 1u,
                                              __ATOMIC_RELAXED) % 8u);
     g_it_fault_have[leaf] = 0u;
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT,
-                  (long)IT_FAULT_LEAF(leaf));
+    (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)IT_FAULT_LEAF(leaf));
     if (!t25_tgt_spawn_dest(g, why)) return 0;
     g->fault_leaf = leaf;
     return 1;
@@ -2198,7 +2180,7 @@ long t25_serve(handle_id_t pcmd, uint32_t sub, uint32_t count,
     m.words[2] = va_ovr;
     m.words[3] = expect_cr2;
     m.word_count = 4u;
-    return it_sys2(SYS_EP_SEND, (long)pcmd, (long)&m);
+    return it_invoke1((long)pcmd, INV_EP_SEND, (long)&m);
 }
 
 long t25_xprobe(handle_id_t pcmd, uint32_t vtid, uint64_t va, uint32_t vseq) {
@@ -2209,7 +2191,7 @@ long t25_xprobe(handle_id_t pcmd, uint32_t vtid, uint64_t va, uint32_t vseq) {
     m.words[1] = va;
     m.words[2] = vseq;
     m.word_count = 3u;
-    return it_sys2(SYS_EP_SEND, (long)pcmd, (long)&m);
+    return it_invoke1((long)pcmd, INV_EP_SEND, (long)&m);
 }
 
 /*
@@ -2288,11 +2270,10 @@ int t25_wait_refault(const struct t25_tgt *g, uint32_t old_seq,
  * parent's own VSpace — frame preparation and post-mortem inspection. */
 int t25_frame_word(handle_id_t fr, uint32_t *val, int write) {
     if (!it_setup_self_vspace()) return 0;
-    if (it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T25_SELF_VA,
-                write ? 1L : 0L) != 0) return 0;
+    if (it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)T25_SELF_VA, write ? 1L : 0L) != 0) return 0;
     volatile uint32_t *p = (volatile uint32_t *)(uintptr_t)T25_SELF_VA;
     if (write) *p = *val; else *val = *p;
-    return it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T25_SELF_VA) == 0;
+    return it_invoke2((long)fr, INV_FRAME_UNMAP, IT_VS, (long)T25_SELF_VA) == 0;
 }
 
 /* ── T181: pager authority manifest ─────────────────────────────────────────
@@ -2348,7 +2329,7 @@ void test_t181(void) {
     handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
     if (ok && ro < 0) { ok = 0; why = "ro dup"; }
     /* A READ-only address space cannot be mapped into. */
-    if (ok && it_sys4(SYS_FRAME_MAP, vmo_t, ro, (long)0x80D0000000ULL, 1)
+    if (ok && it_invoke(vmo_t, INV_FRAME_MAP, ro, (long)0x80D0000000ULL, 1)
               != (long)IRIS_ERR_ACCESS_DENIED) {
         ok = 0; why = "no-write not denied";
     }
@@ -2356,8 +2337,7 @@ void test_t181(void) {
      * the answer is WRONG_TYPE.  SYS_VMO_MAP_INTO flattened it to INVALID_ARG
      * — a resolver that knew exactly what the caller named, reporting only
      * that something was wrong — and SYS_FRAME_MAP says which. */
-    if (ok && it_sys4(SYS_FRAME_MAP, vmo_t, (long)g.notif,
-                      (long)0x80D0000000ULL, 1) != (long)IRIS_ERR_WRONG_TYPE) {
+    if (ok && it_invoke(vmo_t, INV_FRAME_MAP, (long)g.notif, (long)0x80D0000000ULL, 1) != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "wrong type accepted";
     }
     /* Self stays reachable — by SYS_VSPACE_SELF, which is the capability, not

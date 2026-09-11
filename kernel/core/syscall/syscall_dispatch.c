@@ -245,10 +245,24 @@ uint64_t syscall_numbered_call_count(void) {
 static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
                                      uint64_t arg1, uint64_t arg2,
                                      uint64_t arg3, uint64_t arg4) {
-    /* The invocation door.  Everything below it is the numbered door, and
-     * every call that takes it is counted. */
+    /* The invocation door. */
     if (num == SYS_INVOKE) return syscall_invoke(arg0, arg1, arg2, arg3, arg4);
-    atomic_fetch_add_explicit(&syscall_numbered_calls, 1u, memory_order_relaxed);
+
+    /*
+     * Everything below is the numbered door, and what takes it is counted —
+     * EXCEPT the calls that are meant to stay numbers.
+     *
+     * seL4 keeps `seL4_Yield` as a real syscall because it invokes nothing;
+     * IRIS keeps `SYS_EXIT` for the same reason a thread ending itself names
+     * no object, and `SYS_CLOCK_GET` because A-27 answered it rather than
+     * retiring it.  Counting those would make the gauge measure traffic
+     * instead of migration: the suite spins on YIELD in its settle loops, and
+     * the first reading was 438,901 — almost all of it one call that is not
+     * going anywhere.  A number that cannot reach zero is not a progress bar.
+     */
+    if (num != SYS_EXIT && num != SYS_YIELD && num != SYS_CLOCK_GET)
+        atomic_fetch_add_explicit(&syscall_numbered_calls, 1u,
+                                  memory_order_relaxed);
 
     switch (num) {
         /* SYS_WRITE(0), SYS_BRK(7) — retired, fall to default */
@@ -373,6 +387,13 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_INITRD_FRAME:        return sys_initrd_frame(arg0, arg1, arg2, arg3);
         case SYS_REPLY_RECV:          return sys_reply_recv(arg0, arg1, arg2);
         default:
+            /* A number that names nothing.  It reached no method, so it does
+             * not count as a caller still using the numbered door — take the
+             * increment above back.  The distinction matters because T148
+             * fuzzes every hole in the table on purpose, and a gauge that
+             * counted those would read as if the migration had stalled. */
+            atomic_fetch_sub_explicit(&syscall_numbered_calls, 1u,
+                                      memory_order_relaxed);
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }
 }

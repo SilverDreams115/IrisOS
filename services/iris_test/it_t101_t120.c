@@ -48,7 +48,7 @@ void test_t101(void) {
             m.label           = 0x99;
             m.attached_handle = (uint32_t)d;
             m.attached_rights = RIGHT_WRITE;
-            if (it_sys2(SYS_EP_NB_SEND, (long)ep_h, (long)&m) !=
+            if (it_invoke1((long)ep_h, INV_EP_NB_SEND, (long)&m) !=
                 (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "dead waiter"; }
             if (ok && !it_slot_is_notif(d)) {
 
@@ -150,7 +150,7 @@ static void t103_sender(void) {
     m.label           = 0x103;
     m.attached_handle = (uint32_t)g_t103_dup;
     m.attached_rights = RIGHT_WRITE;
-    long r = it_sys2(SYS_EP_SEND, (long)g_t103_ep_h, (long)&m);
+    long r = it_invoke1((long)g_t103_ep_h, INV_EP_SEND, (long)&m);
     g_t103_result = (int)r;
     g_t103_done   = 1;
     it_sys1(SYS_EXIT, 0);
@@ -205,8 +205,8 @@ void test_t103(void) {
     /* And it still works: signal through it, observe on the original. */
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_SIGNAL, g_t103_dup, 1) != 0 ||
-            it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+        if (it_invoke1(g_t103_dup, INV_NOTIFY_SIGNAL, 1) != 0 ||
+            it_invoke1(n, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
             bits != 1u) { ok = 0; why = "cap dead"; }
     }
 
@@ -237,7 +237,7 @@ static void t104_caller(void) {
     m.label               = 0x104;
     m.attached_cap        = (uint32_t)g_t104_dup;
     m.attached_cap_rights = RIGHT_WRITE;
-    long r = it_sys2(SYS_EP_CALL, (long)g_t104_ep_h, (long)&m);
+    long r = it_invoke1((long)g_t104_ep_h, INV_EP_CALL, (long)&m);
     g_t104_result = (int)r;
     g_t104_done   = 1;
     it_sys1(SYS_EXIT, 0);
@@ -314,7 +314,7 @@ static void t105_caller(void) {
     it_iris_msg_zero(&m);
     m.label    = 0x105;
     m.buf_uptr = (uint64_t)(uintptr_t)rbuf;
-    long r = it_sys2(SYS_EP_CALL, (long)g_t105_ep_h, (long)&m);
+    long r = it_invoke1((long)g_t105_ep_h, INV_EP_CALL, (long)&m);
     g_t105_result = (int)(r == 0 && m.label == 0x5A5AULL);
     g_t105_done   = 1;
     it_sys1(SYS_EXIT, 0);
@@ -357,7 +357,7 @@ void test_t105(void) {
     if (ok) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
-        if (it_sys3(SYS_EP_RECV, (long)g_t105_ep_h, (long)&m, 95) != 0 ||
+        if (it_invoke2((long)g_t105_ep_h, INV_EP_RECV, (long)&m, 95) != 0 ||
             m.label != 0x105ULL || m.attached_handle == IRIS_MSG_NO_CAP) {
             ok = 0; why = "recv call";
         } else {
@@ -370,7 +370,7 @@ void test_t105(void) {
         struct IrisMsg rm;
         it_iris_msg_zero(&rm);
         rm.label = 0x5A5A;
-        if (it_sys2(SYS_REPLY, (long)reply_h, (long)&rm) != 0) {
+        if (it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&rm) != 0) {
             ok = 0; why = "first reply";
         }
         for (int i = 0; ok && i < 200 && !g_t105_done; i++)
@@ -391,7 +391,7 @@ void test_t105(void) {
         rm.label           = 0xDEAD;
         rm.attached_handle = (uint32_t)d;
         rm.attached_rights = RIGHT_WRITE;
-        if (it_sys2(SYS_REPLY, (long)reply_h, (long)&rm) !=
+        if (it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&rm) !=
             (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "not one-shot"; }
         if (ok && !it_slot_is_notif(d)) { ok = 0; why = "cap consumed"; }
 
@@ -421,7 +421,7 @@ static void t106_send_idx(int idx) {
     m.label           = 0x106;
     m.attached_handle = (uint32_t)g_t106_dup[idx];
     m.attached_rights = RIGHT_WRITE;
-    long r = it_sys2(SYS_EP_SEND, (long)g_t106_ep_h, (long)&m);
+    long r = it_invoke1((long)g_t106_ep_h, INV_EP_SEND, (long)&m);
     g_t106_result[idx] = (int)r;
     g_t106_done[idx]   = 1;
     it_sys1(SYS_EXIT, 0);
@@ -565,7 +565,7 @@ static void fz_worker(int idx) {
     for (;;) {
         struct IrisMsg c;
         it_iris_msg_zero(&c);
-        if (it_sys2(SYS_EP_RECV, (long)g_fz_ctl[idx], (long)&c) != 0) break;
+        if (it_invoke1((long)g_fz_ctl[idx], INV_EP_RECV, (long)&c) != 0) break;
         uint32_t op = (uint32_t)c.words[0];
         if (op == FZ_OP_EXIT) break;
 
@@ -574,14 +574,14 @@ static void fz_worker(int idx) {
         long r = -1;
         if (op == FZ_OP_RECV) {
             m.attached_cap = (uint32_t)c.words[1];   /* slot hint (0 = legacy) */
-            r = it_sys2(SYS_EP_RECV, (long)g_fz_data_ep, (long)&m);
+            r = it_invoke1((long)g_fz_data_ep, INV_EP_RECV, (long)&m);
         } else if (op == FZ_OP_SEND_CAP) {
             m.label = c.words[3];
             if (c.words[1]) {
                 m.attached_handle = (uint32_t)c.words[1];
                 m.attached_rights = (uint32_t)c.words[2];
             }
-            r = it_sys2(SYS_EP_SEND, (long)g_fz_data_ep, (long)&m);
+            r = it_invoke1((long)g_fz_data_ep, INV_EP_SEND, (long)&m);
         } else if (op == FZ_OP_CALL) {
             m.label = 0xF2;
             if (c.words[1]) {
@@ -589,7 +589,7 @@ static void fz_worker(int idx) {
                 m.attached_cap_rights = (uint32_t)c.words[2];
             }
             m.attached_handle = (uint32_t)c.words[3]; /* reply slot (0 = legacy) */
-            r = it_sys2(SYS_EP_CALL, (long)g_fz_data_ep, (long)&m);
+            r = it_invoke1((long)g_fz_data_ep, INV_EP_CALL, (long)&m);
         }
         g_fz_att[idx]    = m.attached_handle;
         g_fz_attcap[idx] = m.attached_cap;
@@ -635,7 +635,7 @@ static int fz_cmd(int idx, uint32_t op, uint64_t a, uint64_t b, uint64_t c) {
     m.words[3]   = c;
     m.word_count = 4u;
     g_fz_done[idx] = 0;
-    return it_sys2(SYS_EP_SEND, (long)g_fz_ctl[idx], (long)&m) == 0;
+    return it_invoke1((long)g_fz_ctl[idx], INV_EP_SEND, (long)&m) == 0;
 }
 
 /* Bounded wait for worker `idx` to publish a result. */
@@ -672,7 +672,7 @@ void test_t107(void) {
     long n     = it_notify_create_slot();     /* transferable notification */
     long ep2   = it_ep_create_slot();   /* transferable endpoint */
     /* Stage 4: invoked as a CPtr; never materialised into a handle. */
-    const long selfp = (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_PROC) >= 0)
+    const long selfp = (it_invoke0((long)IRIS_CPTR_TEST_PROC, INV_CAP_IDENTIFY) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
     handle_id_t n_h = (handle_id_t)n, ep2_h = (handle_id_t)ep2;
     g_fz_data_ep = (handle_id_t)ep;
@@ -687,7 +687,7 @@ void test_t107(void) {
             struct IrisMsg m;
             it_iris_msg_zero(&m);
             m.label = 0xF0;
-            if (it_sys2(SYS_EP_NB_SEND, (long)g_fz_data_ep, (long)&m) !=
+            if (it_invoke1((long)g_fz_data_ep, INV_EP_NB_SEND, (long)&m) !=
                 (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "nb empty"; }
 
         } else if (pick == 1u || pick == 7u) {
@@ -703,7 +703,7 @@ void test_t107(void) {
             m.label           = 0xF1;
             m.attached_handle = (uint32_t)d;
             m.attached_rights = RIGHT_WRITE;
-            if (it_sys2(SYS_EP_SEND, (long)g_fz_data_ep, (long)&m) != 0) {
+            if (it_invoke1((long)g_fz_data_ep, INV_EP_SEND, (long)&m) != 0) {
                 ok = 0; why = "send";
             }
             if (ok && !fz_wait(0)) { ok = 0; why = "worker hang"; }
@@ -712,26 +712,26 @@ void test_t107(void) {
             }
             /* I12: the CPtr is invocable. */
             if (ok && pick == 1u &&
-                it_sys2(SYS_NOTIFY_SIGNAL, (long)s, 1) != 0) {
+                it_invoke1((long)s, INV_NOTIFY_SIGNAL, 1) != 0) {
                 ok = 0; why = "cptr signal";
             }
             if (ok && pick == 1u) {
                 uint64_t bits = 0;
-                if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+                if (it_invoke1(n, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
                     bits == 0u) { ok = 0; why = "signal lost"; }
             }
             if (ok && pick == 7u) {
                 struct IrisMsg pm;
                 it_iris_msg_zero(&pm);     /* clean probe: no stale attached cap */
                 pm.label = 0xF9;
-                if (it_sys2(SYS_EP_NB_SEND, (long)s, (long)&pm) !=
+                if (it_invoke1((long)s, INV_EP_NB_SEND, (long)&pm) !=
                     (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "cptr ep"; }
             }
             /* Ledger A-29: COPY semantics — the sender KEEPS what it sent,
              * as seL4 does, and the receiver's capability is a derivation
              * child of this slot.  It used to be a move, and the delivery
              * installed the child and then deleted its parent. */
-            if (ok && it_sys1(SYS_CAP_IDENTIFY, d) < 0) {
+            if (ok && it_invoke0(d, INV_CAP_IDENTIFY) < 0) {
                 ok = 0; why = "source lost on transfer";
             }
             it_xfer_release(d);          /* meant as a give-away: drop it */
@@ -751,7 +751,7 @@ void test_t107(void) {
             m.attached_rights = RIGHT_WRITE;
             long r = (long)IRIS_ERR_WOULD_BLOCK;
             for (int i = 0; i < 400 && r == (long)IRIS_ERR_WOULD_BLOCK; i++) {
-                r = it_sys2(SYS_EP_NB_SEND, (long)g_fz_data_ep, (long)&m);
+                r = it_invoke1((long)g_fz_data_ep, INV_EP_NB_SEND, (long)&m);
                 if (r == (long)IRIS_ERR_WOULD_BLOCK) it_sys0(SYS_YIELD);
             }
             if (r != 0) { ok = 0; why = "nb send"; }
@@ -760,7 +760,7 @@ void test_t107(void) {
                 ok = 0; why = "nb slot landing";
             }
             /* A-29: NB_SEND transfers by copy too — same rule, same tree. */
-            if (ok && it_sys1(SYS_CAP_IDENTIFY, d) < 0) {
+            if (ok && it_invoke0(d, INV_CAP_IDENTIFY) < 0) {
                 ok = 0; why = "nb source lost on transfer";
             }
             it_xfer_release(d);
@@ -771,7 +771,7 @@ void test_t107(void) {
              * waiter; source kept; occupant untouched (I3, I4, I5). */
             uint32_t s = fz_slot_alloc();
             if (s == 0u) { ok = 0; why = "slot budget"; break; }
-            if (it_sys3(SYS_CSPACE_MINT, n, IT_MINT_SELF((long)s), (long)RIGHT_WRITE) != 0) { ok = 0; why = "premint"; break; }
+            if (it_invoke2(n, INV_CSPACE_MINT, IT_MINT_SELF((long)s), (long)RIGHT_WRITE) != 0) { ok = 0; why = "premint"; break; }
             if (!fz_cmd(0, FZ_OP_RECV, s, 0, 0)) { ok = 0; why = "cmd"; break; }
             if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
             if (ok && g_fz_res[0] != (long)IRIS_ERR_ALREADY_EXISTS) {
@@ -784,7 +784,7 @@ void test_t107(void) {
                 m.label           = 0xF4;
                 m.attached_handle = (uint32_t)d;
                 m.attached_rights = RIGHT_WRITE;
-                if (it_sys2(SYS_EP_NB_SEND, (long)g_fz_data_ep, (long)&m) !=
+                if (it_invoke1((long)g_fz_data_ep, INV_EP_NB_SEND, (long)&m) !=
                     (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "dead waiter"; }
                 if (ok && !it_slot_is_notif(d)) {
 
@@ -794,7 +794,7 @@ void test_t107(void) {
             }
             /* I3: the occupant is still exactly our pre-minted cap. */
             if (ok) {
-                if (it_sys2(SYS_CAP_SAME_OBJECT, (long)s, n) != 1) {
+                if (it_invoke1((long)s, INV_CAP_SAME_OBJECT, n) != 1) {
                     ok = 0; why = "occupant changed";
                 }
             }
@@ -810,7 +810,7 @@ void test_t107(void) {
             struct IrisMsg m;
             it_iris_msg_zero(&m);
             m.label = 0xF5;
-            if (ok && it_sys2(SYS_EP_NB_SEND, (long)g_fz_data_ep, (long)&m) !=
+            if (ok && it_invoke1((long)g_fz_data_ep, INV_EP_NB_SEND, (long)&m) !=
                 (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ep touched"; }
 
         } else if (pick == 5u) {
@@ -828,7 +828,7 @@ void test_t107(void) {
             m.label           = 0xF6;
             m.attached_handle = (uint32_t)d;
             m.attached_rights = RIGHT_WRITE;
-            if (it_sys2(SYS_EP_SEND, (long)g_fz_data_ep, (long)&m) != 0) {
+            if (it_invoke1((long)g_fz_data_ep, INV_EP_SEND, (long)&m) != 0) {
                 ok = 0; why = "slotless send";
             }
             if (ok && !fz_wait(0)) { ok = 0; why = "worker hang"; }
@@ -858,7 +858,7 @@ void test_t107(void) {
             m.label           = 0xF7;
             m.attached_handle = (uint32_t)bad;
             m.attached_rights = RIGHT_WRITE;
-            if (it_sys2(SYS_EP_NB_SEND, (long)g_fz_data_ep, (long)&m) !=
+            if (it_invoke1((long)g_fz_data_ep, INV_EP_NB_SEND, (long)&m) !=
                 (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no ACCESS_DENIED"; }
             if (ok && !it_slot_is_notif(bad)) {
                 ok = 0; why = "bad slot consumed";
@@ -867,7 +867,7 @@ void test_t107(void) {
             if (ok) {
                 it_iris_msg_zero(&m);
                 m.label = 0xF8;
-                if (it_sys2(SYS_EP_SEND, (long)g_fz_data_ep, (long)&m) != 0) {
+                if (it_invoke1((long)g_fz_data_ep, INV_EP_SEND, (long)&m) != 0) {
                     ok = 0; why = "plain send";
                 }
                 if (ok && !fz_wait(0)) { ok = 0; why = "worker hang"; }
@@ -987,7 +987,7 @@ void test_t108(void) {
             if (ok && g_fz_att[0] != (uint32_t)IRIS_MSG_NO_CAP) {
                 ok = 0; why = "ghost cap";
             }
-            if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)rslot) >= 0) {
+            if (ok && it_invoke0((long)rslot, INV_CAP_IDENTIFY) >= 0) {
                 ok = 0; why = "slot not empty";
             }
 
@@ -1019,7 +1019,7 @@ void test_t108(void) {
                 struct IrisMsg m;
                 it_iris_msg_zero(&m);
                 m.label = 0x308;
-                if (it_sys2(SYS_EP_SEND, (long)g_fz_data_ep, (long)&m) != 0 ||
+                if (it_invoke1((long)g_fz_data_ep, INV_EP_SEND, (long)&m) != 0 ||
                     !fz_wait(0) || g_fz_res[0] != 0 ||
                     g_fz_att[0] != (uint32_t)IRIS_MSG_NO_CAP) {
                     ok = 0; why = "ep not reusable";
@@ -1058,7 +1058,7 @@ void test_t109(void) {
     long ep    = it_ep_create_slot();
     long n     = it_notify_create_slot();
     /* Stage 4: invoked as a CPtr; never materialised into a handle. */
-    const long selfp = (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_PROC) >= 0)
+    const long selfp = (it_invoke0((long)IRIS_CPTR_TEST_PROC, INV_CAP_IDENTIFY) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
     handle_id_t n_h = (handle_id_t)n;
     g_fz_data_ep = (handle_id_t)ep;
@@ -1066,7 +1066,7 @@ void test_t109(void) {
     /* Occupied reply-slot fixture: pre-minted once, occupied forever. */
     uint32_t occ = fz_slot_alloc();
     if (occ == 0u ||
-        it_sys3(SYS_CSPACE_MINT, n, IT_MINT_SELF((long)occ), (long)RIGHT_WRITE) != 0) {
+        it_invoke2(n, INV_CSPACE_MINT, IT_MINT_SELF((long)occ), (long)RIGHT_WRITE) != 0) {
         it_fail("T109", "occ fixture"); return;
     }
     if (!fz_workers_start(1)) { it_fail("T109", "worker"); return; }
@@ -1089,11 +1089,11 @@ void test_t109(void) {
             if (ok) {
                 struct IrisMsg m;
                 it_iris_msg_zero(&m);
-                if (it_sys2(SYS_EP_NB_RECV, (long)g_fz_data_ep, (long)&m) !=
+                if (it_invoke1((long)g_fz_data_ep, INV_EP_NB_RECV, (long)&m) !=
                     (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ghost msg"; }
             }
             if (ok) {
-                if (it_sys2(SYS_CAP_SAME_OBJECT, (long)occ, n) != 1) {
+                if (it_invoke1((long)occ, INV_CAP_SAME_OBJECT, n) != 1) {
                     ok = 0; why = "occupant changed";
                 }
             }
@@ -1110,7 +1110,7 @@ void test_t109(void) {
 
         struct IrisMsg m;
         it_iris_msg_zero(&m);
-        if (it_sys3(SYS_EP_RECV, (long)g_fz_data_ep, (long)&m, 96) != 0 ||
+        if (it_invoke2((long)g_fz_data_ep, INV_EP_RECV, (long)&m, 96) != 0 ||
             m.label != 0xF2ULL ||
             m.attached_handle != 96u) {   /* Phase S1: our reply CPtr echoed */
             ok = 0; why = "recv call"; break;
@@ -1133,7 +1133,7 @@ void test_t109(void) {
                 rm.attached_handle = (uint32_t)d;
                 rm.attached_rights = RIGHT_WRITE;
             }
-            if (it_sys2(SYS_REPLY, (long)reply_h, (long)&rm) != 0) {
+            if (it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&rm) != 0) {
                 ok = 0; why = "first reply";
             }
         }
@@ -1147,11 +1147,11 @@ void test_t109(void) {
             /* I12: the reply cap landed at the declared slot, invocable. */
             if (g_fz_att[0] != s) { ok = 0; why = "slot landing"; }
             uint64_t bits = 0;
-            if (ok && (it_sys2(SYS_NOTIFY_SIGNAL, (long)s, 1) != 0 ||
-                       it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+            if (ok && (it_invoke1((long)s, INV_NOTIFY_SIGNAL, 1) != 0 ||
+                       it_invoke1(n, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
                        bits != 1u)) { ok = 0; why = "cptr dead"; }
             /* A-29: the sender keeps its copy (seL4's transfer is a COPY). */
-            if (ok && it_sys1(SYS_CAP_IDENTIFY, d) < 0) {
+            if (ok && it_invoke0(d, INV_CAP_IDENTIFY) < 0) {
                 ok = 0; why = "source lost on reply transfer";
             }
             it_xfer_release(d);
@@ -1185,7 +1185,7 @@ void test_t109(void) {
                     rm.attached_handle = (uint32_t)d2;
                     rm.attached_rights = RIGHT_WRITE;
                 }
-                if (it_sys2(SYS_REPLY, (long)reply_h, (long)&rm) !=
+                if (it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&rm) !=
                     (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "not one-shot"; }
                 if (ok && d2 >= 0 && !it_slot_is_notif(d2)) {
                     ok = 0; why = "second reply ate cap";
@@ -1239,7 +1239,7 @@ void test_t110(void) {
     long ep    = it_ep_create_slot();
     long nf    = it_notify_create_slot();
     /* Stage 4: invoked as a CPtr; never materialised into a handle. */
-    const long selfp = (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_PROC) >= 0)
+    const long selfp = (it_invoke0((long)IRIS_CPTR_TEST_PROC, INV_CAP_IDENTIFY) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
     handle_id_t ep_h = (handle_id_t)ep, nf_h = (handle_id_t)nf;
     if (ep < 0 || nf < 0 || selfp < 0) { it_fail("T110", "create"); return; }
@@ -1249,7 +1249,7 @@ void test_t110(void) {
     uint32_t nfslot = fz_slot_alloc();
     uint32_t occ    = fz_slot_alloc();
     if (nfslot == 0u || occ == 0u ||
-        it_sys3(SYS_CSPACE_MINT, nf, IT_MINT_SELF((long)occ), (long)RIGHT_WRITE) != 0) {
+        it_invoke2(nf, INV_CSPACE_MINT, IT_MINT_SELF((long)occ), (long)RIGHT_WRITE) != 0) {
         it_fail("T110", "fixtures"); return;
     }
 
@@ -1272,7 +1272,7 @@ void test_t110(void) {
                 struct IrisMsg p;                                             \
                 it_iris_msg_zero(&p);                                         \
                 p.label = 0x110;                                              \
-                if (it_sys2(SYS_EP_NB_SEND, (long)msg.attached_handle,        \
+                if (it_invoke1((long)msg.attached_handle, INV_EP_NB_SEND, \
                             (long)&p) != (long)IRIS_ERR_WOULD_BLOCK) {        \
                     ok = 0; why = "legacy cap dead";                          \
                 }                                                             \
@@ -1289,7 +1289,7 @@ void test_t110(void) {
                 msg.label != IRIS_EP_REPLY_ERR ||                             \
                 msg.words[0] != (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND) {     \
                 ok = 0; why = "not-found lookup";                             \
-            } else if (it_sys1(SYS_CAP_IDENTIFY, (long)nfslot) >= 0) {      \
+            } else if (it_invoke0((long)nfslot, INV_CAP_IDENTIFY) >= 0) {      \
                 ok = 0; why = "ghost cap";                                    \
             }                                                                 \
             exp_reply++; exp_log++;                                           \
@@ -1326,7 +1326,7 @@ void test_t110(void) {
                     struct IrisMsg p;
                     it_iris_msg_zero(&p);
                     p.label = 0x110;
-                    if (it_sys2(SYS_EP_NB_SEND, (long)s, (long)&p) !=
+                    if (it_invoke1((long)s, INV_EP_NB_SEND, (long)&p) !=
                         (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "cptr dead"; }
                     exp_slot++;
                 }
@@ -1456,7 +1456,7 @@ static int t111_round(uint32_t kind, uint32_t *exp_slot, uint32_t *exp_hand,
         if (it_lp_send_cap(ep_h, n) != 0) { ok = 0; *why = "send cap"; }
         if (ok && kind == 0u) {
             uint64_t bits = 0;
-            if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+            if (it_invoke1(n, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
                 bits != 1u) { ok = 0; *why = "x-proc signal"; }
         }
         if (ok) {
@@ -1491,7 +1491,7 @@ static int t111_round(uint32_t kind, uint32_t *exp_slot, uint32_t *exp_hand,
             struct IrisMsg p;
             it_iris_msg_zero(&p);
             p.label = 0x111;
-            if (it_sys2(SYS_EP_NB_SEND, (long)e2_h, (long)&p) !=
+            if (it_invoke1((long)e2_h, INV_EP_NB_SEND, (long)&p) !=
                 (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; *why = "parent ep broken"; }
         }
         if (ok) (*exp_slot)++;
@@ -1516,7 +1516,7 @@ static int t111_round(uint32_t kind, uint32_t *exp_slot, uint32_t *exp_hand,
                 m.label           = 0x211;
                 m.attached_handle = (uint32_t)d;
                 m.attached_rights = RIGHT_WRITE;
-                if (it_sys2(SYS_EP_NB_SEND, (long)ep_h, (long)&m) !=
+                if (it_invoke1((long)ep_h, INV_EP_NB_SEND, (long)&m) !=
                     (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; *why = "dead waiter"; }
                 if (ok && !it_slot_is_notif(d)) {
 
@@ -1593,7 +1593,7 @@ void test_t112(void) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
         m.label = 0x112;
-        if (it_sys2(SYS_EP_SEND, (long)ep_h, (long)&m) != 0) {
+        if (it_invoke1((long)ep_h, INV_EP_SEND, (long)&m) != 0) {
             ok = 0; why = "send";
         }
         if (ok && it_lp_wait_exit(proc_h) != (long)LP_EXIT_MARKER) {
@@ -1670,7 +1670,7 @@ void test_t113(void) {
     if (ok) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
-        if (it_sys3(SYS_EP_RECV, (long)ep_h, (long)&m, 97) != 0 ||
+        if (it_invoke2((long)ep_h, INV_EP_RECV, (long)&m, 97) != 0 ||
             m.label != 0x5CULL ||
             m.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
             ok = 0; why = "recv call";
@@ -1690,7 +1690,7 @@ void test_t113(void) {
         struct IrisMsg rm;
         it_iris_msg_zero(&rm);
         rm.label = 0x5A5A;
-        if (it_sys2(SYS_REPLY, (long)reply_h, (long)&rm) !=
+        if (it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&rm) !=
             (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "reply not NOT_FOUND"; }
     }
 
@@ -1705,7 +1705,7 @@ void test_t113(void) {
             rm.label           = 0xDEAD;
             rm.attached_handle = (uint32_t)d;
             rm.attached_rights = RIGHT_WRITE;
-            if (it_sys2(SYS_REPLY, (long)reply_h, (long)&rm) !=
+            if (it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&rm) !=
                 (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "2nd reply"; }
             if (ok && !it_slot_is_notif(d)) {
 
@@ -1762,7 +1762,7 @@ void test_t114(void) {
             struct IrisMsg m;
             it_iris_msg_zero(&m);
             m.label = 0x114;
-            if (it_sys2(SYS_EP_SEND, (long)ep[s], (long)&m) != 0) {
+            if (it_invoke1((long)ep[s], INV_EP_SEND, (long)&m) != 0) {
                 ok = 0; why = "exit send"; break;
             }
             if (it_lp_wait_exit(pr[s]) != (long)LP_EXIT_MARKER) {
@@ -1795,7 +1795,7 @@ void test_t114(void) {
             struct IrisMsg m;
             it_iris_msg_zero(&m);
             m.label = 0x114;
-            (void)it_sys2(SYS_EP_SEND, (long)ep[s], (long)&m);
+            (void)it_invoke1((long)ep[s], INV_EP_SEND, (long)&m);
             (void)it_lp_wait_exit(pr[s]);
         }
         it_close(&pr[s]);
@@ -1867,8 +1867,8 @@ void test_t115(void) {
             it_iris_msg_zero(&p);
             p.label = 0x115;
             long probe = (kind == 0u)
-                ? it_sys2(SYS_EP_NB_SEND, (long)ep_h, (long)&p)
-                : it_sys2(SYS_EP_NB_RECV, (long)ep_h, (long)&p);
+                ? it_invoke1((long)ep_h, INV_EP_NB_SEND, (long)&p)
+                : it_invoke1((long)ep_h, INV_EP_NB_RECV, (long)&p);
             if (probe != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "dead waiter"; }
         }
 
@@ -1910,12 +1910,9 @@ void test_t116(void) {
      * measures — that killing a child holding live caps releases every one of
      * them — does not depend on which namespace held them, and the CSpace
      * form is the only one left. */
-    if (ok && it_sys3(SYS_CSPACE_MINT, ep,
-                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), (long)T116_EP_SLOT), (long)RIGHT_WRITE) != 0) { ok = 0; why = "mint ep"; }
-    if (ok && it_sys3(SYS_CSPACE_MINT, n,
-                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), (long)T116_N_SLOT), (long)RIGHT_WRITE) != 0) { ok = 0; why = "mint n"; }
-    if (ok && it_sys3(SYS_CSPACE_MINT, vmo,
-                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), (long)T116_VMO_SLOT), (long)(RIGHT_READ | RIGHT_DUPLICATE)) != 0) {
+    if (ok && it_invoke2(ep, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), (long)T116_EP_SLOT), (long)RIGHT_WRITE) != 0) { ok = 0; why = "mint ep"; }
+    if (ok && it_invoke2(n, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), (long)T116_N_SLOT), (long)RIGHT_WRITE) != 0) { ok = 0; why = "mint n"; }
+    if (ok && it_invoke2(vmo, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), (long)T116_VMO_SLOT), (long)(RIGHT_READ | RIGHT_DUPLICATE)) != 0) {
         ok = 0; why = "share vmo";
     }
 
@@ -1930,16 +1927,16 @@ void test_t116(void) {
         struct IrisMsg p;
         it_iris_msg_zero(&p);
         p.label = 0x116;
-        if (it_sys2(SYS_EP_NB_SEND, (long)ep_h, (long)&p) !=
+        if (it_invoke1((long)ep_h, INV_EP_NB_SEND, (long)&p) !=
             (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "endpoint dead"; }
     }
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_SIGNAL, n, 4) != 0 ||
-            it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+        if (it_invoke1(n, INV_NOTIFY_SIGNAL, 4) != 0 ||
+            it_invoke1(n, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
             bits != 4u) { ok = 0; why = "notif dead"; }
     }
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, vmo) != (long)IRIS_HANDLE_TYPE_FRAME) {
+    if (ok && it_invoke0(vmo, INV_CAP_IDENTIFY) != (long)IRIS_HANDLE_TYPE_FRAME) {
         ok = 0; why = "frame dead";
     }
 
@@ -1984,7 +1981,7 @@ void test_t117(void) {
         ep[k] = (handle_id_t)e;
         if (lp_spawn_child(ep[k], &pr[k]) < 0) { ok = 0; why = "spawn"; break; }
         /* Watch each child on its own bit of the shared notification. */
-        if (it_sys3(SYS_TCB_WATCH, it_child_tcb((long)pr[k]), n, (long)(1u << k)) != 0) {
+        if (it_invoke2(it_child_tcb((long)pr[k]), INV_TCB_WATCH, n, (long)(1u << k)) != 0) {
             ok = 0; why = "watch";
         }
     }
@@ -1994,7 +1991,7 @@ void test_t117(void) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
         m.label = 0x117;
-        if (it_sys2(SYS_EP_SEND, (long)ep[0], (long)&m) != 0) { ok = 0; why = "exit send"; }
+        if (it_invoke1((long)ep[0], INV_EP_SEND, (long)&m) != 0) { ok = 0; why = "exit send"; }
     }
     if (ok && it_kill((long)pr[1]) != 0) { ok = 0; why = "kill1"; }
     if (ok && it_lp_cmd(ep[2], LP_CMD_SEND_BLOCK) != 0) { ok = 0; why = "cmd2"; }
@@ -2018,11 +2015,11 @@ void test_t117(void) {
     /* STATUS dead for all; EXIT_CODE retrievable; child 0 kept its marker. */
     for (uint32_t k = 0; ok && k < 3u; k++) {
         if (it_alive((long)pr[k]) != 0) { ok = 0; why = "status alive"; }
-        if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)pr[k])) < 0) {
+        if (ok && it_invoke0(it_child_tcb((long)pr[k]), INV_TCB_EXIT_CODE) < 0) {
             ok = 0; why = "exit code";
         }
     }
-    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)pr[0])) != (long)LP_EXIT_MARKER) {
+    if (ok && it_invoke0(it_child_tcb((long)pr[0]), INV_TCB_EXIT_CODE) != (long)LP_EXIT_MARKER) {
         ok = 0; why = "exit0 marker";
     }
 
@@ -2035,7 +2032,7 @@ void test_t117(void) {
         handle_id_t n2_h = (handle_id_t)n2;
         if (n2 < 0) { ok = 0; why = "notif2"; }
         else {
-            if (it_sys3(SYS_TCB_WATCH, it_child_tcb((long)pr[0]), n2, 0x20) != 0) {
+            if (it_invoke2(it_child_tcb((long)pr[0]), INV_TCB_WATCH, n2, 0x20) != 0) {
                 ok = 0; why = "late watch";
             }
             if (ok) {
@@ -2087,7 +2084,7 @@ void test_t118(void) {
                 struct IrisMsg m;
                 it_iris_msg_zero(&m);
                 m.label = 0x118;
-                (void)it_sys2(SYS_EP_SEND, (long)e_h, (long)&m);
+                (void)it_invoke1((long)e_h, INV_EP_SEND, (long)&m);
                 (void)it_lp_wait_exit(p_h);
             }
             it_close(&p_h);
@@ -2164,15 +2161,15 @@ static void sh_worker(uint32_t idx) {
         }
         struct IrisMsg m;
         it_iris_msg_zero(&m);
-        (void)it_sys2(SYS_EP_RECV, (long)g_sh_ep, (long)&m); /* block until released */
+        (void)it_invoke1((long)g_sh_ep, INV_EP_RECV, (long)&m); /* block until released */
     } else if (mode == SH_MODE_SC) {
-        (void)it_sys1(SYS_THREAD_SET_SC, (long)g_sh_sc);      /* bind → task ref */
+        (void)it_invoke0((long)g_sh_sc, INV_SC_SET_ON_CALLER);      /* bind → task ref */
         for (uint32_t k = 0; k < 6u; k++) { it_sys0(SYS_YIELD); g_sh_prog[idx] = k + 1u; }
     } else { /* SH_MODE_YIELD_BLOCK */
         for (uint32_t k = 0; k < 6u; k++) it_sys0(SYS_YIELD);
         struct IrisMsg m;
         it_iris_msg_zero(&m);
-        (void)it_sys2(SYS_EP_RECV, (long)g_sh_ep, (long)&m); /* block until released */
+        (void)it_invoke1((long)g_sh_ep, INV_EP_RECV, (long)&m); /* block until released */
         for (uint32_t k = 0; k < 6u; k++) it_sys0(SYS_YIELD);
         g_sh_prog[idx] = 1u;
     }
@@ -2228,7 +2225,7 @@ static int sh_release(uint32_t n) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
         m.label = 0x1719;
-        if (it_sys2(SYS_EP_SEND, (long)g_sh_ep, (long)&m) != 0) return 0;
+        if (it_invoke1((long)g_sh_ep, INV_EP_SEND, (long)&m) != 0) return 0;
     }
     return 1;
 }
@@ -2371,21 +2368,21 @@ volatile long g_t121_res[3];
  * kill-child leg below (it_lp_cmd_rslot), so T121 covers both. */
 static void t121_recv(void) {
     struct IrisMsg m; it_iris_msg_zero(&m);
-    g_t121_res[0] = it_sys2(SYS_EP_RECV, (long)g_sh_ep, (long)&m);
+    g_t121_res[0] = it_invoke1((long)g_sh_ep, INV_EP_RECV, (long)&m);
     g_sh_done[0] = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 static void t121_send(void) {
     struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x121;
-    g_t121_res[1] = it_sys2(SYS_EP_SEND, (long)g_sh_ep, (long)&m);
+    g_t121_res[1] = it_invoke1((long)g_sh_ep, INV_EP_SEND, (long)&m);
     g_sh_done[0] = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 static void t121_call(void) {
     struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x121;
-    g_t121_res[2] = it_sys2(SYS_EP_CALL, (long)g_sh_ep, (long)&m);
+    g_t121_res[2] = it_invoke1((long)g_sh_ep, INV_EP_CALL, (long)&m);
     g_sh_done[0] = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}

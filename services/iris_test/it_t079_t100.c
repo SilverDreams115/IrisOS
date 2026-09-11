@@ -18,7 +18,7 @@ void test_t079(void) {
      * on the slot, not a materialisation into a handle. */
     long selfp = -1;
     for (int i = 0; i < 50 && selfp < 0; i++) {
-        selfp = (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_PROC) >= 0)
+        selfp = (it_invoke0((long)IRIS_CPTR_TEST_PROC, INV_CAP_IDENTIFY) >= 0)
                 ? (long)IRIS_CPTR_TEST_PROC : -1;
         if (selfp < 0) it_settle(2);
     }
@@ -32,11 +32,11 @@ void test_t079(void) {
     const char *why = "map by cptr";
 
     /* Mint the frame into our own CSpace: slot 16 rw, slot 17 read-only. */
-    if (it_sys3(SYS_CSPACE_MINT, vmo, IT_MINT_SELF(T079_SLOT_RW), (long)(RIGHT_READ | RIGHT_WRITE)) != 0) { ok = 0; why = "mint rw"; }
-    if (ok && it_sys3(SYS_CSPACE_MINT, vmo, IT_MINT_SELF(T079_SLOT_RO), (long)RIGHT_READ) != 0) { ok = 0; why = "mint ro"; }
+    if (it_invoke2(vmo, INV_CSPACE_MINT, IT_MINT_SELF(T079_SLOT_RW), (long)(RIGHT_READ | RIGHT_WRITE)) != 0) { ok = 0; why = "mint rw"; }
+    if (ok && it_invoke2(vmo, INV_CSPACE_MINT, IT_MINT_SELF(T079_SLOT_RO), (long)RIGHT_READ) != 0) { ok = 0; why = "mint ro"; }
 
     /* Map by CPtr (writable) and write through the mapping. */
-    if (ok && it_sys4(SYS_FRAME_MAP, T079_SLOT_RW, IT_VS, (long)T079_VA_CPTR, 1) != 0) { ok = 0; why = "map rw"; }
+    if (ok && it_invoke(T079_SLOT_RW, INV_FRAME_MAP, IT_VS, (long)T079_VA_CPTR, 1) != 0) { ok = 0; why = "map rw"; }
     if (ok) {
         volatile uint64_t *p = (volatile uint64_t *)(uintptr_t)T079_VA_CPTR;
         *p = 0xA1C0FFEE00000079ULL;
@@ -44,20 +44,20 @@ void test_t079(void) {
     }
 
     /* Failure paths: empty slot, wrong type, insufficient rights. */
-    if (ok && it_sys4(SYS_FRAME_MAP, T079_SLOT_EMPTY, IT_VS, (long)T079_VA_HANDLE, 1) >= 0) { ok = 0; why = "empty slot mapped"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)IRIS_CPTR_TEST_FIX_A, IT_VS, (long)T079_VA_HANDLE, 1) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong type"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, T079_SLOT_RO, IT_VS, (long)T079_VA_HANDLE, 1) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable"; }
+    if (ok && it_invoke(T079_SLOT_EMPTY, INV_FRAME_MAP, IT_VS, (long)T079_VA_HANDLE, 1) >= 0) { ok = 0; why = "empty slot mapped"; }
+    if (ok && it_invoke((long)IRIS_CPTR_TEST_FIX_A, INV_FRAME_MAP, IT_VS, (long)T079_VA_HANDLE, 1) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong type"; }
+    if (ok && it_invoke(T079_SLOT_RO, INV_FRAME_MAP, IT_VS, (long)T079_VA_HANDLE, 1) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable"; }
 
     /* A second, independent capability to the same frame maps at a second VA
      * and reads back what the first mapping wrote — same physical page. */
-    if (ok && it_sys4(SYS_FRAME_MAP, vmo, IT_VS, (long)T079_VA_HANDLE, 1) != 0) { ok = 0; why = "second map"; }
+    if (ok && it_invoke(vmo, INV_FRAME_MAP, IT_VS, (long)T079_VA_HANDLE, 1) != 0) { ok = 0; why = "second map"; }
     if (ok) {
         volatile uint64_t *q = (volatile uint64_t *)(uintptr_t)T079_VA_HANDLE;
         if (*q != 0xA1C0FFEE00000079ULL) { ok = 0; why = "not the same page"; }
     }
 
-    (void)it_sys3(SYS_FRAME_UNMAP, T079_SLOT_RW, IT_VS, (long)T079_VA_CPTR);
-    (void)it_sys3(SYS_FRAME_UNMAP, vmo, IT_VS, (long)T079_VA_HANDLE);
+    (void)it_invoke2(T079_SLOT_RW, INV_FRAME_UNMAP, IT_VS, (long)T079_VA_CPTR);
+    (void)it_invoke2(vmo, INV_FRAME_UNMAP, IT_VS, (long)T079_VA_HANDLE);
     it_close(&vmo_h);
 
     if (ok) it_pass("T079"); else it_fail("T079", why);
@@ -67,7 +67,7 @@ void test_t080(void) {
     /* Stage 4: the self-process cap is invoked as a CPtr; it never becomes
      * a handle.  SYS_PROC_CSPACE_MINT resolves it through CSpace. */
     const long selfp = (long)IRIS_CPTR_TEST_PROC;
-    if (it_sys1(SYS_CAP_IDENTIFY, selfp) < 0) { it_fail("T080", "self proc cptr"); return; }
+    if (it_invoke0(selfp, INV_CAP_IDENTIFY) < 0) { it_fail("T080", "self proc cptr"); return; }
 
     long vmo = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, T080_VMO_SIZE);
     if (vmo < 0) { it_fail("T080", "frame create"); return; }
@@ -77,15 +77,15 @@ void test_t080(void) {
     const char *why = "frame family by cptr";
 
     /* Mint the VMO into our own CSpace: slot 19 rw+dup, slot 20 read-only. */
-    if (it_sys3(SYS_CSPACE_MINT, vmo, IT_MINT_SELF(T080_SLOT_RWD), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0) { ok = 0; why = "mint rwd"; }
-    if (ok && it_sys3(SYS_CSPACE_MINT, vmo, IT_MINT_SELF(T080_SLOT_RO), (long)RIGHT_READ) != 0) { ok = 0; why = "mint ro"; }
+    if (it_invoke2(vmo, INV_CSPACE_MINT, IT_MINT_SELF(T080_SLOT_RWD), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0) { ok = 0; why = "mint rwd"; }
+    if (ok && it_invoke2(vmo, INV_CSPACE_MINT, IT_MINT_SELF(T080_SLOT_RO), (long)RIGHT_READ) != 0) { ok = 0; why = "mint ro"; }
 
     /* ── SYS_FRAME_SIZE ── */
-    if (ok && it_sys1(SYS_FRAME_SIZE, T080_SLOT_RWD) != (long)T080_VMO_SIZE) { ok = 0; why = "size by cptr"; }
-    if (ok && it_sys1(SYS_FRAME_SIZE, T079_SLOT_EMPTY) >= 0) { ok = 0; why = "size of empty slot"; }
-    if (ok && it_sys1(SYS_FRAME_SIZE, (long)IRIS_CPTR_TEST_FIX_A) !=
+    if (ok && it_invoke0(T080_SLOT_RWD, INV_FRAME_SIZE) != (long)T080_VMO_SIZE) { ok = 0; why = "size by cptr"; }
+    if (ok && it_invoke0(T079_SLOT_EMPTY, INV_FRAME_SIZE) >= 0) { ok = 0; why = "size of empty slot"; }
+    if (ok && it_invoke0((long)IRIS_CPTR_TEST_FIX_A, INV_FRAME_SIZE) !=
               (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "size wrong type"; }
-    if (ok && it_sys1(SYS_FRAME_SIZE, vmo) != (long)T080_VMO_SIZE) { ok = 0; why = "size by source"; }
+    if (ok && it_invoke0(vmo, INV_FRAME_SIZE) != (long)T080_VMO_SIZE) { ok = 0; why = "size by source"; }
 
     /* SHARE/MAP_INTO target: a lifecycle_probe child (blocks in EP_RECV). */
     long ep = it_ep_create();
@@ -103,35 +103,26 @@ void test_t080(void) {
      * SYS_PROC_CSPACE_MINT asserts the same three properties against the
      * child's CSpace: a rights-carrying source delegates, a source missing
      * RIGHT_DUPLICATE is denied, and a wrong-type source is rejected. */
-    if (ok && it_sys3(SYS_CSPACE_MINT, T080_SLOT_RWD,
-                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T080_DST_SLOT), (long)(RIGHT_READ | RIGHT_WRITE)) != 0) { ok = 0; why = "delegate"; }
-    if (ok && it_sys3(SYS_CSPACE_MINT, T080_SLOT_RO,
-                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T080_DST_SLOT2), (long)RIGHT_READ)
+    if (ok && it_invoke2(T080_SLOT_RWD, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T080_DST_SLOT), (long)(RIGHT_READ | RIGHT_WRITE)) != 0) { ok = 0; why = "delegate"; }
+    if (ok && it_invoke2(T080_SLOT_RO, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T080_DST_SLOT2), (long)RIGHT_READ)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "delegate without DUP"; }
-    if (ok && it_sys3(SYS_CSPACE_MINT, (long)IRIS_CPTR_TEST_FIX_A,
-                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T080_DST_SLOT2), (long)RIGHT_READ) >= 0) { ok = 0; why = "delegate wrong type"; }
+    if (ok && it_invoke2((long)IRIS_CPTR_TEST_FIX_A, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T080_DST_SLOT2), (long)RIGHT_READ) >= 0) { ok = 0; why = "delegate wrong type"; }
 
     /* ── SYS_FRAME_MAP (vmo by CPtr; Stage 7 Step 9: the TARGET is the
      * child's address space, named directly, not its process) ── */
     long t080_vs = it_child_vspace(proc_h);
     if (ok && t080_vs < 0) { ok = 0; why = "child vspace"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, T080_SLOT_RWD, t080_vs,
-                      (long)LP_MAP_VA, 1) != 0) { ok = 0; why = "map into child"; }
+    if (ok && it_invoke(T080_SLOT_RWD, INV_FRAME_MAP, t080_vs, (long)LP_MAP_VA, 1) != 0) { ok = 0; why = "map into child"; }
     /* Same VA again → BUSY: the CPtr mapping really installed PTEs. */
-    if (ok && it_sys4(SYS_FRAME_MAP, T080_SLOT_RWD, t080_vs,
-                      (long)LP_MAP_VA, 1) != (long)IRIS_ERR_BUSY) { ok = 0; why = "remap not busy"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, T080_SLOT_RO, t080_vs,
-                      (long)(LP_MAP_VA + 0x10000ULL), 1) !=
+    if (ok && it_invoke(T080_SLOT_RWD, INV_FRAME_MAP, t080_vs, (long)LP_MAP_VA, 1) != (long)IRIS_ERR_BUSY) { ok = 0; why = "remap not busy"; }
+    if (ok && it_invoke(T080_SLOT_RO, INV_FRAME_MAP, t080_vs, (long)(LP_MAP_VA + 0x10000ULL), 1) !=
               (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro mapped writable"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, T079_SLOT_EMPTY, t080_vs,
-                      (long)(LP_MAP_VA + 0x10000ULL), 1) >= 0) { ok = 0; why = "empty slot mapped"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)IRIS_CPTR_TEST_FIX_A, t080_vs,
-                      (long)(LP_MAP_VA + 0x10000ULL), 1) !=
+    if (ok && it_invoke(T079_SLOT_EMPTY, INV_FRAME_MAP, t080_vs, (long)(LP_MAP_VA + 0x10000ULL), 1) >= 0) { ok = 0; why = "empty slot mapped"; }
+    if (ok && it_invoke((long)IRIS_CPTR_TEST_FIX_A, INV_FRAME_MAP, t080_vs, (long)(LP_MAP_VA + 0x10000ULL), 1) !=
               (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "map wrong type"; }
     /* ...and a PROCESS capability is no longer accepted as the target: the
      * argument names an address space, and a process is not one. */
-    if (ok && it_sys4(SYS_FRAME_MAP, T080_SLOT_RWD, (long)proc_h,
-                      (long)(LP_MAP_VA + 0x20000ULL), 1) !=
+    if (ok && it_invoke(T080_SLOT_RWD, INV_FRAME_MAP, (long)proc_h, (long)(LP_MAP_VA + 0x20000ULL), 1) !=
               (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "process as vspace"; }
 
     /* Cleanup: kill the child (auto-unmaps, T076-proven), close everything —
@@ -166,10 +157,9 @@ void test_t081(void) {
      * itself part of what this test is for. */
     long ctcb = it_child_tcb(proc_h);
     if (ctcb == 0) { ok = 0; why = "no child thread"; }
-    if (ok && it_sys3(SYS_CSPACE_MINT, ctcb, IT_MINT_SELF(T081_SLOT_PROC), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
+    if (ok && it_invoke2(ctcb, INV_CSPACE_MINT, IT_MINT_SELF(T081_SLOT_PROC), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
         { ok = 0; why = "mint full"; }
-    if (ok && it_sys3(SYS_CSPACE_MINT, ctcb, IT_MINT_SELF(T081_SLOT_RO),
-                      (long)(RIGHT_READ | RIGHT_DUPLICATE)) != 0)
+    if (ok && it_invoke2(ctcb, INV_CSPACE_MINT, IT_MINT_SELF(T081_SLOT_RO), (long)(RIGHT_READ | RIGHT_DUPLICATE)) != 0)
         { ok = 0; why = "mint ro"; }
     /* ...and a mint cannot amplify.  Asking for rights the source does not
      * hold does not fail — seL4's rule is that rights only ever narrow, so the
@@ -179,15 +169,14 @@ void test_t081(void) {
     long camp = ok ? it_cs_reduce(T081_SLOT_RO,
                                   RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE) : -1;
     if (ok && camp < 0) { ok = 0; why = "mint amplify"; }
-    if (ok && it_sys1(SYS_TCB_EXIT, camp) != (long)IRIS_ERR_ACCESS_DENIED)
+    if (ok && it_invoke0(camp, INV_TCB_EXIT) != (long)IRIS_ERR_ACCESS_DENIED)
         { ok = 0; why = "mint amplified"; }
 
     /* Authority not relaxed: minting INTO the child through a READ-only
      * capability to its root CNode (no RIGHT_WRITE) must be denied. */
     long cro = it_cs_reduce(IT_CHILD_CN_CPTR(0), RIGHT_READ);
     if (ok && cro < 0) { ok = 0; why = "reduce child cnode"; }
-    if (ok && it_sys3(SYS_CSPACE_MINT, (long)proc_h,
-                      IT_MINT_INTO(cro, 60L), (long)RIGHT_READ) != (long)IRIS_ERR_ACCESS_DENIED)
+    if (ok && it_invoke2((long)proc_h, INV_CSPACE_MINT, IT_MINT_INTO(cro, 60L), (long)RIGHT_READ) != (long)IRIS_ERR_ACCESS_DENIED)
         { ok = 0; why = "mint into ro cnode"; }
 
     /* Liveness by CPtr: alive via both slots; empty / wrong-type fail. */
@@ -202,7 +191,7 @@ void test_t081(void) {
      * reads a thread's fault any more, because the fault is a message its
      * handler received.  What survives is the assertion that the number is
      * gone for everyone, whatever they hold. */
-    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb(proc_h)) !=
+    if (ok && it_invoke0(it_child_tcb(proc_h), INV_TCB_EXIT_CODE) !=
               (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "exit code alive"; }
     {
         static uint8_t fault_buf[32];
@@ -215,7 +204,7 @@ void test_t081(void) {
      * Stage 7: the THREAD_START half of this check retired with the syscall —
      * a spawned process's first thread is composed from capabilities now, and
      * T297 is where that authority is checked. */
-    if (ok && it_sys1(SYS_TCB_EXIT, T081_SLOT_RO) !=
+    if (ok && it_invoke0(T081_SLOT_RO, INV_TCB_EXIT) !=
               (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro killed"; }
     if (ok && it_sys4(SYS_THREAD_START, T081_SLOT_RO, 0x8000200000L,
                       0x8000300000L, 0) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "thread_start ro"; }
@@ -224,9 +213,9 @@ void test_t081(void) {
     long n = it_notify_create();
     handle_id_t watch_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
     if (watch_h == HANDLE_INVALID) { ok = 0; why = "notify"; }
-    if (ok && it_sys3(SYS_TCB_WATCH, it_child_tcb(proc_h), (long)watch_h, 1) != 0)
+    if (ok && it_invoke2(it_child_tcb(proc_h), INV_TCB_WATCH, (long)watch_h, 1) != 0)
         { ok = 0; why = "watch"; }
-    if (ok && it_sys1(SYS_TCB_EXIT, T081_SLOT_PROC) != 0) { ok = 0; why = "kill"; }
+    if (ok && it_invoke0(T081_SLOT_PROC, INV_TCB_EXIT) != 0) { ok = 0; why = "kill"; }
     if (ok) {
         uint64_t bits = 0;
         if (it_wait_timeout( (long)watch_h,
@@ -237,8 +226,8 @@ void test_t081(void) {
     /* Dead child by CPtr: STATUS 0, EXIT_CODE readable, KILL idempotent,
      * and the retired THREAD_START answers NOT_SUPPORTED whatever it is given. */
     if (ok && it_tcb_alive(T081_SLOT_PROC) != 0) { ok = 0; why = "dead still alive"; }
-    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb(proc_h)) < 0) { ok = 0; why = "exit code dead"; }
-    if (ok && it_sys1(SYS_TCB_EXIT, T081_SLOT_PROC) != 0) { ok = 0; why = "kill not idempotent"; }
+    if (ok && it_invoke0(it_child_tcb(proc_h), INV_TCB_EXIT_CODE) < 0) { ok = 0; why = "exit code dead"; }
+    if (ok && it_invoke0(T081_SLOT_PROC, INV_TCB_EXIT) != 0) { ok = 0; why = "kill not idempotent"; }
     if (ok && it_sys4(SYS_THREAD_START, T081_SLOT_PROC, 0x8000200000L,
                       0x8000300000L, 0) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "thread_start dead"; }
 
@@ -273,19 +262,17 @@ void test_t082(void) {
     int ok = 1;
 
     /* Mint fixtures (target proc by CPtr 25): VMO → 23, child proc → 24. */
-    if (it_sys3(SYS_CSPACE_MINT, vmo, IT_MINT_SELF(T082_SLOT_VMO), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
+    if (it_invoke2(vmo, INV_CSPACE_MINT, IT_MINT_SELF(T082_SLOT_VMO), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
         ok = 0;
-    if (ok && it_sys3(SYS_CSPACE_MINT, (long)proc_h, IT_MINT_SELF(T082_SLOT_PROC), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE |
+    if (ok && it_invoke2((long)proc_h, INV_CSPACE_MINT, IT_MINT_SELF(T082_SLOT_PROC), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE |
                              RIGHT_DUPLICATE)) != 0) ok = 0;
 
     /* MAP_INTO: VMO by CPtr + ADDRESS SPACE by CPtr; repeat → BUSY (PTEs
      * real).  Stage 7 Step 9: the target argument is the VSpace. */
     long t082_vs = it_child_vspace(proc_h);
     if (ok && t082_vs < 0) ok = 0;
-    if (ok && it_sys4(SYS_FRAME_MAP, T082_SLOT_VMO, t082_vs,
-                      (long)LP_MAP_VA, 1) != 0) ok = 0;
-    if (ok && it_sys4(SYS_FRAME_MAP, T082_SLOT_VMO, t082_vs,
-                      (long)LP_MAP_VA, 1) != (long)IRIS_ERR_BUSY) ok = 0;
+    if (ok && it_invoke(T082_SLOT_VMO, INV_FRAME_MAP, t082_vs, (long)LP_MAP_VA, 1) != 0) ok = 0;
+    if (ok && it_invoke(T082_SLOT_VMO, INV_FRAME_MAP, t082_vs, (long)LP_MAP_VA, 1) != (long)IRIS_ERR_BUSY) ok = 0;
 
     /* Cross-CSpace placement: the destination CNODE by CPtr, into the child's
      * CSpace.  SYS_VMO_SHARE and SYS_HANDLE_INSERT covered this by writing the
@@ -293,9 +280,7 @@ void test_t082(void) {
      * child's PROCESS to reach a CSpace the caller did not hold.  The property
      * under test — a destination named by CPtr really is resolved — is now
      * asserted against the thing being written. */
-    if (ok && it_sys3(SYS_CSPACE_MINT, T082_SLOT_VMO,
-                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T080_DST_SLOT),
-                      (long)(RIGHT_READ | RIGHT_WRITE)) != 0) ok = 0;
+    if (ok && it_invoke2(T082_SLOT_VMO, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T080_DST_SLOT), (long)(RIGHT_READ | RIGHT_WRITE)) != 0) ok = 0;
 
     /* Authority not relaxed.  Stage 7 Step 9 moved the target from the process
      * to the address space, so the denial moved with it: a VSpace capability
@@ -304,23 +289,18 @@ void test_t082(void) {
     {
         long vs_ro = (t082_vs >= 0) ? it_cs_reduce(t082_vs, RIGHT_READ) : -1;
         if (ok && vs_ro < 0) ok = 0;
-        if (ok && it_sys4(SYS_FRAME_MAP, T082_SLOT_VMO, vs_ro,
-                          (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_ACCESS_DENIED)
+        if (ok && it_invoke(T082_SLOT_VMO, INV_FRAME_MAP, vs_ro, (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_ACCESS_DENIED)
             ok = 0;
         if (vs_ro >= 0) { handle_id_t h = (handle_id_t)vs_ro; it_close(&h); }
     }
-    if (ok && it_sys4(SYS_FRAME_MAP, T082_SLOT_VMO, (long)IRIS_CPTR_TEST_PROC,
-                      (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_WRONG_TYPE)
+    if (ok && it_invoke(T082_SLOT_VMO, INV_FRAME_MAP, (long)IRIS_CPTR_TEST_PROC, (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_WRONG_TYPE)
         { ok = 0; why = "process as vspace"; }
-    if (ok && it_sys4(SYS_FRAME_MAP, T082_SLOT_VMO, (long)IRIS_CPTR_TEST_FIX_A,
-                      (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_WRONG_TYPE)
+    if (ok && it_invoke(T082_SLOT_VMO, INV_FRAME_MAP, (long)IRIS_CPTR_TEST_FIX_A, (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_WRONG_TYPE)
         { ok = 0; why = "notification as vspace"; }
-    if (ok && it_sys3(SYS_CSPACE_MINT, T082_SLOT_VMO,
-                      IT_MINT_INTO(T079_SLOT_EMPTY, T080_DST_SLOT2), (long)RIGHT_READ) >= 0) ok = 0;
+    if (ok && it_invoke2(T082_SLOT_VMO, INV_CSPACE_MINT, IT_MINT_INTO(T079_SLOT_EMPTY, T080_DST_SLOT2), (long)RIGHT_READ) >= 0) ok = 0;
 
     /* The same map through the address space named directly. */
-    if (ok && it_sys4(SYS_FRAME_MAP, vmo, t082_vs,
-                      (long)T082_MAP_VA2, 1) != 0) ok = 0;
+    if (ok && it_invoke(vmo, INV_FRAME_MAP, t082_vs, (long)T082_MAP_VA2, 1) != 0) ok = 0;
 
     /* Cleanup: kill via the old handle path (still must work). */
     if (ok && it_kill((long)proc_h) != 0) ok = 0;
@@ -365,8 +345,8 @@ void test_t083(void) {
     int ok = 1;
 
     /* Mint the helper's TCB: slot 32 rw+dup, slot 33 read-only. */
-    if (it_sys3(SYS_CSPACE_MINT, (long)tcb_h, IT_MINT_SELF(T083_SLOT_TCB), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0) ok = 0;
-    if (ok && it_sys3(SYS_CSPACE_MINT, (long)tcb_h, IT_MINT_SELF(T083_SLOT_TCB_RO), (long)RIGHT_READ) != 0)
+    if (it_invoke2((long)tcb_h, INV_CSPACE_MINT, IT_MINT_SELF(T083_SLOT_TCB), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0) ok = 0;
+    if (ok && it_invoke2((long)tcb_h, INV_CSPACE_MINT, IT_MINT_SELF(T083_SLOT_TCB_RO), (long)RIGHT_READ) != 0)
         ok = 0;
 
     /* GET_INFO by CPtr (both slots — READ suffices).
@@ -374,28 +354,22 @@ void test_t083(void) {
      * thread id, so the identity checked here is the one the helper's own TCB
      * capability reports — the two CPtrs must name the SAME object. */
     struct iris_tcb_info info, self_info;
-    if (ok && it_sys2(SYS_TCB_GET_INFO, (long)tcb_h,
-                      (long)(uintptr_t)&self_info) != 0) ok = 0;
-    if (ok && it_sys2(SYS_TCB_GET_INFO, T083_SLOT_TCB,
-                      (long)(uintptr_t)&info) != 0) ok = 0;
+    if (ok && it_invoke1((long)tcb_h, INV_TCB_GET_INFO, (long)(uintptr_t)&self_info) != 0) ok = 0;
+    if (ok && it_invoke1(T083_SLOT_TCB, INV_TCB_GET_INFO, (long)(uintptr_t)&info) != 0) ok = 0;
     if (ok && info.task_id != self_info.task_id) ok = 0;
-    if (ok && it_sys2(SYS_TCB_GET_INFO, T083_SLOT_TCB_RO,
-                      (long)(uintptr_t)&info) != 0) ok = 0;
-    if (ok && it_sys2(SYS_TCB_GET_INFO, (long)tcb_h,
-                      (long)(uintptr_t)&info) != 0) ok = 0;
+    if (ok && it_invoke1(T083_SLOT_TCB_RO, INV_TCB_GET_INFO, (long)(uintptr_t)&info) != 0) ok = 0;
+    if (ok && it_invoke1((long)tcb_h, INV_TCB_GET_INFO, (long)(uintptr_t)&info) != 0) ok = 0;
 
     /* SET_PRIORITY by CPtr: change, verify via GET_INFO, restore. */
     uint8_t old_prio = info.priority;
-    if (ok && it_sys2(SYS_TCB_SET_PRIORITY, T083_SLOT_TCB,
-                      (long)(old_prio + 1u)) != 0) ok = 0;
-    if (ok && (it_sys2(SYS_TCB_GET_INFO, T083_SLOT_TCB,
-                       (long)(uintptr_t)&info) != 0 ||
+    if (ok && it_invoke1(T083_SLOT_TCB, INV_TCB_SET_PRIORITY, (long)(old_prio + 1u)) != 0) ok = 0;
+    if (ok && (it_invoke1(T083_SLOT_TCB, INV_TCB_GET_INFO, (long)(uintptr_t)&info) != 0 ||
                info.priority != (uint8_t)(old_prio + 1u))) ok = 0;
-    if (ok && it_sys2(SYS_TCB_SET_PRIORITY, T083_SLOT_TCB, (long)old_prio) != 0)
+    if (ok && it_invoke1(T083_SLOT_TCB, INV_TCB_SET_PRIORITY, (long)old_prio) != 0)
         ok = 0;
 
     /* SUSPEND by CPtr: the helper's counter must freeze. */
-    if (ok && it_sys1(SYS_TCB_SUSPEND, T083_SLOT_TCB) != 0) ok = 0;
+    if (ok && it_invoke0(T083_SLOT_TCB, INV_TCB_SUSPEND) != 0) ok = 0;
     if (ok) {
         uint64_t before = g_t083_count;
         it_settle(5);
@@ -403,7 +377,7 @@ void test_t083(void) {
     }
 
     /* RESUME by CPtr: the counter must advance again. */
-    if (ok && it_sys1(SYS_TCB_RESUME, T083_SLOT_TCB) != 0) ok = 0;
+    if (ok && it_invoke0(T083_SLOT_TCB, INV_TCB_RESUME) != 0) ok = 0;
     if (ok) {
         uint64_t before = g_t083_count;
         it_settle(5);
@@ -411,12 +385,12 @@ void test_t083(void) {
     }
 
     /* Authority not relaxed + failure paths (TCB). */
-    if (ok && it_sys1(SYS_TCB_SUSPEND, T083_SLOT_TCB_RO) !=
+    if (ok && it_invoke0(T083_SLOT_TCB_RO, INV_TCB_SUSPEND) !=
               (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
-    if (ok && it_sys2(SYS_TCB_SET_PRIORITY, T083_SLOT_TCB_RO, 1) !=
+    if (ok && it_invoke1(T083_SLOT_TCB_RO, INV_TCB_SET_PRIORITY, 1) !=
               (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
-    if (ok && it_sys1(SYS_TCB_SUSPEND, T079_SLOT_EMPTY) >= 0) ok = 0;
-    if (ok && it_sys1(SYS_TCB_SUSPEND, (long)IRIS_CPTR_TEST_FIX_A) !=
+    if (ok && it_invoke0(T079_SLOT_EMPTY, INV_TCB_SUSPEND) >= 0) ok = 0;
+    if (ok && it_invoke0((long)IRIS_CPTR_TEST_FIX_A, INV_TCB_SUSPEND) !=
               (long)IRIS_ERR_WRONG_TYPE) ok = 0;
 
     /* ── SchedContext (Phase S2: SYS_SC_CREATE retired → RETYPE2) ── */
@@ -425,30 +399,30 @@ void test_t083(void) {
     if (sc < 0) ok = 0;
     handle_id_t sc_h = (sc >= 0) ? (handle_id_t)sc : HANDLE_INVALID;
 
-    if (ok && it_sys3(SYS_CSPACE_MINT, (long)sc_h, IT_MINT_SELF(T083_SLOT_SC), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
+    if (ok && it_invoke2((long)sc_h, INV_CSPACE_MINT, IT_MINT_SELF(T083_SLOT_SC), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
         ok = 0;
-    if (ok && it_sys3(SYS_CSPACE_MINT, (long)sc_h, IT_MINT_SELF(T083_SLOT_SC_RO), (long)RIGHT_READ) != 0)
+    if (ok && it_invoke2((long)sc_h, INV_CSPACE_MINT, IT_MINT_SELF(T083_SLOT_SC_RO), (long)RIGHT_READ) != 0)
         ok = 0;
 
     /* SC_CONFIGURE by CPtr (budget < period required); handle path too. */
-    if (ok && it_sys4(SYS_SC_CONFIGURE, T083_SLOT_SC, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) ok = 0;
-    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc_h, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) ok = 0;
-    if (ok && it_sys4(SYS_SC_CONFIGURE, T083_SLOT_SC_RO, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) !=
+    if (ok && it_invoke(T083_SLOT_SC, INV_SC_CONFIGURE, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) ok = 0;
+    if (ok && it_invoke((long)sc_h, INV_SC_CONFIGURE, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) ok = 0;
+    if (ok && it_invoke(T083_SLOT_SC_RO, INV_SC_CONFIGURE, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) !=
               (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
-    if (ok && it_sys4(SYS_SC_CONFIGURE, T079_SLOT_EMPTY, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) >= 0) ok = 0;
+    if (ok && it_invoke(T079_SLOT_EMPTY, INV_SC_CONFIGURE, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) >= 0) ok = 0;
     /* A-30: an endpoint where a SchedContext belongs is named, not flattened. */
-    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)IRIS_CPTR_TEST_FIX_A, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) !=
+    if (ok && it_invoke((long)IRIS_CPTR_TEST_FIX_A, INV_SC_CONFIGURE, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) !=
               (long)IRIS_ERR_WRONG_TYPE) ok = 0;
 
     /* THREAD_SET_SC by CPtr: bind the calling thread, then unbind (0). */
-    if (ok && it_sys1(SYS_THREAD_SET_SC, T083_SLOT_SC) != 0) ok = 0;
-    if (ok && it_sys1(SYS_THREAD_SET_SC, 0) != 0) ok = 0;
-    if (ok && it_sys1(SYS_THREAD_SET_SC, (long)IRIS_CPTR_TEST_FIX_A) !=
+    if (ok && it_invoke0(T083_SLOT_SC, INV_SC_SET_ON_CALLER) != 0) ok = 0;
+    if (ok && it_invoke0(0, INV_SC_SET_ON_CALLER) != 0) ok = 0;
+    if (ok && it_invoke0((long)IRIS_CPTR_TEST_FIX_A, INV_SC_SET_ON_CALLER) !=
               (long)IRIS_ERR_WRONG_TYPE) ok = 0;
-    if (ok && it_sys1(SYS_THREAD_SET_SC, T079_SLOT_EMPTY) >= 0) ok = 0;
+    if (ok && it_invoke0(T079_SLOT_EMPTY, INV_SC_SET_ON_CALLER) >= 0) ok = 0;
 
     /* TCB_EXIT by CPtr on the helper (non-self): counter freezes for good. */
-    if (ok && it_sys1(SYS_TCB_EXIT, T083_SLOT_TCB) != 0) ok = 0;
+    if (ok && it_invoke0(T083_SLOT_TCB, INV_TCB_EXIT) != 0) ok = 0;
     if (ok) {
         it_settle(2);
         uint64_t before = g_t083_count;
@@ -474,12 +448,12 @@ static void t084_sender(void) {
     m.label           = 0x84;
     m.attached_handle = (uint32_t)g_t084_cap1;
     m.attached_rights = RIGHT_WRITE;
-    g_t084_s1 = (int)it_sys2(SYS_EP_SEND, (long)g_t084_cmd_ep, (long)&m);
+    g_t084_s1 = (int)it_invoke1((long)g_t084_cmd_ep, INV_EP_SEND, (long)&m);
     it_iris_msg_zero(&m);
     m.label           = 0x84;
     m.attached_handle = (uint32_t)g_t084_cap2;
     m.attached_rights = RIGHT_WRITE;
-    g_t084_s2 = (int)it_sys2(SYS_EP_SEND, (long)g_t084_cmd_ep, (long)&m);
+    g_t084_s2 = (int)it_invoke1((long)g_t084_cmd_ep, INV_EP_SEND, (long)&m);
     g_t084_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -519,13 +493,13 @@ void test_t084(void) {
     /* recv #1: declare slot 36 → the cap must land there, as a CPtr. */
     it_iris_msg_zero(&r);
     r.attached_cap = T084_SLOT;
-    if (it_sys2(SYS_EP_RECV, (long)g_t084_cmd_ep, (long)&r) != 0) ok = 0;
+    if (it_invoke1((long)g_t084_cmd_ep, INV_EP_RECV, (long)&r) != 0) ok = 0;
     if (ok && r.attached_handle != T084_SLOT) ok = 0;
     if (ok) {
         struct IrisMsg probe;
         it_iris_msg_zero(&probe);
         probe.label = 0x84;
-        if (it_sys2(SYS_EP_NB_SEND, (long)T084_SLOT, (long)&probe) !=
+        if (it_invoke1((long)T084_SLOT, INV_EP_NB_SEND, (long)&probe) !=
             (long)IRIS_ERR_WOULD_BLOCK) ok = 0;   /* resolves via CSpace */
     }
 
@@ -535,7 +509,7 @@ void test_t084(void) {
      * hanging and nothing is half-transferred; a receiver that wants the cap
      * says where to put it. */
     it_iris_msg_zero(&r);
-    if (ok && it_sys2(SYS_EP_RECV, (long)g_t084_cmd_ep, (long)&r) != 0) ok = 0;
+    if (ok && it_invoke1((long)g_t084_cmd_ep, INV_EP_RECV, (long)&r) != 0) ok = 0;
     if (ok && r.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) ok = 0;
 
     for (int i = 0; i < 200 && !g_t084_done; i++) it_sys0(SYS_YIELD);
@@ -558,7 +532,7 @@ static void t085_sender(void) {
     m.label           = 0x85;
     m.attached_handle = (uint32_t)g_t085_cap;
     m.attached_rights = RIGHT_WRITE;            /* reduce: drop WAIT et al. */
-    g_t085_s1 = (int)it_sys2(SYS_EP_SEND, (long)g_t085_cmd_ep, (long)&m);
+    g_t085_s1 = (int)it_invoke1((long)g_t085_cmd_ep, INV_EP_SEND, (long)&m);
     g_t085_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -592,21 +566,21 @@ void test_t085(void) {
     struct IrisMsg r;
     it_iris_msg_zero(&r);
     r.attached_cap = T085_SLOT;
-    if (it_sys2(SYS_EP_RECV, (long)g_t085_cmd_ep, (long)&r) != 0) ok = 0;
+    if (it_invoke1((long)g_t085_cmd_ep, INV_EP_RECV, (long)&r) != 0) ok = 0;
     if (ok && r.attached_handle != T085_SLOT) ok = 0;
 
     /* Permitted op by CPtr: SIGNAL (RIGHT_WRITE survived the reduce). */
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)T085_SLOT, 0x85) != 0) ok = 0;
+    if (ok && it_invoke1((long)T085_SLOT, INV_NOTIFY_SIGNAL, 0x85) != 0) ok = 0;
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+        if (it_invoke1(n, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
             bits != 0x85u) ok = 0;   /* original handle sees it: same object */
     }
 
     /* Denied op by CPtr: WAIT (RIGHT_WAIT was reduced away). */
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_WAIT, (long)T085_SLOT, (long)(uintptr_t)&bits) !=
+        if (it_invoke1((long)T085_SLOT, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) !=
             (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
     }
 
@@ -631,7 +605,7 @@ static void t086_sender(void) {
     m.label           = 0x86;
     m.attached_handle = (uint32_t)g_t086_cap;
     m.attached_rights = RIGHT_WRITE;
-    g_t086_s1 = (int)it_sys2(SYS_EP_SEND, (long)g_t086_cmd_ep, (long)&m);
+    g_t086_s1 = (int)it_invoke1((long)g_t086_cmd_ep, INV_EP_SEND, (long)&m);
     g_t086_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -667,7 +641,7 @@ void test_t086(void) {
     /* Occupied slot → ALREADY_EXISTS, fail-fast. */
     it_iris_msg_zero(&r);
     r.attached_cap = T084_SLOT;                   /* occupied since T084 */
-    if (it_sys2(SYS_EP_RECV, (long)g_t086_cmd_ep, (long)&r) !=
+    if (it_invoke1((long)g_t086_cmd_ep, INV_EP_RECV, (long)&r) !=
         (long)IRIS_ERR_ALREADY_EXISTS) ok = 0;
 
     /* A CPtr whose path cannot be walked → INVALID_ARG.  Stage 4 made the
@@ -677,13 +651,13 @@ void test_t086(void) {
      * still rejected — a receive slot must name a real, empty destination. */
     it_iris_msg_zero(&r);
     r.attached_cap = 300u;
-    if (ok && it_sys2(SYS_EP_RECV, (long)g_t086_cmd_ep, (long)&r) !=
+    if (ok && it_invoke1((long)g_t086_cmd_ep, INV_EP_RECV, (long)&r) !=
               (long)IRIS_ERR_INVALID_ARG) ok = 0;
 
     /* EP_NB_RECV validates the declaration the same way. */
     it_iris_msg_zero(&r);
     r.attached_cap = T084_SLOT;
-    if (ok && it_sys2(SYS_EP_NB_RECV, (long)g_t086_cmd_ep, (long)&r) !=
+    if (ok && it_invoke1((long)g_t086_cmd_ep, INV_EP_NB_RECV, (long)&r) !=
               (long)IRIS_ERR_ALREADY_EXISTS) ok = 0;
 
     /* Atomicity: the sender is still blocked — nothing was consumed. */
@@ -692,12 +666,12 @@ void test_t086(void) {
     /* A good declaration now receives the SAME cap, intact. */
     it_iris_msg_zero(&r);
     r.attached_cap = T086_SLOT;
-    if (ok && it_sys2(SYS_EP_RECV, (long)g_t086_cmd_ep, (long)&r) != 0) ok = 0;
+    if (ok && it_invoke1((long)g_t086_cmd_ep, INV_EP_RECV, (long)&r) != 0) ok = 0;
     if (ok && r.attached_handle != T086_SLOT) ok = 0;
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)T086_SLOT, 0x86) != 0) ok = 0;
+    if (ok && it_invoke1((long)T086_SLOT, INV_NOTIFY_SIGNAL, 0x86) != 0) ok = 0;
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+        if (it_invoke1(n, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
             bits != 0x86u) ok = 0;
     }
 
@@ -723,22 +697,22 @@ static void t087_server(void) {
     it_iris_msg_zero(&m);
     m.attached_cap = T087_SRV_SLOT;              /* receive-slot declaration */
     /* Phase S1: explicit reply object (slot 94) staged via recv arg2. */
-    long rr = it_sys3(SYS_EP_RECV, (long)g_t087_ep, (long)&m, 94);
+    long rr = it_invoke2((long)g_t087_ep, INV_EP_RECV, (long)&m, 94);
     if (rr == 0) {
         g_t087_got_cap = m.attached_cap;         /* caller's transferred cap */
         g_t087_reply_h = m.attached_handle;      /* reply cap — MUST be a handle */
-        g_t087_sig = (int)it_sys2(SYS_NOTIFY_SIGNAL, (long)m.attached_cap, 0x87);
+        g_t087_sig = (int)it_invoke1((long)m.attached_cap, INV_NOTIFY_SIGNAL, 0x87);
 
         struct IrisMsg rm;
         it_iris_msg_zero(&rm);
         rm.label           = 0x87;
         rm.attached_handle = (uint32_t)g_t087_capB;   /* cap back to caller */
         rm.attached_rights = RIGHT_WRITE;
-        g_t087_r1 = (int)it_sys2(SYS_REPLY, (long)g_t087_reply_h, (long)&rm);
+        g_t087_r1 = (int)it_invoke1((long)g_t087_reply_h, INV_REPLY_SEND, (long)&rm);
 
         it_iris_msg_zero(&rm);
         rm.label  = 0x87;
-        g_t087_r2 = (int)it_sys2(SYS_REPLY, (long)g_t087_reply_h, (long)&rm);
+        g_t087_r2 = (int)it_invoke1((long)g_t087_reply_h, INV_REPLY_SEND, (long)&rm);
     }
     g_t087_done = 1;
     it_sys1(SYS_EXIT, 0);
@@ -780,20 +754,20 @@ void test_t087(void) {
     cm.attached_handle    = T087_REPLY_SLOT;      /* reply receive-slot */
     cm.attached_cap       = (uint32_t)cA;         /* cap to the server */
     cm.attached_cap_rights = RIGHT_WRITE;
-    if (it_sys2(SYS_EP_CALL, (long)g_t087_ep, (long)&cm) != 0) ok = 0;
+    if (it_invoke1((long)g_t087_ep, INV_EP_CALL, (long)&cm) != 0) ok = 0;
 
     /* Reply's transferred cap landed in OUR declared slot 39. */
     if (ok && cm.attached_handle != T087_REPLY_SLOT) ok = 0;
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)T087_REPLY_SLOT, 0x99) != 0) ok = 0;
+    if (ok && it_invoke1((long)T087_REPLY_SLOT, INV_NOTIFY_SIGNAL, 0x99) != 0) ok = 0;
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_WAIT, nB, (long)(uintptr_t)&bits) != 0 ||
+        if (it_invoke1(nB, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
             bits != 0x99u) ok = 0;
     }
     /* Server signalled notifA through its slot-38 CPtr. */
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_WAIT, nA, (long)(uintptr_t)&bits) != 0 ||
+        if (it_invoke1(nA, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
             bits != 0x87u) ok = 0;
     }
 
@@ -836,7 +810,7 @@ static void t088_recv1(uint64_t self_tcb) {   /* killed while blocked with slot 
     g_t088_r1_ready = 1;
     it_iris_msg_zero(&m);
     m.attached_cap = T088_SLOT_A;
-    (void)it_sys2(SYS_EP_RECV, (long)g_t088_ep, (long)&m);
+    (void)it_invoke1((long)g_t088_ep, INV_EP_RECV, (long)&m);
     it_sys1(SYS_EXIT, 0);    /* not reached: killed while blocked */
     for (;;) {}
 }
@@ -845,9 +819,9 @@ static void t088_recv2(void) {   /* real transfer into the same slot */
     struct IrisMsg m;
     it_iris_msg_zero(&m);
     m.attached_cap = T088_SLOT_A;
-    if (it_sys2(SYS_EP_RECV, (long)g_t088_ep, (long)&m) == 0) {
+    if (it_invoke1((long)g_t088_ep, INV_EP_RECV, (long)&m) == 0) {
         g_t088_r2_got = m.attached_handle;
-        g_t088_r2_sig = (int)it_sys2(SYS_NOTIFY_SIGNAL, (long)m.attached_handle, 0x88);
+        g_t088_r2_sig = (int)it_invoke1((long)m.attached_handle, INV_NOTIFY_SIGNAL, 0x88);
     }
     g_t088_r2_done = 1;
     it_sys1(SYS_EXIT, 0);
@@ -858,7 +832,7 @@ static void t088_recv3(void) {   /* endpoint closed under a declared slot */
     struct IrisMsg m;
     it_iris_msg_zero(&m);
     m.attached_cap = T088_SLOT_C;
-    g_t088_r3_rr   = it_sys2(SYS_EP_RECV, (long)g_t088_ep2, (long)&m);
+    g_t088_r3_rr   = it_invoke1((long)g_t088_ep2, INV_EP_RECV, (long)&m);
     g_t088_r3_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -887,14 +861,14 @@ void test_t088(void) {
         for (int i = 0; i < 200 && !g_t088_r1_ready; i++) it_sys0(SYS_YIELD);
         it_settle(2);            /* let it block in EP_RECV */
         if (ok && (g_t088_r1_tcb < 0 ||
-                   it_sys1(SYS_TCB_EXIT, g_t088_r1_tcb) != 0)) ok = 0;
+                   it_invoke0(g_t088_r1_tcb, INV_TCB_EXIT) != 0)) ok = 0;
         /* No ghost cap in the slot; no stale receiver on the endpoint. */
-        if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)T088_SLOT_A) >= 0) ok = 0;
+        if (ok && it_invoke0((long)T088_SLOT_A, INV_CAP_IDENTIFY) >= 0) ok = 0;
         if (ok) {
             struct IrisMsg p;
             it_iris_msg_zero(&p);
             p.label = 0x88;
-            if (it_sys2(SYS_EP_NB_SEND, (long)g_t088_ep, (long)&p) !=
+            if (it_invoke1((long)g_t088_ep, INV_EP_NB_SEND, (long)&p) !=
                 (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
         }
     }
@@ -913,7 +887,7 @@ void test_t088(void) {
             m.label           = 0x88;
             m.attached_handle = (uint32_t)c;
             m.attached_rights = RIGHT_WRITE;
-            if (it_sys2(SYS_EP_SEND, (long)g_t088_ep, (long)&m) != 0) ok = 0;
+            if (it_invoke1((long)g_t088_ep, INV_EP_SEND, (long)&m) != 0) ok = 0;
         }
         it_xfer_release(c);
         for (int i = 0; i < 200 && !g_t088_r2_done; i++) it_sys0(SYS_YIELD);
@@ -921,7 +895,7 @@ void test_t088(void) {
             g_t088_r2_sig != 0) ok = 0;
         if (ok) {
             uint64_t bits = 0;
-            if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+            if (it_invoke1(n, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
                 bits != 0x88u) ok = 0;
         }
     }
@@ -935,7 +909,7 @@ void test_t088(void) {
         it_close(&g_t088_ep2);            /* close wakes the blocked receiver */
         for (int i = 0; i < 200 && !g_t088_r3_done; i++) it_sys0(SYS_YIELD);
         if (!g_t088_r3_done || g_t088_r3_rr != (long)IRIS_ERR_CLOSED) ok = 0;
-        if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)T088_SLOT_C) >= 0) ok = 0;
+        if (ok && it_invoke0((long)T088_SLOT_C, INV_CAP_IDENTIFY) >= 0) ok = 0;
     }
 
     it_close(&n_h);
@@ -959,7 +933,7 @@ long it_lookup_name_slot(const char *name, uint32_t reply_slot,
     msg->buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg->buf_len  = len;
     iris_msg_declare_reply_slot(msg, reply_slot);
-    return it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)msg);
+    return it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)msg);
 }
 
 /* UNREGISTER dynamic id; 0 on success, -(error) on reply ERR. */
@@ -969,7 +943,7 @@ long it_unregister_id(uint32_t id) {
     msg.label      = IRIS_SVCMGR_EP_UNREGISTER;
     msg.words[0]   = id;
     msg.word_count = 1u;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
     if (r != 0) return r;
     return (msg.label == IRIS_EP_REPLY_OK) ? 0 : -(long)(uint32_t)msg.words[0];
 }
@@ -1003,7 +977,7 @@ void test_t089(void) {
             struct IrisMsg p;
             it_iris_msg_zero(&p);
             p.label = 0x89;
-            if (it_sys2(SYS_EP_NB_SEND, (long)IT_LOOKUP_TMP, (long)&p) !=
+            if (it_invoke1((long)IT_LOOKUP_TMP, INV_EP_NB_SEND, (long)&p) !=
                 (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
         }
         it_slot_delete((uint32_t)IT_LOOKUP_TMP);
@@ -1047,7 +1021,7 @@ void test_t090(void) {
             struct IrisMsg p;
             it_iris_msg_zero(&p);
             p.label = 0x90;
-            if (it_sys2(SYS_EP_NB_SEND, (long)T090_SLOT, (long)&p) !=
+            if (it_invoke1((long)T090_SLOT, INV_EP_NB_SEND, (long)&p) !=
                 (long)IRIS_ERR_WOULD_BLOCK) ok = 0;   /* invocable by CPtr */
         }
     }
@@ -1072,7 +1046,7 @@ void test_t090(void) {
         if (it_lookup_name_slot("t90.nope", T090_SLOT_B, &msg) != 0 ||
             msg.label != IRIS_EP_REPLY_ERR ||
             msg.words[0] != (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND) ok = 0;
-        if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)T090_SLOT_B) >= 0) ok = 0;
+        if (ok && it_invoke0((long)T090_SLOT_B, INV_CAP_IDENTIFY) >= 0) ok = 0;
     }
 
     if (id >= 0) (void)it_unregister_id((uint32_t)id);
@@ -1099,7 +1073,7 @@ void test_t091(void) {
         msg.word_count = 2;
         msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
         msg.buf_len    = len;
-        if (it_sys2(SYS_EP_CALL, (long)T091_SLOT, (long)&msg) != 0 ||
+        if (it_invoke1((long)T091_SLOT, INV_EP_CALL, (long)&msg) != 0 ||
             msg.label != IRIS_EP_REPLY_OK ||
             msg.words[1] != (uint64_t)expect_len ||
             msg.buf_len != expect_len) ok = 0;
@@ -1144,7 +1118,7 @@ void test_t092(void) {
     if (ok) {
         it_iris_msg_zero(&msg);
         msg.label = VFS_EP_OP_STATUS;
-        if (it_sys2(SYS_EP_CALL, (long)IT_LOOKUP_TMP, (long)&msg) != 0 ||
+        if (it_invoke1((long)IT_LOOKUP_TMP, INV_EP_CALL, (long)&msg) != 0 ||
             msg.label != IRIS_EP_REPLY_OK) ok = 0;
     }
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
@@ -1165,7 +1139,7 @@ int it_sched_ext(uint32_t w[14]) {
     /* Phase 16: request 96 bytes so the two lifecycle words (offsets 84/88)
      * land too; a pre-Phase-16 kernel clamps to 88 and leaves w[11..13] zero —
      * the extra words are additive, never required by legacy asserts. */
-    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 96, (long)IRIS_CPTR_DEBUG_CONTROL);
+    long r = it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 96);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 14u; i++) {
         uint32_t o = 40u + 4u * i;
@@ -1179,7 +1153,7 @@ int it_sched_ext(uint32_t w[14]) {
  * sched_live_count, distinct from the handle-table live at IT_SI_LIVE. */
 int it_task_live(uint32_t *out) {
     uint8_t buf[96];
-    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 96, (long)IRIS_CPTR_DEBUG_CONTROL);
+    long r = it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 96);
     if (r != 0) return 0;
     *out = (uint32_t)buf[32] | ((uint32_t)buf[33] << 8) |
            ((uint32_t)buf[34] << 16) | ((uint32_t)buf[35] << 24);
@@ -1192,7 +1166,7 @@ int it_task_live(uint32_t *out) {
 
 int it_sched_ext3(uint32_t w3[6]) {
     uint8_t buf[136];
-    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 136, (long)IRIS_CPTR_DEBUG_CONTROL);
+    long r = it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 136);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 6u; i++) {
         uint32_t o = 112u + 4u * i;
@@ -1204,7 +1178,7 @@ int it_sched_ext3(uint32_t w3[6]) {
 
 int it_sched_ext4(uint32_t w4[5]) {
     uint8_t buf[160];
-    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 160, (long)IRIS_CPTR_DEBUG_CONTROL);
+    long r = it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 160);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 5u; i++) {
         uint32_t o = 136u + 4u * i;
@@ -1216,7 +1190,7 @@ int it_sched_ext4(uint32_t w4[5]) {
 
 int it_sched_ext5(uint32_t w5[5]) {
     uint8_t buf[184];
-    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 184, (long)IRIS_CPTR_DEBUG_CONTROL);
+    long r = it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 184);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 5u; i++) {
         uint32_t o = 160u + 4u * i;
@@ -1239,9 +1213,7 @@ int it_setup_self_vspace(void) {
     /* Derived from the address space the spawner delegated, not fabricated by
      * SYS_VSPACE_SELF — so IT_VS is a child of the loader's slot and a revoke
      * there reaches it, which is the whole of D-6. */
-    long r = it_sys3(SYS_CSPACE_MINT, (long)IRIS_CPTR_OWN_VSPACE,
-                     IT_MINT_SELF(IRIS_CPTR_TEST_VSPACE),
-                     (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+    long r = it_invoke2((long)IRIS_CPTR_OWN_VSPACE, INV_CSPACE_MINT, IT_MINT_SELF(IRIS_CPTR_TEST_VSPACE), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
     if (r != 0) return 0;
     g_it_vspace_ready = 1;
     return 1;
@@ -1251,19 +1223,22 @@ int it_setup_self_vspace(void) {
  * clear of the memory test VAs at 0x8050/0x8060/0x8061).  IT_VS itself is
  * defined at the top of the file: every map names its address space now. */
 
-long it_map_fixup(long nr, long a0, long a1, long a2, long a3) {
+long it_map_fixup_inv(unsigned long label, long c, long a1, long a2, long a3) {
     if (!it_setup_self_vspace()) return (long)IRIS_ERR_MISSING_TABLE;
-    /* Ledger A-31: the fixup speaks in LABELS now.  The numbered wrappers
-     * still reach it while the suite migrates, so the translation lives here
-     * — one line, and it goes when the last `it_sysN` does. */
-    unsigned long label = (nr == SYS_FRAME_MAP) ? (unsigned long)INV_FRAME_MAP
-                                                : 0ul;
-    return iris_vspace_fixup(label, a0, a1, a2, a3,
+    return iris_vspace_fixup(label, c, a1, a2, a3,
                              IT_VS, (long)IRIS_CPTR_TEST_UNTYPED,
                              (long)(((uint64_t)252 << 32) | IT_OBJ_CNODE_SLOT),
                              (long)IT_PT_SCRATCH,
                              (long)(((uint64_t)253 << 32) | IT_OBJ_CNODE_SLOT),
                              (long)IT_PT_VS_SCRATCH);
+}
+
+/* The numbered wrappers still reach the fixup while the suite migrates
+ * (ledger A-31).  One translation, and it goes with the last `it_sysN`. */
+long it_map_fixup(long nr, long a0, long a1, long a2, long a3) {
+    return it_map_fixup_inv((nr == SYS_FRAME_MAP) ? (unsigned long)INV_FRAME_MAP
+                                                  : 0ul,
+                            a0, a1, a2, a3);
 }
 
 long it_cspace_self(void) {
@@ -1301,10 +1276,7 @@ static int      g_it_tcb_ready = 0;
  * Returns the leaf index, or a negative error when every leaf is live. */
 static long it_tcb_leaf_alloc(void) {
     if (!g_it_tcb_ready) {
-        if (it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
-                    (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
-                    (long)((uint64_t)IT_TCB_CNODE_SLOT << 32),
-                    (long)IT_TCB_SLOTS) != 0)
+        if (it_invoke((long)IRIS_CPTR_TEST_UNTYPED, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)), (long)((uint64_t)IT_TCB_CNODE_SLOT << 32), (long)IT_TCB_SLOTS) != 0)
             return (long)IRIS_ERR_NO_MEMORY;
         g_it_tcb_ready = 1;
     }
@@ -1313,11 +1285,11 @@ static long it_tcb_leaf_alloc(void) {
     uint32_t start = __atomic_fetch_add(&g_it_tcb_next, 1u, __ATOMIC_RELAXED);
     for (uint32_t i = 0; i < span; i++) {
         uint32_t leaf = 1u + ((start + i) % span);
-        long t = it_sys1(SYS_CAP_IDENTIFY, (long)IT_TCB_CPTR(leaf));
+        long t = it_invoke0((long)IT_TCB_CPTR(leaf), INV_CAP_IDENTIFY);
         if (t < 0) return (long)leaf;                       /* empty */
         if (t == (long)IRIS_HANDLE_TYPE_TCB &&
             it_tcb_alive((long)IT_TCB_CPTR(leaf)) == 0) {   /* dead: reclaim */
-            (void)it_sys2(SYS_CNODE_DELETE, (long)IT_TCB_CNODE_SLOT, (long)leaf);
+            (void)it_invoke1((long)IT_TCB_CNODE_SLOT, INV_CNODE_DELETE, (long)leaf);
             return (long)leaf;
         }
     }
@@ -1331,16 +1303,13 @@ long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg) {
 
     long leaf = it_tcb_leaf_alloc();
     if (leaf < 0) return leaf;
-    if (it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
-                (long)((uint64_t)IRIS_KOBJ_TCB | (1ULL << 32)),
-                (long)(((uint64_t)leaf << 32) | (uint64_t)IT_TCB_CNODE_SLOT),
-                0) != 0)
+    if (it_invoke((long)IRIS_CPTR_TEST_UNTYPED, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_TCB | (1ULL << 32)), (long)(((uint64_t)leaf << 32) | (uint64_t)IT_TCB_CNODE_SLOT), 0) != 0)
         return (long)IRIS_ERR_NO_MEMORY;
     long tcb = (long)IT_TCB_CPTR((uint32_t)leaf);
 
-    long r = it_sys3(SYS_TCB_CONFIGURE, tcb, cs, IT_VS);
+    long r = it_invoke2(tcb, INV_TCB_CONFIGURE, cs, IT_VS);
     if (r != 0) return r;
-    r = it_sys4(SYS_TCB_WRITE_REGS, tcb, (long)entry, (long)rsp, (long)arg);
+    r = it_invoke(tcb, INV_TCB_WRITE_REGS, (long)entry, (long)rsp, (long)arg);
     if (r != 0) return r;
     (void)it_thread_ipc_buffer(tcb);   /* best-effort while D-4 is migrating */
     if (arg == IT_THREAD_ARG_SELF_TCB) {
@@ -1348,10 +1317,10 @@ long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg) {
          * the only per-thread channel a freshly started thread has, and the
          * reason SYS_TCB_SELF can go (ledger A-18).  Whoever creates a thread
          * holds its TCB; telling it which one it is costs a register. */
-        r = it_sys4(SYS_TCB_WRITE_REGS, tcb, (long)entry, (long)rsp, tcb);
+        r = it_invoke(tcb, INV_TCB_WRITE_REGS, (long)entry, (long)rsp, tcb);
         if (r != 0) return r;
     }
-    r = it_sys1(SYS_TCB_RESUME, tcb);
+    r = it_invoke0(tcb, INV_TCB_RESUME);
     if (r != 0) return r;
     return tcb;
 }
@@ -1384,14 +1353,10 @@ long it_thread_ipc_buffer(long tcb) {
         long ut = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
                                        IRIS_KOBJ_UNTYPED, 128u * 1024u);
         if (ut < 0) return ut;
-        if (it_sys4(SYS_UNTYPED_RETYPE2, ut,
-                    (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
-                    (long)((uint64_t)IT_IPCBUF_CNODE_SLOT << 32), 128) != 0)
+        if (it_invoke(ut, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)), (long)((uint64_t)IT_IPCBUF_CNODE_SLOT << 32), 128) != 0)
             return (long)IRIS_ERR_TABLE_FULL;
         uint32_t home = IT_IPCBUF_MAX + 1u;      /* above every buffer leaf */
-        if (it_sys3(SYS_CSPACE_MINT, ut,
-                    (long)(((uint64_t)home << 32) | (uint64_t)IT_IPCBUF_CNODE_SLOT),
-                    (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
+        if (it_invoke2(ut, INV_CSPACE_MINT, (long)(((uint64_t)home << 32) | (uint64_t)IT_IPCBUF_CNODE_SLOT), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
             return (long)IRIS_ERR_TABLE_FULL;
         it_slot_delete((uint32_t)ut);
         g_it_ipcbuf_ut = (long)IT_IPCBUF_CPTR(home);
@@ -1403,16 +1368,13 @@ long it_thread_ipc_buffer(long tcb) {
      * which is a thing to remember rather than rediscover. */
     uint32_t leaf = n + 1u;
     uint64_t va   = IRIS_IPC_BUFFER_VA + (uint64_t)leaf * 4096u;
-    if (it_sys4(SYS_UNTYPED_RETYPE2, g_it_ipcbuf_ut,
-                (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
-                (long)(((uint64_t)leaf << 32) | (uint64_t)IT_IPCBUF_CNODE_SLOT),
-                4096) != 0)
+    if (it_invoke(g_it_ipcbuf_ut, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)), (long)(((uint64_t)leaf << 32) | (uint64_t)IT_IPCBUF_CNODE_SLOT), 4096) != 0)
         return (long)IRIS_ERR_NO_MEMORY;
 
     long fr = (long)IT_IPCBUF_CPTR(leaf);
-    long r  = it_sys4(SYS_FRAME_MAP, fr, IT_VS, (long)va, (long)IT_MAP_W);
+    long r  = it_invoke(fr, INV_FRAME_MAP, IT_VS, (long)va, (long)IT_MAP_W);
     if (r != 0) return r;
-    r = it_sys3(SYS_TCB_SET_IPC_BUFFER, tcb, fr, (long)va);
+    r = it_invoke2(tcb, INV_TCB_SET_IPC_BUFFER, fr, (long)va);
     if (r != 0) return r;
     return (long)va;          /* where the thread will find it */
 }
@@ -1420,7 +1382,7 @@ long it_thread_ipc_buffer(long tcb) {
 
 int it_sched_ext2(uint32_t w2[4]) {
     uint8_t buf[112];
-    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 112, (long)IRIS_CPTR_DEBUG_CONTROL);
+    long r = it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 112);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 4u; i++) {
         uint32_t o = 96u + 4u * i;
@@ -1460,7 +1422,7 @@ void test_t093(void) {
             struct IrisMsg p;
             it_iris_msg_zero(&p);
             p.label = 0x93;
-            if (it_sys2(SYS_EP_NB_SEND, (long)IT_LOOKUP_TMP, (long)&p) !=
+            if (it_invoke1((long)IT_LOOKUP_TMP, INV_EP_NB_SEND, (long)&p) !=
                 (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
             it_slot_delete((uint32_t)IT_LOOKUP_TMP);
         }
@@ -1492,7 +1454,7 @@ static void t094_recv(void) {
     it_iris_msg_zero(&m);
     m.attached_cap = (uint32_t)T094_SLOT;      /* receive-slot declaration */
     g_t094_ready = 1;
-    if (it_sys2(SYS_EP_RECV, (long)g_t094_ep, (long)&m) == 0)
+    if (it_invoke1((long)g_t094_ep, INV_EP_RECV, (long)&m) == 0)
         g_t094_got = m.attached_handle;        /* EP_SEND caps land here */
     g_t094_done = 1;
     it_sys1(SYS_EXIT, 0);
@@ -1506,7 +1468,7 @@ void test_t094(void) {
     long nB = it_notify_create_slot();      /* the slot-race winner */
     long ep = it_ep_create_slot();
     /* Stage 4: invoked as a CPtr; never materialised into a handle. */
-    const long selfp = (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_PROC) >= 0)
+    const long selfp = (it_invoke0((long)IRIS_CPTR_TEST_PROC, INV_CAP_IDENTIFY) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
     if (nA < 0 || nB < 0 || ep < 0 || selfp < 0) { it_fail("T094", "create"); return; }
     handle_id_t nA_h = (handle_id_t)nA, nB_h = (handle_id_t)nB;
@@ -1523,7 +1485,7 @@ void test_t094(void) {
     it_settle(2);                     /* blocked with slot 51 declared */
 
     /* Fill the declared slot BEFORE delivery (the TOCTOU race). */
-    if (ok && it_sys3(SYS_CSPACE_MINT, nB, IT_MINT_SELF(T094_SLOT), (long)RIGHT_WRITE) != 0) {
+    if (ok && it_invoke2(nB, INV_CSPACE_MINT, IT_MINT_SELF(T094_SLOT), (long)RIGHT_WRITE) != 0) {
         ok = 0; why = "self mint";
     }
 
@@ -1537,7 +1499,7 @@ void test_t094(void) {
             m.label           = 0x94;
             m.attached_handle = (uint32_t)xsrc;
             m.attached_rights = RIGHT_WRITE;
-            if (it_sys2(SYS_EP_SEND, (long)g_t094_ep, (long)&m) != 0) {
+            if (it_invoke1((long)g_t094_ep, INV_EP_SEND, (long)&m) != 0) {
                 ok = 0; why = "send";
             }
         }
@@ -1550,17 +1512,17 @@ void test_t094(void) {
         ok = 0; why = "toctou degradation still alive";
     }
     /* Nothing delivered ⇒ the source slot was never consumed. */
-    if (ok && it_sys1(SYS_CAP_IDENTIFY, xsrc) < 0) {
+    if (ok && it_invoke0(xsrc, INV_CAP_IDENTIFY) < 0) {
         ok = 0; why = "source consumed on failed delivery";
     }
     if (ok) it_slot_delete((uint32_t)xsrc);
     /* The slot keeps exactly the race winner: nB, a notification.  Stage 4:
      * both sides are slots, so identity is compared where it lives. */
     if (ok) {
-        long rh = it_sys1(SYS_CAP_IDENTIFY, T094_SLOT);
+        long rh = it_invoke0(T094_SLOT, INV_CAP_IDENTIFY);
         if (rh < 0) { ok = 0; why = "slot lost"; }
         else {
-            if (it_sys2(SYS_CAP_SAME_OBJECT, T094_SLOT, nB) != 1) {
+            if (it_invoke1(T094_SLOT, INV_CAP_SAME_OBJECT, nB) != 1) {
                 ok = 0; why = "slot object changed";
             }
             handle_id_t r = (handle_id_t)rh;
@@ -1664,7 +1626,7 @@ void test_t096(void) {
             struct IrisMsg p;
             it_iris_msg_zero(&p);
             p.label = IRIS_EP_OP_PING;
-            if (it_sys2(SYS_EP_CALL, (long)IT_LOOKUP_TMP, (long)&p) != 0 ||
+            if (it_invoke1((long)IT_LOOKUP_TMP, INV_EP_CALL, (long)&p) != 0 ||
                 p.label != IRIS_EP_REPLY_OK) ok = 0;
         }
         it_slot_delete((uint32_t)IT_LOOKUP_TMP);
@@ -1707,13 +1669,11 @@ void test_t097(void) {
 
     /* Canonical placement: the cap lands in the child's CSpace — no handle
      * is created in the destination table. */
-    if (it_sys3(SYS_CSPACE_MINT, vmo,
-                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT), (long)(RIGHT_READ | RIGHT_WRITE)) != 0) {
+    if (it_invoke2(vmo, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT), (long)(RIGHT_READ | RIGHT_WRITE)) != 0) {
         ok = 0; why = "mint";
     }
     /* Occupied destination slot → fail-fast, no overwrite. */
-    if (ok && it_sys3(SYS_CSPACE_MINT, vmo,
-                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT), (long)RIGHT_READ) !=
+    if (ok && it_invoke2(vmo, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT), (long)RIGHT_READ) !=
         (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "occupied"; }
     /* Authority cannot escalate: READ-only source + WRITE request →
      * empty effective rights → INVALID_ARG (never a widened grant). */
@@ -1721,8 +1681,7 @@ void test_t097(void) {
         long ro = it_cs_reduce(vmo, RIGHT_READ | RIGHT_DUPLICATE);
         if (ro < 0) { ok = 0; why = "dup"; }
         else {
-            if (it_sys3(SYS_CSPACE_MINT, ro,
-                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT2), (long)RIGHT_WRITE) !=
+            if (it_invoke2(ro, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT2), (long)RIGHT_WRITE) !=
                 (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "escalation"; }
             handle_id_t roh = (handle_id_t)ro;
             it_close(&roh);
@@ -1733,8 +1692,7 @@ void test_t097(void) {
      * named there is WRONG_TYPE, because the resolver identified it exactly
      * and "something about your argument is wrong" was a weaker answer than
      * the kernel already had. */
-    if (ok && it_sys3(SYS_CSPACE_MINT, vmo,
-                      IT_MINT_INTO((long)IRIS_CPTR_TEST_FIX_A, T097_DST_SLOT2), (long)RIGHT_READ) !=
+    if (ok && it_invoke2(vmo, INV_CSPACE_MINT, IT_MINT_INTO((long)IRIS_CPTR_TEST_FIX_A, T097_DST_SLOT2), (long)RIGHT_READ) !=
         (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong type"; }
     /* The retired legacy producer is gone: NOT_SUPPORTED, nothing placed. */
     if (ok && it_sys3(SYS_HANDLE_TRANSFER, vmo, (long)proc_h,
@@ -1758,16 +1716,15 @@ void test_t097(void) {
      */
     if (ok && it_kill((long)proc_h) != 0) { ok = 0; why = "kill"; }
     if (ok) { for (int w = 0; w < 200 &&
-                   it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h)) ==
+                   it_invoke0(it_child_tcb((long)proc_h), INV_TCB_EXIT_CODE) ==
                    (long)IRIS_ERR_WOULD_BLOCK; w++) it_settle(1); }
     if (ok) {
         /* The child's command-endpoint slot, addressed through the root the
          * suite kept: empty once teardown has run. */
         long child_ep = (long)((uint64_t)LP_CPTR_CMD_EP << 8) | IT_CHILD_CN_CPTR(0);
-        if (it_sys1(SYS_CAP_IDENTIFY, child_ep) >= 0) { ok = 0; why = "cspace not emptied"; }
+        if (it_invoke0(child_ep, INV_CAP_IDENTIFY) >= 0) { ok = 0; why = "cspace not emptied"; }
     }
-    if (ok && it_sys3(SYS_CSPACE_MINT, vmo,
-                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT3), (long)RIGHT_READ) != 0) {
+    if (ok && it_invoke2(vmo, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT3), (long)RIGHT_READ) != 0) {
         ok = 0; why = "dead dest";
     }
 
@@ -1810,16 +1767,14 @@ void test_t098(void) {
     const char *why = "vmo share cspace";
 
     /* Canonical: the shared VMO lands in the destination CSpace. */
-    if (it_sys3(SYS_CSPACE_MINT, vmo,
-                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT), (long)RIGHT_READ) != 0) { ok = 0; why = "mint"; }
+    if (it_invoke2(vmo, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT), (long)RIGHT_READ) != 0) { ok = 0; why = "mint"; }
 
     /* A source without RIGHT_DUPLICATE cannot delegate. */
     if (ok) {
         long ro = it_cs_reduce(vmo, RIGHT_READ);
         if (ro < 0) { ok = 0; why = "dup ro"; }
         else {
-            if (it_sys3(SYS_CSPACE_MINT, ro,
-                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT2), (long)RIGHT_READ) != (long)IRIS_ERR_ACCESS_DENIED) {
+            if (it_invoke2(ro, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT2), (long)RIGHT_READ) != (long)IRIS_ERR_ACCESS_DENIED) {
                 ok = 0; why = "mint no-dup";
             }
             handle_id_t roh = (handle_id_t)ro;
@@ -1831,8 +1786,7 @@ void test_t098(void) {
         long rd = it_cs_reduce(vmo, RIGHT_READ | RIGHT_DUPLICATE);
         if (rd < 0) { ok = 0; why = "dup rd"; }
         else {
-            if (it_sys3(SYS_CSPACE_MINT, rd,
-                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT2), (long)RIGHT_MANAGE) >= 0) {
+            if (it_invoke2(rd, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT2), (long)RIGHT_MANAGE) >= 0) {
                 ok = 0; why = "mint disjoint";
             }
             handle_id_t rdh = (handle_id_t)rd;
@@ -1845,11 +1799,11 @@ void test_t098(void) {
      * was standing in for, is that the child's own slots were EMPTIED. */
     if (ok && it_kill((long)proc_h) != 0) { ok = 0; why = "kill"; }
     if (ok) { for (int w = 0; w < 200 &&
-                   it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h)) ==
+                   it_invoke0(it_child_tcb((long)proc_h), INV_TCB_EXIT_CODE) ==
                    (long)IRIS_ERR_WOULD_BLOCK; w++) it_settle(1); }
     if (ok) {
         long child_ep = (long)((uint64_t)LP_CPTR_CMD_EP << 8) | IT_CHILD_CN_CPTR(0);
-        if (it_sys1(SYS_CAP_IDENTIFY, child_ep) >= 0) { ok = 0; why = "dead dest"; }
+        if (it_invoke0(child_ep, INV_CAP_IDENTIFY) >= 0) { ok = 0; why = "dead dest"; }
     }
 
     if (!ok && proc_h != HANDLE_INVALID)
@@ -1867,7 +1821,7 @@ long it_lp_cmd_rslot(handle_id_t cmd_ep_h, uint32_t slot) {
     m.label      = LP_CMD_RSLOT_RECV;
     m.words[0]   = slot;
     m.word_count = 1u;
-    return it_sys2(SYS_EP_SEND, (long)cmd_ep_h, (long)&m);
+    return it_invoke1((long)cmd_ep_h, INV_EP_SEND, (long)&m);
 }
 
 /* Transfer a WRITE|TRANSFER dup of `notif` to the child (blocks until the
@@ -1881,7 +1835,7 @@ long it_lp_send_cap(handle_id_t cmd_ep_h, long notif) {
     m.label           = 0x99;
     m.attached_handle = (uint32_t)d;
     m.attached_rights = RIGHT_WRITE;
-    long r = it_sys2(SYS_EP_SEND, (long)cmd_ep_h, (long)&m);
+    long r = it_invoke1((long)cmd_ep_h, INV_EP_SEND, (long)&m);
     it_xfer_release(d);
     return r;
 }
@@ -1889,7 +1843,7 @@ long it_lp_cmd(handle_id_t cmd_ep_h, uint32_t label) {
     struct IrisMsg m;
     it_iris_msg_zero(&m);
     m.label = label;
-    return it_sys2(SYS_EP_SEND, (long)cmd_ep_h, (long)&m);
+    return it_invoke1((long)cmd_ep_h, INV_EP_SEND, (long)&m);
 }
 
 /* Wait (≤ 2s) for a child to exit; returns its exit code or -1. */
@@ -1903,11 +1857,11 @@ long it_lp_wait_exit(handle_id_t proc_h) {
     if (n < 0) return -1;
     handle_id_t n_h = (handle_id_t)n;
     long ec = -1;
-    if (it_sys3(SYS_TCB_WATCH, tcb, n, 1) == 0) {
+    if (it_invoke2(tcb, INV_TCB_WATCH, n, 1) == 0) {
         uint64_t bits = 0;
         if (it_wait_timeout( n, (long)(uintptr_t)&bits,
                     2000000000LL) == 0)
-            ec = it_sys1(SYS_TCB_EXIT_CODE, tcb);
+            ec = it_invoke0(tcb, INV_TCB_EXIT_CODE);
     }
     it_close(&n_h);
     return ec;
@@ -1939,7 +1893,7 @@ void test_t099(void) {
         if (ok && it_lp_send_cap(ep_h, n) != 0) { ok = 0; why = "send cap"; }
         if (ok) {
             uint64_t bits = 0;
-            if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+            if (it_invoke1(n, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
                 bits != 1u) { ok = 0; why = "cptr signal"; }
         }
         if (ok && it_lp_wait_exit(proc_h) != (long)T099_CHILD_SLOT) {
@@ -1959,8 +1913,7 @@ void test_t099(void) {
         handle_id_t proc_h = HANDLE_INVALID;
         if (ep < 0 || n2 < 0 ||
             lp_spawn_child_cn(1u, ep_h, &proc_h) < 0) { ok = 0; why = "spawn occ"; }
-        if (ok && it_sys3(SYS_CSPACE_MINT, n2,
-                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), (long)T099_CHILD_SLOT), (long)RIGHT_WRITE) != 0) { ok = 0; why = "prefill"; }
+        if (ok && it_invoke2(n2, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), (long)T099_CHILD_SLOT), (long)RIGHT_WRITE) != 0) { ok = 0; why = "prefill"; }
         if (ok && it_lp_cmd_rslot(ep_h, T099_CHILD_SLOT) != 0) {
             ok = 0; why = "cmd occ";
         }
@@ -1972,7 +1925,7 @@ void test_t099(void) {
             struct IrisMsg pr;
             it_iris_msg_zero(&pr);
             pr.label = 0x99;
-            if (it_sys2(SYS_EP_NB_SEND, (long)ep_h, (long)&pr) !=
+            if (it_invoke1((long)ep_h, INV_EP_NB_SEND, (long)&pr) !=
                 (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "dead waiter"; }
         }
         it_close(&proc_h);
@@ -2040,7 +1993,7 @@ void test_t100(void) {
             struct IrisMsg p;
             it_iris_msg_zero(&p);
             p.label = 0xA0;
-            if (it_sys2(SYS_EP_NB_SEND, (long)slot, (long)&p) !=
+            if (it_invoke1((long)slot, INV_EP_NB_SEND, (long)&p) !=
                 (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "cptr dead"; }
         }
     }
@@ -2056,7 +2009,7 @@ void test_t100(void) {
             msg.words[0] != (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND) {
             ok = 0; why = "post-unreg lookup";
         }
-        if (ok && it_sys1(SYS_CAP_IDENTIFY, 43L) >= 0) {
+        if (ok && it_invoke0(43L, INV_CAP_IDENTIFY) >= 0) {
             ok = 0; why = "ghost cap";
         }
     }
