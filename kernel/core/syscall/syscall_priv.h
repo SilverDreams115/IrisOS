@@ -18,7 +18,6 @@
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kirqcap.h>
 #include <iris/nc/kioport.h>
-#include <iris/nc/kinitrdentry.h>
 #include <iris/nc/kendpoint.h>
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kschedctx.h>

@@ -19,7 +19,8 @@ uint64_t sys_clock_get(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
-    /* arg2 = KDEBUG authority CPtr (0 = legacy ambient scan). */
+    /* arg2 = KDEBUG authority CPtr.  Zero is REFUSED, not a fallback: the
+     * authority has to be named (Stage 5 Step 2). */
     if (!t || !task_kdebug_cap_named(t, arg2))
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     uint64_t max = arg1;
@@ -125,7 +126,8 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
-    /* arg2 = KDEBUG authority CPtr (0 = legacy ambient scan). */
+    /* arg2 = KDEBUG authority CPtr.  Zero is REFUSED, not a fallback: the
+     * authority has to be named (Stage 5 Step 2). */
     if (!t || !task_kdebug_cap_named(t, arg2))
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     if (arg1 < SCHED_INFO_BASE_BYTES) return syscall_err(IRIS_ERR_INVALID_ARG);

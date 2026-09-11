@@ -180,7 +180,7 @@ proven:
       `SYS_GETPID`) are diagnostics that confer nothing.
 - [x] Adversarial lifecycle and revocation suite (creation, cross death,
       chained revocation, storage reuse, stale caps) as a permanent gate —
-      278 runtime tests including model-based syscall fuzzing, 18740 host
+      305 runtime tests including model-based syscall fuzzing, 27418 host
       assertions, and `check_purity` as a hard gate on every build.
 
 ## 5. Governing priority
@@ -203,11 +203,16 @@ deliberate — in the ledger if temporary, in this charter if deliberate.
 
 This rule covers divergences found by COMPARING the two architectures, not only
 those left behind by a migration.  Four such were unrecorded until Stage 5
-closed and are now in the ledger's "Structural divergences from seL4" section:
+closed and went into the ledger's "Structural divergences from seL4" section:
 per-thread kernel stacks with in-kernel blocking (D-1), CNodes without guards
-(D-2), the rights set (D-3), and the absent per-thread IPC buffer (D-4).  D-1
-and D-2 carry no retirement stage, which is stated rather than implied: an
-entry with no stage is honest, an unrecorded divergence is not.
+(D-2), the rights set (D-3), and the absent per-thread IPC buffer (D-4).  Six
+more were found the same way afterwards (D-5 … D-10).  Of the ten, **seven are
+closed**, D-2 is half closed (guards exist and are checked; the CNode's own
+default is still a pure radix walk), and two are deliberate and permanent:
+the rights set (D-3) and reference-counted object lifetime (D-7).  When those
+rows were written D-1 and D-2 carried no retirement stage, which was stated
+rather than implied: an entry with no stage is honest, an unrecorded
+divergence is not.  D-1 then closed anyway, in Stage 9-evt.
 
 ### 5.1 Revisit triggers must fire
 
@@ -235,7 +240,7 @@ unrecorded divergence.
 | A delivered capability reports its RIGHTS | seL4's `extraCaps` tells a receiver that a capability arrived; IRIS's MessageInfo tells it which RIGHTS it arrived with, and zero when none did — unambiguous because a capability with no rights cannot be transferred at all.  More than seL4 reports, and deliberately: a receiver that must ask a second time about a capability it was just handed can be told a different answer in between.  Recorded at A-33 rather than rounded to "IRIS has seL4's message" | Permanent, deliberate |
 | IRIS folds seL4's IPC syscalls into the invocation door | seL4 keeps `Send`, `Recv`, `Call`, `Reply`, `ReplyRecv`, `NBSend` and `NBRecv` as real syscalls, because `msgInfo`'s label is application data and the number is what says which IPC verb was meant.  IRIS's message carries its own label, so the number is not needed for that and `EP_Send` is a method like any other: one entry point rather than eight.  More uniform than seL4, and a difference either way — recorded at A-32 rather than rounded to "IRIS has seL4's shape" | Permanent, deliberate |
 | Rights set is IRIS's own (`READ/WRITE/DUPLICATE/TRANSFER/WAIT/ROUTE/MANAGE`) | seL4 has `Read/Write/Grant/GrantReply` and does NOT treat copyability as a right — whether a capability can be copied follows from its type and the derivation tree.  IRIS gates minting with `RIGHT_DUPLICATE` and IPC transfer with `RIGHT_TRANSFER`, which is what makes a delegation non-re-delegable today.  The two models are not translatable one-to-one, so "IRIS has seL4's rights" is never a correct statement | Deliberate, revisable — ledger D-3 |
-| No per-thread IPC buffer object | A message carries four inline words plus a bulk payload staged in the kernel (`task.ipc_kbuf`, 256 B) and copied to/from a user pointer named per call; seL4 registers an IPC buffer FRAME per TCB.  The bulk size is therefore a kernel constant rather than a frame the user chose and paid for | **Condition FIRED, scheduled.**  Its revisit trigger was Stage 6 (frames from Untyped), which closed — and the trigger was never acted on, which is the process failure this row now records.  Retirement is scheduled: **Stage 8-cap**.  Until then, 256 B of kernel memory per TCB that the user did not choose and did not pay for — ledger D-4 |
-| Separate `SYS_REPLY` (no combined ReplyRecv) | simplicity of the current synchronous path; revisit in Stage 8 (MCS) | Deliberate, revisable |
+| ~~No per-thread IPC buffer object~~ | **RETIRED — ledger D-4.**  It said a bulk payload was staged in 256 B inside the TCB and copied to and from a user pointer named per call, where seL4 registers an IPC buffer FRAME per TCB.  `TCB_SetIPCBuffer` is seL4's: a thread registers a frame it retyped and mapped, and the kernel copies between the two ends' frames through its own physical window.  A thread with no registered buffer cannot send a payload at all, which is seL4's answer and now IRIS's.  The revisit trigger this row exists to record — Stage 6 fired it and nobody returned to it — is why §5.1 is in the charter | Closed |
+| ~~Separate `SYS_REPLY` (no combined ReplyRecv)~~ | **RETIRED — Stage 8-mcs.**  Its revisit trigger was Stage 8, and the answer was that MCS needs it: a PASSIVE server runs on time donated by its caller, and must not cross the gap between giving that time back and blocking again.  `EP_ReplyRecv` is one operation, it carries no capability on the reply half (the syscall enforces that — a server's loop hands back the words its receive delivered, and those include the reply object it must not give away), and a reply always delivers badge 0 | Closed |
 | Reply objects with DUPLICATE (supervisor mints them into the child) | IRIS supervision pattern; documented in RETYPE2 | **Deliberate, KEPT.**  Its revisit condition (Stage 1, CDT) fired and was answered: the MDB makes the minted reply capability a traceable child of the supervisor's, so the supervision pattern costs nothing the derivation tree cannot express or revoke.  No further review scheduled |
 | Untyped RESET (bump reset with child_count==0) in addition to revoke | useful as a reuse primitive; real revoke arrives with the CDT | **Temporary → KEPT, deliberate.**  Its condition (Stage 1) fired.  Real revoke exists (`SYS_CSPACE_REVOKE`) and RESET was not removed, because the two answer different questions: revoke destroys a subtree of CAPABILITIES, RESET rewinds a bump allocator whose children are already gone.  seL4 expresses the second by revoking the Untyped, which IRIS also supports; RESET is the cheap path and is gated on `child_count == 0`, so it can never destroy anything.  Kept as an addition, not a substitute |

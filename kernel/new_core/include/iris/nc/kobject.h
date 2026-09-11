@@ -30,7 +30,12 @@ typedef enum {
     KOBJ_VMO,
     KOBJ_IRQ_CAP,      /* authorizes routing a specific hardware IRQ line */
     KOBJ_IOPORT,       /* authorizes IN/OUT access to a contiguous I/O port range */
-    KOBJ_INITRD_ENTRY, /* immutable reference to a named ELF image in the kernel initrd */
+    /* KOBJ_INITRD_ENTRY is RESERVED, not removed, for the reason KOBJ_PROCESS
+     * and KOBJ_VMO are: the enumerator's VALUE is the wire type
+     * SYS_CAP_IDENTIFY reports.  struct KInitrdEntry is deleted and nothing
+     * creates one — a boot image is a FRAME now (ledger D-5/D-10), which is
+     * what an image reference had no reason to be an object for. */
+    KOBJ_INITRD_ENTRY,
     KOBJ_ENDPOINT,       /* seL4-style synchronous IPC rendezvous point */
     KOBJ_CNODE,          /* seL4-style capability node — fixed array of capability slots */
     KOBJ_SCHED_CONTEXT,  /* Ph74: scheduling context — budget/period for time protection */
