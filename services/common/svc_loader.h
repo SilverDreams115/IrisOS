@@ -58,10 +58,25 @@ long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * capabilities into the child's root CNode (SYS_PROC_CSPACE_MINT) BEFORE
  * the first thread starts — the child observes its well-known slots fully
  * populated from its first instruction, with no bootstrap-message barrier
- * and no retry loops.  Mint failures are non-fatal (slots stay empty and
- * the consumer's smoke gates fail loudly); src_h == HANDLE_INVALID entries
- * are skipped.
+ * and no retry loops.
+ *
+ * Mint failures are non-fatal — the child starts with the slot empty — but
+ * they are no longer SILENT.  The loader writes each entry's outcome back into
+ * `result`, because the alternative was the argument that a consumer's smoke
+ * gate would catch it, and that is only true of capabilities some marker
+ * happens to cover.  The domain authority (A-34) had none: its destination
+ * slot was already occupied, the exclusive mint refused, the child started
+ * without it, and nothing said so until a test three hundred cases later asked
+ * for it and got ACCESS_DENIED.
+ *
+ * `src_h == HANDLE_INVALID` and a zero source are skipped, and say so.
  */
+/* What happened to one entry.  Zero is success; a negative value is the
+ * kernel's error (ALREADY_EXISTS means the destination slot was occupied,
+ * which is almost always two entries naming the same slot). */
+#define SVC_MINT_OK       0
+#define SVC_MINT_SKIPPED  1    /* no source named: nothing was attempted */
+#define SVC_MINT_PENDING  2    /* the loader never reached this entry */
 struct svc_mint {
     uint64_t      slot;    /* destination CPtr slot in the child root CNode */
     handle_id_t   src_h;   /* source cap in the CALLER's handle table
@@ -79,6 +94,9 @@ struct svc_mint {
                             * Packed into SYS_PROC_CSPACE_MINT arg3 high
                             * bits; subject to the kernel's no-re-badge
                             * rule. */
+    int32_t       result;  /* OUT: SVC_MINT_* or a negative iris_error_t.
+                            * The caller built this table; the caller is who
+                            * can say whether a refusal matters. */
 };
 
 /* Step 4: spawn publishing every created capability into CSpace.
@@ -137,11 +155,11 @@ struct svc_mint {
  */
 long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         handle_id_t *out_proc_h, handle_id_t *out_chan_h,
-                        const struct svc_mint *mints, uint32_t mint_count,
+                        struct svc_mint *mints, uint32_t mint_count,
                         uint64_t ws, uint64_t child_budget,
                         uint32_t own_budget_slot, uint64_t keep_cnode_dest,
                         uint64_t keep_tcb_dest, uint64_t keep_vspace_dest);
 
 long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
                      handle_id_t *out_proc_h, handle_id_t *out_chan_h,
-                     const struct svc_mint *mints, uint32_t mint_count);
+                     struct svc_mint *mints, uint32_t mint_count);

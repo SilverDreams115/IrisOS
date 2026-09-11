@@ -212,7 +212,7 @@ long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * this stage removes. */
 long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
                      handle_id_t *out_proc_h, handle_id_t *out_chan_h,
-                     const struct svc_mint *mints, uint32_t mint_count) {
+                     struct svc_mint *mints, uint32_t mint_count) {
     (void)proc_c; (void)initrd_c; (void)name; (void)mints; (void)mint_count;
     if (out_proc_h) *out_proc_h = HANDLE_INVALID;
     if (out_chan_h) *out_chan_h = HANDLE_INVALID;
@@ -325,7 +325,7 @@ static int sl_ws_ensure(uint64_t ws) {
  */
 long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         handle_id_t *out_proc_h, handle_id_t *out_chan_h,
-                        const struct svc_mint *mints, uint32_t mint_count,
+                        struct svc_mint *mints, uint32_t mint_count,
                         uint64_t ws, uint64_t child_budget,
                         uint32_t own_budget_slot, uint64_t keep_cnode_dest,
                         uint64_t keep_tcb_dest, uint64_t keep_vspace_dest) {
@@ -908,14 +908,22 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         /* 18b (Phase 8). Mint the well-known CSpace slots BEFORE the first
          * thread starts: the child sees its slots populated from its first
          * instruction — no bootstrap barrier, no retry loop, no race.
-         * Mint failures are deliberately non-fatal (consumers gate loudly
-         * in smoke); invalid sources are skipped. */
+         *
+         * Failures stay non-fatal and stop being SILENT: each entry's outcome
+         * goes back into `mints[mi].result`.  The old argument was that a
+         * consumer's smoke gate would catch a missing capability, which holds
+         * only for capabilities some marker covers — and a table whose two
+         * entries name the same slot produces a child missing one of them with
+         * nothing anywhere saying which (ledger A-34). */
         for (uint32_t mi = 0; mi < mint_count; mi++) {
             if (!mints) continue;
             uint64_t rb = (mints[mi].badge << 32) | (uint64_t)mints[mi].rights;
             uint32_t src = mints[mi].src_cptr ? mints[mi].src_cptr
                                               : (uint32_t)mints[mi].src_h;
-            if (src == 0u || src == (uint32_t)HANDLE_INVALID) continue;
+            if (src == 0u || src == (uint32_t)HANDLE_INVALID) {
+                mints[mi].result = SVC_MINT_SKIPPED;
+                continue;
+            }
             /*
              * Stage 7 Step 9: the destination is the child's ROOT CNODE, which
              * the loader retyped and still holds — not the child's process.
@@ -926,8 +934,10 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
              * it.  The delegation is still an MDB child of our source slot, so
              * SYS_CSPACE_REVOKE on it still reaches into the child.
              */
-            (void)iris_invoke2((long)src, INV_CSPACE_MINT, (long)((uint64_t)child_cn |
-                                 ((uint64_t)mints[mi].slot << 32)), (long)rb);
+            long mr = iris_invoke2((long)src, INV_CSPACE_MINT,
+                                   (long)((uint64_t)child_cn |
+                                     ((uint64_t)mints[mi].slot << 32)), (long)rb);
+            mints[mi].result = (int32_t)mr;
         }
 
         /*

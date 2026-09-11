@@ -2236,8 +2236,26 @@ task.  97 is free everywhere except the suite, where 88..97 is the fixed
 reply-object range and T113 deletes 97 on its way out — so the capability was
 delivered, survived most of the run, and was gone by the time a late test
 looked.  The suite's own documented free slot, 99, turned out to be
-`IRIS_CPTR_FB_CONTROL`, which init also mints, so the second mint silently
-replaced the first.  Both are recorded where the constant is defined.
+`IRIS_CPTR_FB_CONTROL`, which init also mints, so the exclusive mint refused
+and the child started without the authority.
+
+**That second one is the part that got fixed rather than worked around.**  The
+loader's pre-start mints were non-fatal AND silent, on the stated argument that
+"consumers gate loudly in smoke" — which holds only for capabilities some
+marker happens to cover.  The domain authority had none, so a refused mint
+produced a child missing an authority with nothing anywhere saying which, and
+the first symptom was a test three hundred cases later getting ACCESS_DENIED.
+
+Now: `struct svc_mint` carries a `result` the loader writes for every entry,
+`init` prints any failure with the destination slot, and the headless gate
+fails the build on that line — BEFORE it checks the suite result, because a
+missing capability is the cause and a failing suite is the symptom.  A
+collision is a build failure that names the slot.
+
+The comment listing the suite's free slots is gone with it.  It was derived by
+enumerating what the suite NAMES, and 99 is something the suite is GIVEN —
+different lists, and the enumeration could only ever check one of them.  A
+mechanical check replaced it.
 
 **Pinned by**: T340 (GetAddress: answers, survives a map, refused without
 READ, WRONG_TYPE on a notification), T341 (Unmap: comes out, capability

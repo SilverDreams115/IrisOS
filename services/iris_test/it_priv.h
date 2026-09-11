@@ -275,11 +275,32 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * consumes its slot and every negative test deletes its own.
  * A mint into an occupied slot DELETES the occupant, so an overlap silently
  * destroys a live object — that cost two hangs during bring-up. */
-/* The only slots genuinely unassigned in this process (verified by enumerating
- * every IRIS_CPTR_ and BOOT_CPTR_ constant, every _SLOT define and every
- * range-reserved pool): 29, 43, 63, 99, 254, 255.  Of those, 99 is now the
- * DOMAIN authority (below) and the rest are the scratch pool and the serial
- * KIoPort. */
+/*
+ * WHICH SLOTS ARE FREE, and why this comment used to be wrong.
+ *
+ * It said: "the only slots genuinely unassigned in this process (verified by
+ * enumerating every IRIS_CPTR_ and BOOT_CPTR_ constant, every _SLOT define and
+ * every range-reserved pool): 29, 43, 63, 99, 254, 255."
+ *
+ * 99 was not free.  It is IRIS_CPTR_FB_CONTROL and init mints it into this
+ * suite — the enumeration missed it because it looked at what the SUITE names
+ * and not at what the suite is GIVEN, and those are different lists.  Acting
+ * on it cost a capability that was delivered and then silently replaced.
+ *
+ * So this list is no longer the authority and is not repeated here.  Two
+ * things check it instead, and both are mechanical:
+ *
+ *   - the loader records every pre-start mint's outcome and `init` prints any
+ *     failure (ledger A-34).  A destination slot that is already occupied is
+ *     ALREADY_EXISTS, named with the slot number;
+ *   - `scripts/run_qemu_headless.sh` fails the build on that line.
+ *
+ * A collision is therefore a build failure that names the slot, rather than a
+ * comment somebody has to keep true.
+ *
+ * Slots 29, 43, 63 and 254 are the scratch pool (IT_SCRATCH_0..3) and 255 is
+ * the serial KIoPort; those ARE named here and are not free for anything else.
+ */
 
 /*
  * The DOMAIN authority (seL4's seL4_CapDomain), as THIS process receives it.
@@ -287,13 +308,13 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * Every other task gets it at IRIS_CPTR_DOMAIN_CONTROL (97), which is free
  * everywhere except here: 88..97 is the suite's fixed reply-object range and
  * T113 deletes 97 on its way out.  A capability minted into 97 at load time
- * therefore survives until T113 runs and then silently is not there — which is
- * how this was found, by T343 getting ACCESS_DENIED for a capability the
- * loader had definitely delivered.
+ * survives until T113 runs and then is simply not there — which is how this
+ * was found, by T343 getting ACCESS_DENIED for a capability the loader had
+ * definitely delivered.
  *
- * The suite's CNode is the crowded one, so the suite names its own slot.  99
- * is on the free list above and is not IRIS_CPTR_FB_CONTROL here: iris_test is
- * never given framebuffer control. */
+ * The suite's CNode is the crowded one, so the suite names its own slot: 87,
+ * the top of the S1 scratch window, empty at suite start and named by no test.
+ * The first attempt used 99 for the reason the comment above records. */
 #define IT_CPTR_DOMAIN_CONTROL IRIS_CPTR_DOMAIN_CONTROL_TEST
 /* Stage 5 Step 2: slot 99 is IRIS_CPTR_FB_CONTROL, the framebuffer control
  * capability.  T134's guaranteed-EMPTY probe moved to a scratch slot it

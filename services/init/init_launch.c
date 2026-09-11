@@ -14,6 +14,51 @@
 #include <iris/endpoint_proto.h>
 #include "../common/svc_loader.h"
 
+/*
+ * Say what happened to a spawn's pre-start mints.
+ *
+ * They are non-fatal by design — a child with an empty slot is better than no
+ * child — but they used to be non-fatal AND silent, on the argument that a
+ * consumer's smoke gate would catch anything missing.  That holds only for
+ * capabilities some marker covers.  The domain authority (A-34) had none: its
+ * destination slot was occupied, the exclusive mint refused, and the child
+ * started without it with nothing anywhere saying so, until a test three
+ * hundred cases later asked and got ACCESS_DENIED.
+ *
+ * ALREADY_EXISTS is the interesting one and almost always means two entries of
+ * the same table name the same slot — a bug in the table, not in the system.
+ * That is why the slot is named: with it the mistake is one grep away, and
+ * without it somebody re-derives it from a failing test.
+ */
+static void init_report_mints(const char *who, const struct svc_mint *m,
+                              uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+        if (m[i].result == SVC_MINT_OK || m[i].result == SVC_MINT_SKIPPED)
+            continue;
+        {
+            static char line[80];
+            uint32_t p = 0, sl = (uint32_t)m[i].slot;
+            const char *t = "[INIT] MINT FAILED ";
+            while (*t) line[p++] = *t++;
+            t = who; while (*t) line[p++] = *t++;
+            line[p++] = ' '; line[p++] = 's'; line[p++] = 'l';
+            line[p++] = 'o'; line[p++] = 't'; line[p++] = '=';
+            line[p++] = (char)('0' + (sl / 100u) % 10u);
+            line[p++] = (char)('0' + (sl / 10u) % 10u);
+            line[p++] = (char)('0' + sl % 10u);
+            line[p++] = ' '; line[p++] = 'e'; line[p++] = '=';
+            {
+                uint32_t e = (uint32_t)(m[i].result < 0 ? -m[i].result
+                                                        : m[i].result);
+                line[p++] = (char)('0' + (e / 10u) % 10u);
+                line[p++] = (char)('0' + e % 10u);
+            }
+            line[p++] = '\r'; line[p++] = '\n'; line[p] = 0;
+            init_log(line);
+        }
+    }
+}
+
 static const char init_console_load_fail[] = "[INIT] console load FAILED\r\n";
 static const char init_console_ioport_fail[] = "[INIT] console ioport FAILED\r\n";
 static const char init_console_chan_fail[] = "[INIT] console ep FAILED\r\n";
@@ -61,6 +106,7 @@ void init_spawn_fb(void) {
                                /* fb maps the framebuffer into a window nothing
                                 * has touched, so it owes every level under it. */
                                /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
+        init_report_mints("fb", fb_mints, 2u);
     }
     if (r < 0)
         init_early_serial_write(init_fb_load_fail);
@@ -235,6 +281,7 @@ int init_spawn_console(void) {
                                 * nothing and removes that. */
                                /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED,
                                /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
+        init_report_mints("console", con_mints, n);
     }
     /* console's slot-13 mint is the only reply cap: drop ours. */
     (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_CONSOLE_RPLY);
@@ -399,6 +446,7 @@ handle_id_t init_spawn_svcmgr(void) {
                                 * its own address space and thread (D-6). */
                                /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED,
                                /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
+        init_report_mints("svcmgr", sm_mints, n);
     }
     /* svcmgr's slot-12 mint keeps the pool alive: drop ours. */
     (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_SM_UNTYPED);
@@ -680,6 +728,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
                                 * long enough for the self-proc mint below. */
                                (uint64_t)INIT_SLOT_TEST_CNODE << 32,
                                (uint64_t)INIT_SLOT_TEST_TCB << 32, 0);
+        init_report_mints("iris_test", it_mints, 22u);
     }
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);

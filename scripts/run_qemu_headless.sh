@@ -172,6 +172,19 @@ if ! grep -Fq "[USER][INIT][S8] exception delivery OK" "$LOG_FILE"; then
   exit 1
 fi
 
+# A pre-start mint that failed.  These are non-fatal by design — a child with
+# an empty slot still runs — which is exactly why they need a gate: a child
+# quietly missing an authority passes every other check here until something
+# asks for it, and what asks might be a test three hundred cases away (A-34).
+if grep -Fq "[INIT] MINT FAILED" "$LOG_FILE"; then
+  echo "[headless] a spawn's pre-start capability mint failed:"
+  grep -F "[INIT] MINT FAILED" "$LOG_FILE" | sed 's/^/           /'
+  echo "           e=07 is ALREADY_EXISTS: two entries of one mint table"
+  echo "           almost certainly name the same destination slot."
+  cat "$LOG_FILE"
+  exit 1
+fi
+
 if ! grep -Fq "[IRIS][TEST] SUITE PASS" "$LOG_FILE"; then
   echo "[headless] missing iris_test SUITE PASS marker"
   cat "$LOG_FILE"
