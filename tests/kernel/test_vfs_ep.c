@@ -70,8 +70,8 @@ static void t_setup_exports(void) {
 
 /* ── Helpers ────────────────────────────────────────────────────────────── */
 
-static struct IrisMsg g_req;
-static struct IrisMsg g_reply;
+static struct iris_msg g_req;
+static struct iris_msg g_reply;
 static uint8_t        g_req_buf[VFS_EP_DATA_MAX];
 static uint8_t        g_reply_buf[VFS_EP_DATA_MAX];
 

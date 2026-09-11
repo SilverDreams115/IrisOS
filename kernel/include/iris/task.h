@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <iris/ipc_msg.h>
+#include <iris/ipc_stage.h>
 #include <iris/user_ctx.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/error.h>
@@ -412,9 +413,16 @@ struct task {
     uint64_t          cspace_root_guard;
     uint8_t           cspace_root_guard_bits;
     uint64_t          sc_num;
-    uint64_t          sc_arg0, sc_arg1, sc_arg2, sc_arg3;
-    uint64_t          sc_arg4;   /* A-32: the fifth, for invocations */
-    uint64_t          sc_arg5, sc_arg6, sc_arg7;  /* A-33: the message ABI */
+    /*
+     * The syscall's arguments, kept where a restart can find them (D-1).
+     *
+     * An array since A-33, because the message ABI addresses them by POSITION
+     * — `ipc_msg.h` says which word of an invocation carries the MessageInfo
+     * and which carry the message registers, and one definition of that map is
+     * the ABI.  sc_arg[0] is the invoked capability, sc_arg[1] the method, and
+     * sc_arg[1 + n] the method's n'th argument.
+     */
+    uint64_t          sc_arg[9];
     /*
      * A-33 — the return message.
      *
@@ -468,7 +476,7 @@ struct task {
     uint64_t          wake_tick;
 
     /* Synchronous endpoint IPC staging (Ph66+). */
-    struct IrisMsg      ipc_msg;         /* 64-byte staging/delivery buffer */
+    struct ipc_stage      ipc_msg;         /* 64-byte staging/delivery buffer */
     uint32_t            ipc_msg_ready;   /* set by sender on successful rendezvous */
     uint32_t            ipc_ep_closed;   /* set by kendpoint_close while task was blocked */
     struct task        *ep_next;         /* intrusive link for endpoint queue */

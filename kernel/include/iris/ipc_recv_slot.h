@@ -7,7 +7,8 @@
  * Stage 4 the declaration is a full CPtr, not a direct root index, so a
  * process whose root CNode is full can still receive capabilities — into a
  * second-level CNode, the way a real CSpace hierarchy works.
- * The declaration reuses two previously-dead IrisMsg input values (no ABI
+ * A-33: the declaration is an argument register of its own (it reused two dead
+ * message fields before, which is why the old text said "no ABI
  * change — see docs/architecture/a1-5-ipc-receive-slot.md):
  *
  *   SYS_EP_RECV / SYS_EP_NB_RECV : input hint msg.attached_cap
@@ -50,21 +51,19 @@
  * is the kernel-side definition of the same boundary. */
 #define IRIS_CPTR_LIMIT ((uint32_t)HANDLE_TAG)
 
-/* Declare a receive-slot for the cap a sender attaches (EP_RECV/EP_NB_RECV).
- * slot = 0 keeps the legacy attached-handle delivery. */
-static inline void iris_msg_declare_recv_slot(struct IrisMsg *m, uint32_t slot) {
-    m->attached_cap = slot;
-}
+/*
+ * A-33: the two "declare a receive slot" helpers are gone.
+ *
+ * They existed because the field a receive slot went in DEPENDED on which call
+ * was going to read it — `attached_cap` for a receive, `attached_handle` for a
+ * Call — and a caller that used the wrong one silently declared nothing.  The
+ * message ABI gives a receive slot its own register and `struct iris_msg` its
+ * own field, so there is one place to put it and no pair of helpers to choose
+ * between.
+ */
 
-/* Declare a receive-slot for a cap the REPLY transfers back (EP_CALL).
- * slot = 0 keeps the legacy delivery; the KReply cap itself is unaffected
- * (it is ephemeral by design and always arrives as a handle). */
-static inline void iris_msg_declare_reply_slot(struct IrisMsg *m, uint32_t slot) {
-    m->attached_handle = slot;
-}
-
-/* Discriminate a delivered-cap output field (attached_cap or, after EP_CALL,
- * attached_handle).  Exactly one of these is true when a cap was delivered. */
+/* Is this a delivered capability?  A receive reports `IRIS_MSG_NO_CAP` when
+ * nothing came, and a CPtr when something did. */
 static inline int iris_msg_cap_is_cptr(uint32_t v) {
     return v != (uint32_t)IRIS_MSG_NO_CAP && v < IRIS_CPTR_LIMIT;
 }

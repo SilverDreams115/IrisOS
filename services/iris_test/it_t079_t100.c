@@ -11,6 +11,7 @@
 #include "it_priv.h"
 
 
+#include "../common/iris_msg.h"
 void test_t079(void) {
     /* init mints the self-proc cap post-load; retry briefly, then FAIL loud.
      * Stage 4: the cap is USED as a CPtr — SYS_PROC_CSPACE_MINT resolves its
@@ -443,17 +444,17 @@ static volatile int g_t084_s1 = 999, g_t084_s2 = 999, g_t084_done = 0;
 static uint8_t      g_t084_stack[8192];
 
 static void t084_sender(void) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label           = 0x84;
-    m.attached_handle = (uint32_t)g_t084_cap1;
-    m.attached_rights = RIGHT_WRITE;
-    g_t084_s1 = (int)it_invoke1((long)g_t084_cmd_ep, INV_EP_SEND, (long)&m);
-    it_iris_msg_zero(&m);
+    m.cap = (uint32_t)g_t084_cap1;
+    m.cap_rights = RIGHT_WRITE;
+    g_t084_s1 = (int)iris_msg_send((long)g_t084_cmd_ep, &m);
+    iris_msg_zero(&m);
     m.label           = 0x84;
-    m.attached_handle = (uint32_t)g_t084_cap2;
-    m.attached_rights = RIGHT_WRITE;
-    g_t084_s2 = (int)it_invoke1((long)g_t084_cmd_ep, INV_EP_SEND, (long)&m);
+    m.cap = (uint32_t)g_t084_cap2;
+    m.cap_rights = RIGHT_WRITE;
+    g_t084_s2 = (int)iris_msg_send((long)g_t084_cmd_ep, &m);
     g_t084_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -488,18 +489,18 @@ void test_t084(void) {
     it_settle(2);   /* let the sender queue its first send */
 
     int ok = 1;
-    struct IrisMsg r;
+    struct iris_msg r;
 
     /* recv #1: declare slot 36 → the cap must land there, as a CPtr. */
-    it_iris_msg_zero(&r);
-    r.attached_cap = T084_SLOT;
-    if (it_invoke1((long)g_t084_cmd_ep, INV_EP_RECV, (long)&r) != 0) ok = 0;
-    if (ok && r.attached_handle != T084_SLOT) ok = 0;
+    iris_msg_zero(&r);
+    r.recv_slot = T084_SLOT;
+    if (iris_msg_recv((long)g_t084_cmd_ep, &r) != 0) ok = 0;
+    if (ok && r.got_cap != T084_SLOT) ok = 0;
     if (ok) {
-        struct IrisMsg probe;
-        it_iris_msg_zero(&probe);
+        struct iris_msg probe;
+        iris_msg_zero(&probe);
         probe.label = 0x84;
-        if (it_invoke1((long)T084_SLOT, INV_EP_NB_SEND, (long)&probe) !=
+        if (iris_msg_nb_send((long)T084_SLOT, &probe) !=
             (long)IRIS_ERR_WOULD_BLOCK) ok = 0;   /* resolves via CSpace */
     }
 
@@ -508,9 +509,9 @@ void test_t084(void) {
      * raced or occupied slot has had since Step 2.  The sender is not left
      * hanging and nothing is half-transferred; a receiver that wants the cap
      * says where to put it. */
-    it_iris_msg_zero(&r);
-    if (ok && it_invoke1((long)g_t084_cmd_ep, INV_EP_RECV, (long)&r) != 0) ok = 0;
-    if (ok && r.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) ok = 0;
+    iris_msg_zero(&r);
+    if (ok && iris_msg_recv((long)g_t084_cmd_ep, &r) != 0) ok = 0;
+    if (ok && r.got_cap != (uint32_t)IRIS_MSG_NO_CAP) ok = 0;
 
     for (int i = 0; i < 200 && !g_t084_done; i++) it_sys0(SYS_YIELD);
     if (!g_t084_done || g_t084_s1 != 0 || g_t084_s2 != 0) ok = 0;
@@ -527,12 +528,12 @@ static volatile int g_t085_s1 = 999, g_t085_done = 0;
 static uint8_t      g_t085_stack[8192];
 
 static void t085_sender(void) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label           = 0x85;
-    m.attached_handle = (uint32_t)g_t085_cap;
-    m.attached_rights = RIGHT_WRITE;            /* reduce: drop WAIT et al. */
-    g_t085_s1 = (int)it_invoke1((long)g_t085_cmd_ep, INV_EP_SEND, (long)&m);
+    m.cap = (uint32_t)g_t085_cap;
+    m.cap_rights = RIGHT_WRITE;            /* reduce: drop WAIT et al. */
+    g_t085_s1 = (int)iris_msg_send((long)g_t085_cmd_ep, &m);
     g_t085_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -563,11 +564,11 @@ void test_t085(void) {
     it_settle(2);
 
     int ok = 1;
-    struct IrisMsg r;
-    it_iris_msg_zero(&r);
-    r.attached_cap = T085_SLOT;
-    if (it_invoke1((long)g_t085_cmd_ep, INV_EP_RECV, (long)&r) != 0) ok = 0;
-    if (ok && r.attached_handle != T085_SLOT) ok = 0;
+    struct iris_msg r;
+    iris_msg_zero(&r);
+    r.recv_slot = T085_SLOT;
+    if (iris_msg_recv((long)g_t085_cmd_ep, &r) != 0) ok = 0;
+    if (ok && r.got_cap != T085_SLOT) ok = 0;
 
     /* Permitted op by CPtr: SIGNAL (RIGHT_WRITE survived the reduce). */
     if (ok && it_invoke1((long)T085_SLOT, INV_NOTIFY_SIGNAL, 0x85) != 0) ok = 0;
@@ -600,12 +601,12 @@ static volatile int g_t086_s1 = 999, g_t086_done = 0;
 static uint8_t      g_t086_stack[8192];
 
 static void t086_sender(void) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label           = 0x86;
-    m.attached_handle = (uint32_t)g_t086_cap;
-    m.attached_rights = RIGHT_WRITE;
-    g_t086_s1 = (int)it_invoke1((long)g_t086_cmd_ep, INV_EP_SEND, (long)&m);
+    m.cap = (uint32_t)g_t086_cap;
+    m.cap_rights = RIGHT_WRITE;
+    g_t086_s1 = (int)iris_msg_send((long)g_t086_cmd_ep, &m);
     g_t086_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -636,12 +637,12 @@ void test_t086(void) {
     it_settle(2);   /* sender is now queued with its staged cap */
 
     int ok = 1;
-    struct IrisMsg r;
+    struct iris_msg r;
 
     /* Occupied slot → ALREADY_EXISTS, fail-fast. */
-    it_iris_msg_zero(&r);
-    r.attached_cap = T084_SLOT;                   /* occupied since T084 */
-    if (it_invoke1((long)g_t086_cmd_ep, INV_EP_RECV, (long)&r) !=
+    iris_msg_zero(&r);
+    r.recv_slot = T084_SLOT;                   /* occupied since T084 */
+    if (iris_msg_recv((long)g_t086_cmd_ep, &r) !=
         (long)IRIS_ERR_ALREADY_EXISTS) ok = 0;
 
     /* A CPtr whose path cannot be walked → INVALID_ARG.  Stage 4 made the
@@ -649,25 +650,25 @@ void test_t086(void) {
      * CNode": it is root slot 44 (300 & 255) followed by index 1, and slot 44
      * holds no CNode to descend into.  Rejected either way, and deliberately
      * still rejected — a receive slot must name a real, empty destination. */
-    it_iris_msg_zero(&r);
-    r.attached_cap = 300u;
-    if (ok && it_invoke1((long)g_t086_cmd_ep, INV_EP_RECV, (long)&r) !=
+    iris_msg_zero(&r);
+    r.recv_slot = 300u;
+    if (ok && iris_msg_recv((long)g_t086_cmd_ep, &r) !=
               (long)IRIS_ERR_INVALID_ARG) ok = 0;
 
     /* EP_NB_RECV validates the declaration the same way. */
-    it_iris_msg_zero(&r);
-    r.attached_cap = T084_SLOT;
-    if (ok && it_invoke1((long)g_t086_cmd_ep, INV_EP_NB_RECV, (long)&r) !=
+    iris_msg_zero(&r);
+    r.recv_slot = T084_SLOT;
+    if (ok && iris_msg_nb_recv((long)g_t086_cmd_ep, &r) !=
               (long)IRIS_ERR_ALREADY_EXISTS) ok = 0;
 
     /* Atomicity: the sender is still blocked — nothing was consumed. */
     if (ok && g_t086_s1 != 999) ok = 0;
 
     /* A good declaration now receives the SAME cap, intact. */
-    it_iris_msg_zero(&r);
-    r.attached_cap = T086_SLOT;
-    if (ok && it_invoke1((long)g_t086_cmd_ep, INV_EP_RECV, (long)&r) != 0) ok = 0;
-    if (ok && r.attached_handle != T086_SLOT) ok = 0;
+    iris_msg_zero(&r);
+    r.recv_slot = T086_SLOT;
+    if (ok && iris_msg_recv((long)g_t086_cmd_ep, &r) != 0) ok = 0;
+    if (ok && r.got_cap != T086_SLOT) ok = 0;
     if (ok && it_invoke1((long)T086_SLOT, INV_NOTIFY_SIGNAL, 0x86) != 0) ok = 0;
     if (ok) {
         uint64_t bits = 0;
@@ -693,26 +694,30 @@ static volatile int      g_t087_done = 0;
 static uint8_t           g_t087_stack[8192];
 
 static void t087_server(void) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
-    m.attached_cap = T087_SRV_SLOT;              /* receive-slot declaration */
+    struct iris_msg m;
+    iris_msg_zero(&m);
+    m.recv_slot = T087_SRV_SLOT;              /* receive-slot declaration */
     /* Phase S1: explicit reply object (slot 94) staged via recv arg2. */
-    long rr = it_invoke2((long)g_t087_ep, INV_EP_RECV, (long)&m, 94);
+    long rr = (m.reply = 94, iris_msg_recv((long)g_t087_ep, &m));
     if (rr == 0) {
-        g_t087_got_cap = m.attached_cap;         /* caller's transferred cap */
-        g_t087_reply_h = m.attached_handle;      /* reply cap — MUST be a handle */
-        g_t087_sig = (int)it_invoke1((long)m.attached_cap, INV_NOTIFY_SIGNAL, 0x87);
+        /* A-33: a receive of a CALL is handed TWO capabilities and they no
+         * longer share a field.  The caller's gift is wherever the receiver
+         * DECLARED it should go — the receiver knows that without being told
+         * — and `got_cap` is the reply object it is now owed. */
+        g_t087_got_cap = (uint32_t)m.recv_slot;
+        g_t087_reply_h = (uint32_t)m.got_cap;
+        g_t087_sig = (int)it_invoke1(m.recv_slot, INV_NOTIFY_SIGNAL, 0x87);
 
-        struct IrisMsg rm;
-        it_iris_msg_zero(&rm);
+        struct iris_msg rm;
+        iris_msg_zero(&rm);
         rm.label           = 0x87;
-        rm.attached_handle = (uint32_t)g_t087_capB;   /* cap back to caller */
-        rm.attached_rights = RIGHT_WRITE;
-        g_t087_r1 = (int)it_invoke1((long)g_t087_reply_h, INV_REPLY_SEND, (long)&rm);
+        rm.cap = (uint32_t)g_t087_capB;   /* cap back to caller */
+        rm.cap_rights = RIGHT_WRITE;
+        g_t087_r1 = (int)iris_msg_reply((long)g_t087_reply_h, &rm);
 
-        it_iris_msg_zero(&rm);
+        iris_msg_zero(&rm);
         rm.label  = 0x87;
-        g_t087_r2 = (int)it_invoke1((long)g_t087_reply_h, INV_REPLY_SEND, (long)&rm);
+        g_t087_r2 = (int)iris_msg_reply((long)g_t087_reply_h, &rm);
     }
     g_t087_done = 1;
     it_sys1(SYS_EXIT, 0);
@@ -748,16 +753,16 @@ void test_t087(void) {
     it_settle(2);   /* server blocks with slot 38 declared */
 
     int ok = 1;
-    struct IrisMsg cm;
-    it_iris_msg_zero(&cm);
+    struct iris_msg cm;
+    iris_msg_zero(&cm);
     cm.label              = 0x87;
-    cm.attached_handle    = T087_REPLY_SLOT;      /* reply receive-slot */
-    cm.attached_cap       = (uint32_t)cA;         /* cap to the server */
-    cm.attached_cap_rights = RIGHT_WRITE;
-    if (it_invoke1((long)g_t087_ep, INV_EP_CALL, (long)&cm) != 0) ok = 0;
+    cm.recv_slot    = T087_REPLY_SLOT;      /* reply receive-slot */
+    cm.cap       = (uint32_t)cA;         /* cap to the server */
+    cm.cap_rights = RIGHT_WRITE;
+    if (iris_msg_call((long)g_t087_ep, &cm) != 0) ok = 0;
 
     /* Reply's transferred cap landed in OUR declared slot 39. */
-    if (ok && cm.attached_handle != T087_REPLY_SLOT) ok = 0;
+    if (ok && cm.got_cap != T087_REPLY_SLOT) ok = 0;
     if (ok && it_invoke1((long)T087_REPLY_SLOT, INV_NOTIFY_SIGNAL, 0x99) != 0) ok = 0;
     if (ok) {
         uint64_t bits = 0;
@@ -805,23 +810,23 @@ static uint8_t           g_t088_stack2[8192];
 static uint8_t           g_t088_stack3[8192];
 
 static void t088_recv1(uint64_t self_tcb) {   /* killed while blocked with slot declared */
-    struct IrisMsg m;
+    struct iris_msg m;
     g_t088_r1_tcb   = (long)self_tcb;
     g_t088_r1_ready = 1;
-    it_iris_msg_zero(&m);
-    m.attached_cap = T088_SLOT_A;
-    (void)it_invoke1((long)g_t088_ep, INV_EP_RECV, (long)&m);
+    iris_msg_zero(&m);
+    m.recv_slot = T088_SLOT_A;
+    (void)iris_msg_recv((long)g_t088_ep, &m);
     it_sys1(SYS_EXIT, 0);    /* not reached: killed while blocked */
     for (;;) {}
 }
 
 static void t088_recv2(void) {   /* real transfer into the same slot */
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
-    m.attached_cap = T088_SLOT_A;
-    if (it_invoke1((long)g_t088_ep, INV_EP_RECV, (long)&m) == 0) {
-        g_t088_r2_got = m.attached_handle;
-        g_t088_r2_sig = (int)it_invoke1((long)m.attached_handle, INV_NOTIFY_SIGNAL, 0x88);
+    struct iris_msg m;
+    iris_msg_zero(&m);
+    m.recv_slot = T088_SLOT_A;
+    if (iris_msg_recv((long)g_t088_ep, &m) == 0) {
+        g_t088_r2_got = m.got_cap;
+        g_t088_r2_sig = (int)it_invoke1((long)m.got_cap, INV_NOTIFY_SIGNAL, 0x88);
     }
     g_t088_r2_done = 1;
     it_sys1(SYS_EXIT, 0);
@@ -829,10 +834,10 @@ static void t088_recv2(void) {   /* real transfer into the same slot */
 }
 
 static void t088_recv3(void) {   /* endpoint closed under a declared slot */
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
-    m.attached_cap = T088_SLOT_C;
-    g_t088_r3_rr   = it_invoke1((long)g_t088_ep2, INV_EP_RECV, (long)&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
+    m.recv_slot = T088_SLOT_C;
+    g_t088_r3_rr   = iris_msg_recv((long)g_t088_ep2, &m);
     g_t088_r3_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -865,10 +870,10 @@ void test_t088(void) {
         /* No ghost cap in the slot; no stale receiver on the endpoint. */
         if (ok && it_invoke0((long)T088_SLOT_A, INV_CAP_IDENTIFY) >= 0) ok = 0;
         if (ok) {
-            struct IrisMsg p;
-            it_iris_msg_zero(&p);
+            struct iris_msg p;
+            iris_msg_zero(&p);
             p.label = 0x88;
-            if (it_invoke1((long)g_t088_ep, INV_EP_NB_SEND, (long)&p) !=
+            if (iris_msg_nb_send((long)g_t088_ep, &p) !=
                 (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
         }
     }
@@ -882,12 +887,12 @@ void test_t088(void) {
         long c = it_xfer_dup( n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
         if (c < 0) ok = 0;
         if (ok) {
-            struct IrisMsg m;
-            it_iris_msg_zero(&m);
+            struct iris_msg m;
+            iris_msg_zero(&m);
             m.label           = 0x88;
-            m.attached_handle = (uint32_t)c;
-            m.attached_rights = RIGHT_WRITE;
-            if (it_invoke1((long)g_t088_ep, INV_EP_SEND, (long)&m) != 0) ok = 0;
+            m.cap = (uint32_t)c;
+            m.cap_rights = RIGHT_WRITE;
+            if (iris_msg_send((long)g_t088_ep, &m) != 0) ok = 0;
         }
         it_xfer_release(c);
         for (int i = 0; i < 200 && !g_t088_r2_done; i++) it_sys0(SYS_YIELD);
@@ -926,24 +931,23 @@ void test_t088(void) {
 
 /* LOOKUP `name` over svcmgr.ep declaring `reply_slot` (0 = legacy). */
 long it_lookup_name_slot(const char *name, uint32_t reply_slot,
-                                struct IrisMsg *msg) {
+                                struct iris_msg *msg) {
     uint32_t len = it_stage_path(name);
-    it_iris_msg_zero(msg);
+    iris_msg_zero(msg);
     msg->label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg->buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg->buf_len  = len;
-    iris_msg_declare_reply_slot(msg, reply_slot);
-    return it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)msg);
+    msg->recv_slot = (long)reply_slot;   /* where the reply's capability lands */
+    return iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, msg);
 }
 
 /* UNREGISTER dynamic id; 0 on success, -(error) on reply ERR. */
 long it_unregister_id(uint32_t id) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label      = IRIS_SVCMGR_EP_UNREGISTER;
     msg.words[0]   = id;
     msg.word_count = 1u;
-    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     if (r != 0) return r;
     return (msg.label == IRIS_EP_REPLY_OK) ? 0 : -(long)(uint32_t)msg.words[0];
 }
@@ -963,21 +967,21 @@ void test_t089(void) {
     long id = it_register_ep("t89.svc", ep);
     if (id < 0) ok = 0;
 
-    struct IrisMsg msg;
+    struct iris_msg msg;
     if (ok) {
         /* Lookup into a declared slot: the cap is minted from the CSpace
          * master svcmgr holds and lands in the client's CSpace. */
         it_slot_delete((uint32_t)IT_LOOKUP_TMP);
         if (it_lookup_name_slot("t89.svc", (uint32_t)IT_LOOKUP_TMP, &msg) != 0 ||
             msg.label != IRIS_EP_REPLY_OK ||
-            msg.attached_handle != (uint32_t)IT_LOOKUP_TMP) ok = 0;
+            msg.got_cap != (uint32_t)IT_LOOKUP_TMP) ok = 0;
         if (ok) {
             /* Invocable: no receiver on the endpoint → WOULD_BLOCK proves
              * resolution + rights (T084 probe). */
-            struct IrisMsg p;
-            it_iris_msg_zero(&p);
+            struct iris_msg p;
+            iris_msg_zero(&p);
             p.label = 0x89;
-            if (it_invoke1((long)IT_LOOKUP_TMP, INV_EP_NB_SEND, (long)&p) !=
+            if (iris_msg_nb_send((long)IT_LOOKUP_TMP, &p) !=
                 (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
         }
         it_slot_delete((uint32_t)IT_LOOKUP_TMP);
@@ -1011,17 +1015,17 @@ void test_t090(void) {
     long id = it_register_ep("t90.svc", ep);
     if (id < 0) ok = 0;
 
-    struct IrisMsg msg;
+    struct iris_msg msg;
     if (ok) {
         /* Reply-slot lookup: the cap arrives as CPtr T090_SLOT, no handle. */
         if (it_lookup_name_slot("t90.svc", T090_SLOT, &msg) != 0 ||
             msg.label != IRIS_EP_REPLY_OK ||
-            msg.attached_handle != T090_SLOT) ok = 0;
+            msg.recv_slot != T090_SLOT) ok = 0;
         if (ok) {
-            struct IrisMsg p;
-            it_iris_msg_zero(&p);
+            struct iris_msg p;
+            iris_msg_zero(&p);
             p.label = 0x90;
-            if (it_invoke1((long)T090_SLOT, INV_EP_NB_SEND, (long)&p) !=
+            if (iris_msg_nb_send((long)T090_SLOT, &p) !=
                 (long)IRIS_ERR_WOULD_BLOCK) ok = 0;   /* invocable by CPtr */
         }
     }
@@ -1037,7 +1041,7 @@ void test_t090(void) {
         it_slot_delete((uint32_t)IT_LOOKUP_TMP);
         if (it_lookup_name_slot("t90.svc", (uint32_t)IT_LOOKUP_TMP, &msg) != 0 ||
             msg.label != IRIS_EP_REPLY_OK ||
-            msg.attached_handle != (uint32_t)IT_LOOKUP_TMP) ok = 0;
+            msg.recv_slot != (uint32_t)IT_LOOKUP_TMP) ok = 0;
         it_slot_delete((uint32_t)IT_LOOKUP_TMP);
     }
 
@@ -1059,21 +1063,20 @@ void test_t091(void) {
     const uint32_t expect_len = (uint32_t)(sizeof(expect) - 1u);
     int ok = 1;
 
-    struct IrisMsg msg;
+    struct iris_msg msg;
     if (it_lookup_name_slot(VFS_EP_SVC_NAME, T091_SLOT, &msg) != 0 ||
         msg.label != IRIS_EP_REPLY_OK ||
-        msg.attached_handle != T091_SLOT) ok = 0;
+        msg.recv_slot != T091_SLOT) ok = 0;
 
     if (ok) {
         uint32_t len = it_stage_path("iris.txt");
-        it_iris_msg_zero(&msg);
+        iris_msg_zero(&msg);
         msg.label      = VFS_EP_OP_READ_AT;
         msg.words[0]   = 0;
         msg.words[1]   = VFS_EP_DATA_MAX;
         msg.word_count = 2;
-        msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
         msg.buf_len    = len;
-        if (it_invoke1((long)T091_SLOT, INV_EP_CALL, (long)&msg) != 0 ||
+        if (iris_msg_call((long)T091_SLOT, &msg) != 0 ||
             msg.label != IRIS_EP_REPLY_OK ||
             msg.words[1] != (uint64_t)expect_len ||
             msg.buf_len != expect_len) ok = 0;
@@ -1100,12 +1103,12 @@ void test_t091(void) {
  * sticky. */
 void test_t092(void) {
     int ok = 1;
-    struct IrisMsg msg;
+    struct iris_msg msg;
 
     /* Slotless: reply OK, no cap. */
     if (it_lookup_name_slot(VFS_EP_SVC_NAME, 0u, &msg) != 0 ||
         msg.label != IRIS_EP_REPLY_OK ||
-        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) ok = 0;
+        msg.got_cap != (uint32_t)IRIS_MSG_NO_CAP) ok = 0;
 
     /* The same lookup WITH a slot still delivers a working cap: the dropped
      * delivery left nothing wedged on either side. */
@@ -1113,12 +1116,12 @@ void test_t092(void) {
         it_slot_delete((uint32_t)IT_LOOKUP_TMP);
         if (it_lookup_name_slot(VFS_EP_SVC_NAME, (uint32_t)IT_LOOKUP_TMP, &msg) != 0 ||
             msg.label != IRIS_EP_REPLY_OK ||
-            msg.attached_handle != (uint32_t)IT_LOOKUP_TMP) ok = 0;
+            msg.got_cap != (uint32_t)IT_LOOKUP_TMP) ok = 0;
     }
     if (ok) {
-        it_iris_msg_zero(&msg);
+        iris_msg_zero(&msg);
         msg.label = VFS_EP_OP_STATUS;
-        if (it_invoke1((long)IT_LOOKUP_TMP, INV_EP_CALL, (long)&msg) != 0 ||
+        if (iris_msg_call((long)IT_LOOKUP_TMP, &msg) != 0 ||
             msg.label != IRIS_EP_REPLY_OK) ok = 0;
     }
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
@@ -1311,7 +1314,15 @@ long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg) {
     if (r != 0) return r;
     r = it_invoke(tcb, INV_TCB_WRITE_REGS, (long)entry, (long)rsp, (long)arg);
     if (r != 0) return r;
-    (void)it_thread_ipc_buffer(tcb);   /* best-effort while D-4 is migrating */
+    /*
+     * A-33: each thread marshals in the page IT registered, and it knows which
+     * page because it was told.  There is no `buf_uptr` for the kernel to
+     * report one in — that field was the message ABI's way of telling a
+     * receiver where its own buffer was, which is a thing a thread that
+     * registered one already knows.  The creator publishes it here, and the
+     * thread it just made is the one that reads it.
+     */
+    g_it_thread_buf = (uint64_t)it_thread_ipc_buffer(tcb);
     if (arg == IT_THREAD_ARG_SELF_TCB) {
         /* The thread is handed its OWN TCB capability as its entry argument —
          * the only per-thread channel a freshly started thread has, and the
@@ -1344,6 +1355,8 @@ static uint32_t g_it_ipcbuf_next;
 static long     g_it_ipcbuf_ut = -1;   /* a pool of its own; see below */
 _Static_assert(IT_IPCBUF_CNODE_SLOT == 66u,
                "the slot guard names 66 by value; keep the two together");
+
+volatile uint64_t g_it_thread_buf;   /* A-33: see it_thread_create */
 
 long it_thread_ipc_buffer(long tcb) {
     if (g_it_ipcbuf_ut < 0) {
@@ -1413,16 +1426,16 @@ void test_t093(void) {
         }
         /* spot-check two: served from CSpace storage, invocable */
         for (int i = 0; ok && i < 8; i += 7) {
-            struct IrisMsg msg;
+            struct iris_msg msg;
             name[4] = (char)('a' + i);
             it_slot_delete((uint32_t)IT_LOOKUP_TMP);
             if (it_lookup_name_slot(name, (uint32_t)IT_LOOKUP_TMP, &msg) != 0 ||
                 msg.label != IRIS_EP_REPLY_OK ||
-                msg.attached_handle != (uint32_t)IT_LOOKUP_TMP) { ok = 0; break; }
-            struct IrisMsg p;
-            it_iris_msg_zero(&p);
+                msg.got_cap != (uint32_t)IT_LOOKUP_TMP) { ok = 0; break; }
+            struct iris_msg p;
+            iris_msg_zero(&p);
             p.label = 0x93;
-            if (it_invoke1((long)IT_LOOKUP_TMP, INV_EP_NB_SEND, (long)&p) !=
+            if (iris_msg_nb_send((long)IT_LOOKUP_TMP, &p) !=
                 (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
             it_slot_delete((uint32_t)IT_LOOKUP_TMP);
         }
@@ -1433,7 +1446,7 @@ void test_t093(void) {
 
     /* after the last unregister wave nothing resolves */
     if (ok) {
-        struct IrisMsg msg;
+        struct iris_msg msg;
         name[4] = 'a';
         if (it_lookup_name_slot(name, 0u, &msg) != 0 ||
             msg.label != IRIS_EP_REPLY_ERR ||
@@ -1450,12 +1463,12 @@ static volatile int      g_t094_ready = 0, g_t094_done = 0;
 static uint8_t           g_t094_stack[8192];
 
 static void t094_recv(void) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
-    m.attached_cap = (uint32_t)T094_SLOT;      /* receive-slot declaration */
+    struct iris_msg m;
+    iris_msg_zero(&m);
+    m.recv_slot = (uint32_t)T094_SLOT;      /* receive-slot declaration */
     g_t094_ready = 1;
-    if (it_invoke1((long)g_t094_ep, INV_EP_RECV, (long)&m) == 0)
-        g_t094_got = m.attached_handle;        /* EP_SEND caps land here */
+    if (iris_msg_recv((long)g_t094_ep, &m) == 0)
+        g_t094_got = m.got_cap;        /* EP_SEND caps land here */
     g_t094_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -1494,12 +1507,12 @@ void test_t094(void) {
         xsrc = it_xfer_dup( nA, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
         if (xsrc < 0) { ok = 0; why = "xfer slot"; }
         else {
-            struct IrisMsg m;
-            it_iris_msg_zero(&m);
+            struct iris_msg m;
+            iris_msg_zero(&m);
             m.label           = 0x94;
-            m.attached_handle = (uint32_t)xsrc;
-            m.attached_rights = RIGHT_WRITE;
-            if (it_invoke1((long)g_t094_ep, INV_EP_SEND, (long)&m) != 0) {
+            m.cap = (uint32_t)xsrc;
+            m.cap_rights = RIGHT_WRITE;
+            if (iris_msg_send((long)g_t094_ep, &m) != 0) {
                 ok = 0; why = "send";
             }
         }
@@ -1618,15 +1631,15 @@ void test_t096(void) {
     int ok = 1;
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
     for (int i = 0; ok && i < 32; i++) {
-        struct IrisMsg msg;
+        struct iris_msg msg;
         if (it_lookup_name_slot(VFS_EP_SVC_NAME, (uint32_t)IT_LOOKUP_TMP, &msg) != 0 ||
             msg.label != IRIS_EP_REPLY_OK ||
-            msg.attached_handle != (uint32_t)IT_LOOKUP_TMP) { ok = 0; break; }
+            msg.got_cap != (uint32_t)IT_LOOKUP_TMP) { ok = 0; break; }
         if (i == 31) {          /* the last cap still actually works */
-            struct IrisMsg p;
-            it_iris_msg_zero(&p);
+            struct iris_msg p;
+            iris_msg_zero(&p);
             p.label = IRIS_EP_OP_PING;
-            if (it_invoke1((long)IT_LOOKUP_TMP, INV_EP_CALL, (long)&p) != 0 ||
+            if (iris_msg_call((long)IT_LOOKUP_TMP, &p) != 0 ||
                 p.label != IRIS_EP_REPLY_OK) ok = 0;
         }
         it_slot_delete((uint32_t)IT_LOOKUP_TMP);
@@ -1816,12 +1829,12 @@ void test_t098(void) {
 
 /* Command a child into receive-slot mode (second recv declares `slot`). */
 long it_lp_cmd_rslot(handle_id_t cmd_ep_h, uint32_t slot) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label      = LP_CMD_RSLOT_RECV;
     m.words[0]   = slot;
     m.word_count = 1u;
-    return it_invoke1((long)cmd_ep_h, INV_EP_SEND, (long)&m);
+    return iris_msg_send((long)cmd_ep_h, &m);
 }
 
 /* Transfer a WRITE|TRANSFER dup of `notif` to the child (blocks until the
@@ -1830,20 +1843,20 @@ long it_lp_send_cap(handle_id_t cmd_ep_h, long notif) {
     long d = it_xfer_dup( notif,
                      (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
     if (d < 0) return d;
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label           = 0x99;
-    m.attached_handle = (uint32_t)d;
-    m.attached_rights = RIGHT_WRITE;
-    long r = it_invoke1((long)cmd_ep_h, INV_EP_SEND, (long)&m);
+    m.cap = (uint32_t)d;
+    m.cap_rights = RIGHT_WRITE;
+    long r = iris_msg_send((long)cmd_ep_h, &m);
     it_xfer_release(d);
     return r;
 }
 long it_lp_cmd(handle_id_t cmd_ep_h, uint32_t label) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label = label;
-    return it_invoke1((long)cmd_ep_h, INV_EP_SEND, (long)&m);
+    return iris_msg_send((long)cmd_ep_h, &m);
 }
 
 /* Wait (≤ 2s) for a child to exit; returns its exit code or -1. */
@@ -1922,10 +1935,10 @@ void test_t099(void) {
             ok = 0; why = "occupied";
         }
         if (ok) {
-            struct IrisMsg pr;
-            it_iris_msg_zero(&pr);
+            struct iris_msg pr;
+            iris_msg_zero(&pr);
             pr.label = 0x99;
-            if (it_invoke1((long)ep_h, INV_EP_NB_SEND, (long)&pr) !=
+            if (iris_msg_nb_send((long)ep_h, &pr) !=
                 (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "dead waiter"; }
         }
         it_close(&proc_h);
@@ -1976,7 +1989,7 @@ void test_t100(void) {
     const char *why = "lookup rslot stress";
     long ids[4];
     char name[7] = { 't', '1', '0', '0', '.', 'a', '\0' };
-    struct IrisMsg msg;
+    struct iris_msg msg;
 
     for (int i = 0; ok && i < 4; i++) {
         name[5] = (char)('a' + i);
@@ -1988,12 +2001,12 @@ void test_t100(void) {
         name[5] = (char)('a' + i);
         if (it_lookup_name_slot(name, slot, &msg) != 0 ||
             msg.label != IRIS_EP_REPLY_OK ||
-            msg.attached_handle != slot) { ok = 0; why = "slot lookup"; }
+            msg.got_cap != slot) { ok = 0; why = "slot lookup"; }
         if (ok) {
-            struct IrisMsg p;
-            it_iris_msg_zero(&p);
+            struct iris_msg p;
+            iris_msg_zero(&p);
             p.label = 0xA0;
-            if (it_invoke1((long)slot, INV_EP_NB_SEND, (long)&p) !=
+            if (iris_msg_nb_send((long)slot, &p) !=
                 (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "cptr dead"; }
         }
     }
@@ -2020,7 +2033,7 @@ void test_t100(void) {
         else {
             if (it_lookup_name_slot("t100.a", 43u, &msg) != 0 ||
                 msg.label != IRIS_EP_REPLY_OK ||
-                msg.attached_handle != 43u) { ok = 0; why = "slot reuse"; }
+                msg.got_cap != 43u) { ok = 0; why = "slot reuse"; }
             (void)it_unregister_id((uint32_t)id2);
         }
     }

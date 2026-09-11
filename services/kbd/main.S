@@ -21,23 +21,31 @@
  */
 #include <iris/syscall.h>
 #include <iris/invoke.h>
+#include <iris/ipc_msg.h>
 #include <iris/kbd_ep_proto.h>
 
 .global _start
 
 /* ── Endpoint state (Fase 7.4) ─────────────────────────────────────────────
- * kbd_ep_msg:  struct IrisMsg (72 B, Fase 9) staging area for EP recv/reply.
- *              offsets: label 0, words[0..3] 8/16/24/32, word_count 40,
- *              buf_len 44, buf_uptr 48, attached_handle 56, rights 60.
- * kbd_ep_buf:  bulk landing zone (IRIS_IPC_BUF_SIZE); requests carrying bulk
- *              are rejected, the buffer only keeps the kernel copy in-bounds.
+ * Ledger A-33: there is no message STRUCT here any more.  A message arrives in
+ * registers and leaves in registers, so what the driver keeps between the
+ * receive and the reply is three words it actually uses — and it keeps them
+ * because the reply path needs registers for other things, not because the
+ * kernel has any idea they exist.
+ *
+ * kbd_msg_*:   what the last receive delivered: its label, the badge the
+ *              kernel stamped, and the reply capability it echoed back.
+ * kbd_ep_buf:  bulk landing zone; requests carrying bulk are rejected, and
+ *              this only keeps the kernel's copy in bounds.
  * kbd_ring:    scancode ring, KBD_EP_RING_CAP deep, drop-oldest on overflow.
  * kbd_park:    parked KReply cap for a blocking KBD_EP_OP_READ (0 = none).
  * kbd_ep_h:    recv side of the service KEndpoint (0 = not granted).
  */
 .section .bss
 .align 8
-kbd_ep_msg:     .skip 80               /* struct IrisMsg (80 B, Fase 11)   */
+kbd_msg_label:  .skip 8
+kbd_msg_badge:  .skip 8
+kbd_msg_reply:  .skip 8
 kbd_ep_buf:     .skip 256
 kbd_ring:       .skip KBD_EP_RING_CAP
 kbd_ring_head:  .skip 4
@@ -181,18 +189,11 @@ _start:
     movl  kbd_ep_h(%rip), %edi
     testl %edi, %edi
     jz    .kbd_no_ep                   /* no endpoint granted              */
-    leaq  kbd_ep_msg(%rip), %rsi       /* zero IrisMsg, stage bulk buffer  */
-    movq  $0,  0(%rsi)
-    movq  $0,  8(%rsi)
-    movq  $0, 16(%rsi)
-    movq  $0, 24(%rsi)
-    movq  $0, 32(%rsi)
-    movq  $0, 40(%rsi)
-    movq  $0, 56(%rsi)
-    movq  $0, 64(%rsi)                 /* sender_badge (kernel overwrites) */
-    leaq  kbd_ep_buf(%rip), %rax
-    movq  %rax, 48(%rsi)               /* buf_uptr = kbd_ep_buf            */
-    /* Fase S1: pass a FREE explicit reply object in arg2 (rdx).  kbd owns
+    /* A-33: nothing to zero and no buffer to name.  A receive says where it
+     * wants a capability put and which reply object to stage, and that is all
+     * it says; the message comes back in registers.
+     *
+     * Fase S1: pass a FREE explicit reply object.  kbd owns
      * two reply objects (slots 13/14, minted by svcmgr): the one currently
      * parked (kbd_park) is bound to a waiting READ caller, so recv with the
      * other.  0 parked → use 13. */
@@ -201,26 +202,37 @@ _start:
     jne   .kbd_reply_pick_done
     movl  $14, %r10d
 .kbd_reply_pick_done:
-    /* Ledger A-32: rdi = the endpoint being invoked, rsi = the method,
-     * rdx = the message buffer, r10 = the reply object picked above. */
-    movq  %rsi, %rdx                   /* message buffer, out of rsi's way */
+    /* A-33: rdi = the endpoint, rsi = the method, rdx = the slot a delivered
+     * capability should land in (none), r10 = the reply object picked above. */
+    xorl  %edx, %edx
     movq  $INV_EP_RECV, %rsi
     movq  $SYS_INVOKE, %rax            /* BLOCKING: the bound notification  */
     syscall                            /* wakes us for a keystroke too      */
     testq %rax, %rax
     jnz   .kbd_recv               /* error: retry rather than spin     */
 
-    leaq  kbd_ep_msg(%rip), %rsi
-    movq  0(%rsi), %rax                /* a SIGNAL, not a call?            */
-    movq  $0xF0000002, %rcx            /* IRIS_MSG_LABEL_NOTIFICATION      */
+    /*
+     * A-33: unpack.  rdi = the badge the kernel stamped, rsi = the
+     * MessageInfo, rdx = the reply capability this call is owed, and
+     * r10..r15 = the message words.  The label is the MessageInfo's high
+     * field and the bulk byte count its middle one — `iris/ipc_msg.h` is
+     * where that layout is written down for both ends.
+     */
+    movq  %rdi, kbd_msg_badge(%rip)
+    movq  %rdx, kbd_msg_reply(%rip)
+    movq  %rsi, %rax
+    shrq  $IRIS_MI_LABEL_SHIFT, %rax
+    movq  %rax, kbd_msg_label(%rip)
+
+    movq  $IRIS_MSG_LABEL_NOTIFICATION, %rcx   /* a SIGNAL, not a call?    */
     cmpq  %rcx, %rax
     je    .kbd_scancode
-    leaq  kbd_ep_msg(%rip), %rsi
-    movl  56(%rsi), %eax               /* per-call KReply capability       */
-    movl  %eax, 92(%rsp)               /* stash reply cap                  */
-    cmpl  $0, 44(%rsi)                 /* bulk payload attached?           */
-    jne   .kbd_ep_inval
-    movq  0(%rsi), %rax                /* dispatch on label                */
+
+    movq  %rsi, %rcx                   /* bulk payload attached?           */
+    shrq  $IRIS_MI_BUF_SHIFT, %rcx
+    andq  $IRIS_MI_BUF_MASK, %rcx
+    jnz   .kbd_ep_inval
+
     cmpq  $KBD_EP_PING_OP, %rax
     je    .kbd_ep_ping
     cmpq  $KBD_EP_OP_POLL, %rax
@@ -233,20 +245,12 @@ _start:
     movl  $KBD_EP_E_INVALID_ARG, %edx
     jmp   .kbd_ep_reply_err
 
-.kbd_ep_ping:                          /* PING → OK; words[1] = sender badge */
-    leaq  kbd_ep_msg(%rip), %rsi
-    movq  64(%rsi), %rcx               /* req sender_badge (Fase 9) — read */
-                                       /* BEFORE the reply reuses the buf  */
-    movq  $0,  0(%rsi)                 /* label = IRIS_EP_REPLY_OK         */
-    movq  $0,  8(%rsi)                 /* words[0] = 0                     */
-    movq  %rcx, 16(%rsi)               /* words[1] = observed badge        */
-    movq  $0, 24(%rsi)
-    movq  $0, 32(%rsi)
-    movq  $0, 40(%rsi)
-    movq  $0, 48(%rsi)
-    movq  $0, 56(%rsi)
-    movq  $0, 64(%rsi)                 /* sender_badge: kernel-owned       */
-    movl  $2, 40(%rsi)                 /* word_count = 2                   */
+.kbd_ep_ping:                          /* PING → OK; mr1 = sender badge    */
+    /* A-33: a reply is a MessageInfo and message registers.  Label
+     * IRIS_EP_REPLY_OK is 0, so the MessageInfo is just the word count. */
+    movq  $2, %rdx                     /* label 0 (OK), length 2           */
+    xorl  %r10d, %r10d                 /* mr0 = 0                          */
+    movq  kbd_msg_badge(%rip), %r8     /* mr1 = the badge we observed      */
     jmp   .kbd_ep_send_reply
 
 .kbd_ep_poll:                          /* POLL → event or WOULD_BLOCK      */
@@ -263,7 +267,7 @@ _start:
     movl  kbd_park(%rip), %eax
     testl %eax, %eax
     jnz   .kbd_ep_read_busy            /* one parked reply max             */
-    movl  92(%rsp), %eax               /* park the reply cap: answered     */
+    movl  kbd_msg_reply(%rip), %eax    /* park the reply cap: answered     */
     movl  %eax, kbd_park(%rip)         /* from the next IRQ scancode       */
     jmp   .kbd_ep_drain
 .kbd_ep_read_busy:
@@ -278,37 +282,22 @@ _start:
     movzbl (%rdx,%rax,1), %edx         /* edx = scancode                   */
     decl  %ecx
     movl  %ecx, kbd_ring_count(%rip)
-    leaq  kbd_ep_msg(%rip), %rsi       /* OK reply: words[1] = scancode    */
-    movq  $0,  0(%rsi)
-    movq  $0,  8(%rsi)
-    movq  $0, 16(%rsi)
-    movq  $0, 24(%rsi)
-    movq  $0, 32(%rsi)
-    movq  $0, 40(%rsi)
-    movq  $0, 48(%rsi)
-    movq  $0, 56(%rsi)
-    movl  %edx, 16(%rsi)               /* words[1]                         */
-    movl  $2, 40(%rsi)                 /* word_count = 2                   */
+    movl  %edx, %r8d                   /* mr1 = scancode                   */
+    xorl  %r10d, %r10d                 /* mr0 = 0                          */
+    movq  $2, %rdx                     /* label 0 (OK), length 2           */
     jmp   .kbd_ep_send_reply
 
 .kbd_ep_reply_err:                     /* edx = uint32_t error image       */
-    leaq  kbd_ep_msg(%rip), %rsi
-    movq  $0,  0(%rsi)
-    movq  $0,  8(%rsi)
-    movq  $0, 16(%rsi)
-    movq  $0, 24(%rsi)
-    movq  $0, 32(%rsi)
-    movq  $0, 40(%rsi)
-    movq  $0, 48(%rsi)
-    movq  $0, 56(%rsi)
-    movq  $KBD_EP_REPLY_ERR_LABEL, %rax
-    movq  %rax, 0(%rsi)                /* label = IRIS_EP_REPLY_ERR        */
-    movl  %edx, 8(%rsi)                /* words[0] = error                 */
-    movl  $1, 40(%rsi)                 /* word_count = 1                   */
+    movl  %edx, %r10d                  /* mr0 = the error                  */
+    xorl  %r8d, %r8d
+    movq  $((KBD_EP_REPLY_ERR_LABEL << IRIS_MI_LABEL_SHIFT) | 1), %rdx
 
-.kbd_ep_send_reply:
-    movl  92(%rsp), %edi
-    leaq  kbd_ep_msg(%rip), %rdx
+.kbd_ep_send_reply:                    /* rdx = MessageInfo, r10/r8 = mr0/1 */
+    movl  kbd_msg_reply(%rip), %edi
+    xorl  %r9d, %r9d                   /* mr2 */
+    xorl  %r15d, %r15d                 /* mr3 */
+    xorl  %r14d, %r14d                 /* no capability travels            */
+    xorl  %r13d, %r13d                 /* no receive slot                  */
     movq  $INV_REPLY_SEND, %rsi
     movq  $SYS_INVOKE, %rax
     syscall                            /* failure tolerated: caller died   */
@@ -396,20 +385,17 @@ _start:
     movl  kbd_park(%rip), %eax
     testl %eax, %eax
     jz    .kbd_irq_ring
-    leaq  kbd_ep_msg(%rip), %rsi       /* OK reply: words[1] = scancode    */
-    movq  $0,  0(%rsi)
-    movq  $0,  8(%rsi)
-    movq  $0, 16(%rsi)
-    movq  $0, 24(%rsi)
-    movq  $0, 32(%rsi)
-    movq  $0, 40(%rsi)
-    movq  $0, 48(%rsi)
-    movq  $0, 56(%rsi)
+    /* A-33: the parked caller's answer, in registers.  Label OK is 0, so the
+     * MessageInfo is the length alone; the scancode rides in mr1. */
     movzbl 88(%rsp), %eax
-    movl  %eax, 16(%rsi)               /* words[1] = scancode              */
-    movl  $2, 40(%rsi)                 /* word_count = 2                   */
+    movl  %eax, %r8d                   /* mr1 = scancode                   */
+    xorl  %r10d, %r10d                 /* mr0 = 0                          */
+    xorl  %r9d,  %r9d
+    xorl  %r15d, %r15d
+    xorl  %r14d, %r14d
+    xorl  %r13d, %r13d
+    movq  $2, %rdx                     /* label 0 (OK), length 2           */
     movl  kbd_park(%rip), %edi
-    movq  %rsi, %rdx                   /* the message buffer               */
     movq  $INV_REPLY_SEND, %rsi
     movq  $SYS_INVOKE, %rax
     syscall                            /* failure tolerated: caller died   */

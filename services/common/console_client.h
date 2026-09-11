@@ -2,6 +2,7 @@
 #define IRIS_CONSOLE_CLIENT_H
 
 #include <stdint.h>
+#include "iris_msg.h"
 #include <iris/nc/handle.h>
 #include <iris/console_ep_proto.h>
 #include <iris/ipc_msg.h>
@@ -31,14 +32,13 @@ static inline long console_ep_write(handle_id_t ep_h, uint8_t *buf,
         if (chunk > IRIS_IPC_BUF_SIZE) chunk = IRIS_IPC_BUF_SIZE;
         for (uint32_t i = 0; i < chunk; i++) buf[i] = (uint8_t)s[off + i];
 
-        struct IrisMsg msg;
+        struct iris_msg msg;
         uint8_t *raw = (uint8_t *)&msg;
         for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
         msg.label    = CONSOLE_EP_OP_WRITE;
-        msg.buf_uptr = (uint64_t)(uintptr_t)buf;
         msg.buf_len  = chunk;
 
-        long ret = iris_invoke1((long)ep_h, INV_EP_CALL, (long)&msg);
+        long ret = iris_msg_call((long)ep_h, &msg);
         if (ret != 0) return ret;
         if (msg.label != IRIS_EP_REPLY_OK) return -1;
         off += chunk;
@@ -53,11 +53,11 @@ static inline long console_ep_write(handle_id_t ep_h, uint8_t *buf,
  */
 static inline long console_ep_sync(handle_id_t ep_h) {
     if (ep_h == HANDLE_INVALID) return -1;
-    struct IrisMsg msg;
+    struct iris_msg msg;
     uint8_t *raw = (uint8_t *)&msg;
     for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
     msg.label = CONSOLE_EP_OP_SYNC;
-    long ret = iris_invoke1((long)ep_h, INV_EP_CALL, (long)&msg);
+    long ret = iris_msg_call((long)ep_h, &msg);
     if (ret != 0) return ret;
     return (msg.label == IRIS_EP_REPLY_OK) ? 0 : -1;
 }

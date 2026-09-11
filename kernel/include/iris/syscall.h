@@ -856,15 +856,17 @@ static inline long iris_syscall0(long nr) {
  *   Endpoints are created via SYS_UNTYPED_RETYPE2 (Untyped storage, cap
  *   directly in CSpace).  Number permanently reserved.
  *
- * SYS_EP_SEND(ep_h, msg_uptr) → 0 or negative iris_error_t
- *   Requires RIGHT_WRITE.  Blocks until a receiver is ready (rendezvous).
- *   msg_uptr: user pointer to struct IrisMsg (48 bytes).
- *   Returns IRIS_ERR_CLOSED if the endpoint is closed while blocked.
+ * Ledger A-33: none of these take a message POINTER.  A message is a
+ * MessageInfo word and message registers (`iris/ipc_msg.h` has the map), and
+ * anything longer lives in the thread's registered IPC buffer.
  *
- * SYS_EP_RECV(ep_h, msg_uptr) → 0 or negative iris_error_t
- *   Requires RIGHT_READ.  Blocks until a sender is ready (rendezvous).
- *   msg_uptr: user pointer to struct IrisMsg; filled with the received message.
- *   Returns IRIS_ERR_CLOSED if the endpoint is closed while blocked.
+ * EP_Send — requires RIGHT_WRITE.  Blocks until a receiver is ready
+ *   (rendezvous).  IRIS_ERR_CLOSED if the endpoint closes while blocked.
+ *
+ * EP_Recv — requires RIGHT_READ.  Blocks until a sender is ready, and returns
+ *   the message in the registers it was invoked through: the sender's badge,
+ *   the MessageInfo, the reply object it is now owed, and four words.
+ *   IRIS_ERR_CLOSED if the endpoint closes while blocked.
  *
  * SYS_EP_NB_SEND(ep_h, msg_uptr) → 0 or negative iris_error_t
  *   Non-blocking send: returns IRIS_ERR_WOULD_BLOCK immediately if no receiver
@@ -2219,7 +2221,7 @@ void syscall_set_user_cr3(uint64_t val);
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
                           uint64_t arg1, uint64_t arg2, uint64_t arg3,
                           uint64_t arg4, uint64_t arg5, uint64_t arg6,
-                          uint64_t arg7);
+                          uint64_t arg7, uint64_t arg8);
 #endif /* __KERNEL__ */
 #endif /* __ASSEMBLER__ */
 

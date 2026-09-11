@@ -34,10 +34,10 @@
 #include <iris/ipc_msg.h>
 #include <iris/nc/kprocess.h>
 
-static inline void copy_irismsg_r(struct IrisMsg *dst, const struct IrisMsg *src) {
+static inline void copy_irismsg_r(struct ipc_stage *dst, const struct ipc_stage *src) {
     uint8_t       *d = (uint8_t *)dst;
     const uint8_t *s = (const uint8_t *)src;
-    for (uint32_t i = 0u; i < (uint32_t)sizeof(struct IrisMsg); i++) d[i] = s[i];
+    for (uint32_t i = 0u; i < (uint32_t)sizeof(struct ipc_stage); i++) d[i] = s[i];
 }
 
 static inline void copy_kbuf_r(uint8_t *dst, const uint8_t *src, uint32_t n) {
@@ -48,32 +48,32 @@ static inline void copy_kbuf_r(uint8_t *dst, const uint8_t *src, uint32_t n) {
 
 /* ── SYS_EP_CALL ──────────────────────────────────────────────────────── */
 
-static uint64_t ep_call_complete(struct task *t, uint64_t arg1);
+static uint64_t ep_call_complete(struct task *t);
 
 uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
+    /* arg1 is the MessageInfo and arg2 the first message register; both reach
+     * the message through the THREAD (A-33), because a restart re-enters from
+     * the top and has to see the message it was given. */
+    (void)arg1; (void)arg2;
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     /* Stage 9-evt Step 1: a re-execution runs only the completion.  The call
      * was delivered and answered; repeating the send half would deliver the
      * message a second time and transfer its capability twice. */
-    if (t->sc_reentry) return ep_call_complete(t, arg1);
-
-    /* msg is both send (input) and reply (output) — must be readable and writable. */
-    if (!user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)) ||
-        !user_range_writable(arg1, (uint32_t)sizeof(struct IrisMsg)))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (t->sc_reentry) return ep_call_complete(t);
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
     uint64_t ep_badge = 0;
     iris_error_t err = cspace_resolve_only_endpoint_badged(t->cspace_root, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
     if (err != IRIS_OK) return syscall_err(err);
 
-    if (!copy_from_user_checked(&t->ipc_msg, arg1, (uint32_t)sizeof(struct IrisMsg))) {
-        kobject_release(&ep->base);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
+    /* A-33: the outgoing message is in the registers this call arrived in, and
+     * the reply comes back in the registers it returns through.  A Call used
+     * to name ONE struct that was both, which is why it needed the buffer to
+     * be readable and writable and why the reply's destination had to be saved
+     * before the send overwrote it. */
+    ipc_msg_load(t);
 
     /* Phase 9: stamp the caller badge from the invoked cap (anti-spoofing);
      * the server observes it on EP_RECV / EP_NB_RECV. */
@@ -85,13 +85,17 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * historical INVALID_ARG contract, so legacy callers (forced to pass 0)
      * are unaffected.  Stage 4: the boundary is the handle tag bit, not the
      * literal 1024 — a multi-level CPtr is a legitimate receive slot. */
-    if (t->ipc_msg.attached_handle != 0u &&
-        !cspace_value_is_cptr((iris_cptr_t)t->ipc_msg.attached_handle)) {
+    /* A-33: a Call says where the REPLY's capability should land, and that is
+     * its own argument word now.  It used to share `attached_handle` with the
+     * capability being sent — two different capabilities in one field, told
+     * apart by which half of the call was looking. */
+    uint64_t call_recv = t->sc_arg[1 + IRIS_MSGA_RECV];
+    if (call_recv != 0u && !cspace_value_is_cptr((iris_cptr_t)call_recv)) {
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
     {
-        iris_error_t se = syscall_ipc_recv_slot_declare(t, t->ipc_msg.attached_handle);
+        iris_error_t se = syscall_ipc_recv_slot_declare(t, (uint32_t)call_recv);
         if (se != IRIS_OK) {
             kobject_release(&ep->base);
             return syscall_err(se);
@@ -119,18 +123,14 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
     t->ipc_msg.attached_cap = IRIS_MSG_NO_CAP;
 
-    /* Save reply bulk destination before staging the send bulk (same buf_uptr field). */
-    uint64_t reply_buf_uptr = t->ipc_msg.buf_uptr;
-
     /* Stage send bulk payload (D-4: from the registered frame if there is one). */
     if (ipc_stage_out(t) != IRIS_OK) {
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    t->ep_call_mode     = 1u;
-    t->ep_recv_buf_uptr = reply_buf_uptr; /* where reply bulk should land on wake-up */
-    t->ipc_ep_closed    = 0u;
+    t->ep_call_mode  = 1u;
+    t->ipc_ep_closed = 0u;
 
     uint64_t flags = irq_spinlock_lock(&ep->lock);
 
@@ -174,6 +174,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         copy_irismsg_r(&receiver->ipc_msg, &t->ipc_msg);
         receiver->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
+        receiver->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
         receiver->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
         receiver->ipc_msg_ready           = 1u;
 
@@ -277,7 +278,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * into the caller's thread at reply time.  A caller's continuation was never
  * on its stack; the frame was holding the endpoint reference and nothing else.
  */
-static uint64_t ep_call_complete(struct task *t, uint64_t arg1) {
+static uint64_t ep_call_complete(struct task *t) {
     /* Phase S4 (Step 2): endpoint close leaves our source-slot refs for us to
      * drop (kendpoint_obj_close cannot release them under ep->lock).  Nothing
      * was delivered on that path — the source slot itself survives. */
@@ -307,24 +308,17 @@ static uint64_t ep_call_complete(struct task *t, uint64_t arg1) {
     }
 
     /* D-4: nothing to drain.  The reply's payload went straight into this
-     * thread's own IPC buffer, and `ipc_msg.buf_uptr` says where. */
-    t->ep_recv_buf_uptr = 0u;
-
-    if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-
+     * thread's own IPC buffer, and its LENGTH is in the MessageInfo below. */
+    ipc_msg_store_reply(t);   /* A-33: the reply comes back in registers */
     return syscall_ok_u64(0);
 }
 
 /* ── SYS_REPLY ────────────────────────────────────────────────────────── */
 
 uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
+    (void)arg1; (void)arg2;   /* the message: read through the thread (A-33) */
     iris_cptr_t kreply_cptr = (iris_cptr_t)arg0;
     if (!kreply_cptr) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    if (!user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -334,12 +328,12 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                                        RIGHT_WRITE, &rp, &rp_rights);
     if (err != IRIS_OK) return syscall_err(err);
 
-    /* Read reply message from server before taking the kreply lock. */
-    struct IrisMsg reply_msg;
-    if (!copy_from_user_checked(&reply_msg, arg1, (uint32_t)sizeof(reply_msg))) {
-        kobject_release(&rp->base);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
+    /* A-33: the reply message is in the registers this call arrived in.  It
+     * is loaded into the thread's staging like every other outgoing message,
+     * and copied out of it here because the transfer below reads it after the
+     * staging has been handed to the caller. */
+    ipc_msg_load(t);
+    struct ipc_stage reply_msg = t->ipc_msg;
 
     /* Stage attached reply cap (if any) before consuming the one-shot KReply,
      * so staging errors leave the reply invocable and the handle untouched.
@@ -419,6 +413,7 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Deliver reply message into caller's staging (caller is blocked — safe). */
     copy_irismsg_r(&caller->ipc_msg, &reply_msg);
     caller->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
+    caller->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
     /* Phase 9: replies carry NO sender identity — the kernel forces badge 0
      * so a server cannot spoof a badge into its caller (reply identity is
      * implied by the one-shot KReply itself). */
@@ -431,6 +426,7 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                                         xfer_rights, xfer_badge,
                                                         xfer_src_cn, xfer_src_idx);
         caller->ipc_msg.attached_handle = new_h;
+        caller->ipc_msg.attached_rights = xfer_rights;
         /* A-29: the server keeps its source slot; the caller's copy is a
          * derivation child of it (released outside rp->lock). */
         syscall_ipc_stage_cap_release(xfer_src_cn);
@@ -501,39 +497,43 @@ uint64_t sys_reply_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * flag and runs only its completion.
      */
     struct task *rr_t = task_current();
-    if (rr_t && rr_t->sc_reentry)
-        return sys_ep_recv(arg2, arg1, arg0);
+    if (!rr_t) return syscall_err(IRIS_ERR_INVALID_ARG);
+    /* A-33: ReplyRecv is a SEND followed by a receive, so its words are laid
+     * out like a send's — the receive slot is the one a Call would use to say
+     * where the reply's capability lands, NOT the word a plain receive puts it
+     * in.  Those two indices are the same number, which is exactly why this
+     * was wrong the first time: a plain receive's slot and a send's
+     * MessageInfo occupy the same argument. */
+    if (rr_t->sc_reentry)
+        return sys_ep_recv(arg2, rr_t->sc_arg[1 + IRIS_MSGA_RECV], arg0);
 
     /*
-     * The buffer arrives holding the kernel's OWN echo: EP_RECV writes the
-     * staged reply CPtr into attached_handle so the server knows which object
-     * to answer with.  Handing that straight to the reply half would ask the
-     * kernel to TRANSFER the reply object to the client as a capability — the
-     * server would be giving away the very thing it replies with, and the call
-     * would fail for want of RIGHT_TRANSFER on a cap it never meant to send.
+     * The reply carries no capability, and the syscall makes sure of it.
+     *
+     * A server's loop hands the same words back that its receive delivered,
+     * and a receive delivers the reply CPtr among them so the server knows
+     * which object to answer with.  Handing that straight to the reply half
+     * would ask the kernel to TRANSFER the reply object to the client — the
+     * server giving away the very thing it replies with, and failing for want
+     * of RIGHT_TRANSFER on a capability it never meant to send.
      *
      * Every server writing this loop would hit it, so the syscall clears the
      * field rather than documenting a footgun.  The consequence is stated in
      * the contract: REPLY_RECV does not carry a capability on the reply.  A
      * server that needs to is doing two different things and should say so
      * with two calls.
+     *
+     * A-33 makes the clearing one line: the capability travels only if the
+     * MessageInfo says so, so dropping the `extra` count is the whole of it.
      */
-    struct IrisMsg m;
-    if (!user_range_readable(arg1, (uint32_t)sizeof(m)) ||
-        !user_range_writable(arg1, (uint32_t)sizeof(m)))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (!copy_from_user_checked(&m, arg1, (uint32_t)sizeof(m)))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (m.attached_handle != IRIS_MSG_NO_CAP && m.attached_handle != 0u) {
-        m.attached_handle = IRIS_MSG_NO_CAP;
-        if (!copy_to_user_checked(arg1, &m, (uint32_t)sizeof(m)))
-            return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
+    rr_t->sc_arg[1 + IRIS_MSGA_INFO] &=
+        ~((uint64_t)IRIS_MI_EXTRA_MASK << IRIS_MI_EXTRA_SHIFT);
 
     uint64_t r = sys_reply(arg0, arg1, 0);
     if ((int64_t)r < 0) return r;          /* nothing replied, nothing staged */
     /* Re-stage the SAME reply object for the next caller: a server keeps one
      * for its whole life, which is what makes this a loop rather than a
-     * per-request allocation. */
-    return sys_ep_recv(arg2, arg1, arg0);
+     * per-request allocation.  The receive half takes the slot declaration and
+     * the reply object from where a receive always takes them. */
+    return sys_ep_recv(arg2, rr_t->sc_arg[1 + IRIS_MSGA_RECV], arg0);
 }

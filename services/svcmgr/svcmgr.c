@@ -1,4 +1,5 @@
 #include <iris/svcmgr_proto.h>
+#include "../common/iris_msg.h"
 #include <iris/kbd_proto.h>
 #include "service_catalog.h"
 #include <iris/syscall.h>
@@ -690,21 +691,25 @@ static int svcmgr_name_status(struct svcmgr_state *state, const char *name,
     return 0;
 }
 
-static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg *msg) {
-    struct IrisMsg reply;
+static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg *msg) {
+    struct iris_msg reply;
     uint32_t i;
     handle_id_t reply_h;
 
-    if (!msg || msg->attached_handle == (uint32_t)IRIS_MSG_NO_CAP) return;
-    reply_h = (handle_id_t)msg->attached_handle;
+    /* A-33: a receive reports what it was given in `got_cap`, and on a Call it
+     * is the reply capability.  It used to be `attached_handle`, which also
+     * meant "a capability I am sending" everywhere else. */
+    if (!msg || msg->got_cap == (long)IRIS_MSG_NO_CAP) return;
+    reply_h = (handle_id_t)msg->got_cap;
 
     /* A1.6: only REGISTER consumes a transferred cap.  A cap attached to any
      * other opcode used to leak into svcmgr's handle table (the delivered
      * handle was silently ignored); with receive-slots it would leak a pool
      * slot instead.  Discard it up front in both landing modes. */
     if (msg->label != IRIS_SVCMGR_EP_REGISTER &&
-        msg->attached_cap != (uint32_t)IRIS_MSG_NO_CAP)
-        svcmgr_discard_delivered_cap(state, msg->attached_cap);
+        msg->recv_slot != 0 &&
+        (uint32_t)msg->recv_slot != (uint32_t)IRIS_MSG_NO_CAP)
+        svcmgr_discard_delivered_cap(state, (uint32_t)msg->recv_slot);
 
     for (i = 0; i < (uint32_t)sizeof(reply); i++) ((uint8_t *)&reply)[i] = 0;
 
@@ -771,8 +776,8 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
             if (mr == 0) {
                 reply.label              = IRIS_EP_REPLY_OK;
                 reply.words[0]           = 0u;
-                reply.attached_handle    = SVCMGR_XFER_SLOT;
-                reply.attached_rights    = (uint32_t)client_rights;
+                reply.cap                = SVCMGR_XFER_SLOT;
+                reply.cap_rights    = (uint32_t)client_rights;
                 svcmgr_log(sm_str_lookup_name_ok);
             } else {
                 reply.label    = IRIS_EP_REPLY_ERR;
@@ -888,7 +893,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
         uint32_t nl = msg->buf_len < IRIS_EP_SVCNAME_MAX
                       ? msg->buf_len : IRIS_EP_SVCNAME_MAX - 1u;
         const char *nm   = (const char *)g_ep_buf;
-        uint32_t cap_v   = msg->attached_cap;
+        uint32_t cap_v   = (uint32_t)msg->recv_slot;
         iris_error_t rej  = IRIS_OK;
         g_ep_buf[nl] = '\0';
 
@@ -961,7 +966,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
     }
 
     {
-        int64_t rr = iris_invoke1((uint64_t)reply_h, INV_REPLY_SEND, (uint64_t)(uintptr_t)&reply);
+        int64_t rr = iris_msg_reply((long)reply_h, &reply);
         /* Reply-cap contract, ledger A-29: the transfer is a COPY, so the
          * scratch slot holds svcmgr's own capability whether the reply landed
          * or not.  Drop it here on every path.  Delivered or not, what the
@@ -970,7 +975,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
          * it only meant to pass along.  (void) because an empty slot is not an
          * error worth branching on.) */
         (void)rr;
-        if (reply.attached_handle != (uint32_t)IRIS_MSG_NO_CAP)
+        if (reply.cap != (long)IRIS_MSG_NO_CAP)
             (void)iris_invoke1(0, INV_CNODE_DELETE, SVCMGR_XFER_SLOT);
     }
     /* A1.6: the CSpace slot keeps the authority; the resolved master was a
@@ -1630,7 +1635,7 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
         (void)iris_invoke1(IRIS_CPTR_OWN_TCB, INV_TCB_BIND_NOTIFICATION, state->death_notif_c);
 
     for (;;) {
-        struct IrisMsg ep_msg;
+        struct iris_msg ep_msg;
         int64_t ep_r;
         uint32_t k;
 
@@ -1651,12 +1656,11 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
             uint8_t *p = (uint8_t *)&ep_msg;
             for (k = 0; k < (uint32_t)sizeof(ep_msg); k++) p[k] = 0;
         }
-        ep_msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_buf;
         /* A1.6: declare a registration receive-slot so a REGISTER cap lands in
          * the CSpace pool instead of the handle table. */
-        iris_msg_declare_recv_slot(&ep_msg, svcmgr_next_recv_slot(state));
-        /* Phase S1: our explicit reply object rides in recv arg2. */
-        ep_r = iris_invoke2(state->ep_c, INV_EP_RECV, (uint64_t)(uintptr_t)&ep_msg, IRIS_CPTR_OWN_REPLY);
+        ep_msg.recv_slot = svcmgr_next_recv_slot(state);
+        ep_msg.reply     = (long)IRIS_CPTR_OWN_REPLY;
+        ep_r = iris_msg_recv((long)state->ep_c, &ep_msg);
         if (ep_r != IRIS_OK) { svcmgr_log(sm_str_recverr); continue; }
 
         if (ep_msg.label == IRIS_MSG_LABEL_NOTIFICATION) {

@@ -56,7 +56,7 @@ syscall_entry:
      *   [rsp+128] user rbp   ┐ callee-saved (see below)
      *   [rsp+120] user rbx   │
      *   [rsp+112] user r12   ┘
-     *   [rsp+104] user r13
+     *   [rsp+104] arg8       (r13, 9th user arg — A-33)
      *   [rsp+96]  arg7       (r14, 8th user arg — A-33)
      *   [rsp+88]  arg6       (r15, 7th user arg — A-33)
      *   [rsp+80]  arg5       (r9,  6th user arg — A-33)
@@ -96,7 +96,7 @@ syscall_entry:
     pushq %rbp
     pushq %rbx
     pushq %r12
-    pushq %r13
+    pushq %r13        /* arg8 (A-33) — and the user's r13 */
     pushq %r14        /* arg7 (A-33) — and the user's r14 */
     pushq %r15        /* arg6 (A-33) — and the user's r15 */
     pushq %r9         /* arg5 (A-33) */
@@ -127,12 +127,12 @@ syscall_entry:
     call syscall_save_user_ctx
 
     /*
-     * syscall_dispatch(num, arg0..arg7) — nine parameters, eight of them user
+     * syscall_dispatch(num, arg0..arg8) — ten parameters, nine of them user
      * words (A-33).
      *
-     * Six go in registers per the C ABI and THREE on the stack: arg5, arg6 and
-     * arg7, in that order at [rsp+0], [rsp+8], [rsp+16].  32 bytes rather than
-     * 24 because the call needs 16-byte alignment and three words is not.
+     * Six go in registers per the C ABI and FOUR on the stack: arg5 through
+     * arg8, in that order from [rsp+0].  32 bytes, which is what four words
+     * takes and what the call's 16-byte alignment wants anyway.
      */
     subq $32, %rsp
     movq 112(%rsp), %rax
@@ -141,6 +141,8 @@ syscall_entry:
     movq %rax,  8(%rsp)   /* arg6 */
     movq 128(%rsp), %rax
     movq %rax, 16(%rsp)   /* arg7 */
+    movq 136(%rsp), %rax
+    movq %rax, 24(%rsp)   /* arg8 */
     movq  40(%rsp), %rdi  /* num  */
     movq  48(%rsp), %rsi  /* arg0 */
     movq  56(%rsp), %rdx  /* arg1 */

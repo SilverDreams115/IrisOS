@@ -6,17 +6,108 @@
 
 /* ── Internal helpers ────────────────────────────────────────────────── */
 
-/* IrisMsg = 72 bytes = 9 × uint64_t (Phase 9: +sender_badge) — word copy
+/* The staging is 72 bytes = 9 × uint64_t — word copy
  * avoids byte-loop overhead. */
-static inline void irismsg_copy64(struct IrisMsg *dst, const struct IrisMsg *src) {
+static inline void irismsg_copy64(struct ipc_stage *dst, const struct ipc_stage *src) {
     const uint64_t *s = (const uint64_t *)src;
     uint64_t       *d = (uint64_t *)dst;
     d[0]=s[0]; d[1]=s[1]; d[2]=s[2]; d[3]=s[3];
     d[4]=s[4]; d[5]=s[5]; d[6]=s[6]; d[7]=s[7];
-    d[8]=s[8]; d[9]=s[9];          /* Phase 11: sender_badge + attached_cap pair */
-    _Static_assert(sizeof(struct IrisMsg) == 10u * sizeof(uint64_t),
+    d[8]=s[8];                     /* Phase 11: sender_badge + attached_cap pair */
+    _Static_assert(sizeof(struct ipc_stage) == 9u * sizeof(uint64_t),
                    "irismsg_copy64 word count");
 }
+
+/*
+ * ── A-33: a message is registers ──────────────────────────────────────────
+ *
+ * `ipc_msg_load` fills this thread's staging from the invocation's argument
+ * words; `ipc_msg_store` hands the staged message back in its return words.
+ * Between them they are the ENTIRE message ABI, and the map they use lives in
+ * `iris/ipc_msg.h` so that ring 3 and the kernel cannot drift apart about
+ * which register carries what.
+ *
+ * What is gone with the struct: a user pointer on the message path.  There is
+ * no address to validate, none for a second thread to unmap between the check
+ * and the copy, and a short message never touches memory at either end.
+ */
+void ipc_msg_load(struct task *t) {
+    const uint64_t *a  = t->sc_arg + 1;           /* a[n] is the n'th argument */
+    uint64_t        mi = a[IRIS_MSGA_INFO];
+    t->ipc_msg.label      = iris_mi_label(mi);
+    t->ipc_msg.word_count = iris_mi_len(mi);
+    if (t->ipc_msg.word_count > IRIS_MSG_WORDS)
+        t->ipc_msg.word_count = IRIS_MSG_WORDS;
+    t->ipc_msg.buf_len    = iris_mi_buf(mi);
+    t->ipc_msg.words[0]   = a[IRIS_MSGA_MR0];
+    t->ipc_msg.words[1]   = a[IRIS_MSGA_MR1];
+    t->ipc_msg.words[2]   = a[IRIS_MSGA_MR2];
+    t->ipc_msg.words[3]   = a[IRIS_MSGA_MR3];
+
+    /* The capability travelling, if the MessageInfo says one is.  A sender
+     * that sets the word but not the count is sending nothing: the count is
+     * the statement, exactly as `extraCaps` is in seL4. */
+    uint64_t cw = iris_mi_extra(mi) ? a[IRIS_MSGA_CAP] : 0u;
+    t->ipc_msg.attached_handle     = iris_capw_cptr(cw);
+    t->ipc_msg.attached_rights     = iris_capw_rights(cw);
+    t->ipc_msg.attached_cap        = t->ipc_msg.attached_handle;
+    t->ipc_msg.attached_cap_rights = t->ipc_msg.attached_rights;
+    t->ipc_msg.sender_badge        = 0u;          /* stamped by the send path */
+}
+
+extern void serial_write(const char *s);
+/*
+ * A-33: `extra` answers "did a capability land in the slot I declared?", which
+ * is seL4's `extraCaps` and is the only way a receiver can tell.  Which field
+ * holds that capability depends on which half of a conversation this is:
+ *
+ *   - a RECEIVE is handed a caller's gift in `attached_cap`, and separately
+ *     the reply object it is now owed in `attached_handle`;
+ *   - a CALL's completion is handed what the REPLY transferred, and that
+ *     arrives in `attached_handle` because a reply has no second capability
+ *     to keep apart from it.
+ *
+ * `got_cap` is `attached_handle` either way — the reply object for a server,
+ * the delivered capability for a client — and only the count differs.
+ */
+static void ipc_msg_store_ext(struct task *t, uint32_t caps) {
+    uint64_t *r = t->sc_ret;
+    r[IRIS_MSGR_INFO]  = iris_mi(t->ipc_msg.label, t->ipc_msg.word_count,
+                                 caps, t->ipc_msg.buf_len);
+    r[IRIS_MSGR_BADGE] = t->ipc_msg.sender_badge;
+    r[IRIS_MSGR_MR0]   = t->ipc_msg.words[0];
+    r[IRIS_MSGR_MR1]   = t->ipc_msg.words[1];
+    r[IRIS_MSGR_MR2]   = t->ipc_msg.words[2];
+    r[IRIS_MSGR_MR3]   = t->ipc_msg.words[3];
+    r[IRIS_MSGR_CAP]   = t->ipc_msg.attached_handle;
+}
+
+void ipc_msg_store(struct task *t) {          /* a receive: the caller's gift */
+    ipc_msg_store_ext(t, (t->ipc_msg.attached_cap != IRIS_MSG_NO_CAP)
+                         ? (t->ipc_msg.attached_cap_rights & IRIS_MI_EXTRA_MASK)
+                         : 0u);
+}
+
+void ipc_msg_store_reply(struct task *t) {    /* a call: what the reply sent  */
+    ipc_msg_store_ext(t, (t->ipc_msg.attached_handle != IRIS_MSG_NO_CAP)
+                         ? (t->ipc_msg.attached_rights & IRIS_MI_EXTRA_MASK)
+                         : 0u);
+}
+
+/*
+ * A-33 note, written where it was got wrong.
+ *
+ * There was an `ipc_msg_store_call` here that handed a Call's completion the
+ * capability from `attached_cap`.  That is the field a SERVER's receive uses
+ * for the gift a caller sent; a CLIENT's completion finds what the reply
+ * transferred in `attached_handle`, like every other receive.  The variant
+ * returned IRIS_MSG_NO_CAP for every lookup in the system — and a lookup that
+ * gets no capability retries, which is why the symptom was a slot that was
+ * already full rather than a capability that was missing.
+ *
+ * A receiver needs no second word for the gift: it DECLARED where the gift
+ * would land, so it knows the slot already.  One store serves both.
+ */
 
 static inline void copy_kbuf(uint8_t *dst, const uint8_t *src, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) dst[i] = src[i];
@@ -51,8 +142,7 @@ uint32_t ipc_buf_capacity(struct task *t) {
  *
  * With a registered buffer there is NOTHING to do but agree on a length: the
  * user wrote its bytes into a page it owns and the kernel can already read
- * them.  `msg.buf_uptr` may then be zero or the buffer's own address, and
- * anything else is REFUSED — see below for what the silent version cost.
+ * them.
  */
 iris_error_t ipc_stage_out(struct task *t) {
     uint32_t n = t->ipc_msg.buf_len;
@@ -61,30 +151,7 @@ iris_error_t ipc_stage_out(struct task *t) {
     uint32_t cap = ipc_buf_capacity(t);
     if (n > cap) n = cap;
 
-    if (t->ipc_buffer) {
-        /*
-         * A thread with a registered buffer sends FROM it.  Naming some other
-         * address is refused, not silently ignored.
-         *
-         * The silent version of this cost a boot's worth of corrupted console
-         * output and did not fail a single test: the shared console client
-         * marshals into a buffer its caller passes, five services passed their
-         * own static array, and the kernel dutifully sent whatever happened to
-         * be at offset 0 of their IPC buffer instead.  Every log line came out
-         * as the last reply payload the service had composed.  Nothing
-         * asserted on log text, so nothing noticed.
-         *
-         * seL4 has no `buf_uptr` at all — there is one IPC buffer and that is
-         * where a message is marshalled.  IRIS keeps the field for threads
-         * that have not registered one, and for threads that HAVE, a pointer
-         * that disagrees with the buffer is a marshalling mistake.  Refusing
-         * it turns a silent corruption into an error at the call site that
-         * made it.
-         */
-        if (t->ipc_msg.buf_uptr != 0u &&
-            t->ipc_msg.buf_uptr != t->ipc_buffer_uvaddr)
-            return IRIS_ERR_INVALID_ARG;
-    } else {
+    if (!t->ipc_buffer) {
         /*
          * No buffer, no payload.  seL4's answer, and now IRIS's: the message
          * registers travel in registers, and anything longer needs somewhere
@@ -94,6 +161,21 @@ iris_error_t ipc_stage_out(struct task *t) {
          */
         return IRIS_ERR_INVALID_ARG;
     }
+    /*
+     * A-33: there is no `buf_uptr` to check against the buffer any more.
+     *
+     * There used to be, and it was the field that decided WHERE the payload
+     * came from — which cost a boot's worth of corrupted console output and
+     * did not fail a single test.  The shared console client marshalled into a
+     * buffer its caller passed, five services passed their own static array,
+     * and the kernel sent whatever happened to be at offset 0 of their IPC
+     * buffer instead.  Every log line came out as the last reply payload the
+     * service had composed, and nothing asserted on log text.
+     *
+     * D-4 turned that into a refusal; A-33 removes the question.  A payload
+     * is in the thread's registered buffer because there is nowhere else it
+     * could be, and a message carries a LENGTH rather than an address.
+     */
     t->ipc_msg.buf_len = n;
     return IRIS_OK;
 }
@@ -124,7 +206,6 @@ void ipc_transfer_bulk(struct task *sender, struct task *receiver,
          * how many bytes it could not be given rather than being handed a
          * pointer into somebody else's memory. */
         receiver->ipc_msg.buf_len  = n;
-        receiver->ipc_msg.buf_uptr = 0u;
         return;
     }
 
@@ -132,26 +213,24 @@ void ipc_transfer_bulk(struct task *sender, struct task *receiver,
     if (n > cap) n = cap;
     copy_kbuf(dst, src, n);
     receiver->ipc_msg.buf_len  = n;
-    receiver->ipc_msg.buf_uptr = receiver->ipc_buffer_uvaddr;
 }
 
 /*
  * The same transfer, for a REPLY.
  *
- * SYS_REPLY is the one path whose outgoing message is passed by value rather
- * than staged in the sender's TCB: the server hands the kernel a `struct
- * IrisMsg` and the kernel is still in the server's address space, so it can
- * read the server's user memory directly and skip a copy.  That shortcut is
- * why this cannot just call ipc_transfer_bulk — the source is not
- * the sender's TCB.
+ * SYS_REPLY is the one path whose outgoing message is taken by value rather
+ * than read out of the sender's staging, because the reply has to be captured
+ * before the staging is handed to the caller.  That is why this cannot just
+ * call ipc_transfer_bulk — the source is not the sender's TCB.
  *
  * A server WITH a registered buffer takes the same shortcut for free and more
  * safely: its payload is already in a frame the kernel can read from any
- * address space, so `reply_msg->buf_uptr` is ignored exactly as it is on a
+ * address space, so a reply's payload is read from the server's registered
+ * buffer exactly as a send's is (A-33: there is no address to ignore, on
  * send.
  */
 void ipc_transfer_reply(struct task *server, struct task *caller,
-                        const struct IrisMsg *reply_msg) {
+                        const struct ipc_stage *reply_msg) {
     uint32_t n = reply_msg->buf_len;
     if (n == 0u) return;
 
@@ -161,8 +240,7 @@ void ipc_transfer_reply(struct task *server, struct task *caller,
 
     /* A server with a registered buffer replies FROM it; naming any other
      * address is a marshalling mistake, refused rather than substituted. */
-    if (reply_msg->buf_uptr != 0u &&
-        reply_msg->buf_uptr != server->ipc_buffer_uvaddr) {
+    if (0) {
         caller->ipc_msg.buf_len = 0u;
         return;
     }
@@ -171,7 +249,6 @@ void ipc_transfer_reply(struct task *server, struct task *caller,
     if (n > ipc_buf_capacity(caller)) n = ipc_buf_capacity(caller);
     copy_kbuf(dst, src, n);
     caller->ipc_msg.buf_len  = n;
-    caller->ipc_msg.buf_uptr = caller->ipc_buffer_uvaddr;
 }
 
 /* ep_get removed — use cspace_resolve_only_endpoint (Phase 3.2) */
@@ -454,6 +531,7 @@ static int ep_send_fastpath(struct task *t, struct KEndpoint *ep) {
 
     irismsg_copy64(&receiver->ipc_msg, &t->ipc_msg);
     receiver->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
+    receiver->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
     receiver->ipc_msg_ready           = 1;
 
     irq_spinlock_unlock(&ep->lock, fl);
@@ -485,6 +563,7 @@ static int ep_recv_fastpath(struct task *t, struct KEndpoint *ep) {
 
     irismsg_copy64(&t->ipc_msg, &sender->ipc_msg);
     t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
+    t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
 
     irq_spinlock_unlock(&ep->lock, fl);
     task_wakeup(sender);
@@ -498,7 +577,10 @@ static int ep_recv_fastpath(struct task *t, struct KEndpoint *ep) {
 static uint64_t ep_send_complete(struct task *t);
 
 uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
+    /* arg1 is the MessageInfo and arg2 the first message register; both are
+     * read through the THREAD by ipc_msg_load (A-33), because a restart
+     * re-enters from the top and has to see the same message it was given. */
+    (void)arg1; (void)arg2;
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -507,19 +589,13 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * syscall had is already done. */
     if (t->sc_reentry) return ep_send_complete(t);
 
-    if (!user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-
     struct KEndpoint *ep; iris_rights_t _ep_r;
     uint64_t ep_badge = 0;
     iris_error_t err = cspace_resolve_only_endpoint_badged(t->cspace_root, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
     if (err != IRIS_OK) return syscall_err(err);
 
-    /* Copy sender's message. */
-    if (!copy_from_user_checked(&t->ipc_msg, arg1, (uint32_t)sizeof(struct IrisMsg))) {
-        kobject_release(&ep->base);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
+    /* A-33: the message is in the registers this call arrived in. */
+    ipc_msg_load(t);
 
     /* Phase 9: STAMP the sender badge from the invoked capability — whatever
      * the sender wrote in the field is discarded (anti-spoofing). */
@@ -581,6 +657,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         irismsg_copy64(&receiver->ipc_msg, &t->ipc_msg);
         receiver->ipc_msg.attached_handle = IRIS_MSG_NO_CAP; /* will update after unlock */
+        receiver->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
         receiver->ipc_msg_ready           = 1;
 
         /* Ph69/D-4: hand the payload over.  The receiver is not current, so
@@ -600,6 +677,11 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                                             xfer_rights, xfer_badge,
                                                             xfer_src_cn, xfer_src_idx);
             receiver->ipc_msg.attached_handle = new_h;
+            /* A-33: `attached_cap` is uniformly "what landed in the slot the
+             * receiver declared", so the MessageInfo's extra count means one
+             * thing wherever a message came from. */
+            receiver->ipc_msg.attached_cap    = new_h;
+            receiver->ipc_msg.attached_cap_rights = xfer_rights;
             syscall_ipc_stage_cap_release(xfer_src_cn);
         }
 
@@ -771,11 +853,12 @@ static int ep_bind_call_reply(struct task *receiver, struct task *sender,
  * own context.  The only lock taken is the endpoint's.
  */
 int kendpoint_fault_call(struct task *t, struct KEndpoint *ep,
-                         const struct IrisMsg *msg) {
+                         const struct ipc_stage *msg) {
     if (!t || !ep || !msg) return 0;
 
     irismsg_copy64(&t->ipc_msg, msg);
     t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
+    t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
     t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
     t->ipc_msg_ready           = 0u;
     t->ipc_ep_closed           = 0u;
@@ -784,7 +867,6 @@ int kendpoint_fault_call(struct task *t, struct KEndpoint *ep,
      * payload beyond the record, and pointing at one would name memory in an
      * address space that is, by construction, in trouble. */
     t->ipc_msg.buf_len  = 0u;
-    t->ipc_msg.buf_uptr = 0u;
     t->ep_cap_obj     = 0;
     t->ep_cap_rights  = 0;
     t->ep_cap_badge   = 0;
@@ -906,6 +988,7 @@ int kendpoint_deliver_notification(struct task *t, uint64_t bits) {
     t->ipc_msg.word_count     = 1u;
     t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
     t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
+    t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
     t->ipc_msg_ready          = 1u;
     t->ipc_ep_closed          = 0u;
 
@@ -915,14 +998,14 @@ int kendpoint_deliver_notification(struct task *t, uint64_t bits) {
 }
 
 /* Forward: the post-block half, defined with the parking path it belongs to. */
-static uint64_t ep_recv_complete(struct task *t, uint64_t arg1);
+static uint64_t ep_recv_complete(struct task *t);
 
 uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    if (!user_range_writable(arg1, (uint32_t)sizeof(struct IrisMsg)))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
+    /* A-33: there is no message pointer to validate.  arg1 is the receive slot
+     * and arg2 the reply object; the message itself leaves in registers. */
 
     /*
      * Stage 9-evt Step 1: a re-execution after the park runs ONLY the
@@ -932,30 +1015,25 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * the part of itself that had effects.
      */
     if (t->sc_reentry)
-        return ep_recv_complete(t, arg1);
+        return ep_recv_complete(t);
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
     iris_error_t err = cspace_resolve_only_endpoint(t->cspace_root, (iris_cptr_t)arg0,
                                                           RIGHT_READ, &ep, &_ep_r);
     if (err != IRIS_OK) return syscall_err(err);
 
-    /* Ph69: read receiver's hints (buf_uptr = where to put bulk data).
-     * A1.5: attached_cap is a second hint — the receive-slot declaration. */
-    t->ep_recv_buf_uptr = 0;
-    t->ep_recv_slot     = 0;
-    {
-        struct IrisMsg hints;
-        if (user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)) &&
-            copy_from_user_checked(&hints, arg1, (uint32_t)sizeof(struct IrisMsg))) {
-            t->ep_recv_buf_uptr = hints.buf_uptr;
-            /* Fail-fast: a bad slot declaration fails BEFORE the endpoint is
-             * touched — a queued sender keeps its staged cap untouched. */
-            err = syscall_ipc_recv_slot_declare(t, hints.attached_cap);
-            if (err != IRIS_OK) {
-                kobject_release(&ep->base);
-                return syscall_err(err);
-            }
-        }
+    /*
+     * A-33: a receive says where it wants a capability put, and that is now an
+     * ARGUMENT rather than a field of a struct the kernel reads out of user
+     * memory.  Fail-fast is unchanged and is the reason it happens here: a bad
+     * declaration must be refused BEFORE the endpoint is touched, so a queued
+     * sender keeps its staged capability untouched.
+     */
+    t->ep_recv_slot = 0;
+    err = syscall_ipc_recv_slot_declare(t, (uint32_t)arg1);
+    if (err != IRIS_OK) {
+        kobject_release(&ep->base);
+        return syscall_err(err);
     }
 
     /* Phase S1: stage the explicit reply object named by arg2 (0 = none).
@@ -971,8 +1049,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         t->ep_recv_slot = 0;   /* no cap on the fastpath — drop the declaration */
         ep_recv_reply_unstage(t);
         kobject_release(&ep->base);
-        if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))
-            return syscall_err(IRIS_ERR_INVALID_ARG);
+        ipc_msg_store(t);   /* A-33: the message goes back in registers */
         return syscall_ok_u64(0);
     }
 
@@ -998,8 +1075,8 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             t->ipc_msg.word_count      = 1u;
             t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
             t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
-            if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))
-                return syscall_err(IRIS_ERR_INVALID_ARG);
+            t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
+            ipc_msg_store(t);   /* A-33: the message goes back in registers */
             return syscall_ok_u64(0);
         }
     }
@@ -1034,6 +1111,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         irismsg_copy64(&t->ipc_msg, &sender->ipc_msg);
         t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP; /* will update after unlock */
+        t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
 
         /* Ph69/D-4: the receiver is in its own CR3, so the staging path may
          * write to the buffer it named at EP_RECV. */
@@ -1071,6 +1149,8 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                 t->ipc_msg.attached_cap_rights = xfer_rights;
             } else {
                 t->ipc_msg.attached_handle = new_h;
+                t->ipc_msg.attached_cap    = new_h;
+            t->ipc_msg.attached_cap_rights = xfer_rights;   /* A-33: see above */
             }
             syscall_ipc_stage_cap_release(xfer_src_cn);
         }
@@ -1100,8 +1180,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         ep_recv_reply_unstage(t);   /* plain send: staged reply stays unused */
         kobject_release(&ep->base);
 
-        if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))
-            return syscall_err(IRIS_ERR_INVALID_ARG);
+        ipc_msg_store(t);   /* A-33: the message goes back in registers */
         return syscall_ok_u64(0);
     }
 
@@ -1145,7 +1224,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * thread rather than about its stack — the parked frame was holding a
  * reference, not information.
  */
-static uint64_t ep_recv_complete(struct task *t, uint64_t arg1) {
+static uint64_t ep_recv_complete(struct task *t) {
     if (t->sc_held) { kobject_release(t->sc_held); t->sc_held = 0; }
 
     /* A1.5: any routed delivery already consumed the declaration from the
@@ -1163,8 +1242,7 @@ static uint64_t ep_recv_complete(struct task *t, uint64_t arg1) {
      * says where — there is no kernel staging left to drain. */
     t->ep_recv_buf_uptr = 0;
 
-    if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
+    ipc_msg_store(t);   /* A-33: the message goes back in registers */
     return syscall_ok_u64(0);
 }
 
@@ -1259,22 +1337,17 @@ uint64_t sys_ep_cancel_badged_sends(uint64_t arg0, uint64_t arg1, uint64_t arg2)
 /* ── SYS_EP_NB_SEND ──────────────────────────────────────────────────── */
 
 uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
+    (void)arg1; (void)arg2;   /* the message: read through the thread (A-33) */
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    if (!user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
     uint64_t ep_badge = 0;
     iris_error_t err = cspace_resolve_only_endpoint_badged(t->cspace_root, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
     if (err != IRIS_OK) return syscall_err(err);
 
-    if (!copy_from_user_checked(&t->ipc_msg, arg1, (uint32_t)sizeof(struct IrisMsg))) {
-        kobject_release(&ep->base);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
+    /* A-33: the message is in the registers this call arrived in. */
+    ipc_msg_load(t);
 
     /* Phase 9: stamp the sender badge from the invoked cap (anti-spoofing). */
     t->ipc_msg.sender_badge = ep_badge;
@@ -1334,6 +1407,7 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     irismsg_copy64(&receiver->ipc_msg, &t->ipc_msg);
     receiver->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
+    receiver->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
     receiver->ipc_msg_ready           = 1;
 
     ipc_transfer_bulk(t, receiver, 0);
@@ -1348,6 +1422,8 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                                         xfer_rights, xfer_badge,
                                                         xfer_src_cn, xfer_src_idx);
         receiver->ipc_msg.attached_handle = new_h;
+        receiver->ipc_msg.attached_cap    = new_h;   /* A-33: see above */
+        receiver->ipc_msg.attached_cap_rights = xfer_rights;
         syscall_ipc_stage_cap_release(xfer_src_cn);
     }
 
@@ -1362,8 +1438,8 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    if (!user_range_writable(arg1, (uint32_t)sizeof(struct IrisMsg)))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
+    /* A-33: there is no message pointer to validate.  arg1 is the receive slot
+     * and arg2 the reply object; the message itself leaves in registers. */
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
     iris_error_t err = cspace_resolve_only_endpoint(t->cspace_root, (iris_cptr_t)arg0,
@@ -1375,19 +1451,11 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * that is the one field ipc_transfer_bulk consults for a thread with no
      * registered IPC buffer — a receiver should not name its destination two
      * different ways depending on which recv syscall it used. */
-    t->ep_recv_buf_uptr = 0;
     t->ep_recv_slot = 0;
-    {
-        struct IrisMsg hints;
-        if (user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)) &&
-            copy_from_user_checked(&hints, arg1, (uint32_t)sizeof(struct IrisMsg))) {
-            t->ep_recv_buf_uptr = hints.buf_uptr;
-            err = syscall_ipc_recv_slot_declare(t, hints.attached_cap);
-            if (err != IRIS_OK) {
-                kobject_release(&ep->base);
-                return syscall_err(err);
-            }
-        }
+    err = syscall_ipc_recv_slot_declare(t, (uint32_t)arg1);
+    if (err != IRIS_OK) {
+        kobject_release(&ep->base);
+        return syscall_err(err);
     }
 
     /* Phase S1: stage the explicit reply object named by arg2 (0 = none). */
@@ -1433,6 +1501,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     irismsg_copy64(&t->ipc_msg, &sender->ipc_msg);
     t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
+    t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
 
     /* Ph69/D-4: same as above — correct CR3, so the staging path may write. */
     ipc_transfer_bulk(sender, t, 1);
@@ -1489,7 +1558,6 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     ep_recv_reply_unstage(t);   /* plain send: staged reply stays unused */
     kobject_release(&ep->base);
 
-    if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
+    ipc_msg_store(t);   /* A-33: the message goes back in registers */
     return syscall_ok_u64(0);
 }

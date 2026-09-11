@@ -98,41 +98,42 @@ static struct task *ip_caller(void) {
     return t;
 }
 
-static void ip_msg(struct IrisMsg *m) {
-    memset(m, 0, sizeof(*m));
-    m->attached_handle = IRIS_MSG_NO_CAP;
-    m->attached_cap    = IRIS_MSG_NO_CAP;
+/*
+ * A-33: a message is the syscall's ARGUMENT WORDS, so arming one means
+ * setting them.  There is no struct to point at and no pointer to pass —
+ * which is why IP-2, "the message pointer is required", is gone below.
+ */
+static void ip_msg(struct task *t) {
+    for (unsigned i = 0; i < 9u; i++) t->sc_arg[i] = 0;
+}
+
+/* ...and one carrying a capability: the MessageInfo says a capability travels
+ * and with which rights, and the capability word says which one. */
+static void ip_msg_cap(struct task *t, uint64_t cptr, uint32_t rights) {
+    ip_msg(t);
+    t->sc_arg[1 + IRIS_MSGA_INFO] = iris_mi(0, 0, rights, 0);
+    t->sc_arg[1 + IRIS_MSGA_CAP]  = iris_capw(cptr, rights);
 }
 
 void test_syscall_ipc(void) {
     TEST_SUITE("IPC authority (endpoint + reply syscalls)");
 
-    struct IrisMsg m;
-
     /* ── IP-1: no caller, or a caller with no CSpace ─────────────────────*/
     {
         test_set_current_task(NULL);
-        ip_msg(&m);
-        ASSERT_EQ(ip_err(sys_ep_send(S_EP_FULL, (uint64_t)(uintptr_t)&m, 0)),
-                  (long)IRIS_ERR_INVALID_ARG);
-        ASSERT_EQ(ip_err(sys_ep_recv(S_EP_FULL, (uint64_t)(uintptr_t)&m, 0)),
-                  (long)IRIS_ERR_INVALID_ARG);
-        ASSERT_EQ(ip_err(sys_ep_call(S_EP_FULL, (uint64_t)(uintptr_t)&m, 0)),
-                  (long)IRIS_ERR_INVALID_ARG);
-        ASSERT_EQ(ip_err(sys_reply(S_REPLY, (uint64_t)(uintptr_t)&m, 0)),
-                  (long)IRIS_ERR_INVALID_ARG);
-    }
-
-    /* ── IP-2: the message pointer is required ───────────────────────────*/
-    {
-        struct task *t = ip_caller();
-        ASSERT_NOT_NULL(t);
         ASSERT_EQ(ip_err(sys_ep_send(S_EP_FULL, 0, 0)), (long)IRIS_ERR_INVALID_ARG);
         ASSERT_EQ(ip_err(sys_ep_recv(S_EP_FULL, 0, 0)), (long)IRIS_ERR_INVALID_ARG);
         ASSERT_EQ(ip_err(sys_ep_call(S_EP_FULL, 0, 0)), (long)IRIS_ERR_INVALID_ARG);
         ASSERT_EQ(ip_err(sys_reply(S_REPLY, 0, 0)),     (long)IRIS_ERR_INVALID_ARG);
-        test_set_current_task(NULL);
     }
+
+    /* ── IP-2 is RETIRED (ledger A-33) ───────────────────────────────────
+     * It asserted that a message pointer of zero was refused — the check that
+     * stood between the kernel and a user address it was about to dereference.
+     * A message has no address: it is a MessageInfo word and message
+     * registers, so there is nothing to validate and nothing for a second
+     * thread to unmap between the check and the copy.  The absence of
+     * `user_range_readable` on every send path is what replaced it. */
 
     /* ── IP-3: SEND needs WRITE, RECV needs READ ─────────────────────────
      * The same endpoint OBJECT through three capabilities, so a refusal can
@@ -142,15 +143,14 @@ void test_syscall_ipc(void) {
     {
         struct task *t = ip_caller();
         ASSERT_NOT_NULL(t);
-        ip_msg(&m);
-        const uint64_t mp = (uint64_t)(uintptr_t)&m;
+        ip_msg(t);
 
         /* read-only capability cannot send */
-        ASSERT_EQ(ip_err(sys_ep_send(S_EP_RD, mp, 0)), (long)IRIS_ERR_ACCESS_DENIED);
-        ASSERT_EQ(ip_err(sys_ep_nb_send(S_EP_RD, mp, 0)), (long)IRIS_ERR_ACCESS_DENIED);
-        ASSERT_EQ(ip_err(sys_ep_call(S_EP_RD, mp, 0)), (long)IRIS_ERR_ACCESS_DENIED);
+        ASSERT_EQ(ip_err(sys_ep_send(S_EP_RD, 0, 0)), (long)IRIS_ERR_ACCESS_DENIED);
+        ASSERT_EQ(ip_err(sys_ep_nb_send(S_EP_RD, 0, 0)), (long)IRIS_ERR_ACCESS_DENIED);
+        ASSERT_EQ(ip_err(sys_ep_call(S_EP_RD, 0, 0)), (long)IRIS_ERR_ACCESS_DENIED);
         /* write-only capability cannot receive */
-        ASSERT_EQ(ip_err(sys_ep_recv(S_EP_WR, mp, 0)), (long)IRIS_ERR_ACCESS_DENIED);
+        ASSERT_EQ(ip_err(sys_ep_recv(S_EP_WR, 0, 0)), (long)IRIS_ERR_ACCESS_DENIED);
         test_set_current_task(NULL);
     }
 
@@ -158,10 +158,9 @@ void test_syscall_ipc(void) {
     {
         struct task *t = ip_caller();
         ASSERT_NOT_NULL(t);
-        ip_msg(&m);
-        const uint64_t mp = (uint64_t)(uintptr_t)&m;
-        ASSERT_EQ(ip_err(sys_ep_send(S_NOTEP, mp, 0)), (long)IRIS_ERR_WRONG_TYPE);
-        ASSERT_EQ(ip_err(sys_ep_recv(S_NOTEP, mp, 0)), (long)IRIS_ERR_WRONG_TYPE);
+        ip_msg(t);
+        ASSERT_EQ(ip_err(sys_ep_send(S_NOTEP, 0, 0)), (long)IRIS_ERR_WRONG_TYPE);
+        ASSERT_EQ(ip_err(sys_ep_recv(S_NOTEP, 0, 0)), (long)IRIS_ERR_WRONG_TYPE);
         test_set_current_task(NULL);
     }
 
@@ -169,11 +168,10 @@ void test_syscall_ipc(void) {
     {
         struct task *t = ip_caller();
         ASSERT_NOT_NULL(t);
-        ip_msg(&m);
-        const uint64_t mp = (uint64_t)(uintptr_t)&m;
+        ip_msg(t);
         const uint64_t handle_shaped = (uint64_t)1u << 31;
-        ASSERT_EQ(ip_err(sys_ep_send(handle_shaped, mp, 0)) < 0, 1);
-        ASSERT_EQ(ip_err(sys_ep_recv(handle_shaped, mp, 0)) < 0, 1);
+        ASSERT_EQ(ip_err(sys_ep_send(handle_shaped, 0, 0)) < 0, 1);
+        ASSERT_EQ(ip_err(sys_ep_recv(handle_shaped, 0, 0)) < 0, 1);
         test_set_current_task(NULL);
     }
 
@@ -185,10 +183,8 @@ void test_syscall_ipc(void) {
     {
         struct task *t = ip_caller();
         ASSERT_NOT_NULL(t);
-        ip_msg(&m);
-        m.attached_handle = S_XFER_NOTRANSFER;      /* held, but not transferable */
-        m.attached_cap_rights = RIGHT_READ;
-        ASSERT_EQ(ip_err(sys_ep_send(S_EP_FULL, (uint64_t)(uintptr_t)&m, 0)),
+        ip_msg_cap(t, S_XFER_NOTRANSFER, RIGHT_READ);  /* held, not transferable */
+        ASSERT_EQ(ip_err(sys_ep_send(S_EP_FULL, 0, 0)),
                   (long)IRIS_ERR_ACCESS_DENIED);
         test_set_current_task(NULL);
     }
@@ -197,10 +193,8 @@ void test_syscall_ipc(void) {
     {
         struct task *t = ip_caller();
         ASSERT_NOT_NULL(t);
-        ip_msg(&m);
-        m.attached_handle = 199;                    /* empty slot */
-        m.attached_cap_rights = RIGHT_READ;
-        ASSERT_EQ(ip_err(sys_ep_send(S_EP_FULL, (uint64_t)(uintptr_t)&m, 0)),
+        ip_msg_cap(t, 199, RIGHT_READ);             /* an empty slot */
+        ASSERT_EQ(ip_err(sys_ep_send(S_EP_FULL, 0, 0)),
                   (long)IRIS_ERR_NOT_FOUND);
         test_set_current_task(NULL);
     }
@@ -213,14 +207,12 @@ void test_syscall_ipc(void) {
     {
         struct task *t = ip_caller();
         ASSERT_NOT_NULL(t);
-        ip_msg(&m);
-        ASSERT_EQ(ip_err(sys_reply(S_REPLY, (uint64_t)(uintptr_t)&m, 0)),
-                  (long)IRIS_ERR_NOT_FOUND);
+        ip_msg(t);
+        ASSERT_EQ(ip_err(sys_reply(S_REPLY, 0, 0)), (long)IRIS_ERR_NOT_FOUND);
         /* and a reply CPtr of zero is not an address */
-        ASSERT_EQ(ip_err(sys_reply(0, (uint64_t)(uintptr_t)&m, 0)),
-                  (long)IRIS_ERR_INVALID_ARG);
+        ASSERT_EQ(ip_err(sys_reply(0, 0, 0)), (long)IRIS_ERR_INVALID_ARG);
         /* the object named must actually be a reply */
-        ASSERT_EQ(ip_err(sys_reply(S_NOTEP, (uint64_t)(uintptr_t)&m, 0)) < 0, 1);
+        ASSERT_EQ(ip_err(sys_reply(S_NOTEP, 0, 0)) < 0, 1);
         test_set_current_task(NULL);
     }
 
@@ -233,9 +225,8 @@ void test_syscall_ipc(void) {
     {
         struct task *t = ip_caller();
         ASSERT_NOT_NULL(t);
-        ip_msg(&m);
-        ASSERT_EQ(ip_err(sys_reply_recv(S_REPLY, (uint64_t)(uintptr_t)&m,
-                                        S_EP_FULL)),
+        ip_msg(t);
+        ASSERT_EQ(ip_err(sys_reply_recv(S_REPLY, 0, S_EP_FULL)),
                   (long)IRIS_ERR_NOT_FOUND);
         ASSERT_EQ(t->sc_restart, 0u);      /* it did not park on the endpoint */
         test_set_current_task(NULL);

@@ -23,6 +23,7 @@
  * telling the two apart by the message label.
  */
 #include <stdint.h>
+#include "../common/iris_msg.h"
 #include <iris/syscall.h>
 #include <iris/invoke.h>
 #include <iris/nc/handle.h>
@@ -34,7 +35,7 @@
 static inline long tm_sys1(long nr, long a0) {
     return iris_syscall4(nr, a0, 0L, 0L, 0);
 }
-static void tm_msg_zero(struct IrisMsg *m) {
+static void tm_msg_zero(struct iris_msg *m) {
     uint8_t *b = (uint8_t *)m;
     for (uint32_t i = 0; i < (uint32_t)sizeof(*m); i++) b[i] = 0;
 }
@@ -132,15 +133,16 @@ void timer_main(handle_id_t bootstrap_ch_h) {
 
     for (;;) {
         uint32_t slot = tm_free_slot();
-        struct IrisMsg m;
+        struct iris_msg m;
         tm_msg_zero(&m);
         /* Declare where a transferred notification should land.  When the
          * table is full there is no slot to declare, and an ARM that arrives
          * anyway is refused with its capability undelivered. */
-        m.attached_cap = (slot < TMR_MAX_TIMERS)
-                       ? (uint32_t)TMR_CLIENT_CPTR(slot) : 0u;
+        m.recv_slot = (slot < TMR_MAX_TIMERS)
+                    ? (long)TMR_CLIENT_CPTR(slot) : 0;
+        m.reply     = (long)TMR_SLOT_REPLY;
 
-        long r = iris_invoke2((long)TMR_SLOT_CTRL_EP, INV_EP_RECV, (long)(uintptr_t)&m, (long)TMR_SLOT_REPLY);
+        long r = iris_msg_recv((long)TMR_SLOT_CTRL_EP, &m);
         if (r != 0) continue;
 
         if (m.label == IRIS_MSG_LABEL_NOTIFICATION) {
@@ -174,7 +176,10 @@ void timer_main(handle_id_t bootstrap_ch_h) {
             err = TMR_ERR_BADOP;
         } else if (slot >= TMR_MAX_TIMERS) {
             err = TMR_ERR_FULL;
-        } else if (m.attached_cap == IRIS_MSG_NO_CAP) {
+        } else if (m.got_caps == 0u) {
+            /* A-33: the MessageInfo says whether a capability landed in the
+             * slot this receive declared — seL4's `extraCaps`.  `got_cap` is
+             * the reply object, which is a different question. */
             err = TMR_ERR_NOCAP;
         } else {
             long now = tm_sys1(SYS_CLOCK_GET, 0);
@@ -187,12 +192,12 @@ void timer_main(handle_id_t bootstrap_ch_h) {
             g_armed++;
         }
 
-        struct IrisMsg rep;
+        struct iris_msg rep;
         tm_msg_zero(&rep);
         rep.words[0]   = (m.label == TMR_OP_UPTIME) ? uptime : (uint64_t)err;
         rep.words[1]   = token;
         rep.word_count = 2u;
-        (void)iris_invoke1((long)TMR_SLOT_REPLY, INV_REPLY_SEND, (long)(uintptr_t)&rep);
+        (void)iris_msg_reply((long)TMR_SLOT_REPLY, &rep);
 
         /* A refused or non-ARM request must not leave a capability in the slot
          * the next request will declare. */

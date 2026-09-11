@@ -540,7 +540,7 @@ $(KERNEL_SVCMGR_BIN_OBJ): $(SERVICE_SVCMGR_ELF) | dirs
 	    $(SERVICE_SVCMGR_ELF) $@
 
 # ── kbd service ─────────────────────────────────────────────────────────────
-$(BUILD_DIR)/kbd_main.o: services/kbd/main.S | dirs
+$(BUILD_DIR)/kbd_main.o: services/kbd/main.S kernel/include/iris/ipc_msg.h kernel/include/iris/invoke.h kernel/include/iris/syscall.h | dirs
 	gcc $(SERVICE_ASFLAGS) -c $< -o $@
 
 $(SERVICE_KBD_ELF): $(BUILD_DIR)/kbd_main.o

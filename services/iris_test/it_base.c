@@ -328,10 +328,10 @@ void it_settle(uint32_t rounds) {
  * and answers for anybody it was granted to.
  */
 long it_timer_uptime(uint64_t *out_ns) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label = TMR_OP_UPTIME;
-    long r = it_invoke1((long)IRIS_CPTR_TIMER_EP, INV_EP_CALL, (long)(uintptr_t)&m);
+    long r = iris_msg_call((long)IRIS_CPTR_TIMER_EP, &m);
     if (r != 0) return r;
     if (out_ns) *out_ns = m.words[0];
     return 0;
@@ -528,9 +528,9 @@ long it_notify_create(void) {
     return it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_NOTIFICATION, 0);
 }
 
-/* Retype a reply object into a FIXED root slot (tests pass it as recv arg2
- * and invoke SYS_REPLY on the echoed msg.attached_handle).  Delete with
- * it_slot_delete when the test is done. */
+/* Retype a reply object into a FIXED root slot (tests hand it to a receive as
+ * `msg.reply` and reply on the `msg.got_cap` the receive echoes back).  Delete
+ * with it_slot_delete when the test is done. */
 long it_reply_create_at(uint32_t slot) {
     return it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY,
                          slot, 1u, 0);
@@ -689,11 +689,7 @@ void it_fail(const char *id, const char *reason) {
 
 /* it_chan_msg_zero retired — Phase 13/Track I (no KChannel tests remain). */
 
-void it_iris_msg_zero(struct IrisMsg *m) {
-    uint8_t *p = (uint8_t *)m;
-    for (uint32_t i = 0; i < (uint32_t)sizeof(*m); i++) p[i] = 0;
-}
-
+/* iris_msg_zero lives in common/iris_msg.h now, with the message (A-33). */
 /* Release a capability the suite holds, whichever namespace names it.
  *
  * This is what lets the suite migrate WITHOUT moving a single release point.

@@ -13,6 +13,7 @@
  * console.ep — neither path uses a channel.
  */
 #include <iris/svcmgr_proto.h>
+#include "../common/iris_msg.h"
 #include "../common/iris_vspace.h"
 #include <iris/console_proto.h>
 #include <iris/syscall.h>
@@ -332,9 +333,9 @@ static uint32_t g_vfs_registered = 0u;
  * If the attached cap is not a KReply, SYS_REPLY fails and the close below
  * still releases it — no handle leak.
  */
-static void vfs_ep_serve(struct vfs_state *state, struct IrisMsg *req) {
-    struct IrisMsg reply;
-    handle_id_t reply_h = (handle_id_t)req->attached_handle;
+static void vfs_ep_serve(struct vfs_state *state, struct iris_msg *req) {
+    struct iris_msg reply;
+    handle_id_t reply_h = (handle_id_t)req->got_cap;
     /* Take the request out of the IPC buffer before the reply is composed
      * there.  With no registered buffer the kernel already delivered into
      * g_vfs_ep_req_buf and this is a no-op. */
@@ -343,15 +344,15 @@ static void vfs_ep_serve(struct vfs_state *state, struct IrisMsg *req) {
         if (n > (uint32_t)sizeof(g_vfs_ep_req_buf)) n = (uint32_t)sizeof(g_vfs_ep_req_buf);
         for (uint32_t i = 0; i < n; i++) g_vfs_ep_req_buf[i] = g_vfs_in[i];
     }
-    const uint8_t *req_buf =
-        (req->buf_len > 0u && req->buf_uptr != 0u) ? g_vfs_ep_req_buf : 0;
+    const uint8_t *req_buf = (req->buf_len > 0u) ? g_vfs_ep_req_buf : 0;
 
     vfs_ep_dispatch(&state->ep_state, req, req_buf, &reply, g_vfs_reply);
+
 
     /* Phase S1: reply_h is the vfs's OWN reply-object CPtr (echoed by the
      * kernel from the recv arg2).  The object is reusable — never closed. */
     if (reply_h == HANDLE_INVALID) return;
-    (void)vfs_invoke1(reply_h, INV_REPLY_SEND, (uint64_t)(uintptr_t)&reply);
+    (void)iris_msg_reply((long)reply_h, &reply);
 }
 
 void vfs_server_main_c(handle_id_t rbx_unused) {
@@ -392,11 +393,11 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
     /* Phase 8: console output goes through the minted console-endpoint
      * slot; a PING proves the slot is live before the gated marker. */
     {
-        struct IrisMsg pmsg;
+        struct iris_msg pmsg;
         uint8_t *p = (uint8_t *)&pmsg;
         for (uint32_t i = 0; i < (uint32_t)sizeof(pmsg); i++) p[i] = 0;
         pmsg.label = IRIS_EP_OP_PING;
-        if (vfs_invoke1(IRIS_CPTR_CONSOLE_EP, INV_EP_CALL, (uint64_t)(uintptr_t)&pmsg) == IRIS_OK &&
+        if (iris_msg_call((long)IRIS_CPTR_CONSOLE_EP, &pmsg) == IRIS_OK &&
             pmsg.label == IRIS_EP_REPLY_OK)
             g_vfs_console_ep_h = (handle_id_t)IRIS_CPTR_CONSOLE_EP;
     }
@@ -418,16 +419,15 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
      * grant layer. */
     {
         uint64_t epoch = 0;
-        struct IrisMsg smsg;
+        struct iris_msg smsg;
         uint8_t *p = (uint8_t *)&smsg;
         for (uint32_t i = 0; i < (uint32_t)sizeof(smsg); i++) p[i] = 0;
         static const char vfs_self_name[] = "vfs.ep";
         for (uint32_t i = 0; i < (uint32_t)sizeof(vfs_self_name); i++)
             g_vfs_reply[i] = (uint8_t)vfs_self_name[i];
         smsg.label    = IRIS_SVCMGR_EP_STATUS;
-        smsg.buf_uptr = (uint64_t)(uintptr_t)g_vfs_reply;
         smsg.buf_len  = (uint32_t)sizeof(vfs_self_name);
-        if (vfs_invoke1(IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (uint64_t)(uintptr_t)&smsg) == IRIS_OK &&
+        if (iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &smsg) == IRIS_OK &&
             smsg.label == IRIS_EP_REPLY_OK && smsg.word_count >= 2u)
             epoch = smsg.words[1];
         state.ep_state.exports      = state.exports;
@@ -446,17 +446,16 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
      * svcmgr holds the endpoint master forever, so a clean recv failure
      * here is a real fault — fail loudly instead of spinning. */
     for (;;) {
-        struct IrisMsg req;
+        struct iris_msg req;
         int64_t r;
 
         {
             uint8_t *raw = (uint8_t *)&req;
             for (uint32_t i = 0; i < (uint32_t)sizeof(req); i++) raw[i] = 0;
         }
-        req.buf_uptr = (uint64_t)(uintptr_t)g_vfs_in;
 
         /* Phase S1: explicit reply object (svcmgr mints it at slot 13). */
-        r = vfs_invoke2(state.ep_h, INV_EP_RECV, (uint64_t)(uintptr_t)&req, IRIS_CPTR_OWN_REPLY);
+        r = (req.reply = (long)IRIS_CPTR_OWN_REPLY, iris_msg_recv((long)state.ep_h, &req));
         if (r != IRIS_OK) {
             vfs_log(vfs_str_ep_lost);
             goto fail;

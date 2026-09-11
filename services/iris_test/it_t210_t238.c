@@ -10,6 +10,7 @@
  */
 #include "it_priv.h"
 
+#include "../common/iris_msg.h"
 void test_t210(void) {
     uint32_t rng = T210_SEED, word;
     it_quiesce_reaper();
@@ -444,20 +445,20 @@ void test_t216(void) {
 /* Send a multi-page fault-read sequence to a target (words[0]=base VA,
  * words[1]=count, words[2]=visit order). */
 static long t28_cmd_read_seq(handle_id_t cmd, uint64_t base, uint32_t count, uint64_t order) {
-    struct IrisMsg m; it_iris_msg_zero(&m);
+    struct iris_msg m; iris_msg_zero(&m);
     m.label = LP_CMD_FAULT_READ_SEQ;
     m.words[0] = base; m.words[1] = (uint64_t)count; m.words[2] = order;
     m.word_count = 3u;
-    return it_invoke1((long)cmd, INV_EP_SEND, (long)&m);
+    return iris_msg_send((long)cmd, &m);
 }
 /* Two-offset fault-read: read base+off0 and (count==2) base+off1. */
 static long t28_cmd_read_offs(handle_id_t cmd, uint64_t base, uint32_t count,
                               uint64_t off0, uint64_t off1) {
-    struct IrisMsg m; it_iris_msg_zero(&m);
+    struct iris_msg m; iris_msg_zero(&m);
     m.label = LP_CMD_FAULT_READ_OFFS_M;
     m.words[0] = base; m.words[1] = (uint64_t)count; m.words[2] = off0; m.words[3] = off1;
     m.word_count = 4u;
-    return it_invoke1((long)cmd, INV_EP_SEND, (long)&m);
+    return iris_msg_send((long)cmd, &m);
 }
 
 /* Materialize the two supervisor-side file-grant caps init pre-minted:
@@ -497,12 +498,12 @@ static handle_id_t t28_session_cap(uint32_t session) {
 
 /* STAT a file via a vfs cap → size, or -1. */
 long t28_stat(handle_id_t vfs_cap, const char *name) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     uint32_t n = 0; while (name[n] && n + 1u < IT_EP_IO_CAP) { g_ep_io_buf[n] = (uint8_t)name[n]; n++; }
     g_ep_io_buf[n] = 0;
-    m.label = VFS_EP_OP_STAT; m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf; m.buf_len = n + 1u;
-    if (it_invoke1((long)vfs_cap, INV_EP_CALL, (long)&m) != 0) return -1;
+    m.label = VFS_EP_OP_STAT; m.buf_len = n + 1u;
+    if (iris_msg_call((long)vfs_cap, &m) != 0) return -1;
     if (m.label != IRIS_EP_REPLY_OK) return -1;
     return (long)m.words[1];
 }
@@ -512,19 +513,18 @@ long t28_stat(handle_id_t vfs_cap, const char *name) {
  * when non-NULL) or the NEGATIVE iris_error_t from the error reply. */
 static long t28_gcall(handle_id_t cap, uint64_t label, uint64_t w0, uint64_t w1,
                       uint64_t w2, uint32_t wc, const char *name,
-                      struct IrisMsg *out) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+                      struct iris_msg *out) {
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label = label;
     m.words[0] = w0; m.words[1] = w1; m.words[2] = w2; m.word_count = wc;
-    m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     if (name) {
         uint32_t n = 0;
         while (name[n] && n + 1u < IT_EP_IO_CAP) { g_ep_io_buf[n] = (uint8_t)name[n]; n++; }
         g_ep_io_buf[n] = 0;
         m.buf_len = n + 1u;
     }
-    long r = it_invoke1((long)cap, INV_EP_CALL, (long)&m);
+    long r = iris_msg_call((long)cap, &m);
     if (r != 0) return r;
     if (m.label != IRIS_EP_REPLY_OK) return (long)(int32_t)(uint32_t)m.words[0];
     if (out) *out = m;
@@ -534,7 +534,7 @@ static long t28_gcall(handle_id_t cap, uint64_t label, uint64_t w0, uint64_t w1,
 /* Supervisor grant operations (ADMIN cap). */
 static long t28_grant_open(handle_id_t admin, uint32_t session, const char *name,
                            uint32_t rights, struct t28_grant *out) {
-    struct IrisMsg m;
+    struct iris_msg m;
     long r = t28_gcall(admin, VFS_EP_OP_GRANT_OPEN, session, rights, 0, 2u, name, &m);
     if (r != 0) return r;
     if (out) { out->idx = (uint32_t)m.words[1]; out->bid = m.words[2]; out->gen = m.words[3]; }
@@ -544,7 +544,7 @@ static long t28_session_reset(handle_id_t admin, uint32_t session) {
     return t28_gcall(admin, VFS_EP_OP_GRANT_SESSION_RESET, session, 0, 0, 1u, 0, 0);
 }
 long t28_grant_revoke_name(handle_id_t admin, const char *name, uint64_t *newgen) {
-    struct IrisMsg m;
+    struct iris_msg m;
     long r = t28_gcall(admin, VFS_EP_OP_GRANT_REVOKE, 0, 0, 0, 0u, name, &m);
     if (r != 0) return r;
     if (newgen) *newgen = m.words[1];
@@ -554,7 +554,7 @@ long t28_grant_revoke_name(handle_id_t admin, const char *name, uint64_t *newgen
 /* Session-holder grant operations (a SESSION-badged cap). */
 static long t28_grant_read(handle_id_t cap, uint32_t idx, uint64_t off, uint32_t len,
                            uint8_t *first_byte, uint64_t *bytes) {
-    struct IrisMsg m;
+    struct iris_msg m;
     long r = t28_gcall(cap, VFS_EP_OP_GRANT_READ_AT, idx, off, len, 3u, 0, &m);
     if (r != 0) return r;
     if (bytes) *bytes = m.words[1];
@@ -563,7 +563,7 @@ static long t28_grant_read(handle_id_t cap, uint32_t idx, uint64_t off, uint32_t
 }
 static long t28_grant_stat(handle_id_t cap, uint32_t idx, uint64_t *size,
                            uint64_t *bid, uint64_t *gen) {
-    struct IrisMsg m;
+    struct iris_msg m;
     long r = t28_gcall(cap, VFS_EP_OP_GRANT_STAT, idx, 0, 0, 1u, 0, &m);
     if (r != 0) return r;
     if (size) *size = m.words[1];
@@ -575,14 +575,14 @@ static long t28_grant_stat(handle_id_t cap, uint32_t idx, uint64_t *size,
  * refactor; GRANT_QUERY_IDENTITY coverage lives in the vfs_ep host suite. */
 static long t28_grant_derive(handle_id_t cap, uint32_t src, uint32_t rights,
                              uint32_t *newidx) {
-    struct IrisMsg m;
+    struct iris_msg m;
     long r = t28_gcall(cap, VFS_EP_OP_GRANT_DERIVE, src, rights, 0, 2u, 0, &m);
     if (r != 0) return r;
     if (newidx) *newidx = (uint32_t)m.words[1];
     return 0;
 }
 static long t28_grant_revoke_idx(handle_id_t cap, uint32_t idx, uint64_t *newgen) {
-    struct IrisMsg m;
+    struct iris_msg m;
     long r = t28_gcall(cap, VFS_EP_OP_GRANT_REVOKE, idx, 0, 0, 1u, 0, &m);
     if (r != 0) return r;
     if (newgen) *newgen = m.words[1];
@@ -696,18 +696,18 @@ int t28_backing_setup(struct t28_fbk *f, uint32_t bidx, const char *name,
 
 /* Control calls. */
 static long t28_ctrl_words(handle_id_t ctrl, uint32_t op, uint64_t w1, uint64_t w2) {
-    struct IrisMsg m; it_iris_msg_zero(&m);
+    struct iris_msg m; iris_msg_zero(&m);
     m.words[0] = (uint64_t)op; m.words[1] = w1; m.words[2] = w2; m.word_count = 3u;
-    long r = it_invoke1((long)ctrl, INV_EP_CALL, (long)&m);
+    long r = iris_msg_call((long)ctrl, &m);
     if (r != 0) return r;
     if (m.label != IRIS_EP_REPLY_OK) return -100000L;
     return (long)m.words[0];
 }
 static long t28_map_region(handle_id_t ctrl, uint32_t tidx) {
-    struct IrisMsg m; it_iris_msg_zero(&m);
+    struct iris_msg m; iris_msg_zero(&m);
     m.words[0] = (uint64_t)FBK_OP_MAP_REGION | ((uint64_t)tidx << 8);
     m.word_count = 1u;
-    long r = it_invoke1((long)ctrl, INV_EP_CALL, (long)&m);
+    long r = iris_msg_call((long)ctrl, &m);
     if (r != 0) return r;
     if (m.label != IRIS_EP_REPLY_OK) return -100000L;
     return (long)m.words[0];
@@ -720,10 +720,10 @@ static long t28_reg_backing_raw(handle_id_t ctrl, uint32_t idx, uint32_t grant_i
     for (uint32_t i = 0; i < sizeof(*rq); i++) g_t28_buf[i] = 0;
     rq->backing_idx = idx; rq->grant_idx = grant_idx;
     rq->backing_id = id; rq->generation = gen; rq->file_size = size;
-    struct IrisMsg m; it_iris_msg_zero(&m);
+    struct iris_msg m; iris_msg_zero(&m);
     m.words[0] = (uint64_t)FBK_OP_REGISTER_BACKING; m.word_count = 1u;
-    m.buf_uptr = (uint64_t)(uintptr_t)g_t28_buf; m.buf_len = (uint32_t)sizeof(*rq);
-    long r = it_invoke1((long)ctrl, INV_EP_CALL, (long)&m);
+    m.buf_len = (uint32_t)sizeof(*rq);
+    long r = iris_msg_call((long)ctrl, &m);
     if (r != 0) return r;
     if (m.label != IRIS_EP_REPLY_OK) return -100000L;
     return (long)m.words[0];
@@ -736,19 +736,18 @@ static long t28_reg_backing2(handle_id_t ctrl, uint32_t bidx,
 long t28_reg_region(handle_id_t ctrl, const struct pgr_region_req *src) {
     struct pgr_region_req *rq = (struct pgr_region_req *)g_t28_buf;
     for (uint32_t i = 0; i < sizeof(*rq); i++) g_t28_buf[i] = ((const uint8_t *)src)[i];
-    struct IrisMsg m; it_iris_msg_zero(&m);
+    struct iris_msg m; iris_msg_zero(&m);
     m.words[0] = (uint64_t)FBK_OP_REGISTER_REGION; m.word_count = 1u;
-    m.buf_uptr = (uint64_t)(uintptr_t)g_t28_buf; m.buf_len = (uint32_t)sizeof(*rq);
-    long r = it_invoke1((long)ctrl, INV_EP_CALL, (long)&m);
+    m.buf_len = (uint32_t)sizeof(*rq);
+    long r = iris_msg_call((long)ctrl, &m);
     if (r != 0) return r;
     if (m.label != IRIS_EP_REPLY_OK) return -100000L;
     return (long)m.words[0];
 }
 static int t28_diag(handle_id_t ctrl, struct pgr_diag *out) {
-    struct IrisMsg m; it_iris_msg_zero(&m);
+    struct iris_msg m; iris_msg_zero(&m);
     m.words[0] = (uint64_t)FBK_OP_DIAG; m.word_count = 1u;
-    m.buf_uptr = (uint64_t)(uintptr_t)g_t28_buf;
-    if (it_invoke1((long)ctrl, INV_EP_CALL, (long)&m) != 0) return 0;
+    if (iris_msg_call((long)ctrl, &m) != 0) return 0;
     if (m.label != IRIS_EP_REPLY_OK || m.buf_len < sizeof(*out)) return 0;
     for (uint32_t i = 0; i < sizeof(*out); i++) ((uint8_t *)out)[i] = g_t28_buf[i];
     return 1;

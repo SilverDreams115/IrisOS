@@ -1,7 +1,7 @@
 /*
  * vfs_ep.c — VFS endpoint-protocol dispatcher (Phase 7.1; grants Phase 28.1).
  *
- * Pure request → reply logic for the IrisMsg-based VFS protocol
+ * Pure request → reply logic for the VFS protocol
  * (iris/vfs_ep_proto.h). No syscalls, no globals: unit-testable on the host
  * (tests/kernel/test_vfs_ep.c) and wrapped by the drain loop in vfs.c.
  *
@@ -27,15 +27,16 @@
  */
 
 #include "vfs_ep.h"
+#include "../common/iris_msg.h"
 #include <iris/endpoint_proto.h>
 #include <iris/nc/error.h>
 
-static void vfs_ep_msg_clear(struct IrisMsg *m) {
+static void vfs_ep_msg_clear(struct iris_msg *m) {
     uint8_t *p = (uint8_t *)m;
     for (uint32_t i = 0; i < (uint32_t)sizeof(*m); i++) p[i] = 0;
 }
 
-static void vfs_ep_reply_err(struct IrisMsg *reply, iris_error_t err) {
+static void vfs_ep_reply_err(struct iris_msg *reply, iris_error_t err) {
     vfs_ep_msg_clear(reply);
     reply->label      = IRIS_EP_REPLY_ERR;
     reply->words[0]   = (uint64_t)(uint32_t)err;
@@ -46,7 +47,7 @@ static void vfs_ep_reply_err(struct IrisMsg *reply, iris_error_t err) {
  * Validate and extract the request path from the bulk payload.
  * Returns NULL if the payload is malformed (caller replies INVALID_ARG).
  */
-static const char *vfs_ep_req_path(const struct IrisMsg *req,
+static const char *vfs_ep_req_path(const struct iris_msg *req,
                                    const uint8_t *req_buf) {
     if (!req_buf) return 0;                       /* payload not delivered */
     if (req->buf_len == 0u) return 0;             /* short payload */
@@ -95,8 +96,8 @@ static const uint8_t *vfs_ep_export_bytes(const struct vfs_export *exp) {
 
 static void vfs_ep_handle_list(const struct vfs_export *exports,
                                uint32_t export_count,
-                               const struct IrisMsg *req,
-                               struct IrisMsg *reply, uint8_t *reply_buf) {
+                               const struct iris_msg *req,
+                               struct iris_msg *reply, uint8_t *reply_buf) {
     if (req->word_count < 1u) {
         vfs_ep_reply_err(reply, IRIS_ERR_INVALID_ARG);
         return;
@@ -121,14 +122,13 @@ static void vfs_ep_handle_list(const struct vfs_export *exports,
     reply->words[2]   = name_len;
     reply->word_count = 3u;
     reply->buf_len    = name_len + 1u;
-    reply->buf_uptr   = (uint64_t)(uintptr_t)reply_buf;
 }
 
 static void vfs_ep_handle_stat(const struct vfs_export *exports,
                                uint32_t export_count,
-                               const struct IrisMsg *req,
+                               const struct iris_msg *req,
                                const uint8_t *req_buf,
-                               struct IrisMsg *reply) {
+                               struct iris_msg *reply) {
     const char *path = vfs_ep_req_path(req, req_buf);
     if (!path) {
         vfs_ep_reply_err(reply, IRIS_ERR_INVALID_ARG);
@@ -152,7 +152,7 @@ static void vfs_ep_handle_stat(const struct vfs_export *exports,
  * authority decision was already made by the caller; this only moves bytes. */
 static void vfs_ep_read_reply(const struct vfs_export *exp,
                               uint64_t offset, uint64_t len,
-                              struct IrisMsg *reply, uint8_t *reply_buf) {
+                              struct iris_msg *reply, uint8_t *reply_buf) {
     if (len > VFS_EP_DATA_MAX) len = VFS_EP_DATA_MAX;
 
     uint64_t bytes = 0;
@@ -171,15 +171,14 @@ static void vfs_ep_read_reply(const struct vfs_export *exp,
     reply->word_count = 3u;
     if (bytes > 0) {
         reply->buf_len  = (uint32_t)bytes;
-        reply->buf_uptr = (uint64_t)(uintptr_t)reply_buf;
     }
 }
 
 static void vfs_ep_handle_read_at(const struct vfs_export *exports,
                                   uint32_t export_count,
-                                  const struct IrisMsg *req,
+                                  const struct iris_msg *req,
                                   const uint8_t *req_buf,
-                                  struct IrisMsg *reply, uint8_t *reply_buf) {
+                                  struct iris_msg *reply, uint8_t *reply_buf) {
     if (req->word_count < 2u) {
         vfs_ep_reply_err(reply, IRIS_ERR_INVALID_ARG);
         return;
@@ -202,8 +201,8 @@ static void vfs_ep_handle_read_at(const struct vfs_export *exports,
 
 static void vfs_ep_handle_status(const struct vfs_export *exports,
                                  uint32_t export_count,
-                                 const struct IrisMsg *req,
-                                 struct IrisMsg *reply) {
+                                 const struct iris_msg *req,
+                                 struct iris_msg *reply) {
     if (req->buf_len > 0u) {
         vfs_ep_reply_err(reply, IRIS_ERR_INVALID_ARG);
         return;
@@ -248,7 +247,7 @@ void vfs_ep_grants_init(struct vfs_ep_state *st, uint64_t epoch) {
  * existence.  Liveness (generation) is NOT checked here — QUERY/STAT/READ
  * decide how staleness surfaces.  Returns the grant or NULL with *err set. */
 static struct vfs_grant *vfs_ep_grant_ref(struct vfs_ep_state *st,
-                                          const struct IrisMsg *req,
+                                          const struct iris_msg *req,
                                           iris_error_t *err) {
     int s = iris_badge_filegrant_session(req->sender_badge);
     if (s < 0) { *err = IRIS_ERR_ACCESS_DENIED; return 0; }
@@ -286,9 +285,9 @@ static int vfs_ep_grant_alloc(struct vfs_grant_table *gt, uint32_t session) {
 /* GRANT_OPEN — admin only.  The ONLY place a pathname meets the grant layer,
  * presented by the admin identity, never by the session holder. */
 static void vfs_ep_handle_grant_open(struct vfs_ep_state *st,
-                                     const struct IrisMsg *req,
+                                     const struct iris_msg *req,
                                      const uint8_t *req_buf,
-                                     struct IrisMsg *reply) {
+                                     struct iris_msg *reply) {
     if (req->sender_badge != IRIS_BADGE_FILEGRANT_ADMIN) {
         vfs_ep_reply_err(reply, IRIS_ERR_ACCESS_DENIED);
         return;
@@ -338,8 +337,8 @@ static void vfs_ep_handle_grant_open(struct vfs_ep_state *st,
 
 /* GRANT_STAT / GRANT_QUERY_IDENTITY — session-scoped introspection. */
 static void vfs_ep_handle_grant_stat(struct vfs_ep_state *st,
-                                     const struct IrisMsg *req,
-                                     struct IrisMsg *reply, int query_only) {
+                                     const struct iris_msg *req,
+                                     struct iris_msg *reply, int query_only) {
     iris_error_t err = IRIS_ERR_INTERNAL;
     struct vfs_grant *g = vfs_ep_grant_ref(st, req, &err);
     if (!g) { vfs_ep_reply_err(reply, err); return; }
@@ -368,8 +367,8 @@ static void vfs_ep_handle_grant_stat(struct vfs_ep_state *st,
 /* GRANT_READ_AT — the only byte-moving grant op.  No pathname in the request;
  * the grant (validated against VFS state) IS the authority. */
 static void vfs_ep_handle_grant_read_at(struct vfs_ep_state *st,
-                                        const struct IrisMsg *req,
-                                        struct IrisMsg *reply,
+                                        const struct iris_msg *req,
+                                        struct iris_msg *reply,
                                         uint8_t *reply_buf) {
     iris_error_t err = IRIS_ERR_INTERNAL;
     struct vfs_grant *g = vfs_ep_grant_ref(st, req, &err);
@@ -390,8 +389,8 @@ static void vfs_ep_handle_grant_read_at(struct vfs_ep_state *st,
 
 /* GRANT_DERIVE — monotonic reduced-rights copy within the session. */
 static void vfs_ep_handle_grant_derive(struct vfs_ep_state *st,
-                                       const struct IrisMsg *req,
-                                       struct IrisMsg *reply) {
+                                       const struct iris_msg *req,
+                                       struct iris_msg *reply) {
     iris_error_t err = IRIS_ERR_INTERNAL;
     struct vfs_grant *g = vfs_ep_grant_ref(st, req, &err);
     if (!g) { vfs_ep_reply_err(reply, err); return; }
@@ -450,9 +449,9 @@ static uint64_t vfs_ep_backing_bump(struct vfs_ep_state *st,
 
 /* GRANT_REVOKE — admin by name, or session via a FILE_RIGHT_REVOKE grant. */
 static void vfs_ep_handle_grant_revoke(struct vfs_ep_state *st,
-                                       const struct IrisMsg *req,
+                                       const struct iris_msg *req,
                                        const uint8_t *req_buf,
-                                       struct IrisMsg *reply) {
+                                       struct iris_msg *reply) {
     struct vfs_export *exp = 0;
 
     if (req->sender_badge == IRIS_BADGE_FILEGRANT_ADMIN) {
@@ -490,8 +489,8 @@ static void vfs_ep_handle_grant_revoke(struct vfs_ep_state *st,
 
 /* GRANT_SESSION_RESET — admin only; the pager-restart protocol step. */
 static void vfs_ep_handle_session_reset(struct vfs_ep_state *st,
-                                        const struct IrisMsg *req,
-                                        struct IrisMsg *reply) {
+                                        const struct iris_msg *req,
+                                        struct iris_msg *reply) {
     if (req->sender_badge != IRIS_BADGE_FILEGRANT_ADMIN) {
         vfs_ep_reply_err(reply, IRIS_ERR_ACCESS_DENIED);
         return;
@@ -513,8 +512,8 @@ static void vfs_ep_handle_session_reset(struct vfs_ep_state *st,
 }
 
 void vfs_ep_dispatch(struct vfs_ep_state *st,
-                     const struct IrisMsg *req, const uint8_t *req_buf,
-                     struct IrisMsg *reply, uint8_t *reply_buf) {
+                     const struct iris_msg *req, const uint8_t *req_buf,
+                     struct iris_msg *reply, uint8_t *reply_buf) {
     if (!reply) return;
     if (!req || !reply_buf || !st || !st->grants ||
         (!st->exports && st->export_count > 0u)) {

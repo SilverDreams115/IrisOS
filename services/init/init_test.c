@@ -8,6 +8,7 @@
  */
 
 #include <iris/endpoint_proto.h>
+#include "../common/iris_msg.h"
 #include "init.h"
 #include <iris/ipc_msg.h>
 #include <iris/fault_proto.h>
@@ -48,7 +49,7 @@ static void __attribute__((noinline)) s8_ud2_fn(void) {
 void init_selftest_exception(void) {
     long ep_raw, rp_raw, tid_raw, r;
     uint32_t vec, task_id;
-    struct IrisMsg fm;
+    struct iris_msg fm;
 
     ep_raw = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
                               INIT_SLOT_S8_FAULT_EP, 0);
@@ -101,7 +102,7 @@ void init_selftest_exception(void) {
      * wait followed by a second syscall to fetch what the signal did not
      * carry. */
     for (uint32_t i = 0; i < (uint32_t)sizeof(fm); i++) ((uint8_t *)&fm)[i] = 0;
-    r = iris_invoke2((long)INIT_SLOT_S8_FAULT_EP, INV_EP_RECV, (long)&fm, (long)INIT_SLOT_S8_REPLY);
+    r = (fm.reply = (long)INIT_SLOT_S8_REPLY, iris_msg_recv((long)INIT_SLOT_S8_FAULT_EP, &fm));
     if (r < 0) {
         init_log("[USER][INIT][S8] FAIL: no fault message\n"); return;
     }

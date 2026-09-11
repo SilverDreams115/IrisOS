@@ -21,6 +21,7 @@
  */
 
 #include <stdint.h>
+#include "../common/iris_msg.h"
 #include <iris/syscall.h>
 #include <iris/invoke.h>
 #include <iris/nc/handle.h>
@@ -42,7 +43,7 @@ static inline long sh_sys3(long nr, long a0, long a1, long a2) {
 }
 static inline long sh_sys0(long nr)                    { return sh_sys3(nr, 0, 0, 0); }
 
-static void sh_imsg_zero(struct IrisMsg *msg) {
+static void sh_imsg_zero(struct iris_msg *msg) {
     uint8_t *raw = (uint8_t *)msg;
     for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
 }
@@ -170,8 +171,7 @@ static void sh_write_u32(handle_id_t con, uint32_t v) {
  * reply bulk data lands in the same buffer. Returns IRIS_OK and fills *msg on
  * a served round trip (msg->label distinguishes OK from protocol error).
  */
-static int sh_vfs_ep_call(struct IrisMsg *msg, const char *path) {
-    msg->buf_uptr = (uint64_t)(uintptr_t)g_sh_buf;
+static int sh_vfs_ep_call(struct iris_msg *msg, const char *path) {
     if (path) {
         uint32_t plen = sh_strlen(path);
         if (plen + 1u > VFS_EP_PATH_MAX) return (int)IRIS_ERR_INVALID_ARG;
@@ -179,12 +179,12 @@ static int sh_vfs_ep_call(struct IrisMsg *msg, const char *path) {
         g_sh_buf[plen] = 0u;
         msg->buf_len = plen + 1u;
     }
-    return (int)iris_invoke1((long)g_sh_vfs_ep_h, INV_EP_CALL, (long)msg);
+    return (int)iris_msg_call((long)g_sh_vfs_ep_h, msg);
 }
 
 static void sh_cmd_ls_ep(handle_id_t con) {
     for (uint32_t idx = 0; idx < 64u; idx++) {
-        struct IrisMsg msg;
+        struct iris_msg msg;
         sh_imsg_zero(&msg);
         msg.label      = VFS_EP_OP_LIST;
         msg.words[0]   = idx;
@@ -214,7 +214,7 @@ static void sh_cmd_cat_ep(handle_id_t con, const char *path) {
     uint64_t offset = 0;
 
     for (;;) {
-        struct IrisMsg msg;
+        struct iris_msg msg;
         sh_imsg_zero(&msg);
         msg.label      = VFS_EP_OP_READ_AT;
         msg.words[0]   = offset;
@@ -273,11 +273,11 @@ static void sh_dispatch(handle_id_t con, const char *line) {
          * told by whoever holds the hardware, and a shell that was not granted
          * the timer capability says so rather than being told anyway.
          */
-        struct IrisMsg m;
+        struct iris_msg m;
         uint8_t *b = (uint8_t *)&m;
         for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) b[i] = 0;
         m.label = TMR_OP_UPTIME;
-        long r = iris_invoke1((long)IRIS_CPTR_TIMER_EP, INV_EP_CALL, (long)(uintptr_t)&m);
+        long r = iris_msg_call((long)IRIS_CPTR_TIMER_EP, &m);
         if (r != 0) {
             sh_cout(con, "uptime: no clock granted\r\n");
         } else {
@@ -346,10 +346,10 @@ void sh_main_c(handle_id_t rbx_unused) {
     sh_cout(console_h, "[SH] boot\n");
 
     {
-        struct IrisMsg pmsg;
+        struct iris_msg pmsg;
         sh_imsg_zero(&pmsg);
         pmsg.label = IRIS_EP_OP_PING;
-        if (iris_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&pmsg) == IRIS_OK &&
+        if (iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &pmsg) == IRIS_OK &&
             pmsg.label == IRIS_EP_REPLY_OK)
             sh_cout(console_h, "[SH] svcmgr cptr OK\n");
         else
@@ -357,7 +357,7 @@ void sh_main_c(handle_id_t rbx_unused) {
 
         sh_imsg_zero(&pmsg);
         pmsg.label = IRIS_EP_OP_PING;
-        if (iris_invoke1((long)IRIS_CPTR_VFS_EP, INV_EP_CALL, (long)&pmsg) == IRIS_OK &&
+        if (iris_msg_call((long)IRIS_CPTR_VFS_EP, &pmsg) == IRIS_OK &&
             pmsg.label == IRIS_EP_REPLY_OK) {
             g_sh_vfs_ep_h = (handle_id_t)IRIS_CPTR_VFS_EP;
             sh_cout(console_h, "[SH] vfs cptr OK\n");
@@ -367,7 +367,7 @@ void sh_main_c(handle_id_t rbx_unused) {
 
         sh_imsg_zero(&pmsg);
         pmsg.label = IRIS_EP_OP_PING;
-        if (iris_invoke1((long)IRIS_CPTR_KBD_EP, INV_EP_CALL, (long)&pmsg) == IRIS_OK &&
+        if (iris_msg_call((long)IRIS_CPTR_KBD_EP, &pmsg) == IRIS_OK &&
             pmsg.label == IRIS_EP_REPLY_OK) {
             kbd_ep_h = (handle_id_t)IRIS_CPTR_KBD_EP;
             sh_cout(console_h, "[SH] kbd cptr OK\n");
@@ -379,7 +379,7 @@ void sh_main_c(handle_id_t rbx_unused) {
          * the symmetric gated marker. */
         sh_imsg_zero(&pmsg);
         pmsg.label = IRIS_EP_OP_PING;
-        if (iris_invoke1((long)IRIS_CPTR_CONSOLE_EP, INV_EP_CALL, (long)&pmsg) == IRIS_OK &&
+        if (iris_msg_call((long)IRIS_CPTR_CONSOLE_EP, &pmsg) == IRIS_OK &&
             pmsg.label == IRIS_EP_REPLY_OK)
             sh_cout(console_h, "[SH] console cptr OK\n");
         else
@@ -406,10 +406,10 @@ void sh_main_c(handle_id_t rbx_unused) {
         /* Blocking pull: kbd parks the reply until a key event arrives.
          * WOULD_BLOCK (park slot taken by a concurrent caller) and call
          * errors yield-and-retry; this never spins on an immediate reply. */
-        struct IrisMsg msg;
+        struct iris_msg msg;
         sh_imsg_zero(&msg);
         msg.label = KBD_EP_OP_READ;
-        if (iris_invoke1((long)kbd_ep_h, INV_EP_CALL, (long)&msg) != IRIS_OK) {
+        if (iris_msg_call((long)kbd_ep_h, &msg) != IRIS_OK) {
             (void)sh_sys0(SYS_YIELD);
             continue;
         }

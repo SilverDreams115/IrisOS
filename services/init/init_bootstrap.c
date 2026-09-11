@@ -20,6 +20,7 @@
  */
 
 #include "init.h"
+#include "../common/iris_msg.h"
 #include <iris/endpoint_proto.h>
 #include <iris/ipc_recv_slot.h>
 #include <iris/vfs_ep_proto.h>
@@ -105,7 +106,7 @@ void init_ipc_buffer_init(void) {
     if (b) g_init_buf = (uint8_t *)b;
 }
 
-static void init_imsg_zero(struct IrisMsg *msg) {
+static void init_imsg_zero(struct iris_msg *msg) {
     uint8_t *raw = (uint8_t *)msg;
     for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
 }
@@ -125,7 +126,7 @@ static void init_imsg_zero(struct IrisMsg *msg) {
 handle_id_t init_ep_lookup_name_slot(handle_id_t svcmgr_ep_h,
                                      const char *name,
                                      uint32_t reply_slot) {
-    struct IrisMsg msg;
+    struct iris_msg msg;
     uint32_t n = 0;
 
     if (svcmgr_ep_h == HANDLE_INVALID || !name) return HANDLE_INVALID;
@@ -137,17 +138,16 @@ handle_id_t init_ep_lookup_name_slot(handle_id_t svcmgr_ep_h,
 
     init_imsg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_init_buf;
     msg.buf_len  = n + 1u;  /* includes NUL */
-    iris_msg_declare_reply_slot(&msg, reply_slot);
+    msg.recv_slot = (long)reply_slot;   /* where the reply's capability lands */
 
-    if (iris_invoke1((long)svcmgr_ep_h, INV_EP_CALL, (long)&msg) != IRIS_OK)
+    if (iris_msg_call((long)svcmgr_ep_h, &msg) != IRIS_OK)
         return HANDLE_INVALID;
     if (msg.label != IRIS_EP_REPLY_OK)
         return HANDLE_INVALID;
-    if (msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP)
+    if (msg.got_cap == (uint32_t)IRIS_MSG_NO_CAP)
         return HANDLE_INVALID;
-    return (handle_id_t)msg.attached_handle;   /* CPtr or handle — dual-invocable */
+    return (handle_id_t)msg.got_cap;   /* CPtr or handle — dual-invocable */
 }
 
 handle_id_t init_ep_lookup_name(handle_id_t svcmgr_ep_h, const char *name) {
@@ -158,9 +158,8 @@ handle_id_t init_ep_lookup_name(handle_id_t svcmgr_ep_h, const char *name) {
  * One VFS endpoint round trip. The path (when non-NULL) is staged into
  * g_init_buf; reply bulk data lands in the same buffer.
  */
-static int init_vfs_ep_call(handle_id_t vfs_ep_h, struct IrisMsg *msg,
+static int init_vfs_ep_call(handle_id_t vfs_ep_h, struct iris_msg *msg,
                             const char *path) {
-    msg->buf_uptr = (uint64_t)(uintptr_t)g_init_buf;
     if (path) {
         uint32_t plen = 0;
         while (path[plen]) plen++;
@@ -169,13 +168,13 @@ static int init_vfs_ep_call(handle_id_t vfs_ep_h, struct IrisMsg *msg,
         g_init_buf[plen] = 0u;
         msg->buf_len = plen + 1u;
     }
-    return (int)iris_invoke1((long)vfs_ep_h, INV_EP_CALL, (long)msg);
+    return (int)iris_msg_call((long)vfs_ep_h, msg);
 }
 
 /* ── VFS EP LIST check (S5) ─────────────────────────────────────────────── */
 
 static int init_check_vfs_list_ep(handle_id_t vfs_ep_h) {
-    struct IrisMsg msg;
+    struct iris_msg msg;
 
     /* indices 0..2 — expect OK with a non-empty name */
     for (uint64_t idx = 0; idx < 3u; idx++) {
@@ -183,7 +182,8 @@ static int init_check_vfs_list_ep(handle_id_t vfs_ep_h) {
         msg.label      = VFS_EP_OP_LIST;
         msg.words[0]   = idx;
         msg.word_count = 1u;
-        if (init_vfs_ep_call(vfs_ep_h, &msg, 0) != IRIS_OK) return 0;
+        int _r = init_vfs_ep_call(vfs_ep_h, &msg, 0);
+        if (_r != IRIS_OK) return 0;
         if (msg.label != IRIS_EP_REPLY_OK) return 0;
         if (msg.words[2] == 0u) return 0;  /* name length */
     }
@@ -211,7 +211,7 @@ int init_wait_vfs_list_ep(handle_id_t vfs_ep_h) {
 /* ── VFS EP STAT / READ_AT check (S6) ───────────────────────────────────── */
 
 static int init_check_vfs_rw_ep(handle_id_t vfs_ep_h) {
-    struct IrisMsg msg;
+    struct iris_msg msg;
     uint64_t size;
 
     /* STAT of the boot file — expect OK with a sane size */

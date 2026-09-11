@@ -30,6 +30,7 @@
  * access, no untyped, no spawn, no device caps, no KDEBUG.
  */
 #include <stdint.h>
+#include "../common/iris_msg.h"
 #include <iris/syscall.h>
 #include <iris/invoke.h>
 #include "../common/iris_vspace.h"
@@ -78,7 +79,7 @@ static inline uint64_t pg_rd64(const uint8_t *b, uint32_t off) {
     uint64_t v = 0; for (uint32_t i = 0; i < 8u; i++) v |= (uint64_t)b[off+i] << (i*8); return v;
 }
 static void pg_zero(void *d, uint32_t n) { uint8_t *p = d; for (uint32_t i = 0; i < n; i++) p[i] = 0; }
-static void pg_msg_zero(struct IrisMsg *m) { pg_zero(m, (uint32_t)sizeof(*m)); }
+static void pg_msg_zero(struct iris_msg *m) { pg_zero(m, (uint32_t)sizeof(*m)); }
 
 /* ── file-backed state ──────────────────────────────────────────────────── */
 
@@ -139,12 +140,12 @@ static struct pgr_diag g_diag;   /* counters (also the DIAG reply payload) */
  * for grant_idx.  0 on success, negative marker on denial. */
 static long pg_grant_query(uint32_t grant_idx, uint64_t *bid, uint64_t *gen,
                            uint64_t *rights) {
-    struct IrisMsg m;
+    struct iris_msg m;
     pg_msg_zero(&m);
     m.label      = VFS_EP_OP_GRANT_QUERY_IDENTITY;
     m.words[0]   = (uint64_t)grant_idx;
     m.word_count = 1u;
-    long r = pg_invoke1((long)PGR_SLOT_VFS_EP, INV_EP_CALL, (long)&m);
+    long r = iris_msg_call((long)PGR_SLOT_VFS_EP, &m);
     if (r != 0) return r;
     if (m.label != IRIS_EP_REPLY_OK) return -(long)PGR_ERR_GRANT;
     *bid = m.words[1]; *gen = m.words[2]; *rights = m.words[3];
@@ -159,16 +160,15 @@ static long pg_read_file(uint32_t grant_idx, uint64_t file_off,
                          uint8_t *dst, uint32_t want) {
     uint32_t got = 0;
     while (got < want) {
-        struct IrisMsg m;
+        struct iris_msg m;
         pg_msg_zero(&m);
         m.label      = VFS_EP_OP_GRANT_READ_AT;
         m.words[0]   = (uint64_t)grant_idx;
         m.words[1]   = file_off + got;
         m.words[2]   = (want - got < VFS_EP_DATA_MAX) ? (want - got) : VFS_EP_DATA_MAX;
         m.word_count = 3u;
-        m.buf_uptr   = (uint64_t)(uintptr_t)g_pg_buf;
         m.buf_len    = 0u;
-        long r = pg_invoke1((long)PGR_SLOT_VFS_EP, INV_EP_CALL, (long)&m);
+        long r = iris_msg_call((long)PGR_SLOT_VFS_EP, &m);
         if (r != 0) return r;
         if (m.label != IRIS_EP_REPLY_OK) {
             g_diag.grant_denied++;
@@ -300,10 +300,10 @@ static long pg_wait_fault(uint32_t tidx) {
         uint32_t leaf = pg_leaf_take();
         if (!leaf) return -(long)PGR_ERR_NOFAULT;   /* every reply already held */
 
-        struct IrisMsg m;
+        struct iris_msg m;
         pg_msg_zero(&m);
         g_diag.notif_waits++;
-        long r = pg_invoke2((long)PGR_SLOT_FAULT_EP, INV_EP_NB_RECV, (long)(uintptr_t)&m, PGR_FAULT_CPTR(leaf - 1u));
+        long r = (m.reply = (long)(PGR_FAULT_CPTR(leaf - 1u)), iris_msg_nb_recv((long)PGR_SLOT_FAULT_EP, &m));
         if (r != 0) {
             pg_leaf_give(leaf);
             (void)pg_sys1(SYS_YIELD, 0);
@@ -343,9 +343,9 @@ static long pg_fault_answer(uint32_t tidx, int resume) {
     g_fault_leaf[tidx] = 0;
     long r;
     if (resume) {
-        struct IrisMsg m;
+        struct iris_msg m;
         pg_msg_zero(&m);
-        r = pg_invoke1(PGR_FAULT_CPTR(leaf - 1u), INV_REPLY_SEND, (long)(uintptr_t)&m);
+        r = iris_msg_reply((long)PGR_FAULT_CPTR(leaf - 1u), &m);
     } else {
         r = pg_invoke1((long)PGR_SLOT_FAULT_CN, INV_CNODE_DELETE, (long)leaf);
     }
@@ -667,12 +667,10 @@ void pager_main(handle_id_t bootstrap_ch_h) {
 
     g_diag.cache_capacity = PGR_CACHE_CAP;
 
-    struct IrisMsg msg;
+    struct iris_msg msg;
     for (;;) {
         pg_msg_zero(&msg);
-        msg.buf_uptr = (uint64_t)(uintptr_t)(g_pg_registered ? g_pg_buf
-                                                              : g_ctrl_buf);
-        long rr = pg_invoke2((long)PGR_SLOT_CTRL_EP, INV_EP_RECV, (long)&msg, (long)PGR_SLOT_REPLY);
+        long rr = (msg.reply = (long)PGR_SLOT_REPLY, iris_msg_recv((long)PGR_SLOT_CTRL_EP, &msg));
         if (rr != 0) { pg_sys1(SYS_EXIT, 0); for (;;) {} }
 
         /* Take the request out of the buffer before anything below composes a
@@ -683,7 +681,7 @@ void pager_main(handle_id_t bootstrap_ch_h) {
             for (uint32_t i = 0; i < n; i++) g_ctrl_buf[i] = g_pg_buf[i];
         }
 
-        handle_id_t reply_h = (handle_id_t)msg.attached_handle;
+        handle_id_t reply_h = (handle_id_t)msg.got_cap;
         uint32_t op    = PGR_OP(msg.words[0]);
         uint32_t tidx  = PGR_TIDX(msg.words[0]);
         uint32_t vidx  = PGR_VIDX(msg.words[0]);
@@ -717,7 +715,7 @@ void pager_main(handle_id_t bootstrap_ch_h) {
         }
 
         if (reply_h != HANDLE_INVALID) {
-            struct IrisMsg reply;
+            struct iris_msg reply;
             pg_msg_zero(&reply);
             reply.label = IRIS_EP_REPLY_OK;
             reply.words[0] = (uint64_t)result;
@@ -726,11 +724,10 @@ void pager_main(handle_id_t bootstrap_ch_h) {
                 g_diag.cache_entries = pg_cache_entries();
                 g_diag.pending_mask  = (uint32_t)g_pending;
                 for (uint32_t i = 0; i < (uint32_t)sizeof(g_diag); i++) g_pg_buf[i] = ((uint8_t *)&g_diag)[i];
-                reply.buf_uptr = (uint64_t)(uintptr_t)g_pg_buf;
                 reply.buf_len  = (uint32_t)sizeof(g_diag);
             }
             /* Phase S1: reply_h is our reusable reply-object CPtr — no close. */
-            (void)pg_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
+            (void)iris_msg_reply((long)reply_h, &reply);
         }
         if (shutdown) { pg_sys1(SYS_EXIT, 0); for (;;) {} }
     }

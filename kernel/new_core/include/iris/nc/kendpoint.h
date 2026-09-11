@@ -36,9 +36,9 @@ void              kendpoint_cancel_waiter(struct task *t);
  * everything a syscall brings stripped out, because the kernel composed the
  * message and there is no syscall frame under the caller.
  */
-struct IrisMsg;
+struct ipc_stage;
 int               kendpoint_fault_call(struct task *t, struct KEndpoint *ep,
-                                       const struct IrisMsg *msg);
+                                       const struct ipc_stage *msg);
 
 /*
  * Ledger A-23 — hand a BOUND NOTIFICATION's signal to a thread that is blocked

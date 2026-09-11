@@ -11,6 +11,7 @@
 #include "it_priv.h"
 
 
+#include "../common/iris_msg.h"
 void test_t298(void) {
     int ok = 1;
     const char *why = "untyped pays for headers";
@@ -984,10 +985,10 @@ static volatile long g_t308_reply;
 static volatile int  g_t308_served;
 
 static void t308_server(void) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     /* Passive: no SC.  Blocks here until a client donates the time to run. */
-    (void)it_invoke2((long)g_t308_ep, INV_EP_RECV, (long)&m, (long)g_t308_reply);
+    (void)(m.reply = (long)g_t308_reply, iris_msg_recv((long)g_t308_ep, &m));
     g_t308_served = 1;
     /* Spin on the borrowed budget.  With donation this is bounded by the
      * client's budget and ends in a timeout fault; without it, it is not
@@ -996,10 +997,10 @@ static void t308_server(void) {
 }
 
 static void t308_client(void) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label = 0x8CULL;
-    (void)it_invoke1((long)g_t308_ep, INV_EP_CALL, (long)&m);
+    (void)iris_msg_call((long)g_t308_ep, &m);
     it_sys1(SYS_EXIT, 0);
     for (;;) { }
 }
@@ -1082,16 +1083,17 @@ static volatile int  g_t309_bad;
 static volatile int  g_t309_done;
 
 static void t309_server(void) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     /* Passive: no SC of its own.  Blocks until a client donates the time. */
-    if (it_invoke2((long)g_t309_ep, INV_EP_RECV, (long)&m, (long)g_t309_reply) != 0) {
+    if ((m.reply = (long)g_t309_reply, iris_msg_recv((long)g_t309_ep, &m)) != 0) {
         for (;;) { }
     }
     for (;;) {
         /* Answer this one and wait for the next, atomically. */
         m.label = m.label + 1ULL;              /* the service: n -> n+1 */
-        if (it_invoke2((long)g_t309_ep, INV_EP_REPLY_RECV, (long)g_t309_reply, (long)&m) != 0)
+        m.reply = (long)g_t309_reply;
+        if (iris_msg_reply_recv((long)g_t309_ep, &m) != 0)
             break;
     }
     for (;;) { }
@@ -1099,10 +1101,10 @@ static void t309_server(void) {
 
 static void t309_client(void) {
     for (int i = 0; i < T309_ROUNDS; i++) {
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
+        struct iris_msg m;
+        iris_msg_zero(&m);
         m.label = (uint64_t)(0x300 + i);
-        if (it_invoke1((long)g_t309_ep, INV_EP_CALL, (long)&m) != 0) { g_t309_bad = 1; break; }
+        if (iris_msg_call((long)g_t309_ep, &m) != 0) { g_t309_bad = 1; break; }
         if (m.label != (uint64_t)(0x300 + i + 1)) { g_t309_bad = 1; break; }
         g_t309_replies++;
     }
@@ -1410,27 +1412,26 @@ static void t313_server(uint64_t self_tcb) {
     }
     g_t313_srv_ready = 1;
 
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
-    if (it_invoke2((long)g_t313_ep, INV_EP_RECV, (long)&m, (long)g_t313_reply) != 0) {
+    struct iris_msg m;
+    iris_msg_zero(&m);
+    if ((m.reply = (long)g_t313_reply, iris_msg_recv((long)g_t313_ep, &m)) != 0) {
         g_t313_srv_err = 3; for (;;) { }
     }
     for (;;) {
         volatile uint8_t *b = (volatile uint8_t *)(uintptr_t)T313_SRV_VA;
         g_t313_srv_len     = (int)m.buf_len;
-        g_t313_srv_uptr_ok = (m.buf_uptr == T313_SRV_VA);
+        g_t313_srv_uptr_ok = 1;   /* A-33: no address is named, see T313 */
         /* The service: invert every byte, in place, in a page the server owns. */
         for (uint32_t i = 0; i < m.buf_len && i < 4096u; i++)
             b[i] = (uint8_t)(b[i] ^ 0xFFu);
         g_t313_rounds++;
-        m.buf_uptr = 0;              /* naming nothing, on purpose */
-        if (it_invoke2((long)g_t313_ep, INV_EP_REPLY_RECV, (long)g_t313_reply, (long)&m) != 0)
+        m.reply = (long)g_t313_reply;
+        if (iris_msg_reply_recv((long)g_t313_ep, &m) != 0)
             break;
     }
     for (;;) { }
 }
 
-static uint8_t g_t313_stage_buf[1024];
 
 void test_t313(void) {
     it_quiesce_reaper();
@@ -1534,24 +1535,28 @@ void test_t313(void) {
     if (ok) {
         for (uint32_t i = 0; i < T313_LEN; i++) cb[i] = (uint8_t)(i * 7u + 3u);
 
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
+        struct iris_msg m;
+        iris_msg_zero(&m);
         m.label    = 0x313;
         m.buf_len  = T313_LEN;
-        m.buf_uptr = 0;                  /* the point: no address is named */
-        if (it_invoke1((long)g_t313_ep, INV_EP_CALL, (long)&m) != 0) {
+        if (iris_msg_call((long)g_t313_ep, &m) != 0) {
             ok = 0; why = "call failed";
         }
         if (ok && g_t313_srv_len != (int)T313_LEN) {
             ok = 0; why = "server saw the wrong length";
             it_fz_note("T313", (uint32_t)g_t313_srv_len, T313_LEN, 0u);
         }
-        if (ok && !g_t313_srv_uptr_ok) {
-            ok = 0; why = "server was not told where its buffer is";
-        }
-        if (ok && m.buf_uptr != T313_CLI_VA) {
-            ok = 0; why = "client was not told where its buffer is";
-        }
+        /*
+         * A-33: neither end is TOLD where its buffer is, and that is the
+         * point.  A message carries a LENGTH; the page it refers to is the one
+         * the thread registered, because there is nowhere else a payload could
+         * be.  This used to assert that the kernel handed back the registered
+         * address in `buf_uptr` — a field that could only ever hold the one
+         * value, and whose other values the kernel had to refuse.
+         *
+         * What replaces it is the assertion underneath: the bytes are in the
+         * registered page, which is checked directly below.
+         */
         if (ok && m.buf_len != T313_LEN) { ok = 0; why = "reply length lost"; }
         /* The whole oversized payload came back inverted, in the client's own
          * page.  256 bytes of kernel staging could not have carried it. */
@@ -1563,37 +1568,28 @@ void test_t313(void) {
         }
     }
 
-    /* ── 4b. a send that names some OTHER address is REFUSED ─────────────
-     * Not ignored — refused.  The silent version of this cost a boot's worth
-     * of corrupted console output and failed no test: the shared console
-     * client marshals into a buffer its caller passes, five services passed
-     * their own static array, and the kernel sent whatever was at offset 0 of
-     * their IPC buffer instead.  Every log line came out as the last reply
-     * payload the service had composed, and nothing asserts on log text.
+    /* ── 4b. a payload has no address to get wrong ───────────────────────
+     * This leg used to send with a payload pointer that named some other
+     * buffer and require a refusal.  The silent version of that had cost a
+     * boot's worth of corrupted console output and failed no test: the shared
+     * console client marshalled into a buffer its caller passed, five services
+     * passed their own static array, and the kernel sent whatever was at
+     * offset 0 of their IPC buffer instead.  D-4 turned it into a refusal.
      *
-     * A thread has ONE IPC buffer.  Disagreeing with it is a marshalling
-     * mistake, and it fails at the call site that made it. */
+     * A-33 removed the question.  A message carries a LENGTH; the bytes are in
+     * the page the thread registered because there is nowhere else they could
+     * be, and `buf_uptr` is deleted.  What is left to assert is that the
+     * length alone still gets the bytes there and back, which is what the
+     * round trip above does — so this leg asserts the WEAKER remaining thing:
+     * a send of a payload works with nothing named at all.
+     */
     if (ok) {
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
-        m.label    = 0x315;
-        m.buf_len  = 8u;
-        m.buf_uptr = (uint64_t)(uintptr_t)g_t313_stage_buf;   /* not the buffer */
-        if (it_invoke1((long)g_t313_ep, INV_EP_CALL, (long)&m)
-            != (long)IRIS_ERR_INVALID_ARG) {
-            ok = 0; why = "a foreign payload pointer was accepted";
-        }
-    }
-    /* ...and naming the buffer's own address is fine, because that is what a
-     * caller who kept the field in sync would write. */
-    if (ok) {
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
+        struct iris_msg m;
+        iris_msg_zero(&m);
         m.label    = 0x316;
         m.buf_len  = 8u;
-        m.buf_uptr = T313_CLI_VA;
-        if (it_invoke1((long)g_t313_ep, INV_EP_CALL, (long)&m) != 0) {
-            ok = 0; why = "the buffer's own address was refused";
+        if (iris_msg_call((long)g_t313_ep, &m) != 0) {
+            ok = 0; why = "a payload with only a length was refused";
         }
     }
 
@@ -1612,19 +1608,19 @@ void test_t313(void) {
         ok = 0; why = "unregister";
     }
     if (ok) {
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
+        struct iris_msg m;
+        iris_msg_zero(&m);
         m.label   = 0x314;
         m.buf_len = 8u;
-        if (it_invoke1((long)g_t313_ep, INV_EP_CALL, (long)&m)
+        if (iris_msg_call((long)g_t313_ep, &m)
             != (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "a payload with no buffer was accepted";
         }
         /* ...and a message with NO payload still goes: the registers are not
          * the buffer, and losing one must not cost the other. */
-        it_iris_msg_zero(&m);
+        iris_msg_zero(&m);
         m.label = 0x318;
-        if (ok && it_invoke1((long)g_t313_ep, INV_EP_CALL, (long)&m) != 0) {
+        if (ok && iris_msg_call((long)g_t313_ep, &m) != 0) {
             ok = 0; why = "a register-only message was refused";
         }
         if (ok && g_t313_rounds != 3) { ok = 0; why = "server missed a round"; }
@@ -1647,11 +1643,11 @@ void test_t313(void) {
         } else {
             /* The capability goes; the buffer must not. */
             it_slot_delete((uint32_t)probe_fr);
-            struct IrisMsg m;
-            it_iris_msg_zero(&m);
+            struct iris_msg m;
+            iris_msg_zero(&m);
             m.label   = 0x317;
             m.buf_len = 8u;
-            if (it_invoke1((long)g_t313_ep, INV_EP_CALL, (long)&m) != 0) {
+            if (iris_msg_call((long)g_t313_ep, &m) != 0) {
                 ok = 0; why = "a buffer died with its capability";
             }
             (void)it_invoke2(self, INV_TCB_SET_IPC_BUFFER, 0L, 0);
@@ -2140,10 +2136,10 @@ void test_t320(void) {
     handle_id_t n_ro_h = (n_ro >= 0) ? (handle_id_t)n_ro : HANDLE_INVALID;
     if (ok && (n < 0 || n_ro < 0)) { ok = 0; why = "notif"; }
     if (ok) {
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
+        struct iris_msg m;
+        iris_msg_zero(&m);
         m.label = 0x320;
-        if (it_invoke1(n_ro, INV_EP_NB_SEND, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) {
+        if (iris_msg_nb_send(n_ro, &m) != (long)IRIS_ERR_WRONG_TYPE) {
             ok = 0; why = "endpoint slot";
         }
     }

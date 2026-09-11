@@ -14,6 +14,7 @@
  */
 
 #include <stdint.h>
+#include "../common/iris_msg.h"
 #include <iris/syscall.h>
 #include <iris/invoke.h>
 #include <iris/nc/handle.h>
@@ -70,13 +71,13 @@ static void con_ipc_buffer_init(void) {
     g_con_buf_cap = 4096u;
 }
 
-static void con_imsg_zero(struct IrisMsg *msg) {
+static void con_imsg_zero(struct iris_msg *msg) {
     uint8_t *raw = (uint8_t *)msg;
     uint32_t i;
     for (i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
 }
 
-static void con_ep_reply_err(struct IrisMsg *reply, int32_t err) {
+static void con_ep_reply_err(struct iris_msg *reply, int32_t err) {
     con_imsg_zero(reply);
     reply->label      = IRIS_EP_REPLY_ERR;
     reply->words[0]   = (uint64_t)(uint32_t)err;
@@ -84,9 +85,9 @@ static void con_ep_reply_err(struct IrisMsg *reply, int32_t err) {
 }
 
 /* Serve one endpoint request; exactly one reply per request. */
-static void con_serve_ep_msg(handle_id_t ioport_h, struct IrisMsg *req) {
-    struct IrisMsg reply;
-    handle_id_t reply_h = (handle_id_t)req->attached_handle;
+static void con_serve_ep_msg(handle_id_t ioport_h, struct iris_msg *req) {
+    struct iris_msg reply;
+    handle_id_t reply_h = (handle_id_t)req->got_cap;
 
     switch (req->label) {
     case CONSOLE_EP_OP_WRITE: {
@@ -125,7 +126,7 @@ static void con_serve_ep_msg(handle_id_t ioport_h, struct IrisMsg *req) {
     /* Phase S1: reply_h is the console's OWN reply-object CPtr (echoed by the
      * kernel from the recv arg2).  The object is reusable — nothing to close. */
     if (reply_h != HANDLE_INVALID)
-        (void)iris_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
+        (void)iris_msg_reply((long)reply_h, &reply);
 }
 
 void console_main_c(handle_id_t rbx_unused) {
@@ -147,10 +148,9 @@ void console_main_c(handle_id_t rbx_unused) {
      * Phase S1: the explicit reply object (init retypes it from its untyped
      * pool and mints it at IRIS_CPTR_OWN_REPLY) rides in recv arg2. */
     for (;;) {
-        struct IrisMsg req;
+        struct iris_msg req;
         con_imsg_zero(&req);
-        req.buf_uptr = (uint64_t)(uintptr_t)g_con_buf;
-        if (iris_invoke2((long)ep_h, INV_EP_RECV, (long)&req, (long)IRIS_CPTR_OWN_REPLY) != IRIS_OK)
+        if ((req.reply = (long)IRIS_CPTR_OWN_REPLY, iris_msg_recv((long)ep_h, &req)) != IRIS_OK)
             continue;
         con_serve_ep_msg(ioport_h, &req);
     }

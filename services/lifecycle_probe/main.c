@@ -34,6 +34,7 @@
  * has no spawn cap, no device caps, and never touches global state.
  */
 #include <stdint.h>
+#include "../common/iris_msg.h"
 #include <iris/syscall.h>
 #include <iris/invoke.h>
 #include <iris/nc/handle.h>
@@ -277,14 +278,17 @@ static int lp_slot_present(long cptr) {
  * A bad reply CPtr fails BEFORE the endpoint is touched, so the retry is
  * side-effect free. */
 #define LP_CPTR_REPLY 13u
-static long lp_recv(struct IrisMsg *m) {
-    long r = lp_invoke2((long)LP_CPTR_CMD_EP, INV_EP_RECV, (long)(uintptr_t)m, (long)LP_CPTR_REPLY);
-    if (r < 0 && r != (long)IRIS_ERR_CLOSED)
-        r = lp_invoke2((long)LP_CPTR_CMD_EP, INV_EP_RECV, (long)(uintptr_t)m, 0);
+static long lp_recv(struct iris_msg *m) {
+    m->reply = (long)LP_CPTR_REPLY;
+    long r = iris_msg_recv((long)LP_CPTR_CMD_EP, m);
+    if (r < 0 && r != (long)IRIS_ERR_CLOSED) {
+        m->reply = 0;
+        r = iris_msg_recv((long)LP_CPTR_CMD_EP, m);
+    }
     return r;
 }
 
-static void lp_msg_zero(struct IrisMsg *m) {
+static void lp_msg_zero(struct iris_msg *m) {
     uint8_t *b = (uint8_t *)m;
     for (uint32_t i = 0; i < (uint32_t)sizeof(*m); i++) b[i] = 0;
 }
@@ -293,7 +297,7 @@ void lp_main(handle_id_t bootstrap_ch_h);
 void lp_main(handle_id_t bootstrap_ch_h) {
     (void)bootstrap_ch_h;   /* RBX = 0 under the CPtr-mint bootstrap model */
 
-    struct IrisMsg msg;
+    struct iris_msg msg;
     uint8_t *p = (uint8_t *)&msg;
     for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) p[i] = 0;
 
@@ -305,8 +309,8 @@ void lp_main(handle_id_t bootstrap_ch_h) {
     if (msg.label == (uint64_t)LP_CMD_RSLOT_RECV) {
         uint32_t slot = (uint32_t)msg.words[0];
         for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) p[i] = 0;
-        msg.attached_cap = slot;               /* receive-slot declaration */
-        long rr = lp_invoke2((long)LP_CPTR_CMD_EP, INV_EP_RECV, (long)&msg, 0);
+        msg.recv_slot = slot;                  /* where a capability should land */
+        long rr = (msg.reply = (long)(0), iris_msg_recv((long)LP_CPTR_CMD_EP, &msg));
         if (rr != 0)
             lp_sys1(SYS_EXIT, (long)(LP_EXIT_RECV_ERR_BASE | (uint32_t)-rr));
         /* Stage 4: a delivered cap is a CPtr or nothing — handle
@@ -314,7 +318,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
          * the message without the capability and `got` is 0.  Signal bit 1
          * says "arrived in my CSpace"; the parent reads the exit code to tell
          * the two cases apart. */
-        uint32_t got = msg.attached_handle;    /* 0 or a CPtr */
+        uint32_t got = (uint32_t)msg.got_cap;  /* 0 or a CPtr */
         if (got != 0u)
             (void)lp_invoke1((long)got, INV_NOTIFY_SIGNAL, 1L);
         lp_sys1(SYS_EXIT, (long)got);
@@ -328,11 +332,11 @@ void lp_main(handle_id_t bootstrap_ch_h) {
     if (msg.label == (uint64_t)LP_CMD_SEND_BLOCK ||
         msg.label == (uint64_t)LP_CMD_CALL_BLOCK) {
         int is_call = (msg.label == (uint64_t)LP_CMD_CALL_BLOCK);
-        struct IrisMsg w;
+        struct iris_msg w;
         for (uint32_t i = 0; i < (uint32_t)sizeof(w); i++) ((uint8_t *)&w)[i] = 0;
         w.label = is_call ? 0x5CULL : 0x5BULL;
-        long r = lp_invoke1((long)LP_CPTR_CMD_EP,
-                            is_call ? INV_EP_CALL : INV_EP_SEND, (long)&w);
+        long r = is_call ? iris_msg_call((long)LP_CPTR_CMD_EP, &w)
+                         : iris_msg_send((long)LP_CPTR_CMD_EP, &w);
         lp_sys1(SYS_EXIT, (long)(LP_EXIT_IPC_BASE | ((uint32_t)-r & 0xFFu)));
         for (;;) {}
     }
@@ -386,9 +390,9 @@ void lp_main(handle_id_t bootstrap_ch_h) {
             /* A-22: RECEIVE the fault.  The record is the message and the
              * reply object staged here is the authority to resume — two
              * syscalls and a mailbox became one receive. */
-            struct IrisMsg fm;
+            struct iris_msg fm;
             lp_msg_zero(&fm);
-            long r = lp_invoke2((long)LP_PGR_SLOT_FAULT_EP, INV_EP_RECV, (long)(uintptr_t)&fm, LP_PGR_FAULT_CPTR);
+            long r = (fm.reply = (long)LP_PGR_FAULT_CPTR, iris_msg_recv((long)LP_PGR_SLOT_FAULT_EP, &fm));
             if (r != 0) { err = r; break; }
             const uint8_t *fb = (const uint8_t *)fm.words;
             uint32_t vector  = lp_rd32(fb, FAULT_OFF_VECTOR);
@@ -412,9 +416,9 @@ void lp_main(handle_id_t bootstrap_ch_h) {
             if (sub == 3u) {
                 r = lp_invoke1((long)LP_PGR_SLOT_FAULTCN, INV_CNODE_DELETE, 1);
             } else {
-                struct IrisMsg rm;
+                struct iris_msg rm;
                 lp_msg_zero(&rm);
-                r = lp_invoke1(LP_PGR_FAULT_CPTR, INV_REPLY_SEND, (long)(uintptr_t)&rm);
+                r = iris_msg_reply((long)LP_PGR_FAULT_CPTR, &rm);
             }
             if (r != 0) { err = r; break; }
         }
@@ -448,10 +452,10 @@ void lp_main(handle_id_t bootstrap_ch_h) {
              * cannot resume the victim, because a reply answers the one call
              * bound to it and nothing else — and nothing is bound to this one.
              */
-            struct IrisMsg xm;
+            struct iris_msg xm;
             lp_msg_zero(&xm);
-            if (lp_invoke1(LP_PGR_XFAULT_CPTR, INV_REPLY_SEND, (long)(uintptr_t)&xm) >= 0) breach |= (1u << 0);
-            if (lp_invoke1(LP_PGR_FAULT_CPTR, INV_REPLY_SEND, (long)(uintptr_t)&xm) >= 0) breach |= (1u << 1);
+            if (iris_msg_reply((long)LP_PGR_XFAULT_CPTR, &xm) >= 0) breach |= (1u << 0);
+            if (iris_msg_reply((long)LP_PGR_FAULT_CPTR, &xm) >= 0) breach |= (1u << 1);
         }
         /* map / unmap in the victim VSpace through a no-WRITE vspace cap */
         if (lp_invoke((long)LP_PGR_SLOT_FRAME, INV_FRAME_MAP, (long)LP_PGR_SLOT_XVS, (long)va, 0) >= 0) breach |= (1u << 2);
@@ -463,9 +467,9 @@ void lp_main(handle_id_t bootstrap_ch_h) {
             /* ...and the pager's OWN target capability is not reply authority
              * either: a thread capability is not a reply, and SYS_REPLY takes
              * nothing else. */
-            struct IrisMsg tm;
+            struct iris_msg tm;
             lp_msg_zero(&tm);
-            if (lp_invoke1((long)LP_PGR_SLOT_TPROC, INV_REPLY_SEND, (long)(uintptr_t)&tm) >= 0) breach |= (1u << 4);
+            if (iris_msg_reply((long)LP_PGR_SLOT_TPROC, &tm) >= 0) breach |= (1u << 4);
         }
         (void)vtid;
         /* the victim's fault must not appear through the unrelated target cap */
@@ -473,9 +477,9 @@ void lp_main(handle_id_t bootstrap_ch_h) {
             /* ...and the victim's fault never ARRIVES here: it is a call on an
              * endpoint this pager was never given, so a receive on the one it
              * does hold cannot produce it. */
-            struct IrisMsg pm;
+            struct iris_msg pm;
             lp_msg_zero(&pm);
-            if (lp_invoke2((long)LP_PGR_SLOT_FAULT_EP, INV_EP_NB_RECV, (long)(uintptr_t)&pm, LP_PGR_FAULT_CPTR) == 0)
+            if ((pm.reply = (long)LP_PGR_FAULT_CPTR, iris_msg_nb_recv((long)LP_PGR_SLOT_FAULT_EP, &pm)) == 0)
                 breach |= (1u << 5);
         }
         /* device/spawn forgery — a pager holds neither */

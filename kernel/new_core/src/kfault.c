@@ -187,7 +187,7 @@ static int kfault_deliver(struct task *t, uint64_t vector,
      * (fault_proto.h): what changed is that it travels in the IPC rather than
      * sitting in the kernel waiting to be fetched.
      */
-    struct IrisMsg msg;
+    struct ipc_stage msg;
     for (uint32_t i = 0; i < sizeof(msg) / sizeof(uint64_t); i++)
         ((uint64_t *)&msg)[i] = 0;
     msg.label        = FAULT_MSG_NOTIFY;

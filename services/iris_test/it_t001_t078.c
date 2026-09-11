@@ -11,6 +11,7 @@
 #include "it_priv.h"
 
 
+#include "../common/iris_msg.h"
 /* ── T001: the three ambient answers are RETIRED (A-27) ────────────────────
  *
  * `SYS_GETPID` handed a thread its own task id and `SYS_THREAD_EXIT` ended it
@@ -181,11 +182,11 @@ void test_t013(void) {
     }
     handle_id_t ro_h = (handle_id_t)ro_raw;
 
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
     /* EP_SEND on a read-only endpoint cap must fail with ACCESS_DENIED. */
-    long r = it_invoke1(ro_raw, INV_EP_SEND, (long)&msg);
+    long r = iris_msg_send(ro_raw, &msg);
 
     it_close(&ro_h);
     it_close(&ep_h);
@@ -202,9 +203,9 @@ void test_t014(void) {
     long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T014", "ep create"); return; }
 
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
-    long r = it_invoke1(ep_raw, INV_EP_NB_RECV, (long)&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
+    long r = iris_msg_nb_recv(ep_raw, &msg);
 
     it_slot_delete((uint32_t)ep_raw);
 
@@ -222,9 +223,9 @@ static          int g_t015_ok    = 0;
 static uint8_t      g_t015_stack[8192];
 
 static void t015_server(void) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
-    long r = it_invoke1((long)g_t015_ep_h, INV_EP_RECV, (long)&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
+    long r = iris_msg_recv((long)g_t015_ep_h, &msg);
     g_t015_ok   = (r == 0 && msg.label == 0xC0FFEEULL);
     g_t015_done = 1;
     it_sys1(SYS_EXIT, 0);
@@ -249,11 +250,11 @@ void test_t015(void) {
     handle_id_t tid_h = (handle_id_t)tid;
 
     /* EP_SEND blocks until server is ready to rendezvous */
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label      = 0xC0FFEEULL;
     msg.word_count = 0;
-    long r = it_invoke1(ep_raw, INV_EP_SEND, (long)&msg);
+    long r = iris_msg_send(ep_raw, &msg);
 
     /* Poll for server to set done flag (it runs after rendezvous returns) */
     for (int i = 0; i < 200 && !g_t015_done; i++)
@@ -276,21 +277,21 @@ static          int g_t016_ok    = 0;
 static uint8_t      g_t016_stack[8192];
 
 static void t016_server(void) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
-    long r = it_invoke2((long)g_t016_ep_h, INV_EP_RECV, (long)&msg, 88);
-    if (r < 0 || msg.attached_handle == IRIS_MSG_NO_CAP) {
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
+    long r = (msg.reply = 88, iris_msg_recv((long)g_t016_ep_h, &msg));
+    if (r < 0 || msg.got_cap == IRIS_MSG_NO_CAP) {
         g_t016_done = 1;
         it_sys1(SYS_EXIT, 0);
         for (;;) {}
     }
 
-    handle_id_t reply_h = (handle_id_t)msg.attached_handle;
-    struct IrisMsg reply;
-    it_iris_msg_zero(&reply);
+    handle_id_t reply_h = (handle_id_t)msg.got_cap;
+    struct iris_msg reply;
+    iris_msg_zero(&reply);
     reply.label      = 0xFEEDBEEFULL;
     reply.word_count = 0;
-    long rr = it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
+    long rr = iris_msg_reply((long)reply_h, &reply);
     g_t016_ok   = (rr == 0);
     g_t016_done = 1;
     it_sys1(SYS_EXIT, 0);
@@ -318,17 +319,12 @@ void test_t016(void) {
     }
     handle_id_t tid_h = (handle_id_t)tid;
 
-    /* Bulk reply buffer (unused but required by EP_CALL msg.buf_uptr path) */
-    uint8_t reply_buf[64];
-    for (uint32_t i = 0; i < 64; i++) reply_buf[i] = 0;
-
     /* EP_CALL blocks until server calls SYS_REPLY */
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label      = 0xABCDULL;
     msg.word_count = 0;
-    msg.buf_uptr   = (uint64_t)(uintptr_t)reply_buf;
-    long r = it_invoke1(ep_raw, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call(ep_raw, &msg);
 
     /* After EP_CALL returns the server has already replied */
     for (int i = 0; i < 200 && !g_t016_done; i++)
@@ -350,10 +346,10 @@ void test_t018(void) {
     long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T018", "ep create"); return; }
 
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = 0x1818ULL;
-    long r = it_invoke1(ep_raw, INV_EP_NB_SEND, (long)&msg);
+    long r = iris_msg_nb_send(ep_raw, &msg);
 
     it_slot_delete((uint32_t)ep_raw);
 
@@ -371,9 +367,9 @@ static          int g_t019_result = 0;
 static uint8_t      g_t019_stack[8192];
 
 static void t019_thread(void) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
-    long r = it_invoke1((long)g_t019_ep_h, INV_EP_RECV, (long)&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
+    long r = iris_msg_recv((long)g_t019_ep_h, &msg);
     g_t019_result = (int)r;
     g_t019_done   = 1;
     it_sys1(SYS_EXIT, 0);
@@ -428,10 +424,10 @@ static          int g_t020_result = 0;
 static uint8_t      g_t020_stack[8192];
 
 static void t020_thread(void) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = 0x2020ULL;
-    long r = it_invoke1((long)g_t020_ep_h, INV_EP_SEND, (long)&msg);
+    long r = iris_msg_send((long)g_t020_ep_h, &msg);
     g_t020_result = (int)r;
     g_t020_done   = 1;
     it_sys1(SYS_EXIT, 0);
@@ -491,12 +487,10 @@ static          int g_t021_ok    = 0;
 static uint8_t      g_t021_stack[8192];
 
 static void t021_client(void) {
-    uint8_t rbuf[64];
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = 0x2121ULL;
-    msg.buf_uptr = (uint64_t)(uintptr_t)rbuf;
-    long r = it_invoke1((long)g_t021_ep_h, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)g_t021_ep_h, &msg);
     g_t021_ok   = (r == 0);
     g_t021_done = 1;
     it_sys1(SYS_EXIT, 0);
@@ -526,31 +520,31 @@ void test_t021(void) {
         it_close(&g_t021_ep_h);
         it_fail("T021", "reply create"); return;
     }
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
-    long r = it_invoke2(ep_raw, INV_EP_RECV, (long)&msg, 89);
-    if (r < 0 || msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
+    long r = (msg.reply = 89, iris_msg_recv(ep_raw, &msg));
+    if (r < 0 || msg.got_cap == (uint32_t)IRIS_MSG_NO_CAP) {
         it_close(&tid_h);
         it_close(&g_t021_ep_h);
         it_slot_delete(89);
         it_fail("T021", "ep_recv"); return;
     }
 
-    handle_id_t reply_h = (handle_id_t)msg.attached_handle;
+    handle_id_t reply_h = (handle_id_t)msg.got_cap;
 
     /* First SYS_REPLY → client unblocks */
-    struct IrisMsg reply;
-    it_iris_msg_zero(&reply);
+    struct iris_msg reply;
+    iris_msg_zero(&reply);
     reply.label = 0xCAFEULL;
-    long r1 = it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
+    long r1 = iris_msg_reply((long)reply_h, &reply);
 
     /* Wait for client to record EP_CALL result */
     for (int i = 0; i < 200 && !g_t021_done; i++)
         it_settle(1);
 
     /* Second SYS_REPLY on same handle → NOT_FOUND (caller pointer is NULL) */
-    it_iris_msg_zero(&reply);
-    long r2 = it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
+    iris_msg_zero(&reply);
+    long r2 = iris_msg_reply((long)reply_h, &reply);
 
     it_close(&tid_h);
     it_close(&g_t021_ep_h);
@@ -574,21 +568,24 @@ static          int g_t022_ok    = 0;
 static uint8_t      g_t022_stack[8192];
 
 static void t022_server(void) {
-    struct IrisMsg rmsg;
-    it_iris_msg_zero(&rmsg);
-    /* D-4: the payload lands in this thread's OWN IPC buffer, and the kernel
-     * says where that is — `buf_uptr` comes back as the registered address.
-     * Naming a static array here would be a marshalling mistake the kernel
-     * refuses, which is the point of it refusing. */
-    long r = it_invoke2((long)g_t022_ep_h, INV_EP_RECV, (long)&rmsg, 90);
-    if (r < 0 || rmsg.buf_len != 4u || rmsg.buf_uptr == 0u ||
-            rmsg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
+    struct iris_msg rmsg;
+    iris_msg_zero(&rmsg);
+    /* D-4/A-33: the payload lands in this thread's OWN IPC buffer, and the
+     * message says how MANY bytes rather than where they are.  There is
+     * nowhere else they could be: a thread sends from the page it registered
+     * or it does not send a payload at all. */
+    long r = (rmsg.reply = 90, iris_msg_recv((long)g_t022_ep_h, &rmsg));
+    if (r < 0 || rmsg.buf_len != 4u ||
+            rmsg.got_cap == (uint32_t)IRIS_MSG_NO_CAP) {
         g_t022_done = 1;
         it_sys1(SYS_EXIT, 0);
         for (;;) {}
     }
 
-    volatile uint8_t *b = (volatile uint8_t *)(uintptr_t)rmsg.buf_uptr;
+    /* A-33: THIS thread's buffer, not the one that called us.  Each end
+     * marshals in the page it registered; the kernel copied the request into
+     * ours and will copy our reply out of it. */
+    volatile uint8_t *b = (volatile uint8_t *)(uintptr_t)g_it_thread_buf;
     int recv_ok = (b[0] == 0x10 && b[1] == 0x20 &&
                    b[2] == 0x30 && b[3] == 0x40);
 
@@ -597,13 +594,12 @@ static void t022_server(void) {
     b[2] = (uint8_t)(b[2] + 1u);
     b[3] = (uint8_t)(b[3] + 1u);
 
-    handle_id_t reply_h = (handle_id_t)rmsg.attached_handle;
-    struct IrisMsg repl;
-    it_iris_msg_zero(&repl);
+    handle_id_t reply_h = (handle_id_t)rmsg.got_cap;
+    struct iris_msg repl;
+    iris_msg_zero(&repl);
     repl.label   = 0xB01FULL;
-    repl.buf_uptr = rmsg.buf_uptr;    /* its own buffer, which is accepted */
     repl.buf_len  = 4u;
-    long rr = it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&repl);
+    long rr = iris_msg_reply((long)reply_h, &repl);
 
     g_t022_ok   = (recv_ok && rr == 0);
     g_t022_done = 1;
@@ -635,12 +631,11 @@ void test_t022(void) {
     g_ep_io_buf[0] = 0x10; g_ep_io_buf[1] = 0x20;
     g_ep_io_buf[2] = 0x30; g_ep_io_buf[3] = 0x40;
 
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = 0xCA11ULL;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = 4u;
-    long r = it_invoke1(ep_raw, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call(ep_raw, &msg);
 
     for (int i = 0; i < 200 && !g_t022_done; i++)
         it_settle(1);
@@ -673,10 +668,10 @@ void test_t023(void) {
     }
     handle_id_t ro_h = (handle_id_t)ro_raw;
 
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = 0x2323ULL;
-    long r = it_invoke1(ro_raw, INV_EP_SEND, (long)&msg);
+    long r = iris_msg_send(ro_raw, &msg);
 
     it_close(&ro_h);
     it_close(&ep_h);
@@ -693,17 +688,17 @@ static uint32_t     g_t024_got_h = 0;
 static uint8_t      g_t024_stack[8192];
 
 static void t024_client(void) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = 0x2424ULL;
     /* Stage 4: the client declares where a reply-transferred cap should land.
      * Without a declaration the reply arrives with no capability at all —
      * handle materialisation is retired. */
     it_slot_delete((uint32_t)T024_GOT_SLOT);
-    msg.attached_handle = (uint32_t)T024_GOT_SLOT;
-    long r = it_invoke1((long)g_t024_ep_h, INV_EP_CALL, (long)&msg);
+    msg.recv_slot = (uint32_t)T024_GOT_SLOT;
+    long r = iris_msg_call((long)g_t024_ep_h, &msg);
     g_t024_ok    = (r == 0 && msg.label == IRIS_EP_REPLY_OK);
-    g_t024_got_h = msg.attached_handle;
+    g_t024_got_h = msg.got_cap;
     g_t024_done  = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -731,16 +726,16 @@ void test_t024(void) {
         it_close(&g_t024_ep_h);
         it_fail("T024", "reply create"); return;
     }
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
-    long r = it_invoke2(ep_raw, INV_EP_RECV, (long)&msg, 91);
-    if (r < 0 || msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
+    long r = (msg.reply = 91, iris_msg_recv(ep_raw, &msg));
+    if (r < 0 || msg.got_cap == (uint32_t)IRIS_MSG_NO_CAP) {
         it_close(&tid_h);
         it_close(&g_t024_ep_h);
         it_slot_delete(91);
         it_fail("T024", "ep_recv"); return;
     }
-    handle_id_t reply_h = (handle_id_t)msg.attached_handle;
+    handle_id_t reply_h = (handle_id_t)msg.got_cap;
 
     long rr = -1;
     long notif_raw = it_notify_create_slot();
@@ -748,12 +743,12 @@ void test_t024(void) {
         /* Phase S4 (Step 2): the reply's transfer source is a CSpace slot. */
         long src = it_xfer_dup(notif_raw, RIGHT_WRITE | RIGHT_WAIT);
         if (src >= 0) {
-            struct IrisMsg reply;
-            it_iris_msg_zero(&reply);
+            struct iris_msg reply;
+            iris_msg_zero(&reply);
             reply.label           = IRIS_EP_REPLY_OK;
-            reply.attached_handle = (uint32_t)src;
-            reply.attached_rights = RIGHT_WRITE | RIGHT_WAIT;
-            rr = it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
+            reply.cap = (uint32_t)src;
+            reply.cap_rights = RIGHT_WRITE | RIGHT_WAIT;
+            rr = iris_msg_reply((long)reply_h, &reply);
             it_xfer_release(src);
         }
         /* the master notification handle is ours regardless of the transfer */
@@ -791,12 +786,12 @@ static          int g_t025_ok   = 0;
 static uint8_t      g_t025_stack[8192];
 
 static void t025_client(void) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = 0x2525ULL;
-    long r = it_invoke1((long)g_t025_ep_h, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)g_t025_ep_h, &msg);
     g_t025_ok   = (r == 0 &&
-                   msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP);
+                   msg.got_cap == (uint32_t)IRIS_MSG_NO_CAP);
     g_t025_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -823,16 +818,16 @@ void test_t025(void) {
         it_close(&g_t025_ep_h);
         it_fail("T025", "reply create"); return;
     }
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
-    long r = it_invoke2(ep_raw, INV_EP_RECV, (long)&msg, 92);
-    if (r < 0 || msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
+    long r = (msg.reply = 92, iris_msg_recv(ep_raw, &msg));
+    if (r < 0 || msg.got_cap == (uint32_t)IRIS_MSG_NO_CAP) {
         it_close(&tid_h);
         it_close(&g_t025_ep_h);
         it_slot_delete(92);
         it_fail("T025", "ep_recv"); return;
     }
-    handle_id_t reply_h = (handle_id_t)msg.attached_handle;
+    handle_id_t reply_h = (handle_id_t)msg.got_cap;
 
     /* Phase S4 (Step 2): a SOURCE SLOT without RIGHT_TRANSFER → staging must
      * fail with ACCESS_DENIED and leave the slot intact. */
@@ -847,12 +842,12 @@ void test_t025(void) {
          * handle-only and would simply not resolve a CPtr. */
         it_slot_delete(IT_XFER_SLOT_C);
         if (it_invoke2(notif_raw, INV_CSPACE_MINT, (long)((uint64_t)IT_XFER_SLOT_C << 32), (long)(RIGHT_WRITE | RIGHT_WAIT)) == 0) {
-            struct IrisMsg reply;
-            it_iris_msg_zero(&reply);
+            struct iris_msg reply;
+            iris_msg_zero(&reply);
             reply.label           = IRIS_EP_REPLY_OK;
-            reply.attached_handle = IT_XFER_SLOT_C;
-            reply.attached_rights = RIGHT_WRITE | RIGHT_WAIT;
-            r1 = it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
+            reply.cap = IT_XFER_SLOT_C;
+            reply.cap_rights = RIGHT_WRITE | RIGHT_WAIT;
+            r1 = iris_msg_reply((long)reply_h, &reply);
             /* denied staging must NOT consume the source slot */
             src_preserved =
                 (it_invoke0((long)IT_XFER_SLOT_C, INV_CAP_IDENTIFY) >= 0);
@@ -861,10 +856,10 @@ void test_t025(void) {
     }
 
     /* Clean reply on the SAME KReply handle must still succeed */
-    struct IrisMsg reply;
-    it_iris_msg_zero(&reply);
+    struct iris_msg reply;
+    iris_msg_zero(&reply);
     reply.label = IRIS_EP_REPLY_OK;
-    long r2 = it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
+    long r2 = iris_msg_reply((long)reply_h, &reply);
 
     for (int i = 0; i < 200 && !g_t025_done; i++)
         it_settle(1);
@@ -929,20 +924,19 @@ static long it_lookup_ep(const char *name, uint32_t dest_cptr) {
     it_slot_delete(dest_cptr);
 
     uint32_t len = it_stage_path(name);
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label           = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr        = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len         = len;
-    msg.attached_handle = dest_cptr;      /* receive-slot declaration */
+    msg.recv_slot = dest_cptr;      /* receive-slot declaration */
 
-    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     if (r != 0 || msg.label != IRIS_EP_REPLY_OK) return -1;
-    if (msg.attached_handle != dest_cptr) {
+    if (msg.got_cap != dest_cptr) {
         /* Landed somewhere else (or nowhere): drop whatever arrived so the
          * failure does not leak authority into the next test. */
-        if (msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
-            handle_id_t h = (handle_id_t)msg.attached_handle;
+        if (msg.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
+            handle_id_t h = (handle_id_t)msg.got_cap;
             it_close(&h);
         }
         return -1;
@@ -970,11 +964,10 @@ void test_t027(void) {
         it_fail("T027", "vfs ep missing"); return;
     }
 
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = IRIS_EP_OP_PING;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    long r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)g_vfs_ep_h, &msg);
 
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
         it_pass("T027");
@@ -993,15 +986,14 @@ void test_t028(void) {
     const uint32_t expect_len = (uint32_t)(sizeof(expect) - 1u);
 
     uint32_t len = it_stage_path("iris.txt");
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label      = VFS_EP_OP_READ_AT;
     msg.words[0]   = 0;                 /* offset */
     msg.words[1]   = VFS_EP_DATA_MAX;   /* len (server clamps) */
     msg.word_count = 2;
-    msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len    = len;
-    long r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)g_vfs_ep_h, &msg);
 
     int ok = (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
               msg.words[1] == (uint64_t)expect_len &&
@@ -1017,14 +1009,13 @@ void test_t028(void) {
     int eof_ok = 0;
     if (ok) {
         len = it_stage_path("iris.txt");
-        it_iris_msg_zero(&msg);
+        iris_msg_zero(&msg);
         msg.label      = VFS_EP_OP_READ_AT;
         msg.words[0]   = expect_len;
         msg.words[1]   = VFS_EP_DATA_MAX;
         msg.word_count = 2;
-        msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
         msg.buf_len    = len;
-        r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)&msg);
+        r = iris_msg_call((long)g_vfs_ep_h, &msg);
         eof_ok = (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
                   msg.words[1] == 0 &&
                   msg.words[2] == (uint64_t)expect_len);
@@ -1043,20 +1034,18 @@ void test_t029(void) {
         it_fail("T029", "vfs ep missing"); return;
     }
 
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = UINT64_C(0x0EEE);  /* not a VFS opcode */
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    long r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)g_vfs_ep_h, &msg);
     int unk_ok = (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
                   msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_SUPPORTED);
 
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label      = VFS_EP_OP_LIST;
     msg.words[0]   = 999;
     msg.word_count = 1;
-    msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
-    r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)&msg);
+    r = iris_msg_call((long)g_vfs_ep_h, &msg);
     int oob_ok = (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
                   msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND);
 
@@ -1068,8 +1057,8 @@ void test_t029(void) {
 
 /* ── T030: VFS EP malformed READ_AT paths → INVALID_ARG ─────────────────── */
 
-static int t030_expect_inval(struct IrisMsg *msg) {
-    long r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)msg);
+static int t030_expect_inval(struct iris_msg *msg) {
+    long r = iris_msg_call((long)g_vfs_ep_h, msg);
     return (r == 0 && msg->label == IRIS_EP_REPLY_ERR &&
             msg->words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG);
 }
@@ -1079,39 +1068,36 @@ void test_t030(void) {
         it_fail("T030", "vfs ep missing"); return;
     }
 
-    struct IrisMsg msg;
+    struct iris_msg msg;
     int ok = 1;
 
     /* (a) READ_AT with no path payload */
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label      = VFS_EP_OP_READ_AT;
     msg.words[0]   = 0;
     msg.words[1]   = 16;
     msg.word_count = 2;
-    msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len    = 0;
     if (!t030_expect_inval(&msg)) ok = 0;
 
     /* (b) path not NUL-terminated (drop the NUL from buf_len) */
     uint32_t len = it_stage_path("iris.txt");
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label      = VFS_EP_OP_READ_AT;
     msg.words[0]   = 0;
     msg.words[1]   = 16;
     msg.word_count = 2;
-    msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len    = len - 1u;
     if (!t030_expect_inval(&msg)) ok = 0;
 
     /* (c) oversized path (buf_len > VFS_EP_PATH_MAX) */
     for (uint32_t i = 0; i < VFS_EP_PATH_MAX; i++) g_ep_io_buf[i] = (uint8_t)'a';
     g_ep_io_buf[VFS_EP_PATH_MAX] = 0u;
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label      = VFS_EP_OP_READ_AT;
     msg.words[0]   = 0;
     msg.words[1]   = 16;
     msg.word_count = 2;
-    msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len    = VFS_EP_PATH_MAX + 1u;
     if (!t030_expect_inval(&msg)) ok = 0;
 
@@ -1136,20 +1122,19 @@ void test_t031(void) {
     }
 
     uint32_t len = it_stage_path("spoof.ep");
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
-    long r = it_invoke1((long)g_svcmgr_ep_h, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)g_svcmgr_ep_h, &msg);
 
     if (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
         msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND &&
-        msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
+        msg.got_cap == (uint32_t)IRIS_MSG_NO_CAP) {
         it_pass("T031");
     } else {
-        if (msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
-            handle_id_t h = (handle_id_t)msg.attached_handle;
+        if (msg.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
+            handle_id_t h = (handle_id_t)msg.got_cap;
             it_close(&h);
         }
         it_fail("T031", "spoof.ep lookup must NOT resolve");
@@ -1170,20 +1155,19 @@ void test_t032(void) {
     }
 
     uint32_t len = it_stage_path("vfs");
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
-    long r = it_invoke1((long)g_svcmgr_ep_h, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)g_svcmgr_ep_h, &msg);
 
     if (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
         msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND &&
-        msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
+        msg.got_cap == (uint32_t)IRIS_MSG_NO_CAP) {
         it_pass("T032");
     } else {
-        if (msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
-            handle_id_t h = (handle_id_t)msg.attached_handle;
+        if (msg.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
+            handle_id_t h = (handle_id_t)msg.got_cap;
             it_close(&h);
         }
         it_fail("T032", "legacy vfs name must NOT resolve");
@@ -1197,10 +1181,10 @@ void test_t033(void) {
         it_fail("T033", "vfs ep missing"); return;
     }
 
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = VFS_EP_OP_STATUS;
-    long r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)g_vfs_ep_h, &msg);
 
     if (r != 0 || msg.label != IRIS_EP_REPLY_OK ||
         msg.words[1] < (uint64_t)VFS_BOOT_EXPORT_COUNT) {
@@ -1210,11 +1194,10 @@ void test_t033(void) {
 
     /* STATUS with a bulk payload is malformed → INVALID_ARG */
     uint32_t len = it_stage_path("junk");
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label    = VFS_EP_OP_STATUS;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
-    r = it_invoke1((long)g_vfs_ep_h, INV_EP_CALL, (long)&msg);
+    r = iris_msg_call((long)g_vfs_ep_h, &msg);
 
     if (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
         msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG)
@@ -1234,11 +1217,11 @@ void test_t034(void) {
     if (c < 0) { it_fail("T034", "kbd.ep lookup"); return; }
     g_kbd_ep_h = (handle_id_t)c;
 
-    struct IrisMsg msg;
+    struct iris_msg msg;
     long r;
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    r = it_invoke1((long)g_kbd_ep_h, INV_EP_CALL, (long)&msg);
+    r = iris_msg_call((long)g_kbd_ep_h, &msg);
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
         it_pass("T034");
     else
@@ -1247,7 +1230,7 @@ void test_t034(void) {
 
 /* ── T035: kbd EP semantics — empty POLL, malformed requests (7.4) ────── */
 
-static int t035_expect_err(struct IrisMsg *msg, uint32_t want) {
+static int t035_expect_err(struct iris_msg *msg, uint32_t want) {
     return msg->label == IRIS_EP_REPLY_ERR &&
            (uint32_t)msg->words[0] == want;
 }
@@ -1257,28 +1240,27 @@ void test_t035(void) {
         it_fail("T035", "kbd ep missing"); return;
     }
 
-    struct IrisMsg msg;
+    struct iris_msg msg;
     int ok = 1;
 
     /* POLL on an idle keyboard (headless: no keys) → WOULD_BLOCK, clean */
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label = KBD_EP_OP_POLL;
-    if (it_invoke1((long)g_kbd_ep_h, INV_EP_CALL, (long)&msg) != 0 ||
+    if (iris_msg_call((long)g_kbd_ep_h, &msg) != 0 ||
         !t035_expect_err(&msg, KBD_EP_E_WOULD_BLOCK)) ok = 0;
 
     /* unknown opcode → NOT_SUPPORTED */
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label = 0x7777;
-    if (it_invoke1((long)g_kbd_ep_h, INV_EP_CALL, (long)&msg) != 0 ||
+    if (iris_msg_call((long)g_kbd_ep_h, &msg) != 0 ||
         !t035_expect_err(&msg, KBD_EP_E_NOT_SUPPORTED)) ok = 0;
 
     /* bulk payload on POLL → INVALID_ARG */
     uint32_t len = it_stage_path("junk");
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label    = KBD_EP_OP_POLL;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
-    if (it_invoke1((long)g_kbd_ep_h, INV_EP_CALL, (long)&msg) != 0 ||
+    if (iris_msg_call((long)g_kbd_ep_h, &msg) != 0 ||
         !t035_expect_err(&msg, KBD_EP_E_INVALID_ARG)) ok = 0;
 
     if (ok)
@@ -1298,11 +1280,11 @@ void test_t036(void) {
     if (c < 0) { it_fail("T036", "console.ep lookup"); return; }
     g_con_ep_h = (handle_id_t)c;
 
-    struct IrisMsg msg;
+    struct iris_msg msg;
     long r;
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    r = it_invoke1((long)g_con_ep_h, INV_EP_CALL, (long)&msg);
+    r = iris_msg_call((long)g_con_ep_h, &msg);
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
         it_pass("T036");
     else
@@ -1320,12 +1302,11 @@ void test_t037(void) {
     uint32_t len = (uint32_t)sizeof(line) - 1u;
     for (uint32_t i = 0; i < len; i++) g_ep_io_buf[i] = (uint8_t)line[i];
 
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = CONSOLE_EP_OP_WRITE;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
-    long r = it_invoke1((long)g_con_ep_h, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)g_con_ep_h, &msg);
 
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
         it_pass("T037");
@@ -1340,29 +1321,28 @@ void test_t038(void) {
         it_fail("T038", "console ep missing"); return;
     }
 
-    struct IrisMsg msg;
+    struct iris_msg msg;
     int ok = 1;
 
     /* SYNC: deterministic barrier, no payload */
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label = CONSOLE_EP_OP_SYNC;
-    if (it_invoke1((long)g_con_ep_h, INV_EP_CALL, (long)&msg) != 0 ||
+    if (iris_msg_call((long)g_con_ep_h, &msg) != 0 ||
         msg.label != IRIS_EP_REPLY_OK) ok = 0;
 
     /* SYNC with bulk payload → INVALID_ARG */
     uint32_t len = it_stage_path("junk");
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label    = CONSOLE_EP_OP_SYNC;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
-    if (it_invoke1((long)g_con_ep_h, INV_EP_CALL, (long)&msg) != 0 ||
+    if (iris_msg_call((long)g_con_ep_h, &msg) != 0 ||
         msg.label != IRIS_EP_REPLY_ERR ||
         (uint32_t)msg.words[0] != (uint32_t)IRIS_ERR_INVALID_ARG) ok = 0;
 
     /* unknown opcode → NOT_SUPPORTED */
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label = 0x6666;
-    if (it_invoke1((long)g_con_ep_h, INV_EP_CALL, (long)&msg) != 0 ||
+    if (iris_msg_call((long)g_con_ep_h, &msg) != 0 ||
         msg.label != IRIS_EP_REPLY_ERR ||
         (uint32_t)msg.words[0] != (uint32_t)IRIS_ERR_NOT_SUPPORTED) ok = 0;
 
@@ -1381,10 +1361,10 @@ void test_t038(void) {
  * PING, then a LOOKUP_NAME("vfs.ep") that returns a real endpoint cap.
  */
 void test_t039(void) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     if (r != 0 || msg.label != IRIS_EP_REPLY_OK) {
         it_fail("T039", "cptr ping");
         return;
@@ -1411,22 +1391,22 @@ void test_t039(void) {
  *     raw values 30/31 are never live handles — generations start at 1).
  */
 void test_t040(void) {
-    struct IrisMsg msg;
+    struct iris_msg msg;
     int ok = 1;
 
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    long r = it_invoke1(0L /* CPTR_NULL */, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call(0L /* CPTR_NULL */, &msg);
     if (r >= 0) ok = 0;
 
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    r = it_invoke1((long)IRIS_CPTR_TEST_FIX_A, INV_EP_CALL, (long)&msg);
+    r = iris_msg_call((long)IRIS_CPTR_TEST_FIX_A, &msg);
     if (r != (long)IRIS_ERR_WRONG_TYPE) ok = 0;
 
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    r = it_invoke1((long)IRIS_CPTR_TEST_FIX_B, INV_EP_CALL, (long)&msg);
+    r = iris_msg_call((long)IRIS_CPTR_TEST_FIX_B, &msg);
     if (r != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
 
     if (ok)
@@ -1467,15 +1447,14 @@ void test_t042(void) {
     const uint32_t expect_len = (uint32_t)(sizeof(expect) - 1u);
 
     uint32_t len = it_stage_path("iris.txt");
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label      = VFS_EP_OP_READ_AT;
     msg.words[0]   = 0;
     msg.words[1]   = VFS_EP_DATA_MAX;
     msg.word_count = 2;
-    msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len    = len;
-    long r = it_invoke1((long)IRIS_CPTR_VFS_EP, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)IRIS_CPTR_VFS_EP, &msg);
 
     int ok = (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
               msg.words[1] == (uint64_t)expect_len &&
@@ -1499,12 +1478,11 @@ void test_t043(void) {
 
     for (uint32_t i = 0; i < line_len; i++) g_ep_io_buf[i] = (uint8_t)line[i];
 
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = CONSOLE_EP_OP_WRITE;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = line_len;
-    long r = it_invoke1((long)IRIS_CPTR_CONSOLE_EP, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)IRIS_CPTR_CONSOLE_EP, &msg);
 
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
         it_pass("T043");
@@ -1515,10 +1493,10 @@ void test_t043(void) {
 /* ── T044: kbd PING via IRIS_CPTR_KBD_EP (Phase 8) ───────────────────────── */
 
 void test_t044(void) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    long r = it_invoke1((long)IRIS_CPTR_KBD_EP, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)IRIS_CPTR_KBD_EP, &msg);
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
         it_pass("T044");
     else
@@ -1533,10 +1511,9 @@ void test_t044(void) {
  * fallback would surface BAD_HANDLE (raw 2 is never a live handle).
  */
 void test_t045(void) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    long r = it_invoke1((long)IRIS_CPTR_VFS_EP, INV_EP_NB_RECV, (long)&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
+    long r = iris_msg_nb_recv((long)IRIS_CPTR_VFS_EP, &msg);
     if (r == (long)IRIS_ERR_ACCESS_DENIED)
         it_pass("T045");
     else
@@ -1561,10 +1538,10 @@ void test_t045(void) {
 /* PING a slot and return the badge the server says it observed (words[1]);
  * stores -1 on transport/protocol failure. */
 long it_ping_badge(long cptr, uint64_t *out_badge) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    long r = it_invoke1(cptr, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call(cptr, &msg);
     if (r != 0 || msg.label != IRIS_EP_REPLY_OK || msg.word_count < 2u)
         return -1;
     *out_badge = msg.words[1];
@@ -1614,11 +1591,11 @@ void test_t050(void) {
 /* T051: payload spoofing is impossible — whatever we write into
  * sender_badge is overwritten by the kernel at send time. */
 void test_t051(void) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label        = IRIS_EP_OP_PING;
     msg.sender_badge = 0xDEADBEEFu;          /* forged identity attempt */
-    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
         msg.word_count >= 2u && msg.words[1] == IRIS_BADGE_IRIS_TEST)
         it_pass("T051");
@@ -1630,25 +1607,24 @@ void test_t051(void) {
  * lookup (handle >= 1024, unbadged master dup) delivers badge 0. */
 void test_t052(void) {
     uint32_t len = it_stage_path(CONSOLE_EP_SVC_NAME);
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
     /* Stage 4: a reply that carries a capability needs somewhere to put it —
      * handle materialisation is retired, so an undeclared receive gets the
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
-    msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
-    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    msg.recv_slot = (uint32_t)IT_LOOKUP_TMP;
+    long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
 
     int ok = 0;
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
-        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+        msg.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
         uint64_t b = 0xFFu;
-        if (it_ping_badge((long)msg.attached_handle, &b) == 0 && b == 0u)
+        if (it_ping_badge((long)msg.got_cap, &b) == 0 && b == 0u)
             ok = 1;
-        handle_id_t h = (handle_id_t)msg.attached_handle;
+        handle_id_t h = (handle_id_t)msg.got_cap;
         it_close(&h);
     }
     if (ok)
@@ -1668,10 +1644,10 @@ void test_t053(void) {
     if (b1 != IRIS_BADGE_IRIS_TEST || b2 != IRIS_BADGE_TEST_B || b1 == b2)
         ok = 0;
 
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    if (it_invoke1((long)IRIS_CPTR_TEST_FIX_B, INV_EP_CALL, (long)&msg) !=
+    if (iris_msg_call((long)IRIS_CPTR_TEST_FIX_B, &msg) !=
         (long)IRIS_ERR_ACCESS_DENIED)
         ok = 0;
 
@@ -1686,17 +1662,16 @@ void test_t053(void) {
 /* svcmgr STATUS oracle: name → {alive, generation}. Returns 0 on OK. */
 long it_status(const char *name, uint32_t *alive, uint32_t *gen) {
     uint32_t len = it_stage_path(name);
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_STATUS;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
     /* Stage 4: a reply that carries a capability needs somewhere to put it —
      * handle materialisation is retired, so an undeclared receive gets the
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
-    msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
-    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    msg.recv_slot = (uint32_t)IT_LOOKUP_TMP;
+    long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     if (r != 0 || msg.label != IRIS_EP_REPLY_OK || msg.word_count < 2u)
         return -1;
     if (alive) *alive = (uint32_t)msg.words[0];
@@ -1723,14 +1698,13 @@ long it_register_ep(const char *name, handle_id_t ep) {
     long d = it_xfer_dup((long)ep, (uint32_t)mr);
     if (d < 0) return d;
     uint32_t len = it_stage_path(name);
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label               = IRIS_SVCMGR_EP_REGISTER;
-    msg.buf_uptr            = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len             = len;
-    msg.attached_cap        = (uint32_t)d;
-    msg.attached_cap_rights = (uint32_t)mr;
-    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    msg.cap        = (uint32_t)d;
+    msg.cap_rights = (uint32_t)mr;
+    long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     it_xfer_release(d);
     if (r != 0) return r;
     if (msg.label != IRIS_EP_REPLY_OK) return -(long)(uint32_t)msg.words[0];
@@ -1762,25 +1736,24 @@ void test_t054(void) {
  * (SYS_HANDLE_DUP → ACCESS_DENIED, no re-mint authority). */
 void test_t055(void) {
     uint32_t len = it_stage_path(VFS_EP_SVC_NAME);
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
     /* Stage 4: a reply that carries a capability needs somewhere to put it —
      * handle materialisation is retired, so an undeclared receive gets the
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
-    msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
-    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    msg.recv_slot = (uint32_t)IT_LOOKUP_TMP;
+    long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     int ok = 0;
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
-        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
-        handle_id_t cap = (handle_id_t)msg.attached_handle;
-        struct IrisMsg p;
-        it_iris_msg_zero(&p);
+        msg.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
+        handle_id_t cap = (handle_id_t)msg.got_cap;
+        struct iris_msg p;
+        iris_msg_zero(&p);
         p.label = IRIS_EP_OP_PING;
-        long pr  = it_invoke1((long)cap, INV_EP_CALL, (long)&p);          /* WRITE works */
+        long pr  = iris_msg_call((long)cap, &p);          /* WRITE works */
         /* The grant carries no RIGHT_DUPLICATE, so it cannot be derived from.
          * Asked of the slot: SYS_CSPACE_MINT is the derive, and it needs
          * RIGHT_DUPLICATE on the source exactly as the handle dup did. */
@@ -1815,12 +1788,12 @@ void test_t057(void) {
     if (it_status(VFS_EP_SVC_NAME, &a, &g0) != 0 || a != 1u) {
         it_fail("T057", "pre-status"); return;
     }
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = IRIS_SVCMGR_EP_RESTART;
     msg.words[0] = (uint64_t)SVCMGR_SERVICE_VFS;
     msg.word_count = 1u;
-    long r = it_invoke1((long)IRIS_CPTR_TEST_SUPER, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)IRIS_CPTR_TEST_SUPER, &msg);
     if (!(r == 0 && msg.label == IRIS_EP_REPLY_OK)) {
         it_fail("T057", "restart request denied"); return;
     }
@@ -1840,10 +1813,10 @@ void test_t057(void) {
  * confirms the kbd IRQ-notification WAIT slot is still functional after the
  * lifecycle changes (a non-blocking poll must not fault). */
 void test_t058(void) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    long r = it_invoke1((long)IRIS_CPTR_KBD_EP, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)IRIS_CPTR_KBD_EP, &msg);
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
         it_pass("T058");
     else
@@ -1865,25 +1838,24 @@ void test_t059(void) {
 /* T060: relookup after restart yields a working cap to the new instance. */
 void test_t060(void) {
     uint32_t len = it_stage_path(VFS_EP_SVC_NAME);
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
     /* Stage 4: a reply that carries a capability needs somewhere to put it —
      * handle materialisation is retired, so an undeclared receive gets the
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
-    msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
-    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    msg.recv_slot = (uint32_t)IT_LOOKUP_TMP;
+    long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     int ok = 0;
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
-        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
-        handle_id_t cap = (handle_id_t)msg.attached_handle;
-        struct IrisMsg p;
-        it_iris_msg_zero(&p);
+        msg.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
+        handle_id_t cap = (handle_id_t)msg.got_cap;
+        struct iris_msg p;
+        iris_msg_zero(&p);
         p.label = IRIS_EP_OP_PING;
-        long pr = it_invoke1((long)cap, INV_EP_CALL, (long)&p);
+        long pr = iris_msg_call((long)cap, &p);
         if (pr == 0 && p.label == IRIS_EP_REPLY_OK) ok = 1;
         it_close(&cap);
     }
@@ -1899,12 +1871,11 @@ void test_t061(void) {
     int ok = 1;
     for (uint32_t i = 0; i < 3u; i++) {
         uint32_t len = it_stage_path(reserved[i]);
-        struct IrisMsg msg;
-        it_iris_msg_zero(&msg);
+        struct iris_msg msg;
+        iris_msg_zero(&msg);
         msg.label    = IRIS_SVCMGR_EP_REGISTER;
-        msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
         msg.buf_len  = len;
-        long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+        long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
         if (!(r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
               msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_ACCESS_DENIED))
             ok = 0;
@@ -1933,21 +1904,20 @@ void test_t062(void) {
 void test_t063(void) {
     if (g_ltst_ep == (handle_id_t)0) { it_fail("T063", "no ltst ep"); return; }
     uint32_t len = it_stage_path("ltst.svc");
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
     /* Stage 4: a reply that carries a capability needs somewhere to put it —
      * handle materialisation is retired, so an undeclared receive gets the
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
-    msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
-    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    msg.recv_slot = (uint32_t)IT_LOOKUP_TMP;
+    long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     int ok = 0;
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
-        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
-        handle_id_t got = (handle_id_t)msg.attached_handle;
+        msg.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
+        handle_id_t got = (handle_id_t)msg.got_cap;
         long ty   = it_invoke0((long)got, INV_CAP_IDENTIFY);
         long same = it_invoke1((long)got, INV_CAP_SAME_OBJECT, (long)g_ltst_ep);
         if (ty == (long)IRIS_HANDLE_TYPE_ENDPOINT && same == 1) ok = 1;
@@ -1962,12 +1932,11 @@ void test_t064(void) {
     int ok = 1;
     /* no cap */
     uint32_t len = it_stage_path("nocap.svc");
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_REGISTER;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;                        /* attached_cap = NO_CAP */
-    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     if (!(r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
           msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG)) ok = 0;
 
@@ -1979,13 +1948,12 @@ void test_t064(void) {
     long d = it_xfer_dup((long)notif, (uint32_t)RIGHT_WRITE);
     if (d < 0) { it_close(&notif); it_fail("T064", "xfer slot"); return; }
     len = it_stage_path("wrongtype.svc");
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label               = IRIS_SVCMGR_EP_REGISTER;
-    msg.buf_uptr            = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len             = len;
-    msg.attached_cap        = (uint32_t)d;
-    msg.attached_cap_rights = (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER);
-    r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    msg.cap        = (uint32_t)d;
+    msg.cap_rights = (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER);
+    r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     it_xfer_release(d);
     if (!(r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
           msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG)) ok = 0;
@@ -1998,22 +1966,22 @@ void test_t064(void) {
  * slot 28) is denied; UNREGISTER by the owner succeeds. */
 void test_t065(void) {
     int ok = 1;
-    struct IrisMsg msg;
+    struct iris_msg msg;
     /* wrong badge (0xB2) via the second-identity fixture → ACCESS_DENIED */
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label      = IRIS_SVCMGR_EP_UNREGISTER;
     msg.words[0]   = g_ltst_id;
     msg.word_count = 1u;
-    long r = it_invoke1((long)IRIS_CPTR_TEST_FIX_C, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)IRIS_CPTR_TEST_FIX_C, &msg);
     if (!(r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
           msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_ACCESS_DENIED)) ok = 0;
 
     /* owner badge (IRIS_TEST via slot 1) → OK */
-    it_iris_msg_zero(&msg);
+    iris_msg_zero(&msg);
     msg.label      = IRIS_SVCMGR_EP_UNREGISTER;
     msg.words[0]   = g_ltst_id;
     msg.word_count = 1u;
-    r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     if (!(r == 0 && msg.label == IRIS_EP_REPLY_OK)) ok = 0;
 
     if (ok) it_pass("T065"); else it_fail("T065", "unregister owner policy");
@@ -2022,17 +1990,16 @@ void test_t065(void) {
 /* T066: after UNREGISTER the name no longer resolves (NOT_FOUND). */
 void test_t066(void) {
     uint32_t len = it_stage_path("ltst.svc");
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
     /* Stage 4: a reply that carries a capability needs somewhere to put it —
      * handle materialisation is retired, so an undeclared receive gets the
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
-    msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
-    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    msg.recv_slot = (uint32_t)IT_LOOKUP_TMP;
+    long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     int ok = (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
               msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND);
     if (g_ltst_ep != (handle_id_t)0) it_close(&g_ltst_ep);
@@ -2044,10 +2011,10 @@ void test_t066(void) {
 /* T067: svcmgr DIAG over the endpoint (replaces legacy KChannel SVCMGR_MSG_DIAG
  * as the productive path) returns the expected catalog snapshot. */
 void test_t067(void) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = IRIS_SVCMGR_EP_DIAG;
-    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK && msg.word_count >= 4u &&
         msg.words[0] == 3u &&                       /* catalog: kbd/vfs/sh */
         msg.words[1] >= 3u &&                       /* all core services ready */
@@ -2060,10 +2027,10 @@ void test_t067(void) {
 /* T068: an unknown/malformed svcmgr EP opcode fails cleanly with INVALID_ARG —
  * there is NO silent fallback to a legacy path and no hang/crash. */
 void test_t068(void) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = UINT64_C(0xF0FE);                   /* not a real svcmgr opcode */
-    long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     if (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
         msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG)
         it_pass("T068");
@@ -2234,36 +2201,36 @@ void test_t073(void) {
     if (it_invoke2(ep, INV_CSPACE_MINT, (long)((uint64_t)IT_XFER_SLOT_C << 32), (long)RIGHT_READ) != 0) {
         it_close(&ep_h); it_fail("T073", "mint notrans"); return;
     }
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label           = 0x73;
-    msg.attached_handle = IT_XFER_SLOT_C;
-    msg.attached_rights = (uint32_t)RIGHT_READ;
-    long a = it_invoke1(ep, INV_EP_NB_SEND, (long)&msg);
+    msg.cap = IT_XFER_SLOT_C;
+    msg.cap_rights = (uint32_t)RIGHT_READ;
+    long a = iris_msg_nb_send(ep, &msg);
     int  denied = (a == (long)IRIS_ERR_ACCESS_DENIED);
     /* not consumed: the slot still resolves */
     int  preserved = (it_invoke0((long)IT_XFER_SLOT_C, INV_CAP_IDENTIFY) >= 0);
 
     /* (b) An EMPTY source slot → clean NOT_FOUND (no cap, nothing staged). */
     (void)it_invoke1((long)root, INV_CNODE_DELETE, (long)IT_XFER_SLOT_D);
-    struct IrisMsg msg2;
-    it_iris_msg_zero(&msg2);
+    struct iris_msg msg2;
+    iris_msg_zero(&msg2);
     msg2.label           = 0x73;
-    msg2.attached_handle = IT_XFER_SLOT_D;
-    msg2.attached_rights = (uint32_t)RIGHT_TRANSFER;
-    long b = it_invoke1(ep, INV_EP_NB_SEND, (long)&msg2);
+    msg2.cap = IT_XFER_SLOT_D;
+    msg2.cap_rights = (uint32_t)RIGHT_TRANSFER;
+    long b = iris_msg_nb_send(ep, &msg2);
     int  empty_clean = (b == (long)IRIS_ERR_NOT_FOUND);
 
     /* (c) A MALFORMED source CPtr → INVALID_ARG, with nothing staged.  This
      * used to feed a real HANDLE value and assert the transfer source lives in
      * exactly one namespace; there is one namespace now, so the equivalent
      * hostile input is a CPtr that does not address a capability. */
-    struct IrisMsg msg3;
-    it_iris_msg_zero(&msg3);
+    struct iris_msg msg3;
+    iris_msg_zero(&msg3);
     msg3.label           = 0x73;
-    msg3.attached_handle = (uint32_t)(IT_XFER_SLOT_C | (1u << 16));  /* alias */
-    msg3.attached_rights = (uint32_t)RIGHT_TRANSFER;
-    int handle_rejected = (it_invoke1(ep, INV_EP_NB_SEND, (long)&msg3) ==
+    msg3.cap = (uint32_t)(IT_XFER_SLOT_C | (1u << 16));  /* alias */
+    msg3.cap_rights = (uint32_t)RIGHT_TRANSFER;
+    int handle_rejected = (iris_msg_nb_send(ep, &msg3) ==
                            (long)IRIS_ERR_INVALID_ARG);
 
     it_slot_delete(IT_XFER_SLOT_C);
@@ -2290,20 +2257,20 @@ static          int g_t074_r2   = 999;
 static uint8_t      g_t074_stack[8192];
 
 static void t074_server(void) {
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
-    long rr = it_invoke2((long)g_t074_ep_h, INV_EP_RECV, (long)&msg, 93);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
+    long rr = (msg.reply = 93, iris_msg_recv((long)g_t074_ep_h, &msg));
     if (rr == 0) {
-        handle_id_t reply_h = (handle_id_t)msg.attached_handle;
-        struct IrisMsg rmsg;
-        it_iris_msg_zero(&rmsg);
+        handle_id_t reply_h = (handle_id_t)msg.got_cap;
+        struct iris_msg rmsg;
+        iris_msg_zero(&rmsg);
         rmsg.label = 0x74;
-        g_t074_r1 = (int)it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&rmsg);
+        g_t074_r1 = (int)iris_msg_reply((long)reply_h, &rmsg);
         /* Second reply on the consumed one-shot cap must be rejected. */
-        struct IrisMsg rmsg2;
-        it_iris_msg_zero(&rmsg2);
+        struct iris_msg rmsg2;
+        iris_msg_zero(&rmsg2);
         rmsg2.label = 0x74;
-        g_t074_r2 = (int)it_invoke1((long)reply_h, INV_REPLY_SEND, (long)&rmsg2);
+        g_t074_r2 = (int)iris_msg_reply((long)reply_h, &rmsg2);
     } else {
         g_t074_r1 = (int)rr;
     }
@@ -2329,14 +2296,10 @@ void test_t074(void) {
     if (tid < 0) { it_close(&g_t074_ep_h); it_fail("T074", "thread create"); return; }
     handle_id_t tid_h = (handle_id_t)tid;
 
-    uint8_t reply_buf[64];
-    for (uint32_t i = 0; i < 64; i++) reply_buf[i] = 0;
-
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = 0x74;
-    msg.buf_uptr = (uint64_t)(uintptr_t)reply_buf;
-    long r = it_invoke1(ep, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call(ep, &msg);
 
     for (int i = 0; i < 200 && !g_t074_done; i++)
         it_settle(1);
@@ -2427,12 +2390,12 @@ void test_t075(void) {
                    (it_invoke2(it_child_tcb((long)proc_h), INV_TCB_WATCH, (long)watch_h, 1) == 0);
 
     /* Drive the child: EP_NB_SEND until it is blocked in EP_RECV (bounded). */
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = 0x75;
     int sent = 0;
     for (int i = 0; i < 300 && !sent; i++) {
-        if (it_invoke1((long)cmd_ep_h, INV_EP_NB_SEND, (long)&msg) == 0) sent = 1;
+        if (iris_msg_nb_send((long)cmd_ep_h, &msg) == 0) sent = 1;
         else it_settle(1);
     }
 
@@ -2477,10 +2440,10 @@ void test_t077(void) {
     int  dead = (it_alive((long)proc_h) == 0);
 
     /* Blocked recv must have been cancelled: no stale receiver remains. */
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = 0x77;
-    long s = it_invoke1((long)cmd_ep_h, INV_EP_NB_SEND, (long)&msg);
+    long s = iris_msg_nb_send((long)cmd_ep_h, &msg);
     int  ep_clean = (s == (long)IRIS_ERR_WOULD_BLOCK);
 
     it_close(&proc_h);
@@ -2511,13 +2474,10 @@ void test_t078(void) {
 
     /* Client call: rendezvous with the child's recv, then the child exits
      * unanswered.  EP_CALL must return CLOSED, not hang. */
-    uint8_t reply_buf[64];
-    for (uint32_t i = 0; i < 64; i++) reply_buf[i] = 0;
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label    = 0x78;
-    msg.buf_uptr = (uint64_t)(uintptr_t)reply_buf;
-    long r = it_invoke1((long)cmd_ep_h, INV_EP_CALL, (long)&msg);
+    long r = iris_msg_call((long)cmd_ep_h, &msg);
 
     /* Confirm the child actually died (bounded). */
     int dead = 0;

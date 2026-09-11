@@ -10,6 +10,7 @@
  */
 #include "it_priv.h"
 
+#include "../common/iris_msg.h"
 void test_t121(void) {
     uint32_t tl_before = 0, tl_after = 0;
     uint32_t e0[14], e1[14];
@@ -53,10 +54,10 @@ void test_t121(void) {
             it_settle(3);
             if (ok && it_kill((long)p_h) != 0) { ok = 0; why = "kill"; }
             if (ok) {
-                struct IrisMsg p;
-                it_iris_msg_zero(&p);
+                struct iris_msg p;
+                iris_msg_zero(&p);
                 p.label = 0x121;
-                if (it_invoke1((long)ep_h, INV_EP_NB_SEND, (long)&p) != (long)IRIS_ERR_WOULD_BLOCK) {
+                if (iris_msg_nb_send((long)ep_h, &p) != (long)IRIS_ERR_WOULD_BLOCK) {
                     ok = 0; why = "dead waiter";
                 }
             }
@@ -324,8 +325,8 @@ void test_t125(void) {
     /* Type-appropriate use: the retyped endpoint is a real rendezvous point
      * (empty → WOULD_BLOCK); the sub-untyped answers INFO; the SC configures. */
     if (ok) {
-        struct IrisMsg m; it_iris_msg_zero(&m);
-        if (it_invoke1((long)ep, INV_EP_NB_RECV, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) {
+        struct iris_msg m; iris_msg_zero(&m);
+        if (iris_msg_nb_recv((long)ep, &m) != (long)IRIS_ERR_WOULD_BLOCK) {
             ok = 0; why = "ep not usable";
         }
     }
@@ -597,8 +598,8 @@ void test_t128(void) {
  * Invariants: U8, U13 (via S13/S14), U14, U15, U17. */
 static volatile long g_t129_res;
 static void t129_worker(void) {
-    struct IrisMsg m; it_iris_msg_zero(&m);
-    g_t129_res = it_invoke1((long)g_sh_ep, INV_EP_RECV, (long)&m);
+    struct iris_msg m; iris_msg_zero(&m);
+    g_t129_res = iris_msg_recv((long)g_sh_ep, &m);
     g_sh_done[0] = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -1073,8 +1074,8 @@ void test_t136(void) {
                     it_settle(1);
                     if (it_kill((long)p_h) != 0) { ok = 0; why = "kill"; }
                 } else {
-                    struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x136;
-                    (void)it_invoke1((long)ep_h, INV_EP_SEND, (long)&m);
+                    struct iris_msg m; iris_msg_zero(&m); m.label = 0x136;
+                    (void)iris_msg_send((long)ep_h, &m);
                     (void)it_lp_wait_exit(p_h);
                 }
             }
@@ -1298,12 +1299,12 @@ long it_fault_info(uint32_t leaf, struct it_fault *f) {
 /* Send a fault-trigger command with a target VA (blocking send — returns once
  * the child has picked the message up, i.e. is about to fault). */
 long it_lp_cmd_va(handle_id_t ep_h, uint32_t label, uint64_t va) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label      = label;
     m.words[0]   = va;
     m.word_count = 1u;
-    return it_invoke1((long)ep_h, INV_EP_SEND, (long)&m);
+    return iris_msg_send((long)ep_h, &m);
 }
 
 /* Spawn a lifecycle_probe child wired for fault supervision: command endpoint,
@@ -1365,9 +1366,9 @@ int it_fault_wait_ep(long fault_ep, uint32_t mbox) {
      * bound to is reusable, so there is nothing to refresh between tries. */
     if (!it_fault_reply_fresh(mbox)) return 0;
     for (uint32_t tries = 0; tries < 3000u; tries++) {
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
-        if (it_invoke2(fault_ep, INV_EP_NB_RECV, (long)(uintptr_t)&m, IT_FAULT_CPTR(mbox)) == 0) {
+        struct iris_msg m;
+        iris_msg_zero(&m);
+        if ((m.reply = (long)(IT_FAULT_CPTR(mbox)), iris_msg_nb_recv((long)fault_ep, &m)) == 0) {
             for (uint32_t b = 0; b < FAULT_MSG_LEN; b++)
                 g_it_fault_rec[mbox][b] = ((const uint8_t *)m.words)[b];
             g_it_fault_have[mbox]  = 1u;
@@ -1382,10 +1383,10 @@ int it_fault_wait_ep(long fault_ep, uint32_t mbox) {
 
 /* Resume the thread whose fault leaf `mbox` holds. */
 long it_fault_resume(uint32_t mbox) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     if (mbox < IT_FAULT_LEAVES) g_it_fault_have[mbox] = 0u;
-    long r = it_invoke1(IT_FAULT_CPTR(mbox), INV_REPLY_SEND, (long)(uintptr_t)&m);
+    long r = iris_msg_reply(IT_FAULT_CPTR(mbox), &m);
     /* A reply object is ONE-SHOT: once spent it can never answer anything
      * again, so the capability is dropped here rather than left in a slot
      * where a later test would count it as live authority. */
@@ -1537,9 +1538,9 @@ void test_t140(void) {
         }
         /* The replaced-away endpoint must NOT have received it. */
         if (ok) {
-            struct IrisMsg stale;
-            it_iris_msg_zero(&stale);
-            if (it_invoke2((long)na, INV_EP_NB_RECV, (long)(uintptr_t)&stale, 0L)
+            struct iris_msg stale;
+            iris_msg_zero(&stale);
+            if ((stale.reply = 0L, iris_msg_nb_recv((long)na, &stale))
                 != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "old handler fired"; }
         }
         struct it_fault f;
@@ -1602,9 +1603,9 @@ void test_t141(void) {
     if (ok) {
         /* Exactly once: a blocked thread cannot fault again, so a second
          * receive on its endpoint finds nothing. */
-        struct IrisMsg again;
-        it_iris_msg_zero(&again);
-        if (it_invoke2((long)n_h, INV_EP_NB_RECV, (long)(uintptr_t)&again, 0L)
+        struct iris_msg again;
+        iris_msg_zero(&again);
+        if ((again.reply = 0L, iris_msg_nb_recv((long)n_h, &again))
             != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "double delivery"; }
     }
     struct it_fault f2;
@@ -1795,11 +1796,11 @@ void test_t144(void) {
          * RIGHT_WRITE on a TCB capability the kernel had minted into a
          * mailbox, which also authorised everything else a thread can be made
          * to do. */
-        struct IrisMsg rm;
-        it_iris_msg_zero(&rm);
+        struct iris_msg rm;
+        iris_msg_zero(&rm);
         long rp_ro = it_cs_reduce(IT_FAULT_CPTR(0), RIGHT_READ);
         if (ok && rp_ro < 0) { ok = 0; why = "ro reply dup"; }
-        if (ok && it_invoke1(rp_ro, INV_REPLY_SEND, (long)(uintptr_t)&rm)
+        if (ok && iris_msg_reply(rp_ro, &rm)
                   != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-write not denied"; }
         if (rp_ro >= 0) { handle_id_t h = (handle_id_t)rp_ro; it_close(&h); }
     }
@@ -1808,11 +1809,11 @@ void test_t144(void) {
      * is no number to get wrong and no action to choose, only a capability you
      * either hold or do not. */
     {
-        struct IrisMsg rm;
-        it_iris_msg_zero(&rm);
-        if (ok && it_invoke1((long)ep_h, INV_REPLY_SEND, (long)(uintptr_t)&rm)
+        struct iris_msg rm;
+        iris_msg_zero(&rm);
+        if (ok && iris_msg_reply((long)ep_h, &rm)
                   != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "non-reply not rejected"; }
-        if (ok && it_invoke1(it_child_tcb((long)proc_h), INV_REPLY_SEND, (long)(uintptr_t)&rm)
+        if (ok && iris_msg_reply(it_child_tcb((long)proc_h), &rm)
                   != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "tcb accepted as reply"; }
     }
 

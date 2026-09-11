@@ -17,6 +17,7 @@
 #define IRIS_TEST_IT_PRIV_H
 
 #include <stdint.h>
+#include "../common/iris_msg.h"
 #include <iris/syscall.h>
 #include <iris/invoke.h>
 #include <iris/nc/error.h>
@@ -505,11 +506,10 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 #define T083_SLOT_SC_RO   35L             /* SchedContext: READ only    */
 
 /* ── T084: IPC receive-slot — basic endpoint cap delivery (A1.5) ────────────
- * A receiver can declare an empty own-CSpace slot in the EP_RECV hint field
- * msg.attached_cap (1..1023; 0 = legacy): a cap attached by the sender then
- * lands IN THE SLOT and the receiver gets the CPtr back in attached_handle
- * (the <1024 / >=1024 namespace split is the discriminator — no new msg
- * fields).  A sender thread EP_SENDs the same endpoint cap twice (WRITE,
+ * A receiver declares an empty own-CSpace slot in `msg.recv_slot` (A-33: its
+ * own argument register, where it used to share a field with two other
+ * meanings): a capability the sender attaches lands IN THAT SLOT and the
+ * receiver reads the CPtr back in `msg.got_cap`.  A sender thread EP_SENDs the same endpoint cap twice (WRITE,
  * TRANSFER-consumed dups): recv #1 declares slot 36 → attached_handle == 36
  * and EP_NB_SEND by that CPtr resolves (WOULD_BLOCK = resolution + rights
  * OK, no receiver on that ep); recv #2 declares nothing → legacy handle
@@ -2523,7 +2523,6 @@ long it_xfer_dup(long src_h, uint32_t rights);
 void it_xfer_release(long cptr);
 void it_pass(const char *id);
 void it_fail(const char *id, const char *reason);
-void it_iris_msg_zero(struct IrisMsg *m);
 void it_close(handle_id_t *h);
 void test_t001(void);
 void test_t002(void);
@@ -2617,7 +2616,7 @@ void test_t086(void);
 void test_t087(void);
 void test_t088(void);
 long it_lookup_name_slot(const char *name, uint32_t reply_slot,
-                                struct IrisMsg *msg);
+                                struct iris_msg *msg);
 long it_unregister_id(uint32_t id);
 void test_t089(void);
 void test_t090(void);
@@ -2634,6 +2633,8 @@ long it_map_fixup_inv(unsigned long label, long c, long a1, long a2, long a3);
 long it_cspace_self(void);
 long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg);
 long it_thread_ipc_buffer(long tcb);
+/* A-33: the IPC-buffer VA of the thread it_thread_create just made. */
+extern volatile uint64_t g_it_thread_buf;
 int it_sched_ext2(uint32_t w2[4]);
 void test_t093(void);
 void test_t094(void);
@@ -2954,6 +2955,7 @@ void test_t334(void);
 void test_t335(void);
 void test_t336(void);
 void test_t337(void);
+void test_t338(void);
 void test_t324(void);
 void test_t319(void);
 void test_t296(void);

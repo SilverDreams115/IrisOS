@@ -9,7 +9,8 @@
  * seL4-style pull: the client EP_CALLs the kbd endpoint and the service
  * replies through the per-call KReply capability.
  *
- * Wire format: struct IrisMsg (iris/ipc_msg.h), msg.label = opcode.
+ * Wire format: a MessageInfo word and message registers (iris/ipc_msg.h);
+ * the MessageInfo's label field is the opcode.
  *   - Requests carry no bulk payload; buf_len > 0 → IRIS_ERR_INVALID_ARG.
  *   - Reply OK : label = IRIS_EP_REPLY_OK,  words[0] = 0,
  *                words[1] = raw scancode (POLL/READ), word_count = 2.

@@ -13,6 +13,7 @@
 #include "it_priv.h"
 
 
+#include "../common/iris_msg.h"
 void test_t326(void) {
     it_quiesce_reaper();
     struct it_utq_taskobj t0, t1;
@@ -273,10 +274,10 @@ void test_t329(void) {
      *    same endpoint — enough to ARM a thread's faults — cannot receive one. */
     if (ok) {
         long wo = it_cs_reduce(fep, RIGHT_WRITE);
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
+        struct iris_msg m;
+        iris_msg_zero(&m);
         if (wo < 0) { ok = 0; why = "write-only copy"; }
-        else if (it_invoke2(wo, INV_EP_NB_RECV, (long)(uintptr_t)&m, 0L)
+        else if ((m.reply = 0L, iris_msg_nb_recv(wo, &m))
                  != (long)IRIS_ERR_ACCESS_DENIED) {
             ok = 0; why = "write-only cap received a fault";
         }
@@ -321,9 +322,9 @@ void test_t329(void) {
     /* 2. the reply is the authority, and it is the only one: a thread
      *    capability with every right on it resumes nothing. */
     if (ok) {
-        struct IrisMsg rm;
-        it_iris_msg_zero(&rm);
-        if (it_invoke1(it_child_tcb((long)pa), INV_REPLY_SEND, (long)(uintptr_t)&rm)
+        struct iris_msg rm;
+        iris_msg_zero(&rm);
+        if (iris_msg_reply(it_child_tcb((long)pa), &rm)
             != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "tcb answered a fault"; }
     }
     if (ok && it_fault_kill(T329_LEAF_A) != 0) { ok = 0; why = "answer a"; }
@@ -410,9 +411,9 @@ void test_t330(void) {
      *        way in, and arrives labelled. */
     if (ok && it_invoke1(n1, INV_NOTIFY_SIGNAL, 0x5u) != 0) { ok = 0; why = "signal"; }
     if (ok) {
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
-        if (it_invoke2(ep, INV_EP_RECV, (long)(uintptr_t)&m, 0L) != 0) {
+        struct iris_msg m;
+        iris_msg_zero(&m);
+        if ((m.reply = 0L, iris_msg_recv(ep, &m)) != 0) {
             ok = 0; why = "recv did not take the signal";
         } else if (m.label != IRIS_MSG_LABEL_NOTIFICATION) {
             ok = 0; why = "signal not labelled";
@@ -426,9 +427,9 @@ void test_t330(void) {
     if (ok && it_invoke1(self, INV_TCB_BIND_NOTIFICATION, 0L) != 0) { ok = 0; why = "unbind"; }
     if (ok && it_invoke1(n1, INV_NOTIFY_SIGNAL, 0x9u) != 0) { ok = 0; why = "signal 2"; }
     if (ok) {
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
-        if (it_invoke2(ep, INV_EP_NB_RECV, (long)(uintptr_t)&m, 0L)
+        struct iris_msg m;
+        iris_msg_zero(&m);
+        if ((m.reply = 0L, iris_msg_nb_recv(ep, &m))
             != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "unbound thread still took it"; }
     }
     if (ok) {
@@ -533,13 +534,13 @@ void test_t331(void) {
     /* 3. an arm needs a notification to signal; without one it is refused, and
      *    the service is left holding nothing. */
     if (ok) {
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
+        struct iris_msg m;
+        iris_msg_zero(&m);
         m.label      = TMR_OP_ARM;
         m.words[0]   = 1000ull;
         m.words[1]   = 1ull;
         m.word_count = 2u;
-        if (it_invoke1((long)IRIS_CPTR_TIMER_EP, INV_EP_CALL, (long)(uintptr_t)&m) != 0) {
+        if (iris_msg_call((long)IRIS_CPTR_TIMER_EP, &m) != 0) {
             ok = 0; why = "capless call";
         } else if (m.words[0] == 0u) {
             ok = 0; why = "armed with no notification";
@@ -577,20 +578,20 @@ static volatile int  g_t332_done, g_t332_done_b;
 static volatile long g_t332_err_a;
 
 static void t332_sender_a(void) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label = 0x332;
-    long r = it_invoke1(g_t332_ep_a, INV_EP_SEND, (long)(uintptr_t)&m);
+    long r = iris_msg_send(g_t332_ep_a, &m);
     g_t332_err_a = r;
     __atomic_fetch_add((int *)&g_t332_done, 1, __ATOMIC_RELAXED);
     for (;;) (void)it_sys1(SYS_YIELD, 0);
 }
 
 static void t332_sender_b(void) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label = 0x332;
-    (void)it_invoke1(g_t332_ep_b, INV_EP_SEND, (long)(uintptr_t)&m);
+    (void)iris_msg_send(g_t332_ep_b, &m);
     g_t332_done_b = 1;
     for (;;) (void)it_sys1(SYS_YIELD, 0);
 }
@@ -678,9 +679,9 @@ void test_t332(void) {
     if (ok && g_t332_done_b != 0) { ok = 0; why = "other badge cancelled too"; }
     /* ...and it can still be served. */
     if (ok) {
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
-        if (it_invoke2(ep, INV_EP_NB_RECV, (long)(uintptr_t)&m, 0L) != 0) {
+        struct iris_msg m;
+        iris_msg_zero(&m);
+        if ((m.reply = 0L, iris_msg_nb_recv(ep, &m)) != 0) {
             ok = 0; why = "survivor not receivable";
         } else if (m.sender_badge != 0x22u) {
             ok = 0; why = "wrong survivor";
@@ -892,12 +893,12 @@ static          int g_t334_res  = 999;
 static uint8_t      g_t334_stack[8192];
 
 static void t334_sender(void) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label           = 0x334;
-    m.attached_handle = (uint32_t)g_t334_src;
-    m.attached_rights = RIGHT_WRITE;
-    g_t334_res  = (int)it_invoke1((long)g_t334_ep, INV_EP_SEND, (long)&m);
+    m.cap = (uint32_t)g_t334_src;
+    m.cap_rights = RIGHT_WRITE;
+    g_t334_res  = (int)iris_msg_send((long)g_t334_ep, &m);
     g_t334_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -917,11 +918,11 @@ static int t334_transfer(long n, const char **why) {
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t334_stack + sizeof(g_t334_stack))) & ~0xFULL;
     if (it_thread_create(entry, rsp, 0) < 0) { *why = "thread"; return 0; }
 
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
-    m.attached_cap = T334_DST_SLOT;          /* declared receive slot */
-    if (it_invoke1((long)g_t334_ep, INV_EP_RECV, (long)&m) != 0) { *why = "recv"; return 0; }
-    if (m.attached_handle != T334_DST_SLOT)  { *why = "landing"; return 0; }
+    struct iris_msg m;
+    iris_msg_zero(&m);
+    m.recv_slot = T334_DST_SLOT;          /* declared receive slot */
+    if (iris_msg_recv((long)g_t334_ep, &m) != 0) { *why = "recv"; return 0; }
+    if (m.got_cap != T334_DST_SLOT)  { *why = "landing"; return 0; }
     for (int i = 0; i < 400 && !g_t334_done; i++) it_settle(1);
     if (!g_t334_done || g_t334_res != 0)     { *why = "send"; return 0; }
     return 1;
@@ -1470,8 +1471,8 @@ void test_t295(void) {
 
         /* Invocation path: an aliased endpoint CPtr must not send. */
         if (ok) {
-            struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x95;
-            if (it_invoke1(deep_alias, INV_EP_NB_SEND, (long)&m)
+            struct iris_msg m; iris_msg_zero(&m); m.label = 0x95;
+            if (iris_msg_nb_send(deep_alias, &m)
                 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "alias invoked"; }
         }
 
@@ -1489,9 +1490,9 @@ void test_t295(void) {
             long cmd = it_ep_create_slot();
             if (cmd < 0) { ok = 0; why = "cmd ep"; }
             else {
-                struct IrisMsg r; it_iris_msg_zero(&r);
-                r.attached_cap = (uint32_t)(root_ok | (1L << 16));
-                if (it_invoke1(cmd, INV_EP_NB_RECV, (long)&r)
+                struct iris_msg r; iris_msg_zero(&r);
+                r.recv_slot = (uint32_t)(root_ok | (1L << 16));
+                if (iris_msg_nb_recv(cmd, &r)
                     != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "alias declared"; }
                 handle_id_t ch = (handle_id_t)cmd;
                 it_close(&ch);
@@ -1641,8 +1642,8 @@ void test_t337(void) {
     }
     /* ...and the other way round: an endpoint method on a notification. */
     if (ok) {
-        struct IrisMsg m; it_iris_msg_zero(&m);
-        if (iris_invoke1(n, INV_EP_NB_SEND, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) {
+        struct iris_msg m; iris_msg_zero(&m);
+        if (iris_msg_nb_send(n, &m) != (long)IRIS_ERR_WRONG_TYPE) {
             ok = 0; why = "notification took an endpoint method";
         }
     }
@@ -1709,4 +1710,156 @@ void test_t337(void) {
     it_slot_delete(T337_NOTIF);
     it_quiesce_reaper();
     if (ok) it_pass("T337"); else it_fail("T337", why);
+}
+
+/* T338's sender: hands over a reduced copy and exits. */
+static long          g_t338_ep, g_t338_cap;
+static volatile int  g_t338_done;
+static uint8_t       g_t338_stack[8192];
+
+static void t338_sender(void) {
+    struct iris_msg m;
+    iris_msg_zero(&m);
+    m.label      = 0x338;
+    m.cap        = g_t338_cap;
+    m.cap_rights = RIGHT_WRITE;
+    (void)iris_msg_send(g_t338_ep, &m);
+    g_t338_done = 1;
+    it_sys1(SYS_EXIT, 0);
+    for (;;) {}
+}
+
+/* ── T338: a message is registers (ledger A-33) ────────────────────────────
+ *
+ * `struct IrisMsg` was the ABI: an 80-byte struct in user memory, named by a
+ * pointer the kernel validated and then copied from, each way, for a message
+ * that was usually two words.  A message is a MessageInfo word and message
+ * registers now, and anything longer lives in the page the sending thread
+ * registered.
+ *
+ * Four claims, and each fails under a different mutation:
+ *
+ *  1. the MessageInfo round-trips.  Label, length and the bulk byte count go
+ *     out packed in one word and come back packed in one word, so a server
+ *     reads what a client wrote and nothing in between has an opinion;
+ *  2. there is NO POINTER.  A send whose argument words are a hostile address
+ *     is not refused, because nothing dereferences them — they are message
+ *     words, and a word is a word.  This is the claim the old ABI could not
+ *     make: it had `user_range_readable` on every send path and a test that
+ *     required those addresses to be rejected;
+ *  3. a capability's RIGHTS come back with it.  A receiver is told what it was
+ *     given, in the MessageInfo, and told ZERO when it was given nothing —
+ *     which is unambiguous because a capability with no rights cannot be
+ *     transferred at all;
+ *  4. a failed receive delivers NO message.  The kernel writes no return
+ *     words on an error path, so a wrapper that unpacked anyway would hand
+ *     back the arguments it sent — which is exactly what one did, and what
+ *     made a refused receive look like a delivered capability.
+ * Invariants: A1, A5. */
+#define T338_EP     IT_SCRATCH_1
+#define T338_NOTIF  IT_SCRATCH_2
+#define T338_DST    IT_SCRATCH_3
+
+void test_t338(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "a message is registers";
+
+    it_slot_delete(T338_EP);
+    it_slot_delete(T338_NOTIF);
+    it_slot_delete(T338_DST);
+    if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT,
+                      T338_EP, 1u, 0) != 0) { it_fail("T338", "ep"); return; }
+    if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_NOTIFICATION,
+                      T338_NOTIF, 1u, 0) != 0) { it_fail("T338", "notif"); return; }
+
+    /* ── 1. the MessageInfo round-trips ──
+     * Packed on the way out and unpacked on the way in, through a real
+     * rendezvous: the suite sends non-blockingly to itself is impossible, so
+     * this uses the packing directly — which is what both ends share. */
+    {
+        uint64_t mi = iris_mi(0x1234Aull, 3u, 0u, 777u);
+        if (ok && iris_mi_label(mi) != 0x1234Aull) { ok = 0; why = "label lost"; }
+        if (ok && iris_mi_len(mi)   != 3u)         { ok = 0; why = "length lost"; }
+        if (ok && iris_mi_buf(mi)   != 777u)       { ok = 0; why = "bulk count lost"; }
+        if (ok && iris_mi_extra(mi) != 0u)         { ok = 0; why = "phantom capability"; }
+        /* ...and the fields do not bleed into each other at their limits. */
+        uint64_t full = iris_mi(0ull, 4u, 0x7Fu, 8191u);
+        if (ok && (iris_mi_len(full) != 4u || iris_mi_extra(full) != 0x7Fu ||
+                   iris_mi_buf(full) != 8191u || iris_mi_label(full) != 0u)) {
+            ok = 0; why = "fields overlap at their limits";
+        }
+    }
+
+    /* ── 2. there is no pointer to get wrong ──
+     * The old ABI refused these addresses because it was about to dereference
+     * one.  Here they are message WORDS: a send of four hostile-looking
+     * numbers to an endpoint with no receiver is WOULD_BLOCK, which is a
+     * statement about the endpoint and not about any address. */
+    if (ok) {
+        static const long hostile[] = {
+            (long)0xFFFFFFFFFFFFFFFFLL,        /* non-canonical               */
+            (long)0xFFFF800000000000LL,        /* kernel half                 */
+            8L,                                /* unmapped and unaligned      */
+        };
+        for (uint32_t i = 0; ok && i < 3u; i++) {
+            if (iris_invoke((long)T338_EP, INV_EP_NB_SEND,
+                            (long)iris_mi(0x338ull, 4u, 0u, 0u),
+                            hostile[i], hostile[i])
+                != (long)IRIS_ERR_WOULD_BLOCK) {
+                ok = 0; why = "a message word was treated as an address";
+            }
+        }
+    }
+
+    /* ── 3. the rights of what was delivered come back ──
+     * Through a real transfer: a helper thread sends a reduced copy of the
+     * notification and the receive reports the rights it landed with. */
+    if (ok) {
+        long give = it_cdt_derive((long)T338_NOTIF, IT_SCRATCH_0,
+                                  RIGHT_WRITE | RIGHT_TRANSFER);
+        if (give < 0) { ok = 0; why = "derive"; }
+        else {
+            g_t338_ep = (long)T338_EP; g_t338_cap = give; g_t338_done = 0;
+            uint64_t rsp = ((uint64_t)(uintptr_t)(g_t338_stack +
+                              sizeof(g_t338_stack))) & ~0xFULL;
+            if (it_thread_create((uint64_t)(uintptr_t)t338_sender, rsp, 0) < 0) {
+                ok = 0; why = "thread";
+            }
+            if (ok) {
+                struct iris_msg m;
+                iris_msg_zero(&m);
+                m.recv_slot = (long)T338_DST;
+                if (iris_msg_recv((long)T338_EP, &m) != 0) { ok = 0; why = "recv"; }
+                /* The rights it was SENT with, not the rights of the source. */
+                else if (m.got_caps != (uint32_t)RIGHT_WRITE) {
+                    ok = 0; why = "delivered rights not reported";
+                }
+                else if (it_invoke0((long)T338_DST, INV_CAP_IDENTIFY)
+                         != (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+                    ok = 0; why = "nothing landed in the declared slot";
+                }
+                for (int i = 0; i < 400 && !g_t338_done; i++) it_settle(1);
+            }
+            it_slot_delete(IT_SCRATCH_0);
+            it_slot_delete(T338_DST);
+        }
+    }
+    /* ...and a receive that was given nothing says zero. */
+    if (ok) {
+        struct iris_msg m;
+        iris_msg_zero(&m);
+        m.recv_slot = (long)T338_DST;
+        if (iris_msg_nb_recv((long)T338_EP, &m) != (long)IRIS_ERR_WOULD_BLOCK) {
+            ok = 0; why = "empty endpoint answered";
+        }
+        if (ok && m.got_caps != 0u) { ok = 0; why = "a refused receive reported a capability"; }
+        if (ok && m.label != 0u)    { ok = 0; why = "a refused receive reported a label"; }
+    }
+
+    it_slot_delete(T338_DST);
+    it_slot_delete(T338_NOTIF);
+    it_slot_delete(T338_EP);
+    it_quiesce_reaper();
+    if (ok) it_pass("T338"); else it_fail("T338", why);
 }

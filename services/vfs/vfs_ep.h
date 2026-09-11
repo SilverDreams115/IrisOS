@@ -16,6 +16,7 @@
 #define IRIS_SERVICES_VFS_EP_H
 
 #include <stdint.h>
+#include "../common/iris_msg.h"
 #include <iris/ipc_msg.h>
 #include <iris/vfs_ep_proto.h>
 
@@ -73,7 +74,7 @@ void vfs_ep_grants_init(struct vfs_ep_state *st, uint64_t epoch);
  * vfs_ep_dispatch — handle one endpoint request.
  *
  *   st:        export + grant tables (see above).
- *   req:       received IrisMsg (label, words, buf_len, sender_badge as
+ *   req:       the received message (label, words, buf_len, sender_badge as
  *              delivered by the kernel).
  *   req_buf:   bulk payload bytes for req (valid for req->buf_len bytes when
  *              the payload was delivered; pass NULL if it was not).
@@ -84,7 +85,7 @@ void vfs_ep_grants_init(struct vfs_ep_state *st, uint64_t epoch);
  * Exactly one reply is produced for every request, including malformed ones.
  */
 void vfs_ep_dispatch(struct vfs_ep_state *st,
-                     const struct IrisMsg *req, const uint8_t *req_buf,
-                     struct IrisMsg *reply, uint8_t *reply_buf);
+                     const struct iris_msg *req, const uint8_t *req_buf,
+                     struct iris_msg *reply, uint8_t *reply_buf);
 
 #endif /* IRIS_SERVICES_VFS_EP_H */

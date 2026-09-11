@@ -11,6 +11,7 @@
 #include "it_priv.h"
 
 
+#include "../common/iris_msg.h"
 /* ── T182: external pager receives an invalid-VA fault ──────────────────────
  * The full external delivery path: the target touches an unmapped VA; the
  * PAGER (a separate process) wakes on its WAIT-only notification cap, reads
@@ -228,9 +229,9 @@ void test_t184(void) {
     }
     if (ok) {
         /* A thread capability is not reply authority, whatever its rights. */
-        struct IrisMsg rm;
-        it_iris_msg_zero(&rm);
-        if (it_invoke1(atcb, INV_REPLY_SEND, (long)(uintptr_t)&rm)
+        struct iris_msg rm;
+        iris_msg_zero(&rm);
+        if (iris_msg_reply(atcb, &rm)
             != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "read tcb resumed"; }
     }
     if (ok && it_invoke(atcb, INV_TCB_SET_FAULT_HANDLER, (long)va.notif, 0, 0)
@@ -310,9 +311,9 @@ void test_t185(void) {
     /* The kept copy of R1 answers nothing: F1 is already answered and F2 is
      * bound to a different object entirely. */
     if (ok && r1dup >= 0) {
-        struct IrisMsg rm;
-        it_iris_msg_zero(&rm);
-        if (it_invoke1(r1dup, INV_REPLY_SEND, (long)(uintptr_t)&rm)
+        struct iris_msg rm;
+        iris_msg_zero(&rm);
+        if (iris_msg_reply(r1dup, &rm)
             != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "stale resume accepted"; }
     }
     /* ...and destroying it resolves nothing either — a fault is ended by the
@@ -405,10 +406,10 @@ void test_t186(void) {
      * same act as reading it. */
     /* The dead pager's endpoint has no phantom receiver. */
     if (ok) {
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
+        struct iris_msg m;
+        iris_msg_zero(&m);
         m.label = 0x186;
-        if (it_invoke1((long)p1cmd, INV_EP_NB_SEND, (long)&m)
+        if (iris_msg_nb_send((long)p1cmd, &m)
             != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "phantom pager receiver"; }
     }
     t25_reap(&p1proc); it_close(&p1cmd);
@@ -818,11 +819,11 @@ void test_t190(void) {
             /* A-22: a READ-only copy of the very reply that would resume g1
              * answers nothing — the rights on the ANSWER are what gate it. */
             if (ok) {
-                struct IrisMsg rm;
-                it_iris_msg_zero(&rm);
+                struct iris_msg rm;
+                iris_msg_zero(&rm);
                 long rr = it_cs_reduce(IT_FAULT_CPTR(g1.fault_leaf), RIGHT_READ);
                 if (rr < 0) { ok = 0; why = "op4 caps"; }
-                else if (it_invoke1(rr, INV_REPLY_SEND, (long)(uintptr_t)&rm)
+                else if (iris_msg_reply(rr, &rm)
                          != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op4 ro resume"; }
             }
             if (ok && it_invoke((long)fr_h, INV_FRAME_MAP, rvs, (long)T25_VA_A, 0)
@@ -1749,13 +1750,13 @@ int t27_pager_spawn(struct t27_pager *p,
 long t27_pager_call(handle_id_t ctrl_ep, uint32_t op, uint32_t tidx,
                            uint32_t vidx, uint32_t flags,
                            uint64_t offset, uint64_t expect) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.words[0] = PGR_PACK(op, tidx, vidx, flags);
     m.words[1] = offset;
     m.words[2] = expect;
     m.word_count = 3u;
-    long r = it_invoke1((long)ctrl_ep, INV_EP_CALL, (long)&m);
+    long r = iris_msg_call((long)ctrl_ep, &m);
     if (r != 0) return r;
     if (m.label != IRIS_EP_REPLY_OK) return -100000L;
     return (long)m.words[0];
@@ -1872,11 +1873,11 @@ void test_t201(void) {
      * cap answers (the registry serves the CURRENT endpoint). */
     if (ok && p.reg_id < 0) { ok = 0; why = "not registered"; }
     if (ok) {
-        struct IrisMsg lm;
+        struct iris_msg lm;
         it_slot_delete((uint32_t)IT_LOOKUP_TMP);
         if (it_lookup_name_slot("pager.svc", (uint32_t)IT_LOOKUP_TMP, &lm) != 0 ||
             lm.label != IRIS_EP_REPLY_OK ||
-            lm.attached_handle != (uint32_t)IT_LOOKUP_TMP) { ok = 0; why = "lookup"; }
+            lm.got_cap != (uint32_t)IT_LOOKUP_TMP) { ok = 0; why = "lookup"; }
         else {
             if (t27_pager_call((handle_id_t)IT_LOOKUP_TMP, PGR_OP_PING, 0, 0, 0, 0, 0) != 0) {
                 ok = 0; why = "lookup ping";
@@ -2351,11 +2352,11 @@ void test_t209(void) {
      * it, below. */
     /* Dead pager's control endpoint has no phantom receiver. */
     if (ok) {
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
+        struct iris_msg m;
+        iris_msg_zero(&m);
         m.words[0] = PGR_PACK(PGR_OP_PING, 0, 0, 0);
         m.word_count = 1u;
-        if (it_invoke1((long)p1ctrl, INV_EP_NB_SEND, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) {
+        if (iris_msg_nb_send((long)p1ctrl, &m) != (long)IRIS_ERR_WOULD_BLOCK) {
             ok = 0; why = "phantom receiver"; }
     }
     it_close(&p1.ctrl_ep);

@@ -6,7 +6,8 @@
 /*
  * console_ep_proto.h — KEndpoint protocol for the serial console (Phase 7.3).
  *
- * Wire format: struct IrisMsg (iris/ipc_msg.h), msg.label = opcode.
+ * Wire format: a MessageInfo word and message registers (iris/ipc_msg.h);
+ * the MessageInfo's label field is the opcode.
  * This is the ONLY console write path.  It fully replaced the legacy
  * CONSOLE_MSG_WRITE/SYNC KChannel protocol (iris/console_proto.h), which is
  * retired and non-functional (Phase 13/Track G).  All writers — init, sh, vfs,

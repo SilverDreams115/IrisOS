@@ -1,5 +1,5 @@
 /*
- * endpoint_proto.h — IrisMsg-based service IPC protocol definitions.
+ * endpoint_proto.h — the service IPC protocols, carried by message registers.
  *
  * This header defines the wire protocol for services that communicate via
  * KEndpoint (seL4-style synchronous IPC) rather than KChannel ring buffers.
@@ -205,7 +205,7 @@
  * Well-known sender badges (Phase 9).
  *
  * A badge is per-cap metadata stamped by the KERNEL into
- * IrisMsg.sender_badge on every EP_SEND / EP_NB_SEND / EP_CALL — it is
+ * the sender badge on every EP_SEND / EP_NB_SEND / EP_CALL — it is
  * taken from the capability the sender invoked, never from the payload,
  * so it cannot be forged by writing the field.  Badges are assigned at
  * mint time by the spawner (SYS_PROC_CSPACE_MINT arg3 high bits); a badged
@@ -247,7 +247,7 @@
 
 /*
  * Phase 28.1: file-grant badge identities at the VFS.  These are BADGES, not
- * rights: the kernel stamps them into IrisMsg.sender_badge from the invoked
+ * rights: the kernel stamps them into the sender badge from the invoked
  * cap, so the VFS can classify a caller unforgeably.
  *   IRIS_BADGE_FILEGRANT_ADMIN — a pager supervisor's grant-admin identity
  *       (GRANT_OPEN / GRANT_REVOKE-by-name / GRANT_SESSION_RESET).

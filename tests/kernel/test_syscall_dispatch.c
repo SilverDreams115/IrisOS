@@ -25,7 +25,7 @@
 
 void test_set_current_task(struct task *t);
 static long ds(uint64_t num) {
-    return (long)(int64_t)syscall_dispatch(num, 0, 0, 0, 0, 0, 0, 0, 0);
+    return (long)(int64_t)syscall_dispatch(num, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 }
 
 void test_syscall_dispatch(void) {
@@ -134,11 +134,11 @@ void test_syscall_dispatch(void) {
      * Label 0 names nothing on purpose, and gets the same answer an
      * unassigned syscall number does. */
     {
-        ASSERT_EQ((long)(int64_t)syscall_dispatch(SYS_INVOKE, 0, INV_CAP_IDENTIFY, 0, 0, 0, 0, 0, 0),
+        ASSERT_EQ((long)(int64_t)syscall_dispatch(SYS_INVOKE, 0, INV_CAP_IDENTIFY, 0, 0, 0, 0, 0, 0, 0),
                   (long)IRIS_ERR_INVALID_ARG);
-        ASSERT_EQ((long)(int64_t)syscall_dispatch(SYS_INVOKE, 0, INV_INVALID, 0, 0, 0, 0, 0, 0),
+        ASSERT_EQ((long)(int64_t)syscall_dispatch(SYS_INVOKE, 0, INV_INVALID, 0, 0, 0, 0, 0, 0, 0),
                   (long)IRIS_ERR_NOT_SUPPORTED);
-        ASSERT_EQ((long)(int64_t)syscall_dispatch(SYS_INVOKE, 0, (uint64_t)INV_LABEL_COUNT, 0, 0, 0, 0, 0, 0),
+        ASSERT_EQ((long)(int64_t)syscall_dispatch(SYS_INVOKE, 0, (uint64_t)INV_LABEL_COUNT, 0, 0, 0, 0, 0, 0, 0),
                   (long)IRIS_ERR_NOT_SUPPORTED);
     }
 

@@ -11,6 +11,7 @@
 #include "it_priv.h"
 
 
+#include "../common/iris_msg.h"
 /* ── T239: every object has a budget, a charge point and a release point ────
  *
  * Stage 7-mem rewrote this test rather than retiring it, because the CLAIM
@@ -646,8 +647,8 @@ void test_t252(void) {
 
     /* The objects are REAL (usable through their CSpace caps). */
     if (ok) {
-        struct IrisMsg m; it_iris_msg_zero(&m);
-        if (it_invoke1((long)S1_SLOT_A, INV_EP_NB_RECV, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ep dead"; }
+        struct iris_msg m; iris_msg_zero(&m);
+        if (iris_msg_nb_recv((long)S1_SLOT_A, &m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ep dead"; }
         if (ok && it_invoke1((long)S1_SLOT_C, INV_NOTIFY_SIGNAL, 1) != 0) { ok = 0; why = "nt dead"; }
     }
 
@@ -799,8 +800,8 @@ static volatile int  g_t255_done;
 static volatile long g_t255_res;
 static uint8_t       g_t255_stack[8192];
 static void t255_waiter(void) {
-    struct IrisMsg m; it_iris_msg_zero(&m);
-    g_t255_res  = it_invoke2((long)S1_SLOT_A, INV_EP_RECV, (long)&m, 0);
+    struct iris_msg m; iris_msg_zero(&m);
+    g_t255_res  = (m.reply = 0, iris_msg_recv((long)S1_SLOT_A, &m));
     g_t255_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -820,16 +821,16 @@ void test_t255(void) {
     if (ok && (h < 0 || d < 0)) { ok = 0; why = "derive"; }
     /* send/receive through the CPtr + the derived CPtr. */
     if (ok) {
-        struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x255;
-        if (it_invoke1(d, INV_EP_NB_SEND, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "nb send"; }
+        struct iris_msg m; iris_msg_zero(&m); m.label = 0x255;
+        if (iris_msg_nb_send(d, &m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "nb send"; }
     }
     /* call: needs our reply object. */
     if (ok && it_reply_create_at(S1_SLOT_B) < 0) { ok = 0; why = "reply"; }
     /* Delete ONE cap (the derived SLOT): object must survive. */
     if (ok) { it_slot_delete(IT_SCRATCH_0); d = -1; }
     if (ok) {
-        struct IrisMsg m; it_iris_msg_zero(&m);
-        if (it_invoke1((long)S1_SLOT_A, INV_EP_NB_RECV, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) {
+        struct iris_msg m; iris_msg_zero(&m);
+        if (iris_msg_nb_recv((long)S1_SLOT_A, &m) != (long)IRIS_ERR_WOULD_BLOCK) {
             ok = 0; why = "object died with one cap (S10)";
         }
     }
@@ -854,8 +855,8 @@ void test_t255(void) {
     if (ok && it_invoke0(su, INV_UNTYPED_RESET) != 0) { ok = 0; why = "reset busy (S12)"; }
     if (ok && it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "reuse retype"; }
     if (ok) {
-        struct IrisMsg m; it_iris_msg_zero(&m);
-        if (it_invoke1((long)S1_SLOT_A, INV_EP_NB_RECV, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "reused ep dead"; }
+        struct iris_msg m; iris_msg_zero(&m);
+        if (iris_msg_nb_recv((long)S1_SLOT_A, &m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "reused ep dead"; }
         it_slot_delete(S1_SLOT_A);
     }
     it_close(&su_h);
@@ -945,10 +946,9 @@ void test_t256(void) {
 static volatile int g_t257_done;
 static uint8_t      g_t257_stack[8192];
 static void t257_caller(void) {
-    uint8_t rb[16];
-    struct IrisMsg m; it_iris_msg_zero(&m);
-    m.label = 0x257; m.buf_uptr = (uint64_t)(uintptr_t)rb;
-    (void)it_invoke1((long)S1_SLOT_A, INV_EP_CALL, (long)&m);
+    struct iris_msg m; iris_msg_zero(&m);
+    m.label = 0x257;
+    (void)iris_msg_call((long)S1_SLOT_A, &m);
     g_t257_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -975,12 +975,12 @@ void test_t257(void) {
         uint64_t entry = (uint64_t)(uintptr_t)t257_caller;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t257_stack + sizeof(g_t257_stack))) & ~0xFULL;
         if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread"; break; }
-        struct IrisMsg m; it_iris_msg_zero(&m);
-        if (it_invoke2((long)S1_SLOT_A, INV_EP_RECV, (long)&m, (long)S1_SLOT_B) != 0 ||
-            m.attached_handle != S1_SLOT_B) { ok = 0; why = "recv/echo"; break; }
-        struct IrisMsg rm; it_iris_msg_zero(&rm); rm.label = 0xAC7;
-        if (it_invoke1((long)S1_SLOT_B, INV_REPLY_SEND, (long)&rm) != 0) { ok = 0; why = "reply"; break; }
-        if (it_invoke1((long)S1_SLOT_B, INV_REPLY_SEND, (long)&rm) != (long)IRIS_ERR_NOT_FOUND) {
+        struct iris_msg m; iris_msg_zero(&m);
+        if ((m.reply = (long)S1_SLOT_B, iris_msg_recv((long)S1_SLOT_A, &m)) != 0 ||
+            m.got_cap != S1_SLOT_B) { ok = 0; why = "recv/echo"; break; }
+        struct iris_msg rm; iris_msg_zero(&rm); rm.label = 0xAC7;
+        if (iris_msg_reply((long)S1_SLOT_B, &rm) != 0) { ok = 0; why = "reply"; break; }
+        if (iris_msg_reply((long)S1_SLOT_B, &rm) != (long)IRIS_ERR_NOT_FOUND) {
             ok = 0; why = "one-shot broken (S18)"; break;
         }
         for (int y = 0; y < 4000 && !g_t257_done; y++) it_sys0(SYS_YIELD);
@@ -995,13 +995,13 @@ void test_t257(void) {
         if (ep2 < 0 || lp_spawn_child(cmd, &proc) < 0) { ok = 0; why = "spawn"; }
         if (ok && it_lp_cmd(cmd, LP_CMD_CALL_BLOCK) != 0) { ok = 0; why = "cmd"; }
         if (ok) {
-            struct IrisMsg m; it_iris_msg_zero(&m);
-            if (it_invoke2((long)cmd, INV_EP_RECV, (long)&m, (long)S1_SLOT_B) != 0) { ok = 0; why = "recv child call"; }
+            struct iris_msg m; iris_msg_zero(&m);
+            if ((m.reply = (long)S1_SLOT_B, iris_msg_recv((long)cmd, &m)) != 0) { ok = 0; why = "recv child call"; }
         }
         if (ok && it_kill((long)proc) != 0) { ok = 0; why = "kill"; }
         if (ok) {
-            struct IrisMsg rm; it_iris_msg_zero(&rm);
-            if (it_invoke1((long)S1_SLOT_B, INV_REPLY_SEND, (long)&rm) != (long)IRIS_ERR_NOT_FOUND) {
+            struct iris_msg rm; iris_msg_zero(&rm);
+            if (iris_msg_reply((long)S1_SLOT_B, &rm) != (long)IRIS_ERR_NOT_FOUND) {
                 ok = 0; why = "dead caller reply";
             }
         }
@@ -1016,14 +1016,14 @@ void test_t257(void) {
         if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread 2"; }
         else {
             for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);   /* caller queues */
-            struct IrisMsg m; it_iris_msg_zero(&m);
-            if (it_invoke2((long)S1_SLOT_A, INV_EP_RECV, (long)&m, 0) !=
+            struct iris_msg m; iris_msg_zero(&m);
+            if ((m.reply = 0, iris_msg_recv((long)S1_SLOT_A, &m)) !=
                 (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "implicit reply not retired (S22)"; }
             /* Serve it properly so the thread exits. */
             if (ok) {
-                if (it_invoke2((long)S1_SLOT_A, INV_EP_RECV, (long)&m, (long)S1_SLOT_B) != 0) { ok = 0; why = "recv 3"; }
-                struct IrisMsg rm; it_iris_msg_zero(&rm);
-                if (ok && it_invoke1((long)S1_SLOT_B, INV_REPLY_SEND, (long)&rm) != 0) { ok = 0; why = "reply 3"; }
+                if ((m.reply = (long)S1_SLOT_B, iris_msg_recv((long)S1_SLOT_A, &m)) != 0) { ok = 0; why = "recv 3"; }
+                struct iris_msg rm; iris_msg_zero(&rm);
+                if (ok && iris_msg_reply((long)S1_SLOT_B, &rm) != 0) { ok = 0; why = "reply 3"; }
                 for (int y = 0; y < 4000 && !g_t257_done; y++) it_sys0(SYS_YIELD);
                 if (!g_t257_done) { ok = 0; why = "caller 3 stuck"; }
             }
@@ -1033,8 +1033,8 @@ void test_t257(void) {
     /* Stale: delete the reply cap → the CPtr no longer resolves. */
     it_slot_delete(S1_SLOT_B);
     if (ok) {
-        struct IrisMsg rm; it_iris_msg_zero(&rm);
-        long r = it_invoke1((long)S1_SLOT_B, INV_REPLY_SEND, (long)&rm);
+        struct iris_msg rm; iris_msg_zero(&rm);
+        long r = iris_msg_reply((long)S1_SLOT_B, &rm);
         if (r != (long)IRIS_ERR_NOT_FOUND && r != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "stale reply cap"; }
     }
     it_slot_delete(S1_SLOT_A);
@@ -1057,8 +1057,8 @@ static volatile int  g_t258_done;
 static volatile long g_t258_res;
 static uint8_t       g_t258_stack[8192];
 static void t258_sender(void) {
-    struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x258;
-    g_t258_res  = it_invoke1((long)S1_SLOT_A, INV_EP_SEND, (long)&m);
+    struct iris_msg m; iris_msg_zero(&m); m.label = 0x258;
+    g_t258_res  = iris_msg_send((long)S1_SLOT_A, &m);
     g_t258_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -1098,8 +1098,8 @@ void test_t258(void) {
         if (ok && it_reply_create_at(S1_SLOT_B) < 0) { ok = 0; why = "reply fixture"; }
         if (ok && it_lp_cmd(cmd, LP_CMD_CALL_BLOCK) != 0) { ok = 0; why = "cmd"; }
         if (ok) {
-            struct IrisMsg m; it_iris_msg_zero(&m);
-            if (it_invoke2((long)cmd, INV_EP_RECV, (long)&m, (long)S1_SLOT_B) != 0) { ok = 0; why = "recv call"; }
+            struct iris_msg m; iris_msg_zero(&m);
+            if ((m.reply = (long)S1_SLOT_B, iris_msg_recv((long)cmd, &m)) != 0) { ok = 0; why = "recv call"; }
         }
         if (ok) {
             it_slot_delete(S1_SLOT_B);         /* reply close → caller CLOSED */
@@ -1163,8 +1163,8 @@ void test_t259(void) {
      *    blocks the old object's protocol);
      *  - B carries no pending state from A's lifetime. */
     if (ok) {
-        struct IrisMsg m; it_iris_msg_zero(&m);
-        if (it_invoke1((long)S1_SLOT_A, INV_EP_NB_SEND, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) {
+        struct iris_msg m; iris_msg_zero(&m);
+        if (iris_msg_nb_send((long)S1_SLOT_A, &m) != (long)IRIS_ERR_WRONG_TYPE) {
             ok = 0; why = "stale protocol reached B (S29)";
         }
     }
@@ -1236,11 +1236,11 @@ void test_t261(void) {
         uint32_t a = 0, g0 = 0;
         if (it_status(VFS_EP_SVC_NAME, &a, &g0) != 0 || a != 1u) { ok = 0; why = "pre status"; }
         if (ok) {
-            struct IrisMsg msg; it_iris_msg_zero(&msg);
+            struct iris_msg msg; iris_msg_zero(&msg);
             msg.label = IRIS_SVCMGR_EP_RESTART;
             msg.words[0] = (uint64_t)SVCMGR_SERVICE_VFS;
             msg.word_count = 1u;
-            long r = it_invoke1((long)IRIS_CPTR_TEST_SUPER, INV_EP_CALL, (long)&msg);
+            long r = iris_msg_call((long)IRIS_CPTR_TEST_SUPER, &msg);
             if (!(r == 0 && msg.label == IRIS_EP_REPLY_OK)) { ok = 0; why = "restart denied"; }
         }
         int recovered = 0;
@@ -1290,16 +1290,16 @@ void test_t262(void) {
             children++;
             /* Type-appropriate probe. */
             if (type == IRIS_KOBJ_ENDPOINT) {
-                struct IrisMsg m; it_iris_msg_zero(&m);
-                if (it_invoke1((long)slot, INV_EP_NB_RECV, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ep probe"; }
+                struct iris_msg m; iris_msg_zero(&m);
+                if (iris_msg_nb_recv((long)slot, &m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ep probe"; }
             } else if (type == IRIS_KOBJ_NOTIFICATION) {
                 uint64_t bits = 0;
                 if (it_invoke1((long)slot, INV_NOTIFY_SIGNAL, 1u + round) != 0 ||
                     it_invoke1((long)slot, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
                     bits != (uint64_t)(1u + round)) { ok = 0; why = "notif probe"; }
             } else {
-                struct IrisMsg rm; it_iris_msg_zero(&rm);
-                if (it_invoke1((long)slot, INV_REPLY_SEND, (long)&rm) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "reply probe"; }
+                struct iris_msg rm; iris_msg_zero(&rm);
+                if (iris_msg_reply((long)slot, &rm) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "reply probe"; }
             }
         }
         /* Occasional forced failures — must not consume anything. */
@@ -1329,8 +1329,8 @@ void test_t262(void) {
         /* Tear down; stale CPtr probes must fail cleanly; region reusable. */
         for (uint32_t i = 0; ok && i < nops; i++) it_slot_delete(S1_SLOT_A + i);
         if (ok) {
-            struct IrisMsg m; it_iris_msg_zero(&m);
-            if (it_invoke1((long)S1_SLOT_A, INV_EP_NB_SEND, (long)&m) != (long)IRIS_ERR_NOT_FOUND) {
+            struct iris_msg m; iris_msg_zero(&m);
+            if (iris_msg_nb_send((long)S1_SLOT_A, &m) != (long)IRIS_ERR_NOT_FOUND) {
                 ok = 0; why = "stale cptr";
             }
         }
@@ -1918,12 +1918,12 @@ static long it_cs_mint_into(uint64_t proc, uint32_t dslot, uint64_t src,
 /* An endpoint is "alive" iff EP_NB_RECV resolves it (WOULD_BLOCK = no sender);
  * once its cap is revoked/deleted the CPtr no longer resolves (< 0, != WB). */
 static int it_ep_alive(uint32_t slot) {
-    struct IrisMsg m; it_iris_msg_zero(&m);
-    return it_invoke1((long)slot, INV_EP_NB_RECV, (long)&m) == (long)IRIS_ERR_WOULD_BLOCK;
+    struct iris_msg m; iris_msg_zero(&m);
+    return iris_msg_nb_recv((long)slot, &m) == (long)IRIS_ERR_WOULD_BLOCK;
 }
 static int it_ep_dead(uint32_t slot) {
-    struct IrisMsg m; it_iris_msg_zero(&m);
-    long r = it_invoke1((long)slot, INV_EP_NB_RECV, (long)&m);
+    struct iris_msg m; iris_msg_zero(&m);
+    long r = iris_msg_nb_recv((long)slot, &m);
     return r < 0 && r != (long)IRIS_ERR_WOULD_BLOCK;
 }
 
@@ -2193,12 +2193,12 @@ static volatile int g_t294_s1 = 999, g_t294_done = 0;
 static uint8_t      g_t294_stack[8192];
 
 static void t294_sender(void) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label           = 0x94;
-    m.attached_handle = (uint32_t)g_t294_cap;
-    m.attached_rights = RIGHT_WRITE;
-    g_t294_s1 = (int)it_invoke1((long)g_t294_cmd_ep, INV_EP_SEND, (long)&m);
+    m.cap = (uint32_t)g_t294_cap;
+    m.cap_rights = RIGHT_WRITE;
+    g_t294_s1 = (int)iris_msg_send((long)g_t294_cmd_ep, &m);
     g_t294_done = 1;
     it_sys1(SYS_EXIT, 0);
     for (;;) {}
@@ -2231,17 +2231,17 @@ void test_t294(void) {
 
     int ok = 1;
     const char *why = "deep recv slot";
-    struct IrisMsg r;
+    struct iris_msg r;
 
-    it_iris_msg_zero(&r);
-    r.attached_cap = (uint32_t)T294_CPTR;
-    if (it_invoke1((long)g_t294_cmd_ep, INV_EP_RECV, (long)&r) != 0) {
+    iris_msg_zero(&r);
+    r.recv_slot = (uint32_t)T294_CPTR;
+    if (iris_msg_recv((long)g_t294_cmd_ep, &r) != 0) {
         ok = 0; why = "recv";
     }
     /* Delivered AT the declared CPtr, and reported as a CPtr — not reclassified
      * as a handle because it happens to exceed 1024. */
-    if (ok && r.attached_handle != (uint32_t)T294_CPTR) { ok = 0; why = "wrong dest"; }
-    if (ok && !iris_msg_cap_is_cptr(r.attached_handle)) { ok = 0; why = "classified as handle"; }
+    if (ok && r.got_cap != (uint32_t)T294_CPTR) { ok = 0; why = "wrong dest"; }
+    if (ok && !iris_msg_cap_is_cptr(r.got_cap)) { ok = 0; why = "classified as handle"; }
 
     /* The capability is really there, is the right type, and works. */
     if (ok && it_invoke0((long)T294_CPTR, INV_CAP_IDENTIFY)
@@ -2262,10 +2262,10 @@ void test_t294(void) {
 
     /* Declaring the SAME deep slot again, now occupied, fails fast. */
     if (ok) {
-        struct IrisMsg r2;
-        it_iris_msg_zero(&r2);
-        r2.attached_cap = (uint32_t)T294_CPTR;
-        if (it_invoke1((long)g_t294_cmd_ep, INV_EP_NB_RECV, (long)&r2)
+        struct iris_msg r2;
+        iris_msg_zero(&r2);
+        r2.recv_slot = (uint32_t)T294_CPTR;
+        if (iris_msg_nb_recv((long)g_t294_cmd_ep, &r2)
             != (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "occupied deep slot"; }
     }
 

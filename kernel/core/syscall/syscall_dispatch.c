@@ -61,11 +61,11 @@ struct syscall_frame {
     uint64_t arg5;         /*  80 — r9  (ledger A-33)               */
     uint64_t arg6;         /*  88 — r15 (ledger A-33)               */
     uint64_t arg7;         /*  96 — r14 (ledger A-33)               */
+    uint64_t arg8;         /* 104 — r13 (ledger A-33)               */
     /* Callee-saved, pushed FIRST so the offsets above did not move.
-     * r15 and r14 are ABOVE, because they are arguments now: the same two
-     * pushes, carrying the user's values on the way in and the message on the
-     * way out. */
-    uint64_t user_r13;     /* 104 */
+     * r15, r14 and r13 are ABOVE, because they are arguments now: the same
+     * three pushes, carrying the user's values on the way in and the message
+     * on the way out. */
     uint64_t user_r12;     /* 112 */
     uint64_t user_rbx;     /* 120 */
     uint64_t user_rbp;     /* 128 */
@@ -93,7 +93,7 @@ void syscall_save_user_ctx(struct syscall_frame *f) {
      * in a call which returns no message must find them unchanged. */
     t->sc_user_regs[0] = f->arg6;   /* r15 */
     t->sc_user_regs[1] = f->arg7;   /* r14 */
-    t->sc_user_regs[2] = f->user_r13;
+    t->sc_user_regs[2] = f->arg8;   /* r13 */
     t->sc_user_regs[3] = f->user_r12;
     t->sc_user_regs[4] = f->user_rbx;
     t->sc_user_regs[5] = f->user_rbp;
@@ -144,7 +144,7 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
                                      uint64_t arg1, uint64_t arg2,
                                      uint64_t arg3, uint64_t arg4,
                                      uint64_t arg5, uint64_t arg6,
-                                     uint64_t arg7);
+                                     uint64_t arg7, uint64_t arg8);
 
 /*
  * A-33 — copy the return message out of the thread and into the frame.
@@ -197,9 +197,9 @@ void syscall_request_restart(struct task *t) {
 static uint64_t syscall_run(struct task *t, uint64_t num, uint64_t arg0,
                             uint64_t arg1, uint64_t arg2, uint64_t arg3,
                             uint64_t arg4, uint64_t arg5, uint64_t arg6,
-                            uint64_t arg7) {
+                            uint64_t arg7, uint64_t arg8) {
     uint64_t r = syscall_dispatch_one(num, arg0, arg1, arg2, arg3, arg4,
-                                      arg5, arg6, arg7);
+                                      arg5, arg6, arg7, arg8);
     if (!t || !t->sc_restart) { if (t) t->sc_reentry = 0u; return r; }
 
     t->sc_restart = 0u;
@@ -210,16 +210,18 @@ static uint64_t syscall_run(struct task *t, uint64_t num, uint64_t arg0,
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
                           uint64_t arg1, uint64_t arg2, uint64_t arg3,
                           uint64_t arg4, uint64_t arg5, uint64_t arg6,
-                          uint64_t arg7) {
+                          uint64_t arg7, uint64_t arg8) {
     struct task *t = task_current();
     if (t) {
-        t->sc_num  = num;  t->sc_arg0 = arg0; t->sc_arg1 = arg1;
-        t->sc_arg2 = arg2; t->sc_arg3 = arg3; t->sc_arg4 = arg4;
-        t->sc_arg5 = arg5; t->sc_arg6 = arg6; t->sc_arg7 = arg7;
+        t->sc_num = num;
+        t->sc_arg[0] = arg0; t->sc_arg[1] = arg1; t->sc_arg[2] = arg2;
+        t->sc_arg[3] = arg3; t->sc_arg[4] = arg4; t->sc_arg[5] = arg5;
+        t->sc_arg[6] = arg6; t->sc_arg[7] = arg7; t->sc_arg[8] = arg8;
         t->sc_restart = 0u;
         t->sc_reentry = 0u;
     }
-    return syscall_run(t, num, arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+    return syscall_run(t, num, arg0, arg1, arg2, arg3, arg4, arg5, arg6,
+                       arg7, arg8);
 }
 
 /*
@@ -258,9 +260,10 @@ __attribute__((noreturn)) void syscall_restart_trampoline(void) {
     atomic_fetch_add_explicit(&syscall_abandon_total, 1u, memory_order_relaxed);
     t->sc_reentry = 1u;
 
-    uint64_t r = syscall_run(t, t->sc_num, t->sc_arg0, t->sc_arg1,
-                             t->sc_arg2, t->sc_arg3, t->sc_arg4,
-                             t->sc_arg5, t->sc_arg6, t->sc_arg7);
+    uint64_t r = syscall_run(t, t->sc_num, t->sc_arg[0], t->sc_arg[1],
+                             t->sc_arg[2], t->sc_arg[3], t->sc_arg[4],
+                             t->sc_arg[5], t->sc_arg[6], t->sc_arg[7],
+                             t->sc_arg[8]);
 
     /*
      * And return to ring 3 without a syscall frame — the whole point of step 2.
@@ -295,10 +298,11 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
                                      uint64_t arg1, uint64_t arg2,
                                      uint64_t arg3, uint64_t arg4,
                                      uint64_t arg5, uint64_t arg6,
-                                     uint64_t arg7) {
+                                     uint64_t arg7, uint64_t arg8) {
     /* The invocation door. */
     if (num == SYS_INVOKE)
-        return syscall_invoke(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+        return syscall_invoke(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7,
+                              arg8);
 
     /*
      * Everything below is the numbered door, and what takes it is counted —

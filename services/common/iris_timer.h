@@ -22,6 +22,7 @@
  * doing.
  */
 #include <stdint.h>
+#include "iris_msg.h"
 #include <iris/syscall.h>
 #include <iris/invoke.h>
 #include <iris/ipc_msg.h>
@@ -50,16 +51,16 @@
 static inline long iris_timer_arm(long timer_ep, long notif_give,
                                   uint64_t bits, uint64_t ns,
                                   uint64_t *out_token) {
-    struct IrisMsg m;
+    struct iris_msg m;
     uint8_t *b = (uint8_t *)&m;
     for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) b[i] = 0;
     m.label               = TMR_OP_ARM;
     m.words[0]            = ns;
     m.words[1]            = bits;
     m.word_count          = 2u;
-    m.attached_cap        = (uint32_t)notif_give;
-    m.attached_cap_rights = RIGHT_WRITE;
-    long r = iris_invoke1(timer_ep, INV_EP_CALL, (long)(uintptr_t)&m);
+    m.cap        = (uint32_t)notif_give;
+    m.cap_rights = RIGHT_WRITE;
+    long r = iris_msg_call(timer_ep, &m);
     if (r != 0) return r;
     if (m.words[0] != 0u) return -1;
     if (out_token) *out_token = m.words[1];
@@ -76,13 +77,13 @@ static inline long iris_timer_arm(long timer_ep, long notif_give,
  * the capability it arrives through, so a client can only take back its own.
  */
 static inline long iris_timer_cancel(long timer_ep, uint64_t token) {
-    struct IrisMsg m;
+    struct iris_msg m;
     uint8_t *b = (uint8_t *)&m;
     for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) b[i] = 0;
     m.label      = TMR_OP_CANCEL;
     m.words[0]   = token;
     m.word_count = 1u;
-    long r = iris_invoke1(timer_ep, INV_EP_CALL, (long)(uintptr_t)&m);
+    long r = iris_msg_call(timer_ep, &m);
     if (r != 0) return r;
     return (m.words[0] == 0u) ? 0 : -1;
 }

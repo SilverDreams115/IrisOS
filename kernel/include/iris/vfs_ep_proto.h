@@ -1,14 +1,14 @@
 /*
  * vfs_ep_proto.h — VFS service protocol over KEndpoint (Phase 7.1).
  *
- * Wire format: struct IrisMsg (iris/ipc_msg.h) following the conventions in
+ * Wire format: struct iris_msg (iris/ipc_msg.h) following the conventions in
  * iris/endpoint_proto.h. All operations are EP_CALL + SYS_REPLY round trips.
  *
  * Design notes:
  *   - The endpoint protocol is STATELESS: there is no open-file table on the
  *     EP path. Reads carry an explicit (path, offset, len) triple, so a dead
  *     client leaves no server-side state behind and no sender identity is
- *     required (IrisMsg carries no kernel-stamped sender id / badge yet).
+ *     required (the message carried no kernel-stamped sender id / badge yet).
  *   - This is the ONLY VFS protocol (Phase 7.5): the legacy stateful KChannel
  *     open/read/close protocol (iris/vfs_proto.h) was removed with its last
  *     clients; VFS no longer owns a legacy service channel.

@@ -50,12 +50,15 @@
 
 uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
                         uint64_t a1, uint64_t a2, uint64_t a3,
-                        uint64_t a4, uint64_t a5, uint64_t a6) {
-    /* a4..a6 are the message ABI's extra words (A-33): only the IPC methods
-     * read them, and they reach those methods through the thread rather than
-     * through this switch, which would otherwise carry eight arguments for the
-     * benefit of seven of its sixty cases. */
-    (void)a4; (void)a5; (void)a6;
+                        uint64_t a4, uint64_t a5, uint64_t a6,
+                        uint64_t a7) {
+    /* a4, a5 and a7 are message words (A-33).  The IPC methods read the
+     * message through the THREAD rather than through this switch, which would
+     * otherwise carry nine arguments for the benefit of seven of its sixty
+     * cases — and which a restart could not reproduce anyway.  a6 is the one
+     * exception, because ReplyRecv needs its reply object before it has
+     * touched the message at all. */
+    (void)a4; (void)a5; (void)a7;
     switch (label) {
     /* ── KOBJ_TCB ─────────────────────────────────────────────────────── */
     case INV_TCB_SUSPEND:              return sys_tcb_suspend(cptr, a1, a2);
@@ -85,7 +88,9 @@ uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
      * first and the endpoint last, because it grew out of SYS_REPLY.  The
      * order is rearranged here rather than in the function, so that adopting
      * seL4's way of NAMING the operation changes nothing it does. */
-    case INV_EP_REPLY_RECV:            return sys_reply_recv(a1, a2, cptr);
+    /* A-33: the reply object rides in the capability word (a6), because a
+     * reply carries no capability and the syscall enforces that itself. */
+    case INV_EP_REPLY_RECV:            return sys_reply_recv(a6, 0, cptr);
 
     /* ── KOBJ_NOTIFICATION ────────────────────────────────────────────── */
     case INV_NOTIFY_SIGNAL:            return sys_notify_signal(cptr, a1, a2);

@@ -11,6 +11,7 @@
 #include "it_priv.h"
 
 
+#include "../common/iris_msg.h"
 /* ── T149: CPtr / handle / wrong-type fuzz ──────────────────────────────────
  * Every handle-taking syscall family gets fed empty slots, wrong-type caps,
  * stale handles and boundary values.  Wrong-type crossings are the core:
@@ -31,11 +32,11 @@ void test_t149(void) {
     handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
     if (ep < 0 || no < 0) { it_close(&ep_h); it_close(&no_h); it_fail("T149", "fixture"); return; }
 
-    struct IrisMsg m; it_iris_msg_zero(&m);
+    struct iris_msg m; iris_msg_zero(&m);
 
     /* Wrong-type: endpoint op on a notification and vice-versa. */
-    if (ok && it_invoke1(no, INV_EP_SEND, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "ep_send on notif"; }
-    if (ok && it_invoke1(no, INV_EP_NB_SEND, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "nb_send on notif"; }
+    if (ok && iris_msg_send(no, &m) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "ep_send on notif"; }
+    if (ok && iris_msg_nb_send(no, &m) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "nb_send on notif"; }
     if (ok && it_invoke1(ep, INV_NOTIFY_SIGNAL, 1) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "signal on ep"; }
     /* Stage 7 Step 13: killing names a THREAD, and the TCB family answers
      * INVALID_ARG for an argument that is not one. */
@@ -50,7 +51,7 @@ void test_t149(void) {
         long h = it_fz_bad_handles[i];
         if (it_invoke0(h, INV_CAP_IDENTIFY) >= 0)                { ok = 0; why = "identify honoured bad"; break; }
         if (it_invoke1(h, INV_NOTIFY_SIGNAL, 1) >= 0)            { ok = 0; why = "signal honoured bad"; break; }
-        if (it_invoke1(h, INV_EP_SEND, (long)&m) >= 0)           { ok = 0; why = "ep_send honoured bad"; break; }
+        if (iris_msg_send(h, &m) >= 0)           { ok = 0; why = "ep_send honoured bad"; break; }
         if (it_invoke0(h, INV_TCB_EXIT) >= 0)                    { ok = 0; why = "kill honoured bad"; break; }
         if (it_invoke2(h, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_0 << 32), (long)RIGHT_READ) >= 0)                   { ok = 0; why = "mint honoured bad"; break; }
         if (it_retype_slot_alloc(h, IT_KOBJ_FRAME, 4096) >= 0) { ok = 0; why = "retype honoured bad"; break; }
@@ -156,18 +157,19 @@ void test_t150(void) {
         }
         it_close(&no_h);
     }
-    /* SYS_EP_SEND with a hostile message pointer → INVALID_ARG, endpoint clean. */
-    {
-        long ep = it_ep_create();
-        handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
-        if (ep < 0) { ok = 0; why = "ep fixture"; }
-        for (int i = 0; ok && i < NB; i++) {
-            if (it_invoke1(ep, INV_EP_NB_SEND, bad_ptr[i]) != (long)IRIS_ERR_INVALID_ARG) {
-                ok = 0; why = "ep_send bad msg"; break;
-            }
-        }
-        it_close(&ep_h);
-    }
+    /*
+     * A-33 deleted this probe's subject.
+     *
+     * It sent a hostile MESSAGE POINTER and asked for INVALID_ARG with the
+     * endpoint left clean.  A message has no pointer any more — it is a
+     * MessageInfo word and message registers — so there is no address for a
+     * caller to get wrong and none for the kernel to validate.  The hostile
+     * pointers above still have work to do, because `Notify_Wait` and
+     * `Notify_Poll` genuinely do write to user memory the caller names.
+     *
+     * What took its place is not another probe but the absence of a check:
+     * `user_range_readable` is gone from every send path in the kernel.
+     */
 
     /* Size fuzz on SYS_SCHED_INFO: below-base is INVALID_ARG, huge size is
      * clamped to the largest tier (not an overflow) and succeeds into a valid
@@ -226,9 +228,9 @@ void test_t151(void) {
              * nothing.  Whatever is in that slot — nothing, or an object of
              * some other type — the call fails; what it must never do is
              * resume a thread. */
-            struct IrisMsg rm;
-            it_iris_msg_zero(&rm);
-            long rr = it_invoke1((long)(fz_rand() & 0x3FFu), INV_REPLY_SEND, (long)(uintptr_t)&rm);
+            struct iris_msg rm;
+            iris_msg_zero(&rm);
+            long rr = iris_msg_reply((long)(fz_rand() & 0x3FFu), &rm);
             if (rr >= 0) { ok = 0; why = "random cptr resumed something"; break; }
         }
         op = 6;
@@ -329,9 +331,9 @@ void test_t152(void) {
      * 233 is above every fault leaf in the objects CNode and nothing else
      * writes it. */
     {
-        struct IrisMsg rm;
-        it_iris_msg_zero(&rm);
-        if (ok && it_invoke1((long)IT_OBJ_CPTR(233u), INV_REPLY_SEND, (long)(uintptr_t)&rm)
+        struct iris_msg rm;
+        iris_msg_zero(&rm);
+        if (ok && iris_msg_reply((long)IT_OBJ_CPTR(233u), &rm)
                   != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "resume mismatch"; }
     }
 
@@ -591,31 +593,39 @@ long it_lp_report_slots(const struct svc_mint *extra, uint32_t nextra) {
 
 /* LOOKUP_NAME through the given svcmgr CPtr; returns the granted attached_rights
  * (>=0), or a negative error.  Closes the returned cap (rights are the subject). */
+/*
+ * The rights a lookup actually GRANTED.
+ *
+ * A-33: it used to read the rights the server had written into the reply
+ * message — a field the kernel copied across untouched, so the answer was
+ * what the server ASKED for and not what the caller got.  There is no such
+ * field now.  A capability's rights come back in the MessageInfo, which means
+ * the capability has to actually be delivered, which means declaring a slot
+ * for it — so this asks the stronger question, and deletes what it was given.
+ */
 long it_lookup_rights(long svcmgr_cptr, const char *name) {
     uint32_t len = it_stage_path(name);
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
-    m.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    m.buf_len  = len;
-    if (it_invoke1(svcmgr_cptr, INV_EP_CALL, (long)&m) != 0) return -1;
+    struct iris_msg m;
+    iris_msg_zero(&m);
+    m.label     = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    m.buf_len   = len;
+    it_slot_delete(IT_SCRATCH_2);
+    m.recv_slot = (long)IT_SCRATCH_2;
+    if (iris_msg_call(svcmgr_cptr, &m) != 0) return -1;
     if (m.label != IRIS_EP_REPLY_OK) return -(long)(uint32_t)m.words[0];
-    if (m.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
-        handle_id_t h = (handle_id_t)m.attached_handle;
-        it_close(&h);
-    }
-    return (long)m.attached_rights;
+    long r = (long)m.got_caps;
+    it_slot_delete(IT_SCRATCH_2);
+    return r;
 }
 
 /* svcmgr DIAG ready-service count (words[1]) — the registry gauge that INCLUDES
  * dynamic registrations (words[2] active_slot_count is catalog-only).  A dynamic
  * register bumps this by one; unregister drops it back. */
 static long it_svcmgr_active_slots(void) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label    = IRIS_SVCMGR_EP_DIAG;
-    m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    if (it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m) != 0) return -1;
+    if (iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &m) != 0) return -1;
     if (m.label != IRIS_EP_REPLY_OK || m.word_count < 2u) return -1;
     return (long)(uint32_t)m.words[1];
 }
@@ -708,23 +718,21 @@ void test_t158(void) {
     const char *why = "vfs boundary";
 
     /* vfs.ep answers PING. */
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label    = IRIS_EP_OP_PING;
-    m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    if (ok && (it_invoke1((long)IRIS_CPTR_VFS_EP, INV_EP_CALL, (long)&m) != 0 ||
+    if (ok && (iris_msg_call((long)IRIS_CPTR_VFS_EP, &m) != 0 ||
                m.label != IRIS_EP_REPLY_OK)) { ok = 0; why = "vfs ping"; }
 
     /* A foreign registry opcode to vfs.ep must NOT be honoured as a registry
      * op (vfs is not svcmgr); it replies with an error, never OK. */
-    it_iris_msg_zero(&m);
+    iris_msg_zero(&m);
     m.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     m.buf_len  = it_stage_path("vfs.ep");
-    if (ok && it_invoke1((long)IRIS_CPTR_VFS_EP, INV_EP_CALL, (long)&m) == 0 &&
-        m.label == IRIS_EP_REPLY_OK && m.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+    if (ok && iris_msg_call((long)IRIS_CPTR_VFS_EP, &m) == 0 &&
+        m.label == IRIS_EP_REPLY_OK && m.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
         ok = 0; why = "vfs served a registry op";
-        handle_id_t h = (handle_id_t)m.attached_handle; it_close(&h);
+        handle_id_t h = (handle_id_t)m.got_cap; it_close(&h);
     }
 
     /* Ordinary vfs.ep cap is call-only (no DUPLICATE) — cannot be re-minted. */
@@ -752,22 +760,20 @@ void test_t159(void) {
     const long eps[2] = { (long)IRIS_CPTR_CONSOLE_EP, (long)IRIS_CPTR_KBD_EP };
 
     for (int i = 0; ok && i < 2; i++) {
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
+        struct iris_msg m;
+        iris_msg_zero(&m);
         m.label    = IRIS_EP_OP_PING;
-        m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-        if (it_invoke1(eps[i], INV_EP_CALL, (long)&m) != 0 || m.label != IRIS_EP_REPLY_OK) {
+        if (iris_msg_call(eps[i], &m) != 0 || m.label != IRIS_EP_REPLY_OK) {
             ok = 0; why = "driver ping"; break;
         }
         /* Foreign registry op → must not hand back a cap. */
-        it_iris_msg_zero(&m);
+        iris_msg_zero(&m);
         m.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-        m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
         m.buf_len  = it_stage_path("vfs.ep");
-        if (it_invoke1(eps[i], INV_EP_CALL, (long)&m) == 0 &&
-            m.label == IRIS_EP_REPLY_OK && m.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+        if (iris_msg_call(eps[i], &m) == 0 &&
+            m.label == IRIS_EP_REPLY_OK && m.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
             ok = 0; why = "driver served registry op";
-            handle_id_t h = (handle_id_t)m.attached_handle; it_close(&h); break;
+            handle_id_t h = (handle_id_t)m.got_cap; it_close(&h); break;
         }
     }
 
@@ -841,12 +847,12 @@ void test_t161(void) {
 
     /* Unregister (owner) → gone, gauge back to baseline, no ghost. */
     if (ok) {
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
+        struct iris_msg m;
+        iris_msg_zero(&m);
         m.label      = IRIS_SVCMGR_EP_UNREGISTER;
         m.words[0]   = (uint32_t)id;
         m.word_count = 1u;
-        if (it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m) != 0 ||
+        if (iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &m) != 0 ||
             m.label != IRIS_EP_REPLY_OK) { ok = 0; why = "unregister"; }
     }
     if (ok && it_lookup_rights((long)IRIS_CPTR_SVCMGR_EP, "t161.svc")
@@ -918,23 +924,22 @@ void test_t163(void) {
             != -(long)(uint32_t)IRIS_ERR_NOT_FOUND) { ok = 0; why = "missing lookup"; break; }
         op = 2;
         {   /* unregister a stale/never-registered id → not OK */
-            struct IrisMsg m;
-            it_iris_msg_zero(&m);
+            struct iris_msg m;
+            iris_msg_zero(&m);
             m.label = IRIS_SVCMGR_EP_UNREGISTER;
             m.words[0] = 0x4000u + (fz_rand() & 0xFFu);
             m.word_count = 1u;
-            long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m);
+            long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &m);
             if (r == 0 && m.label == IRIS_EP_REPLY_OK) { ok = 0; why = "stale unregister accepted"; break; }
         }
         op = 3;   /* register a reserved name → ACCESS_DENIED */
         {
             uint32_t len = it_stage_path("vfs.ep");
-            struct IrisMsg m;
-            it_iris_msg_zero(&m);
+            struct iris_msg m;
+            iris_msg_zero(&m);
             m.label = IRIS_SVCMGR_EP_REGISTER;
-            m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
             m.buf_len = len;
-            long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m);
+            long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &m);
             if (r == 0 && m.label == IRIS_EP_REPLY_OK) { ok = 0; why = "reserved register accepted"; break; }
         }
 
@@ -949,12 +954,12 @@ void test_t163(void) {
         if (it_lookup_rights((long)IRIS_CPTR_SVCMGR_EP, "t163.svc") < 0) { ok = 0; why = "lookup"; it_close(&svc_ep); break; }
         op = 12;
         {
-            struct IrisMsg m;
-            it_iris_msg_zero(&m);
+            struct iris_msg m;
+            iris_msg_zero(&m);
             m.label = IRIS_SVCMGR_EP_UNREGISTER;
             m.words[0] = (uint32_t)id;
             m.word_count = 1u;
-            if (it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m) != 0 ||
+            if (iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &m) != 0 ||
                 m.label != IRIS_EP_REPLY_OK) { ok = 0; why = "unregister"; it_close(&svc_ep); break; }
         }
         it_close(&svc_ep);
@@ -1574,13 +1579,12 @@ void test_t171(void) {
  *   2 when only alive/gen were returned, or -1 on failure. */
 static long it_policy(const char *name, uint32_t p[6]) {
     uint32_t len = it_stage_path(name);
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label    = IRIS_SVCMGR_EP_STATUS;
-    m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     m.buf_len  = len;
     for (uint32_t i = 0; i < 6u; i++) p[i] = 0u;
-    if (it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m) != 0) return -1;
+    if (iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &m) != 0) return -1;
     if (m.label != IRIS_EP_REPLY_OK) return -1;
     p[0] = (uint32_t)m.words[0];   /* alive */
     p[1] = (uint32_t)m.words[1];   /* generation */
@@ -1598,12 +1602,12 @@ static long it_policy(const char *name, uint32_t p[6]) {
 /* Unregister a dynamic service id through the svcmgr endpoint; returns 0 (OK) or
  * the negative error the reply carried. */
 long it_unregister(uint32_t dyn_id) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label      = IRIS_SVCMGR_EP_UNREGISTER;
     m.words[0]   = dyn_id;
     m.word_count = 1u;
-    if (it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m) != 0) return -1;
+    if (iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &m) != 0) return -1;
     if (m.label != IRIS_EP_REPLY_OK) return -(long)(uint32_t)m.words[0];
     return 0;
 }
@@ -1659,12 +1663,12 @@ void test_t173(void) {
     if (ok && it_policy(KBD_EP_SVC_NAME, p0) < 4) { ok = 0; why = "pre-policy"; }
     if (ok && p0[0] != 1u) { ok = 0; why = "kbd not alive pre"; }
 
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
+    struct iris_msg msg;
+    iris_msg_zero(&msg);
     msg.label = IRIS_SVCMGR_EP_RESTART;
     msg.words[0] = (uint64_t)SVCMGR_SERVICE_KBD;
     msg.word_count = 1u;
-    if (ok && (it_invoke1((long)IRIS_CPTR_TEST_SUPER, INV_EP_CALL, (long)&msg) != 0 ||
+    if (ok && (iris_msg_call((long)IRIS_CPTR_TEST_SUPER, &msg) != 0 ||
                msg.label != IRIS_EP_REPLY_OK)) { ok = 0; why = "restart denied"; }
 
     /* Poll (bounded, no sleep — each EP_CALL yields) until the new generation. */
@@ -1680,10 +1684,10 @@ void test_t173(void) {
 
     /* The restarted instance answers on kbd.ep (endpoint survives restart). */
     if (ok) {
-        struct IrisMsg pm;
-        it_iris_msg_zero(&pm);
+        struct iris_msg pm;
+        iris_msg_zero(&pm);
         pm.label = IRIS_EP_OP_PING;
-        if (it_invoke1((long)IRIS_CPTR_KBD_EP, INV_EP_CALL, (long)&pm) != 0 ||
+        if (iris_msg_call((long)IRIS_CPTR_KBD_EP, &pm) != 0 ||
             pm.label != IRIS_EP_REPLY_OK) { ok = 0; why = "kbd.ep dead after restart"; }
     }
 
@@ -1809,10 +1813,10 @@ void test_t176(void) {
     /* The endpoint has no receiver now: a non-blocking send reports WOULD_BLOCK,
      * not a phantom rendezvous with the dead caller. */
     if (ok) {
-        struct IrisMsg m;
-        it_iris_msg_zero(&m);
+        struct iris_msg m;
+        iris_msg_zero(&m);
         m.label = 0x176;
-        long r = it_invoke1((long)cmd, INV_EP_NB_SEND, (long)&m);
+        long r = iris_msg_nb_send((long)cmd, &m);
         if (r != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "phantom receiver after death"; }
     }
 
@@ -1964,12 +1968,12 @@ void test_t180(void) {
         /* Stale-registry pressure: unregister a never-registered id. */
         op = 1;
         {
-            struct IrisMsg m;
-            it_iris_msg_zero(&m);
+            struct iris_msg m;
+            iris_msg_zero(&m);
             m.label = IRIS_SVCMGR_EP_UNREGISTER;
             m.words[0] = 0x4000u + (fz_rand() & 0xFFu);
             m.word_count = 1u;
-            long r = it_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&m);
+            long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &m);
             if (r == 0 && m.label == IRIS_EP_REPLY_OK) { ok = 0; why = "stale unregister accepted"; break; }
         }
 
@@ -2172,26 +2176,26 @@ long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
 
 long t25_serve(handle_id_t pcmd, uint32_t sub, uint32_t count,
                       uint64_t mflags, uint64_t va_ovr, uint64_t expect_cr2) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label = LP_CMD_PAGER_SERVE;
     m.words[0] = (uint64_t)sub | ((uint64_t)count << 8);
     m.words[1] = mflags;
     m.words[2] = va_ovr;
     m.words[3] = expect_cr2;
     m.word_count = 4u;
-    return it_invoke1((long)pcmd, INV_EP_SEND, (long)&m);
+    return iris_msg_send((long)pcmd, &m);
 }
 
 long t25_xprobe(handle_id_t pcmd, uint32_t vtid, uint64_t va, uint32_t vseq) {
-    struct IrisMsg m;
-    it_iris_msg_zero(&m);
+    struct iris_msg m;
+    iris_msg_zero(&m);
     m.label = LP_CMD_PAGER_XPROBE;
     m.words[0] = vtid;
     m.words[1] = va;
     m.words[2] = vseq;
     m.word_count = 3u;
-    return it_invoke1((long)pcmd, INV_EP_SEND, (long)&m);
+    return iris_msg_send((long)pcmd, &m);
 }
 
 /*
