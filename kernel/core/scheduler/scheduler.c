@@ -60,8 +60,15 @@ static volatile uint64_t wall_ticks = 0;
 static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
     /* Phase S2 Step C: iterate the registry, not the raw array — a TCB's
      * identity is its registry reference, never a position in tasks[]. */
-    /* Fast-forward clock to nearest deadline so timed tasks wake even with no IRQs. */
+    /* Fast-forward clock to nearest deadline so timed tasks wake even with no IRQs.
+     *
+     * Both walks below hold `sched_list_lock` (§9.1 rank 5): a thread can be
+     * unlinked by a termination on another CPU while this one is following
+     * `sched_next`, and the unlink resets the very field the walk is standing
+     * on.  `task_wakeup` inside the second walk takes the run queue (rank 7),
+     * which is down the order and therefore allowed. */
     uint64_t min_wake = UINT64_MAX;
+    uint64_t lf = irq_spinlock_lock(&sched_list_lock);
     for (struct task *t = sched_thread_list; t; t = t->sched_next) {
         if (t->wake_tick != 0 && t->wake_tick < min_wake)
             min_wake = t->wake_tick;
@@ -93,6 +100,7 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
             task_wakeup(t);
         }
     }
+    irq_spinlock_unlock(&sched_list_lock, lf);
     *out_chosen = rq_dequeue_best();
 }
 
@@ -366,6 +374,7 @@ void scheduler_tick(void) {
      *   and task_wakeup sends an IPI to the home CPU — correct but wastes IRQ
      *   budget.  A per-CPU timer wheel removes the cross-CPU IPI.
      */
+    uint64_t tf = irq_spinlock_lock(&sched_list_lock);
     for (struct task *t = sched_thread_list; t; t = t->sched_next) {
         /* Ph75: refill budget for exhausted tasks whose period has elapsed */
         if (t->state == TASK_BUDGET_EXHAUSTED &&
@@ -377,6 +386,7 @@ void scheduler_tick(void) {
             task_wakeup(t);
         }
     }
+    irq_spinlock_unlock(&sched_list_lock, tf);
 
     if (!current_task) return;
 

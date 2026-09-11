@@ -42,6 +42,25 @@
  */
 struct task         ktcb_backing[TASK_BOOTSTRAP_MAX];  /* idle + root task */
 struct task        *sched_thread_list = 0;
+
+/*
+ * The list's lock (SMP roadmap §9.1, rank 5).
+ *
+ * `sched_thread_list` is the one piece of scheduler state every CPU touches:
+ * thread creation pushes onto it, termination unlinks from it, and the
+ * DISPATCHER walks it twice on every idle looking for a deadline to fast
+ * forward to or a budget that has come back.  A walk racing an unlink reads a
+ * `sched_next` out of a TCB that is being reset — which on one core cannot
+ * happen, because neither the dispatcher nor a syscall can be interrupted into
+ * the other.
+ *
+ * IRQ-OFF, and that is not a default.  The TICK walks this list too
+ * (`scheduler_tick`, in interrupt context).  A plain spinlock would let the
+ * tick interrupt a CPU that is halfway through the dispatcher's walk and then
+ * spin for a lock its own CPU holds, which is a deadlock with one core, never
+ * mind two.
+ */
+irq_spinlock_t      sched_list_lock;
 struct task        *current_task    = 0;
 
 /* ── Phase S2 D2 — registry + backing instrumentation (QUERY kind 4) ── */
@@ -70,11 +89,13 @@ static int task_registry_alloc(struct task *t) {
      * the array was full — the kernel telling a holder with memory and a
      * capability that it may not have another thread. */
     if (t->reg_slot >= 0) return 0;              /* already listed */
+    uint64_t lf = irq_spinlock_lock(&sched_list_lock);
     t->sched_prev = 0;
     t->sched_next = sched_thread_list;
     if (sched_thread_list) sched_thread_list->sched_prev = t;
     sched_thread_list = t;
     t->reg_slot = 1;
+    irq_spinlock_unlock(&sched_list_lock, lf);
     uint32_t n = atomic_fetch_add_explicit(&reg_active, 1u, memory_order_relaxed) + 1u;
     uint32_t hw = atomic_load_explicit(&reg_hwm, memory_order_relaxed);
     while (n > hw &&
@@ -88,12 +109,14 @@ static int task_registry_alloc(struct task *t) {
  * capability to a terminated TCB keeps the object, never a place in the walk. */
 static void task_registry_release(struct task *t) {
     if (!t || t->reg_slot < 0) return;
+    uint64_t lf = irq_spinlock_lock(&sched_list_lock);
     if (t->sched_prev) t->sched_prev->sched_next = t->sched_next;
     else               sched_thread_list         = t->sched_next;
     if (t->sched_next) t->sched_next->sched_prev = t->sched_prev;
     t->sched_prev = 0;
     t->sched_next = 0;
     t->reg_slot   = -1;
+    irq_spinlock_unlock(&sched_list_lock, lf);
     atomic_fetch_sub_explicit(&reg_active, 1u, memory_order_relaxed);
 }
 
@@ -789,6 +812,7 @@ void task_init(void) {
     __asm__ volatile ("fxsaveq (%0)" : : "r"(initial_fpu_state) : "memory");
 
     irq_spinlock_init(&reap_queue_lock);
+    irq_spinlock_init(&sched_list_lock);
     kernel_cr3 = pml4_get_current();
 
     /* Initialize CPU 0's run queue and wire it before any rq_* call. */

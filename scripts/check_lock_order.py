@@ -24,10 +24,11 @@ RANK = {
     'ep->lock': 2,
     'vs->lock': 3,
     'live_lock': 4,
-    'cn->lock': 5, 'to_cn->lock': 5, 'from_cn->lock': 5, 'parent_cn->lock': 5,
-    'obj->lock': 5, 'n->base.lock': 5, 'pool->lock': 5,
-    't->obj_lock': 5, 'target->obj_lock': 5,
-    'rq->lock': 6,          # leaf: nothing may be taken under it
+    'sched_list_lock': 5,   # the scheduler's list of live threads
+    'cn->lock': 6, 'to_cn->lock': 6, 'from_cn->lock': 6, 'parent_cn->lock': 6,
+    'obj->lock': 6, 'n->base.lock': 6, 'pool->lock': 6,
+    't->obj_lock': 6, 'target->obj_lock': 6, 'sc->lock': 6,
+    'rq->lock': 7,          # leaf: nothing may be taken under it
 }
 
 LOCK   = re.compile(r'(?:irq_)?spinlock_lock\(&\s*([\w\->\.\[\]]+)')

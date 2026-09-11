@@ -100,6 +100,10 @@ uint64_t sched_domain_switches(void);
  * meant".
  */
 extern struct task        *sched_thread_list;   /* head; NULL before init */
+/* Guards the list above (SMP roadmap §9.1, rank 5).  IRQ-off: the TICK walks
+ * the list, so a plain spinlock would let an interrupt deadlock its own CPU
+ * against the dispatcher's walk. */
+extern irq_spinlock_t      sched_list_lock;
 extern struct task         ktcb_backing[TASK_BOOTSTRAP_MAX]; /* idle + root task */
 extern struct task        *current_task;
 extern struct task        *task_list_head;

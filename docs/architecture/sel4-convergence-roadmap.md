@@ -2076,8 +2076,9 @@ true.
 | 2 | `KEndpoint.lock` | per object |
 | 3 | `KVSpace.lock` | per object |
 | 4 | `live_lock` (knotification registry) | global |
-| 5 | `KCNode.lock`, `KObject.lock`, `KAsidPool.lock`, `task.obj_lock` | per object |
-| 6 | `CpuRunQueue.lock` | per CPU — **leaf, nothing may be taken under it** |
+| 5 | `sched_list_lock` | global — the scheduler's list of live threads |
+| 6 | `KCNode.lock`, `KObject.lock`, `KAsidPool.lock`, `KSchedContext.lock`, `task.obj_lock` | per object |
+| 7 | `CpuRunQueue.lock` | per CPU — **leaf, nothing may be taken under it** |
 
 **Enforced**: `make check-locks` (`scripts/check_lock_order.py`) holds the
 table above as data and reports any edge that goes up it, following calls three
@@ -2095,6 +2096,7 @@ Observed edges, all of them:
 | `KEndpoint.lock` → `CpuRunQueue.lock` | `kendpoint.c:57`, via `task_wakeup` → `rq_enqueue` |
 | `KVSpace.lock` → `KAsidPool.lock` | `kvspace.c:63→67`, via `kasidpool_take` |
 | `live_lock` → `KObject.lock` | `knotification.c:166` |
+| `sched_list_lock` → `CpuRunQueue.lock` | `scheduler.c`, both walks, via `task_wakeup` |
 
 Three locks are BOOT-ONLY and cannot contend once the system is running, which
 is worth stating because it removes them from the analysis rather than leaving
