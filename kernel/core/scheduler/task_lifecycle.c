@@ -165,7 +165,10 @@ static struct task *task_registry_find_free(void) {
 
 struct task        *task_list_head  = 0;
 struct task        *task_list_tail  = 0;
-uint32_t            next_id         = 0;
+/* Thread ids are a DIAGNOSTIC (charter: nothing selects an object by number),
+ * but a diagnostic that hands two threads the same id is a diagnostic that
+ * lies.  Three call sites increment it and none held a lock. */
+_Atomic uint32_t    next_id         = 0;
 /* Phase S2: task_rsp[TASK_MAX] retired — kernel RSP moved into struct task.saved_krsp */
 uint64_t            kernel_cr3      = 0;
 
@@ -313,7 +316,8 @@ void rq_remove(struct task *t) {
 struct task *rq_dequeue_best(void) {
     struct CpuRunQueue *rq = cpu_self()->rq;
     if (!rq) return 0;
-    uint32_t dom = iris_cur_domain;
+    uint32_t dom = (uint32_t)atomic_load_explicit(&iris_cur_domain,
+                                                  memory_order_relaxed);
     if (dom >= IRIS_NUM_DOMAINS) dom = 0u;
     uint64_t flags = irq_spinlock_lock(&rq->lock);
     for (int w = 3; w >= 0; w--) {
@@ -340,7 +344,8 @@ struct task *rq_dequeue_best(void) {
 int rq_top_priority(void) {
     struct CpuRunQueue *rq = cpu_self()->rq;
     if (!rq) return -1;
-    uint32_t dom = iris_cur_domain;
+    uint32_t dom = (uint32_t)atomic_load_explicit(&iris_cur_domain,
+                                                  memory_order_relaxed);
     if (dom >= IRIS_NUM_DOMAINS) dom = 0u;
     uint64_t flags = irq_spinlock_lock(&rq->lock);
     int result = -1;
@@ -716,7 +721,8 @@ static void task_execution_teardown_off_cpu(struct task *t) {
  * reaper drains under pressure (T114/T118) — if it ever approached
  * REAP_QUEUE_SIZE the "cannot occur on single-CPU" assumption would be
  * broken and dead tasks would leak their slots. */
-static uint32_t reap_queue_hwm = 0u;
+/* Written under reap_queue_lock, read without it — the type now says so. */
+static _Atomic uint32_t reap_queue_hwm = 0u;
 
 uint32_t sched_reap_queue_hwm(void) {
     return __atomic_load_n(&reap_queue_hwm, __ATOMIC_RELAXED);
@@ -730,10 +736,12 @@ void reap_enqueue_dead(struct task *t) {
         reap_queue_head = next;
         unsigned int depth = (reap_queue_head - reap_queue_tail) &
                              (REAP_QUEUE_SIZE - 1u);
-        if (depth > reap_queue_hwm) reap_queue_hwm = depth;
+        if (depth > atomic_load_explicit(&reap_queue_hwm, memory_order_relaxed))
+            atomic_store_explicit(&reap_queue_hwm, depth, memory_order_relaxed);
     }
-    /* Queue full: slot leaks until a subsequent reap drains it.
-     * Cannot occur on single-CPU (one death per yield interval). */
+    /* Queue full: slot leaks until a subsequent reap drains it.  One core
+     * cannot reach it (one death per yield interval); several can, and that is
+     * what the per-CPU dead lists in SMP roadmap §9.3 step 1 are for. */
     irq_spinlock_unlock(&reap_queue_lock, flags);
 }
 
@@ -836,7 +844,7 @@ void task_init(void) {
     /* Idle is the single bootstrap exception: static backing, never retyped,
      * never reused, not built by the productive task builder. */
     task_registry_bind_idle(idle);
-    idle->id    = next_id++;
+    idle->id    = atomic_fetch_add_explicit(&next_id, 1u, memory_order_relaxed);
     idle->state = TASK_RUNNING;
     idle->next  = idle;
 
@@ -894,7 +902,7 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     /* No task_reset_slot(t) here — see task_create. */
 
     task_init_fpu_state(t);
-    t->id         = next_id++;
+    t->id         = atomic_fetch_add_explicit(&next_id, 1u, memory_order_relaxed);
     t->state      = TASK_READY;
     t->ring       = TASK_RING3;
     t->priority   = TASK_PRIORITY_DEFAULT;
@@ -1175,7 +1183,7 @@ iris_error_t ktcb_configure(struct task *t,
     }
 
     task_init_fpu_state(t);
-    t->id         = next_id++;
+    t->id         = atomic_fetch_add_explicit(&next_id, 1u, memory_order_relaxed);
     t->state      = TASK_SUSPENDED;   /* configured is not started */
     t->ring       = TASK_RING3;
     t->time_slice = TASK_DEFAULT_SLICE;

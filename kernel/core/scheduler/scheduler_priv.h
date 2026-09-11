@@ -57,7 +57,7 @@ struct iris_dom_slot {
 
 /* The current domain, and how many ticks it has left.  Read by the dispatcher,
  * advanced by the tick. */
-extern uint8_t  iris_cur_domain;
+extern _Atomic uint8_t iris_cur_domain;  /* relaxed; see scheduler.c */
 
 /* Advance the schedule by one tick; returns 1 if the DOMAIN changed, which the
  * tick turns into a reschedule. */
@@ -108,7 +108,7 @@ extern struct task         ktcb_backing[TASK_BOOTSTRAP_MAX]; /* idle + root task
 extern struct task        *current_task;
 extern struct task        *task_list_head;
 extern struct task        *task_list_tail;
-extern uint32_t            next_id;
+extern _Atomic uint32_t    next_id;
 /* Phase S2: task_rsp[TASK_MAX] retired — saved kernel RSP lives in
  * struct task.saved_krsp (scheduler indirection: no index-keyed parallel
  * array, no (t - tasks) pointer arithmetic to reach it). */
@@ -129,7 +129,7 @@ static inline void set_current_task(struct task *t) {
 }
 
 /* Scheduler tick counter (defined in scheduler.c) */
-extern volatile uint64_t scheduler_ticks;
+extern _Atomic uint64_t scheduler_ticks;  /* relaxed; see scheduler.c */
 
 /* ── Architecture helpers ────────────────────────────────────────────────── */
 

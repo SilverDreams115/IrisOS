@@ -16,7 +16,27 @@
  * Kernel stack management lives in kstack.c.
  */
 
-volatile uint64_t scheduler_ticks = 0;
+/*
+ * The tick counters, and why `volatile` was never the right word.
+ *
+ * `volatile` says "re-read this from memory", which is what a one-core kernel
+ * needed from it: the idle loop had to see a counter the interrupt handler
+ * bumped.  It says nothing about atomicity and nothing about ordering, so the
+ * moment a second CPU can bump or read one, it is a claim the type does not
+ * make.  On x86-64 an aligned 64-bit access happens to be atomic anyway, which
+ * is exactly what makes this the kind of thing that survives review and then
+ * is wrong somewhere else.
+ *
+ * Relaxed ordering is deliberate and sufficient: nothing is published THROUGH
+ * these counters.  A reader wants a number that is not torn and not stale
+ * forever; it does not want a happens-before edge, and paying for one on every
+ * tick would be paying for a guarantee no reader uses.
+ */
+_Atomic uint64_t scheduler_ticks = 0;
+
+static inline uint64_t sched_ticks_load(void) {
+    return atomic_load_explicit(&scheduler_ticks, memory_order_relaxed);
+}
 
 /*
  * Phase 17 — scheduling-decision counter (additive instrumentation, exposed
@@ -39,7 +59,7 @@ uint32_t sched_yield_count(void) {
 /* wall_ticks is incremented only by the real PIT ISR path (scheduler_tick).
  * Unlike scheduler_ticks it is never fast-forwarded by the idle-loop clock
  * workaround, so it reflects real elapsed time and is used by SYS_CLOCK_GET. */
-static volatile uint64_t wall_ticks = 0;
+static _Atomic uint64_t wall_ticks = 0;
 
 /*
  * sched_handle_idle — fast-forward clock when the idle task is current and no
@@ -85,14 +105,30 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
             if (due < min_wake) min_wake = due;
         }
     }
-    if (min_wake != UINT64_MAX && min_wake > scheduler_ticks)
-        scheduler_ticks = min_wake;
+    /*
+     * Advance to the deadline — a monotonic MAX, not a store.
+     *
+     * It was `if (min_wake > ticks) ticks = min_wake;`, which is a read, a
+     * decision and a write with the clock free to move between them.  With one
+     * idle CPU there is exactly one fast-forwarder and the race has nobody to
+     * lose to; with two, one can rewind the other's advance.  The compare and
+     * the exchange become one act, and the loop retries against whatever the
+     * clock has actually become.
+     */
+    if (min_wake != UINT64_MAX) {
+        uint64_t cur = sched_ticks_load();
+        while (min_wake > cur &&
+               !atomic_compare_exchange_weak_explicit(&scheduler_ticks, &cur,
+                                                      min_wake,
+                                                      memory_order_relaxed,
+                                                      memory_order_relaxed)) { }
+    }
 
     /* Wake any thread whose BUDGET came back and enqueue it. */
     for (struct task *t = sched_thread_list; t; t = t->sched_next) {
         if (t == idle) continue;
         if (t->state == TASK_BUDGET_EXHAUSTED && t->sched_ctx &&
-            kschedctx_apply_refills(t->sched_ctx, scheduler_ticks)) {
+            kschedctx_apply_refills(t->sched_ctx, sched_ticks_load())) {
             /* Stage 8-mcs: woken by a REPLENISHMENT coming due, not by a
              * period-boundary reset.  The thread gets back exactly what it
              * spent, one period after it spent it. */
@@ -237,7 +273,7 @@ struct task *sched_pick_for_dispatch(struct task *outgoing) {
             tf->state = TASK_BLOCKED_FAULT;
         } else if (tf->sched_ctx) {
             tf->state     = TASK_BUDGET_EXHAUSTED;
-            tf->wake_tick = scheduler_ticks + tf->sched_ctx->period_ticks;
+            tf->wake_tick = sched_ticks_load() + tf->sched_ctx->period_ticks;
         }
     }
 
@@ -302,12 +338,33 @@ static const struct iris_dom_slot dom_schedule[] = {
                    * single-domain default never advances the schedule at all,
                    * so the tick does no work and no switch is ever counted. */
 };
+/*
+ * The schedule's CURSOR, and the current domain, are two different kinds of
+ * shared state and get two different treatments.
+ *
+ * `iris_cur_domain` is READ by every CPU's dispatcher, on every dispatch, to
+ * pick which set of run queues to look at.  It is one byte and it is hot, so
+ * it is an atomic with relaxed ordering: nothing is published through it — the
+ * queues it selects have their own lock — and a reader wants a value that is
+ * not torn, not a happens-before edge it would never use.
+ *
+ * The cursor (`dom_sched_idx`, `dom_ticks_left`) is different: advancing it is
+ * a read-modify-write across two variables, and it must happen ONCE per tick
+ * however many CPUs are ticking.  Two CPUs each decrementing `dom_ticks_left`
+ * would end a domain's slot at twice the rate the schedule says — the
+ * partition would still be a partition, and it would not be the one anybody
+ * wrote down.  So the cursor takes a lock and the tick that loses the race
+ * does nothing, which is exactly right: the slot has already been advanced.
+ */
 static uint32_t dom_sched_idx;
 static uint32_t dom_ticks_left;
-uint8_t         iris_cur_domain;
+static irq_spinlock_t dom_lock;          /* §9.1 rank 7 — guards the cursor */
+_Atomic uint8_t iris_cur_domain;
 static _Atomic uint64_t dom_switches;
 
-uint32_t sched_domain_current(void)  { return (uint32_t)iris_cur_domain; }
+uint32_t sched_domain_current(void) {
+    return (uint32_t)atomic_load_explicit(&iris_cur_domain, memory_order_relaxed);
+}
 uint64_t sched_domain_switches(void) {
     return atomic_load_explicit(&dom_switches, memory_order_relaxed);
 }
@@ -321,17 +378,23 @@ uint64_t sched_domain_switches(void) {
 int sched_domain_tick(void) {
     const uint32_t n = (uint32_t)(sizeof(dom_schedule) / sizeof(dom_schedule[0]));
     /* A schedule of one entry with no length is the default: nothing to
-     * advance, and the branch costs one comparison on every tick. */
+     * advance, and the branch costs one comparison on every tick — taken
+     * before the lock, so the default configuration never contends. */
     if (n <= 1u && dom_schedule[0].ticks == 0u) return 0;
 
+    uint64_t df = irq_spinlock_lock(&dom_lock);
     if (dom_ticks_left > 0u) dom_ticks_left--;
-    if (dom_ticks_left > 0u) return 0;
+    if (dom_ticks_left > 0u) { irq_spinlock_unlock(&dom_lock, df); return 0; }
 
-    uint8_t prev = iris_cur_domain;
+    uint8_t prev = (uint8_t)atomic_load_explicit(&iris_cur_domain,
+                                                 memory_order_relaxed);
     dom_sched_idx = (dom_sched_idx + 1u) % n;
-    iris_cur_domain = dom_schedule[dom_sched_idx].domain;
-    dom_ticks_left  = dom_schedule[dom_sched_idx].ticks;
-    if (iris_cur_domain != prev) {
+    uint8_t next  = dom_schedule[dom_sched_idx].domain;
+    dom_ticks_left = dom_schedule[dom_sched_idx].ticks;
+    atomic_store_explicit(&iris_cur_domain, next, memory_order_relaxed);
+    irq_spinlock_unlock(&dom_lock, df);
+
+    if (next != prev) {
         atomic_fetch_add_explicit(&dom_switches, 1u, memory_order_relaxed);
         return 1;
     }
@@ -339,14 +402,15 @@ int sched_domain_tick(void) {
 }
 
 void scheduler_init(void) {
+    irq_spinlock_init(&dom_lock);
     task_init();
 }
 
 void scheduler_tick(void) {
     reap_pending_dead_task();
 
-    scheduler_ticks++;
-    wall_ticks++;
+    atomic_fetch_add_explicit(&scheduler_ticks, 1u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&wall_ticks,       1u, memory_order_relaxed);
 
     /* The domain schedule advances on the same tick that drives preemption,
      * and a domain change forces a reschedule: the outgoing domain's thread
@@ -379,7 +443,7 @@ void scheduler_tick(void) {
         /* Ph75: refill budget for exhausted tasks whose period has elapsed */
         if (t->state == TASK_BUDGET_EXHAUSTED &&
             t->wake_tick != 0 &&
-            t->wake_tick <= scheduler_ticks) {
+            t->wake_tick <= sched_ticks_load()) {
             if (t->sched_ctx)
                 t->sched_ctx->remaining_budget = t->sched_ctx->budget_ticks;
             t->wake_tick = 0;
@@ -395,7 +459,7 @@ void scheduler_tick(void) {
      * earns comes due exactly one period later. */
     if (current_task->sched_ctx && current_task->state == TASK_RUNNING) {
         struct KSchedContext *sc = current_task->sched_ctx;
-        if (kschedctx_charge_tick(sc, scheduler_ticks)) {
+        if (kschedctx_charge_tick(sc, sched_ticks_load())) {
             /*
              * Stage 8-mcs — a TIMEOUT FAULT, when one is armed.
              *
@@ -459,11 +523,11 @@ uint32_t sched_live_task_count(void) {
 }
 
 uint64_t sched_current_ticks(void) {
-    return scheduler_ticks;
+    return sched_ticks_load();
 }
 
 uint64_t sched_wall_ticks(void) {
-    return wall_ticks;
+    return atomic_load_explicit(&wall_ticks, memory_order_relaxed);
 }
 
 uint64_t sched_context_switches(void) {

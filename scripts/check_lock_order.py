@@ -28,7 +28,8 @@ RANK = {
     'cn->lock': 6, 'to_cn->lock': 6, 'from_cn->lock': 6, 'parent_cn->lock': 6,
     'obj->lock': 6, 'n->base.lock': 6, 'pool->lock': 6,
     't->obj_lock': 6, 'target->obj_lock': 6, 'sc->lock': 6,
-    'rq->lock': 7,          # leaf: nothing may be taken under it
+    'dom_lock': 7,          # the domain schedule's cursor
+    'rq->lock': 8,          # leaf: nothing may be taken under it
 }
 
 LOCK   = re.compile(r'(?:irq_)?spinlock_lock\(&\s*([\w\->\.\[\]]+)')

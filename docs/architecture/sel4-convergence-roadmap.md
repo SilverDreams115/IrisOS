@@ -2078,7 +2078,8 @@ true.
 | 4 | `live_lock` (knotification registry) | global |
 | 5 | `sched_list_lock` | global — the scheduler's list of live threads |
 | 6 | `KCNode.lock`, `KObject.lock`, `KAsidPool.lock`, `KSchedContext.lock`, `task.obj_lock` | per object |
-| 7 | `CpuRunQueue.lock` | per CPU — **leaf, nothing may be taken under it** |
+| 7 | `dom_lock` | global — the domain schedule's cursor |
+| 8 | `CpuRunQueue.lock` | per CPU — **leaf, nothing may be taken under it** |
 
 **Enforced**: `make check-locks` (`scripts/check_lock_order.py`) holds the
 table above as data and reports any edge that goes up it, following calls three
@@ -2116,15 +2117,21 @@ This is what Stage 9's one-line "re-derive EVERY atomicity property" expands
 to.  The old catalog named four items (IPC staging, RETYPE2, reply bind,
 teardown); it was not wrong, it was a quarter of the list.
 
-**Unprotected, and that is only safe on one core:**
+**Unprotected, and that is only safe on one core** — ✅ **all closed, step 1**:
 
-| State | Today | Why it is exposed |
+| State | Was | Now |
 |---|---|---|
-| `sched_thread_list` | plain pointer, no lock | walked three times in `scheduler.c` (idle fast-forward, budget replenishment, diagnostics) and mutated on every thread create/destroy |
-| `scheduler_ticks`, `wall_ticks` | `volatile uint64_t` | `volatile` orders nothing and is not atomic; written by whichever CPU takes the tick, read everywhere |
-| `iris_cur_domain`, `dom_sched_idx`, `dom_ticks_left` | plain | written by the tick CPU, read by every CPU's dispatcher on every switch (A-34) |
-| `next_id` | plain `uint32_t` | incremented per thread creation |
-| `reap_queue_hwm` | plain | diagnostic, but a torn read is still a wrong number |
+| `sched_thread_list` | plain pointer, no lock; walked three times in `scheduler.c` and mutated on every create/destroy | `sched_list_lock`, IRQ-off because the TICK is one of the walkers |
+| `scheduler_ticks`, `wall_ticks` | `volatile uint64_t` — `volatile` orders nothing and is not atomic | `_Atomic`, relaxed.  The idle fast-forward became a monotonic MAX via compare-exchange: it was a read, a decision and a write with the clock free to move between them |
+| `iris_cur_domain` | plain, read by every dispatcher on every dispatch | `_Atomic uint8_t`, relaxed — nothing is published through it, the queues it selects have their own lock |
+| `dom_sched_idx`, `dom_ticks_left` | plain | `dom_lock`.  Advancing the cursor is a read-modify-write across two variables that must happen ONCE per tick however many CPUs tick, or a domain's slot ends at twice the rate the schedule says |
+| `next_id` | plain `uint32_t`, three incrementing call sites | `_Atomic`.  A diagnostic that hands two threads the same id is a diagnostic that lies |
+| `reap_queue_hwm` | plain | **the catalog was wrong**: the write was always under `reap_queue_lock` and only the read was bare.  Made `_Atomic` so the type says what the code does |
+
+One more found while closing these, which the catalog had missed:
+`kschedctx_apply_refills` mutates a scheduling context's refill ring without
+taking the lock that object has.  It is called from inside the list walk, so it
+is step 1's, not step 4's.
 
 **Protected, but by an argument rather than a lock** — ten sites whose comment
 says the kernel is uniprocessor or non-preemptive.  Each needs re-deriving, and
