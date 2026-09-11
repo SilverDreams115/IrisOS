@@ -1863,3 +1863,124 @@ void test_t338(void) {
     it_quiesce_reaper();
     if (ok) it_pass("T338"); else it_fail("T338", why);
 }
+
+/* T339's sender: stages a capability, then blocks with it staged. */
+static long          g_t339_ep, g_t339_cap;
+static volatile int  g_t339_staging, g_t339_done;
+static uint8_t       g_t339_stack[8192];
+
+static void t339_sender(void) {
+    struct iris_msg m;
+    iris_msg_zero(&m);
+    m.label      = 0x339;
+    m.cap        = g_t339_cap;
+    m.cap_rights = RIGHT_WRITE;
+    g_t339_staging = 1;             /* set BEFORE the call: we need the block */
+    (void)iris_msg_send(g_t339_ep, &m);
+    g_t339_done = 1;
+    it_sys1(SYS_EXIT, 0);
+    for (;;) {}
+}
+
+/* ── T339: a staged capability's parent is an OBJECT, not a location ────────
+ *
+ * A transfer is a COPY (A-29), and the copy is installed as an MDB CHILD of
+ * the sender's source slot — which is what gives a delivered capability real
+ * ancestry instead of making it a LEGACY_ROOT.
+ *
+ * Staging records WHERE that source was: a CNode and a slot index, captured
+ * when the send is made.  The delivery happens LATER, at the rendezvous, and
+ * a slot is a reusable location.  The sending thread is not the only thread
+ * in its process: a sibling can delete that slot and mint something unrelated
+ * into it while the sender is blocked.
+ *
+ * `kcnode_slot_install_linked` checked only that the parent slot was
+ * OCCUPIED.  So the delivered capability was linked as a child of whatever
+ * now sat there — an ancestor that never authorised it.  Revoking the new
+ * occupant would destroy a capability it has no relation to; revoking the
+ * real ancestor would not reach the copy.  Charter A9 fails in both
+ * directions, and the helper written for it (`kcnode_slot_holds`) had never
+ * been called.
+ *
+ * This drives the window: stage a NOTIFICATION, swap the source slot for an
+ * ENDPOINT while the sender is blocked, and take delivery.  The message must
+ * still arrive — nothing about it is in doubt — and the capability must NOT,
+ * because the source no longer holds what was staged.  Fails closed, which is
+ * the same shape a revoked source and an occupied destination already had.
+ * Invariants: A9, I2, I3. */
+#define T339_EP   IT_SCRATCH_0
+#define T339_A    IT_SCRATCH_1
+#define T339_SRC  IT_SCRATCH_2
+#define T339_DST  IT_SCRATCH_3
+
+void test_t339(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "a staged parent is an object";
+
+    it_slot_delete(T339_EP);  it_slot_delete(T339_A);
+    it_slot_delete(T339_SRC); it_slot_delete(T339_DST);
+
+    if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT,
+                      T339_EP, 1u, 0) != 0) { it_fail("T339", "ep"); return; }
+    if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_NOTIFICATION,
+                      T339_A, 1u, 0) != 0) { it_fail("T339", "notif"); return; }
+
+    /* The source slot the sender will name, holding a copy of the
+     * NOTIFICATION — the object that is going to travel. */
+    if (it_cdt_derive((long)T339_A, T339_SRC, RIGHT_WRITE | RIGHT_TRANSFER) < 0) {
+        ok = 0; why = "derive";
+    }
+
+    if (ok) {
+        g_t339_ep = (long)T339_EP; g_t339_cap = (long)T339_SRC;
+        g_t339_staging = 0; g_t339_done = 0;
+        uint64_t rsp = ((uint64_t)(uintptr_t)(g_t339_stack +
+                          sizeof(g_t339_stack))) & ~0xFULL;
+        if (it_thread_create((uint64_t)(uintptr_t)t339_sender, rsp, 0) < 0) {
+            ok = 0; why = "thread";
+        }
+    }
+
+    /* Wait until the sender is blocked WITH the capability staged.  It raises
+     * the flag immediately before the send, and the send cannot return until
+     * we receive — so once the flag is up and the scheduler has run, the
+     * staging is done and the thread is parked. */
+    if (ok) {
+        for (int i = 0; i < 400 && !g_t339_staging; i++) it_settle(1);
+        if (!g_t339_staging) { ok = 0; why = "sender never reached the send"; }
+        else for (int i = 0; i < 40; i++) it_settle(1);
+        if (ok && g_t339_done) { ok = 0; why = "the send did not block"; }
+    }
+
+    /* THE WINDOW: the source slot stops holding what was staged.  An ENDPOINT
+     * goes in, which is a different object AND a different type — so a
+     * delivery that still happened could not be mistaken for a benign one. */
+    if (ok) {
+        it_slot_delete(T339_SRC);
+        if (it_cdt_derive((long)T339_EP, T339_SRC, RIGHT_WRITE | RIGHT_TRANSFER) < 0) {
+            ok = 0; why = "reoccupy";
+        }
+    }
+
+    if (ok) {
+        struct iris_msg m;
+        iris_msg_zero(&m);
+        m.recv_slot = (long)T339_DST;
+        if (iris_msg_recv((long)T339_EP, &m) != 0) { ok = 0; why = "recv"; }
+        /* The MESSAGE is not in doubt: only the capability is. */
+        else if (m.label != 0x339u) { ok = 0; why = "the message was lost too"; }
+        else if (m.got_caps != 0u) {
+            ok = 0; why = "delivered a capability whose parent had been replaced";
+        }
+        else if (it_invoke0((long)T339_DST, INV_CAP_IDENTIFY) >= 0) {
+            ok = 0; why = "something landed in the declared slot";
+        }
+        for (int i = 0; i < 400 && !g_t339_done; i++) it_settle(1);
+    }
+
+    it_slot_delete(T339_DST); it_slot_delete(T339_SRC);
+    it_slot_delete(T339_A);   it_slot_delete(T339_EP);
+    it_quiesce_reaper();
+    if (ok) it_pass("T339"); else it_fail("T339", why);
+}

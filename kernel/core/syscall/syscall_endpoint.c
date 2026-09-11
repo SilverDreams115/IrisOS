@@ -479,13 +479,39 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
         iris_error_t e = cspace_resolve_dest_slot(receiver->cspace_root,
                                                   (iris_cptr_t)slot, &cn, &idx);
         if (e == IRIS_OK) {
-            /* Phase S4 (Step 2): install as an MDB CHILD of the sender's
-             * source slot — real CSpace ancestry, no LEGACY_ROOT.  The
-             * source must still be occupied: a cap revoked while staged
-             * makes this fail, and the cap is NOT delivered (roadmap
-             * invariant 4).  The TOCTOU slot→handle degradation is gone
-             * (charter §3.7): an occupied/raced destination slot now fails
-             * the delivery instead of silently landing in the handle table. */
+            /*
+             * Phase S4 (Step 2): install as an MDB CHILD of the sender's
+             * source slot — real CSpace ancestry, no LEGACY_ROOT.  The TOCTOU
+             * slot→handle degradation is gone (charter §3.7): an occupied or
+             * raced destination slot fails the delivery instead of silently
+             * landing in the handle table.
+             *
+             * IDENTITY, not occupancy.
+             *
+             * Staging records WHERE the source capability was — a CNode and a
+             * slot index — and the delivery happens later, at the rendezvous.
+             * A slot is a reusable location, and the sending thread is not the
+             * only thread in its process: a sibling can delete slot 40 and
+             * mint something unrelated into it while the sender is blocked.
+             * `kcnode_slot_install_linked` only checks that the parent slot is
+             * OCCUPIED, so the delivered capability would be linked as a child
+             * of whatever now sits there — an ancestor that never authorised
+             * it.  Revoking the new occupant would then destroy a capability
+             * it has no relation to, and revoking the real ancestor would not
+             * reach the copy.  Charter A9 in both directions.
+             *
+             * `kcnode_slot_holds` was written for exactly this and was never
+             * called; this is the call.  A source slot that no longer holds
+             * the staged object fails closed — the message is delivered
+             * without the capability, which is the same shape a revoked or
+             * occupied destination already had.
+             */
+            if (!kcnode_slot_holds(src_cn, src_idx, xo)) {
+                kobject_active_release(&cn->base);
+                kobject_release(&cn->base);
+                kobject_release(xo);
+                return IRIS_MSG_NO_CAP;
+            }
             e = kcnode_slot_install_linked(
                     cn, idx, xo, (iris_rights_t)cap_rights,
                     badge, src_cn, src_idx,
