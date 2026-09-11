@@ -15,7 +15,6 @@
 #include <iris/svcmgr_proto.h>
 #include "../common/iris_msg.h"
 #include "../common/iris_vspace.h"
-#include <iris/console_proto.h>
 #include <iris/syscall.h>
 #include <iris/invoke.h>
 #include <iris/nc/error.h>

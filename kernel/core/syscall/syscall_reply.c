@@ -40,10 +40,6 @@ static inline void copy_irismsg_r(struct ipc_stage *dst, const struct ipc_stage 
     for (uint32_t i = 0u; i < (uint32_t)sizeof(struct ipc_stage); i++) d[i] = s[i];
 }
 
-static inline void copy_kbuf_r(uint8_t *dst, const uint8_t *src, uint32_t n) {
-    for (uint32_t i = 0u; i < n; i++) dst[i] = src[i];
-}
-
 /* ep_get_r removed — use cspace_resolve_only_endpoint (Phase 3.2) */
 
 /* ── SYS_EP_CALL ──────────────────────────────────────────────────────── */

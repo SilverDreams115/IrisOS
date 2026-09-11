@@ -38,8 +38,8 @@
  *
  * Liveness: kbd never blocks on event delivery. IRQ scancodes (KNotification)
  * and endpoint requests are multiplexed in one loop (EP drain + notification
- * poll).  The legacy KChannel HELLO/STATUS path (iris/kbd_proto.h) is retired
- * and no longer part of this loop (Phase 13/Track G).
+ * poll).  The legacy KChannel HELLO/STATUS path is retired, its header
+ * deleted, and it is no longer part of this loop (Phase 13/Track G).
  *
  * Discovery: svcmgr publishes the endpoint as "kbd.ep"
  * (IRIS_SVCMGR_EP_LOOKUP_NAME); the recv side reaches kbd at bootstrap via

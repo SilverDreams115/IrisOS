@@ -8,7 +8,7 @@
  * Main loop: endpoint-only. Drain EP requests (CONSOLE_EP_OP_WRITE / SYNC /
  * PING — iris/console_ep_proto.h). EP WRITE replies only after the bytes hit
  * the UART; EP SYNC is an explicit flush barrier. The legacy KChannel write
- * path (CONSOLE_MSG_WRITE/SYNC, iris/console_proto.h) is retired and no longer
+ * path (CONSOLE_MSG_WRITE/SYNC) is retired, header deleted, and no longer
  * served — every writer, including svcmgr's klog drain, uses console.ep
  * (Phase 13/Track G).
  */
@@ -20,7 +20,6 @@
 #include <iris/nc/handle.h>
 #include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
-#include <iris/console_proto.h>
 #include <iris/console_ep_proto.h>
 #include <iris/ipc_msg.h>
 #include <iris/nc/error.h>

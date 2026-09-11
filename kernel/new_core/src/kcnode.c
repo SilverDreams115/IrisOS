@@ -681,12 +681,11 @@ iris_error_t kcnode_mint(struct KCNode *cn, uint32_t slot_idx,
                                       /*exclusive=*/0, /*legacy=*/1);
 }
 
-iris_error_t kcnode_mint_badged(struct KCNode *cn, uint32_t slot_idx,
-                                struct KObject *obj, iris_rights_t rights,
-                                uint64_t badge) {
-    return kcnode_slot_install_linked(cn, slot_idx, obj, rights, badge, 0, 0,
-                                      /*exclusive=*/0, /*legacy=*/1);
-}
+/* kcnode_mint_badged is gone — an OVERWRITE mint that installed a LEGACY root
+ * with an explicit badge, written for the Phase 9 MOVE path and never called
+ * by it.  Every producer of an unparented capability is one T305 has to
+ * account for (D-6), so one that nothing uses is one to delete rather than
+ * keep available. */
 
 iris_error_t kcnode_mint_excl_badged(struct KCNode *cn, uint32_t slot_idx,
                                      struct KObject *obj,

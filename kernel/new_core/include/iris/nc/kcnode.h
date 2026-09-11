@@ -146,10 +146,6 @@ iris_error_t   kcnode_mint(struct KCNode *cn, uint32_t slot_idx,
  * SYS_PROC_CSPACE_MINT so a spawner cannot clobber a child's slots. */
 iris_error_t   kcnode_mint_excl(struct KCNode *cn, uint32_t slot_idx,
                                  struct KObject *obj, iris_rights_t rights);
-/* Overwrite mint preserving an explicit badge (Phase 9; MOVE path). */
-iris_error_t   kcnode_mint_badged(struct KCNode *cn, uint32_t slot_idx,
-                                   struct KObject *obj, iris_rights_t rights,
-                                   uint64_t badge);
 /* Badged exclusive mint (Phase 9): like kcnode_mint_excl but also records
  * the per-cap badge in the slot. */
 iris_error_t   kcnode_mint_excl_badged(struct KCNode *cn, uint32_t slot_idx,

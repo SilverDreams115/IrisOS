@@ -1,6 +1,5 @@
 #include <iris/svcmgr_proto.h>
 #include "../common/iris_msg.h"
-#include <iris/kbd_proto.h>
 #include "service_catalog.h"
 #include <iris/syscall.h>
 #include <iris/invoke.h>

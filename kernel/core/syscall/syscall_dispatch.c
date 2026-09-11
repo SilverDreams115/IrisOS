@@ -31,11 +31,9 @@ static inline uint64_t rdmsr(uint32_t msr) {
 
 extern void syscall_entry(void);
 
-static inline void _sc_putc(char c) {
-    uint8_t s;
-    do { __asm__ volatile ("inb %1,%0":"=a"(s):"Nd"((uint16_t)0x3FD)); } while (!(s&0x20));
-    __asm__ volatile ("outb %0,%1"::"a"((uint8_t)c),"Nd"((uint16_t)0x3F8));
-}
+/* `_sc_putc` is gone: a raw COM1 write from inside the syscall dispatcher,
+ * uncalled.  The kernel's output path is klog, drained by the console service;
+ * a second one that bypasses it is a debugging aid that outlived its session. */
 /*
  * Stage 9-evt Step 2 — the syscall frame, as C sees it.
  *
