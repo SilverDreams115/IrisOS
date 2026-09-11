@@ -1253,7 +1253,12 @@ int it_setup_self_vspace(void) {
 
 long it_map_fixup(long nr, long a0, long a1, long a2, long a3) {
     if (!it_setup_self_vspace()) return (long)IRIS_ERR_MISSING_TABLE;
-    return iris_vspace_fixup(nr, a0, a1, a2, a3,
+    /* Ledger A-31: the fixup speaks in LABELS now.  The numbered wrappers
+     * still reach it while the suite migrates, so the translation lives here
+     * — one line, and it goes when the last `it_sysN` does. */
+    unsigned long label = (nr == SYS_FRAME_MAP) ? (unsigned long)INV_FRAME_MAP
+                                                : 0ul;
+    return iris_vspace_fixup(label, a0, a1, a2, a3,
                              IT_VS, (long)IRIS_CPTR_TEST_UNTYPED,
                              (long)(((uint64_t)252 << 32) | IT_OBJ_CNODE_SLOT),
                              (long)IT_PT_SCRATCH,

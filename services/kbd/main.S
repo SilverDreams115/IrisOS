@@ -20,6 +20,7 @@
  *   cap delivery is owned entirely by svcmgr/init (no nameserver calls).
  */
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/kbd_ep_proto.h>
 
 .global _start
@@ -79,11 +80,10 @@ _start:
     movl  $5, kbd_ep_h(%rip)
     movl  $7, kbd_notif_h(%rip)
 
-    /* release the unused bootstrap KChannel handle (entry RBX) BEFORE rbx is
-     * reused for the irqcap CPtr — the bootstrap channel carries nothing now. */
-    movq  $SYS_HANDLE_CLOSE, %rax
-    movq  %rbx, %rdi
-    syscall
+    /* The bootstrap KChannel handle in entry RBX had a close here.  The handle
+     * namespace is gone and SYS_HANDLE_CLOSE answers NOT_SUPPORTED, so the
+     * call did nothing; it goes with the numbered ABI (A-31) rather than being
+     * carried across as an invocation of a method that does not exist. */
 
     movq  $10, %r14                    /* IRIS_CPTR_IOPORT  (CPtr) */
     movq  $11, %rbx                    /* IRIS_CPTR_IRQ_CAP (CPtr) */
@@ -101,17 +101,19 @@ _start:
     testl %r11d, %r11d
     jz    .kbd_ps2_flush_done          /* iteration limit reached */
     decl  %r11d
-    movq  $SYS_IOPORT_IN, %rax
-    movq  %r14, %rdi
-    movq  $4,   %rsi                   /* offset 4 = port 0x64 (status) */
+    movq  $SYS_INVOKE, %rax
+    movq  %r14, %rdi                   /* the KIoPort capability */
+    movq  $INV_IOPORT_IN, %rsi
+    movq  $4,   %rdx                   /* offset 4 = port 0x64 (status) */
     syscall
     testq %rax, %rax
     js    .kbd_ps2_flush_done          /* syscall error → stop */
     testb $1,   %al                    /* OBF set? */
     jz    .kbd_ps2_flush_done          /* no pending data → done */
-    movq  $SYS_IOPORT_IN, %rax
+    movq  $SYS_INVOKE, %rax
     movq  %r14, %rdi
-    movq  $0,   %rsi                   /* offset 0 = port 0x60 (data) */
+    movq  $INV_IOPORT_IN, %rsi
+    movq  $0,   %rdx                   /* offset 0 = port 0x60 (data) */
     syscall
     jmp   .kbd_ps2_flush_loop
 .kbd_ps2_flush_done:
@@ -166,11 +168,12 @@ _start:
  * the endpoint receive and arrives as a message labelled
  * IRIS_MSG_LABEL_NOTIFICATION.  Idle costs nothing.
  */
-    movl  kbd_notif_h(%rip), %esi      /* bind the IRQ notification to us  */
-    testl %esi, %esi
+    movl  kbd_notif_h(%rip), %edx      /* bind the IRQ notification to us  */
+    testl %edx, %edx
     jz    .kbd_recv
     movl  $19, %edi                    /* IRIS_CPTR_OWN_TCB */
-    movq  $SYS_TCB_BIND_NOTIFICATION, %rax
+    movq  $INV_TCB_BIND_NOTIFICATION, %rsi
+    movq  $SYS_INVOKE, %rax
     syscall
 
 .kbd_recv:
@@ -193,12 +196,16 @@ _start:
      * two reply objects (slots 13/14, minted by svcmgr): the one currently
      * parked (kbd_park) is bound to a waiting READ caller, so recv with the
      * other.  0 parked → use 13. */
-    movl  $13, %edx
+    movl  $13, %r10d
     cmpl  $13, kbd_park(%rip)
     jne   .kbd_reply_pick_done
-    movl  $14, %edx
+    movl  $14, %r10d
 .kbd_reply_pick_done:
-    movq  $SYS_EP_RECV, %rax           /* BLOCKING: the bound notification  */
+    /* Ledger A-31: rdi = the endpoint being invoked, rsi = the method,
+     * rdx = the message buffer, r10 = the reply object picked above. */
+    movq  %rsi, %rdx                   /* message buffer, out of rsi's way */
+    movq  $INV_EP_RECV, %rsi
+    movq  $SYS_INVOKE, %rax            /* BLOCKING: the bound notification  */
     syscall                            /* wakes us for a keystroke too      */
     testq %rax, %rax
     jnz   .kbd_recv               /* error: retry rather than spin     */
@@ -301,8 +308,9 @@ _start:
 
 .kbd_ep_send_reply:
     movl  92(%rsp), %edi
-    leaq  kbd_ep_msg(%rip), %rsi
-    movq  $SYS_REPLY, %rax
+    leaq  kbd_ep_msg(%rip), %rdx
+    movq  $INV_REPLY_SEND, %rsi
+    movq  $SYS_INVOKE, %rax
     syscall                            /* failure tolerated: caller died   */
     /* Fase S1: the reply CPtr (slot 13/14) is a reusable object — no close. */
     jmp   .kbd_ep_drain
@@ -314,8 +322,9 @@ _start:
     movl  kbd_notif_h(%rip), %edi
     testl %edi, %edi
     jz    .kbd_recv
-    leaq  kbd_notif_bits(%rip), %rsi
-    movq  $SYS_NOTIFY_WAIT, %rax
+    leaq  kbd_notif_bits(%rip), %rdx
+    movq  $INV_NOTIFY_WAIT, %rsi
+    movq  $SYS_INVOKE, %rax
     syscall
     testq %rax, %rax
     jz    .kbd_scancode
@@ -327,15 +336,17 @@ _start:
  * Key press:   scancode < 0x80
  * Key release: scancode >= 0x80 (bit 7 set; base key = scancode & 0x7F) */
 .kbd_scancode:
-    movq  $SYS_IOPORT_IN, %rax        /* read PS/2 data register via KIoPort */
+    movq  $SYS_INVOKE, %rax           /* read PS/2 data register via KIoPort */
     movq  %r14, %rdi
-    movq  $0,   %rsi                   /* offset 0 = port 0x60 */
+    movq  $INV_IOPORT_IN, %rsi
+    movq  $0,   %rdx                   /* offset 0 = port 0x60 */
     syscall
     testq %rax, %rax
     js    .kbd_recv                    /* I/O error: IRQ stays masked (stall) */
     movb  %al,  88(%rsp)               /* stash scancode above msg struct */
-    movq  $SYS_IRQ_ACK, %rax          /* unmask IRQ1: byte consumed, safe to re-arm */
+    movq  $SYS_INVOKE, %rax           /* unmask IRQ1: byte consumed, safe to re-arm */
     movq  %rbx, %rdi
+    movq  $INV_IRQ_ACK, %rsi
     syscall
     movzbl 88(%rsp), %ecx             /* ecx = scancode (reload; rax clobbered) */
     testb %cl,  %cl
@@ -398,7 +409,9 @@ _start:
     movl  %eax, 16(%rsi)               /* words[1] = scancode              */
     movl  $2, 40(%rsi)                 /* word_count = 2                   */
     movl  kbd_park(%rip), %edi
-    movq  $SYS_REPLY, %rax
+    movq  %rsi, %rdx                   /* the message buffer               */
+    movq  $INV_REPLY_SEND, %rsi
+    movq  $SYS_INVOKE, %rax
     syscall                            /* failure tolerated: caller died   */
     /* Fase S1: parked reply CPtr is a reusable object — no close. */
     movl  $0, kbd_park(%rip)

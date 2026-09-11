@@ -3,18 +3,14 @@
 
 #include <stdint.h>
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/endpoint_proto.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>
 
-/* The services define their own arity wrappers; these are the two shapes this
- * header needs, spelled here so it depends on nothing but iris_syscall4. */
-static inline long iris_ipcbuf_sys1(long nr, long a0) {
-    return iris_syscall4(nr, a0, 0, 0, 0);
-}
-static inline long iris_ipcbuf_sys3(long nr, long a0, long a1, long a2) {
-    return iris_syscall4(nr, a0, a1, a2, 0);
-}
+/* Ledger A-31: this header used to carry two arity wrappers of its own, so it
+ * could name syscall numbers without depending on a service's helpers.  It
+ * names METHODS now, and `iris_invoke*` comes with the ABI. */
 
 /*
  * The well-known address for a thread's IPC buffer.
@@ -72,9 +68,9 @@ static inline void *iris_ipc_buffer_init_from(uint64_t untyped_c,
     if (!untyped_c || !vspace_c || !tcb_c) return 0;
 
     /* One page, retyped from memory this service owns. */
-    if (iris_syscall4(SYS_UNTYPED_RETYPE2, (long)untyped_c,
-                      (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
-                      (long)((uint64_t)frame_slot << 32), 4096) != 0)
+    if (iris_invoke((long)untyped_c, INV_UNTYPED_RETYPE,
+                    (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
+                    (long)((uint64_t)frame_slot << 32), 4096) != 0)
         return 0;
 
     /*
@@ -93,23 +89,23 @@ static inline void *iris_ipc_buffer_init_from(uint64_t untyped_c,
      * revoking that Untyped reclaims all of it.
      */
     for (int level = 0; level < 4; level++) {
-        long r = iris_syscall4(SYS_FRAME_MAP, (long)frame_slot,
-                               (long)vspace_c, (long)vaddr, 1);
+        long r = iris_invoke((long)frame_slot, INV_FRAME_MAP,
+                             (long)vspace_c, (long)vaddr, 1);
         if (r == 0) break;
         if (r != (long)IRIS_ERR_MISSING_TABLE || level == 3) return 0;
         /* One level, retyped and installed at whichever depth is missing. */
-        (void)iris_ipcbuf_sys3(SYS_CNODE_DELETE, 0, (long)pt_slot, 0);
-        if (iris_syscall4(SYS_UNTYPED_RETYPE2, (long)untyped_c,
-                          (long)((uint64_t)IRIS_KOBJ_PAGE_TABLE | (1ULL << 32)),
-                          (long)((uint64_t)pt_slot << 32), 4096) != 0)
+        (void)iris_invoke1(0, INV_CNODE_DELETE, (long)pt_slot);
+        if (iris_invoke((long)untyped_c, INV_UNTYPED_RETYPE,
+                        (long)((uint64_t)IRIS_KOBJ_PAGE_TABLE | (1ULL << 32)),
+                        (long)((uint64_t)pt_slot << 32), 4096) != 0)
             return 0;
-        if (iris_ipcbuf_sys3(SYS_VSPACE_MAP_TABLE, (long)pt_slot,
-                             (long)vspace_c, (long)vaddr) != 0)
+        if (iris_invoke2((long)pt_slot, INV_PAGE_TABLE_MAP,
+                         (long)vspace_c, (long)vaddr) != 0)
             return 0;
     }
 
-    if (iris_ipcbuf_sys3(SYS_TCB_SET_IPC_BUFFER, (long)tcb_c,
-                         (long)frame_slot, (long)vaddr) != 0)
+    if (iris_invoke2((long)tcb_c, INV_TCB_SET_IPC_BUFFER,
+                     (long)frame_slot, (long)vaddr) != 0)
         return 0;
 
     return (void *)(uintptr_t)vaddr;

@@ -22,6 +22,7 @@
 
 #include <stdint.h>
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/nc/handle.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>
@@ -80,11 +81,8 @@ static inline long init_sys0(long nr) {
 static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
                                     uint32_t dest_slot, uint64_t obj_arg) {
     if (ut_cptr == 0u) return (long)IRIS_ERR_NOT_FOUND;
-    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)dest_slot);
-    return init_sys4(SYS_UNTYPED_RETYPE2, (long)ut_cptr,
-                     (long)((uint64_t)obj_type | (1ULL << 32)),
-                     (long)((uint64_t)dest_slot << 32),
-                     (long)obj_arg);
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)dest_slot);
+    return iris_invoke((long)ut_cptr, INV_UNTYPED_RETYPE, (long)((uint64_t)obj_type | (1ULL << 32)), (long)((uint64_t)dest_slot << 32), (long)obj_arg);
 }
 
 /* Step 4: init's own root-CNode slots for the objects it fabricates.  Kept

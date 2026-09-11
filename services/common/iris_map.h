@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/nc/error.h>
 
 /*
@@ -39,23 +40,22 @@ static inline long iris_map_frame(uint64_t frame_c, uint64_t vspace_c,
      * shared upper levels.  A loop that cannot terminate is worse than a map
      * that fails. */
     for (int attempt = 0; attempt < 96; attempt++) {
-        long r = iris_syscall4((long)SYS_FRAME_MAP, (long)frame_c,
-                               (long)vspace_c, (long)vaddr, (long)flags);
+        long r = iris_invoke((long)frame_c, INV_FRAME_MAP,
+                             (long)vspace_c, (long)vaddr, (long)flags);
         if (r == 0) return 0;
         if (r != (long)IRIS_ERR_MISSING_TABLE) return r;
 
         int installed = 0;
         for (uint64_t off = 0; off < (size ? size : 4096u);
              off += 0x200000ULL) {
-            (void)iris_syscall4((long)SYS_CNODE_DELETE, 0,
-                                (long)pt_slot, 0, 0);
-            if (iris_syscall4((long)SYS_UNTYPED_RETYPE2, (long)untyped_c,
-                              (long)((uint64_t)IRIS_KOBJ_PAGE_TABLE |
-                                     (1ULL << 32)),
-                              (long)((uint64_t)pt_slot << 32), 4096) != 0)
+            (void)iris_invoke1(0, INV_CNODE_DELETE, (long)pt_slot);
+            if (iris_invoke((long)untyped_c, INV_UNTYPED_RETYPE,
+                            (long)((uint64_t)IRIS_KOBJ_PAGE_TABLE |
+                                   (1ULL << 32)),
+                            (long)((uint64_t)pt_slot << 32), 4096) != 0)
                 return r;
-            if (iris_syscall4((long)SYS_VSPACE_MAP_TABLE, (long)pt_slot,
-                              (long)vspace_c, (long)(vaddr + off), 0) == 0) {
+            if (iris_invoke2((long)pt_slot, INV_PAGE_TABLE_MAP,
+                             (long)vspace_c, (long)(vaddr + off)) == 0) {
                 installed = 1;
                 break;
             }

@@ -22,7 +22,7 @@ void init_runtime_probe_invalid_userptr(void) {
                               INIT_SLOT_PROBE_NOTIF, 0);
     if (n < 0) return;
     n = (long)INIT_SLOT_PROBE_NOTIF;
-    long r = init_sys2(SYS_NOTIFY_POLL, n, 1 /* bogus user ptr */);
+    long r = iris_invoke1(n, INV_NOTIFY_POLL, 1 /* bogus user ptr */);
     if (r == (long)IRIS_ERR_INVALID_ARG)
         init_log("[USER][INIT][SELFTEST] invalid-userptr OK\n");
     else
@@ -73,15 +73,11 @@ void init_selftest_exception(void) {
      * used to be fabricated by SYS_CSPACE_SELF / SYS_VSPACE_SELF — capabilities
      * handed over on request, with no capability asked for and no ancestor to
      * revoke them through. */
-    if (init_sys3(SYS_CSPACE_MINT, (long)IRIS_CPTR_OWN_CSPACE,
-                  (long)((uint64_t)INIT_SLOT_OWN_CSPACE << 32),
-                  (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0 ||
-        init_sys3(SYS_CSPACE_MINT, (long)IRIS_CPTR_OWN_VSPACE,
-                  (long)((uint64_t)INIT_SLOT_OWN_VSPACE << 32),
-                  (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0) {
+    if (iris_invoke2((long)IRIS_CPTR_OWN_CSPACE, INV_CSPACE_MINT, (long)((uint64_t)INIT_SLOT_OWN_CSPACE << 32), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0 ||
+        iris_invoke2((long)IRIS_CPTR_OWN_VSPACE, INV_CSPACE_MINT, (long)((uint64_t)INIT_SLOT_OWN_VSPACE << 32), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0) {
         init_log("[USER][INIT][S8] SKIP: self caps\n"); return;
     }
-    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_S8_TCB);
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_S8_TCB);
     tid_raw = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_TCB,
                                INIT_SLOT_S8_TCB, 0);
     if (tid_raw < 0) {
@@ -92,15 +88,12 @@ void init_selftest_exception(void) {
      * below the retype in Stage 7 Step 12 for the reason it stays there: there
      * is no thread to name before it.
      */
-    if (init_sys4(SYS_TCB_SET_FAULT_HANDLER, (long)INIT_SLOT_S8_TCB,
-                  (long)INIT_SLOT_S8_FAULT_EP, 0, 0) != 0) {
+    if (iris_invoke((long)INIT_SLOT_S8_TCB, INV_TCB_SET_FAULT_HANDLER, (long)INIT_SLOT_S8_FAULT_EP, 0, 0) != 0) {
         init_log("[USER][INIT][S8] SKIP: handler reg\n"); return;
     }
-    if (init_sys3(SYS_TCB_CONFIGURE, (long)INIT_SLOT_S8_TCB,
-                  (long)INIT_SLOT_OWN_CSPACE, (long)INIT_SLOT_OWN_VSPACE) != 0 ||
-        init_sys4(SYS_TCB_WRITE_REGS, (long)INIT_SLOT_S8_TCB,
-                  (long)entry, (long)rsp, 0) != 0 ||
-        init_sys1(SYS_TCB_RESUME, (long)INIT_SLOT_S8_TCB) != 0) {
+    if (iris_invoke2((long)INIT_SLOT_S8_TCB, INV_TCB_CONFIGURE, (long)INIT_SLOT_OWN_CSPACE, (long)INIT_SLOT_OWN_VSPACE) != 0 ||
+        iris_invoke((long)INIT_SLOT_S8_TCB, INV_TCB_WRITE_REGS, (long)entry, (long)rsp, 0) != 0 ||
+        iris_invoke0((long)INIT_SLOT_S8_TCB, INV_TCB_RESUME) != 0) {
         init_log("[USER][INIT][S8] SKIP: thread create\n"); return;
     }
 
@@ -108,8 +101,7 @@ void init_selftest_exception(void) {
      * wait followed by a second syscall to fetch what the signal did not
      * carry. */
     for (uint32_t i = 0; i < (uint32_t)sizeof(fm); i++) ((uint8_t *)&fm)[i] = 0;
-    r = init_sys3(SYS_EP_RECV, (long)INIT_SLOT_S8_FAULT_EP, (long)&fm,
-                  (long)INIT_SLOT_S8_REPLY);
+    r = iris_invoke2((long)INIT_SLOT_S8_FAULT_EP, INV_EP_RECV, (long)&fm, (long)INIT_SLOT_S8_REPLY);
     if (r < 0) {
         init_log("[USER][INIT][S8] FAIL: no fault message\n"); return;
     }
@@ -133,7 +125,7 @@ void init_selftest_exception(void) {
     /* Kill the faulting thread by REFUSING to answer it: dropping the reply
      * object is how a handler says "this one does not resume", and the kernel
      * destroys a thread whose fault nobody will ever answer. */
-    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_S8_REPLY);
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_S8_REPLY);
     (void)task_id;
 
 

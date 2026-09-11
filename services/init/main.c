@@ -83,9 +83,9 @@ void init_close(handle_id_t *h) {
     uint32_t v = (uint32_t)*h;
     if (v != 0u) {
         if (v >= 256u)
-            init_sys2(SYS_CNODE_DELETE, (long)(v & 0xFFu), (long)(v >> 8));
+            iris_invoke1((long)(v & 0xFFu), INV_CNODE_DELETE, (long)(v >> 8));
         else
-            init_sys2(SYS_CNODE_DELETE, 0, (long)v);
+            iris_invoke1(0, INV_CNODE_DELETE, (long)v);
     }
     *h = HANDLE_INVALID;
 }
@@ -151,8 +151,7 @@ static void init_idle_loop(void) {
                               INIT_SLOT_IDLE_NOTIF, 0);
     for (;;) {
         uint64_t bits = 0;
-        if (n < 0 || init_sys2(SYS_NOTIFY_WAIT, (long)INIT_SLOT_IDLE_NOTIF,
-                               (long)&bits) != 0) {
+        if (n < 0 || iris_invoke1((long)INIT_SLOT_IDLE_NOTIF, INV_NOTIFY_WAIT, (long)&bits) != 0) {
             /* No notification to hold still on: yield rather than spin hot. */
             (void)init_sys1(SYS_YIELD, 0);
         }
@@ -187,7 +186,7 @@ void init_main(handle_id_t rbx_unused) {
      * way into retype2 — which is what gives the fabricated objects a real MDB
      * ancestor instead of LEGACY_ROOT status (see init_retype_slot). */
     {
-        long ur = init_sys3(SYS_UNTYPED_INFO, (long)IRIS_CPTR_INIT_UNTYPED, 0, 0);
+        long ur = iris_invoke2((long)IRIS_CPTR_INIT_UNTYPED, INV_UNTYPED_INFO, 0, 0);
         if (ur >= 0) g_init_untyped_c = IRIS_CPTR_INIT_UNTYPED;
         else init_early_serial_write("[INIT] boot untyped absent\r\n");
     }

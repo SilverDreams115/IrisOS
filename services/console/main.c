@@ -15,6 +15,7 @@
 
 #include <stdint.h>
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/nc/handle.h>
 #include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
@@ -43,9 +44,9 @@ static void con_uart_write_byte(handle_id_t ioport_h, uint8_t byte) {
     long v;
     /* Wait for THRE (bit 5 of LSR at offset 5). */
     do {
-        v = con_sys2(SYS_IOPORT_IN, (long)ioport_h, 5);
+        v = iris_invoke1((long)ioport_h, INV_IOPORT_IN, 5);
     } while (v < 0 || !((uint8_t)v & 0x20u));
-    (void)con_sys3(SYS_IOPORT_OUT, (long)ioport_h, 0, (long)byte);
+    (void)iris_invoke2((long)ioport_h, INV_IOPORT_OUT, 0, (long)byte);
 }
 
 /* Phase 13 (Track I): the legacy KChannel write path (con_serve_chan_msg /
@@ -137,7 +138,7 @@ static void con_serve_ep_msg(handle_id_t ioport_h, struct IrisMsg *req) {
     /* Phase S1: reply_h is the console's OWN reply-object CPtr (echoed by the
      * kernel from the recv arg2).  The object is reusable — nothing to close. */
     if (reply_h != HANDLE_INVALID)
-        (void)con_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
+        (void)iris_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
 }
 
 void console_main_c(handle_id_t rbx_unused) {
@@ -162,8 +163,7 @@ void console_main_c(handle_id_t rbx_unused) {
         struct IrisMsg req;
         con_imsg_zero(&req);
         req.buf_uptr = (uint64_t)(uintptr_t)g_con_buf;
-        if (con_sys3(SYS_EP_RECV, (long)ep_h, (long)&req,
-                     (long)IRIS_CPTR_OWN_REPLY) != IRIS_OK)
+        if (iris_invoke2((long)ep_h, INV_EP_RECV, (long)&req, (long)IRIS_CPTR_OWN_REPLY) != IRIS_OK)
             continue;
         con_serve_ep_msg(ioport_h, &req);
     }

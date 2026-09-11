@@ -34,10 +34,9 @@ void init_early_serial_write(const char *s) {
     while (*s) {
         long v;
         do {
-            v = init_sys2(SYS_IOPORT_IN, (long)g_init_early_serial_h, 5);
+            v = iris_invoke1((long)g_init_early_serial_h, INV_IOPORT_IN, 5);
         } while (v < 0 || !((uint8_t)v & 0x20u));
-        (void)init_sys3(SYS_IOPORT_OUT, (long)g_init_early_serial_h, 0,
-                        (long)(uint8_t)*s++);
+        (void)iris_invoke2((long)g_init_early_serial_h, INV_IOPORT_OUT, 0, (long)(uint8_t)*s++);
     }
 }
 
@@ -54,9 +53,7 @@ void init_early_serial_start(void) {
     /* Stage 7 Step 14: base and count share arg1 (base | count << 16) so arg2
      * can name the budget the KIoPort object is charged to.  init pays out of
      * its own boot block; nothing is charged to a pool the kernel picked. */
-    if (init_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
-                  (long)(0x3F8u | (8u << 16)), (long)IRIS_CPTR_INIT_UNTYPED,
-                  (long)((uint64_t)INIT_EARLY_SERIAL_SLOT << 32)) != 0) return;
+    if (iris_invoke((long)IRIS_CPTR_IOPORT_CONTROL, INV_BOOT_CREATE_IOPORT, (long)(0x3F8u | (8u << 16)), (long)IRIS_CPTR_INIT_UNTYPED, (long)((uint64_t)INIT_EARLY_SERIAL_SLOT << 32)) != 0) return;
     g_init_early_serial_h = (handle_id_t)INIT_EARLY_SERIAL_SLOT;
 }
 
@@ -144,7 +141,7 @@ handle_id_t init_ep_lookup_name_slot(handle_id_t svcmgr_ep_h,
     msg.buf_len  = n + 1u;  /* includes NUL */
     iris_msg_declare_reply_slot(&msg, reply_slot);
 
-    if (init_sys2(SYS_EP_CALL, (long)svcmgr_ep_h, (long)&msg) != IRIS_OK)
+    if (iris_invoke1((long)svcmgr_ep_h, INV_EP_CALL, (long)&msg) != IRIS_OK)
         return HANDLE_INVALID;
     if (msg.label != IRIS_EP_REPLY_OK)
         return HANDLE_INVALID;
@@ -172,7 +169,7 @@ static int init_vfs_ep_call(handle_id_t vfs_ep_h, struct IrisMsg *msg,
         g_init_buf[plen] = 0u;
         msg->buf_len = plen + 1u;
     }
-    return (int)init_sys2(SYS_EP_CALL, (long)vfs_ep_h, (long)msg);
+    return (int)iris_invoke1((long)vfs_ep_h, INV_EP_CALL, (long)msg);
 }
 
 /* ── VFS EP LIST check (S5) ─────────────────────────────────────────────── */

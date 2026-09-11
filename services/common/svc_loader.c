@@ -15,38 +15,18 @@
 #include "iris_vspace.h"
 #include <iris/endpoint_proto.h>
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>
 #include <iris/paging.h>
 
 /* ── Freestanding syscall helpers ─────────────────────────────────── */
 
-static inline long sl_sys0(long nr) {
-    return iris_syscall4((long)nr, (long)0L, (long)0L, (long)0L, (long)0);
-}
-
-static inline long sl_sys1(long nr, long a0) {
-    return iris_syscall4((long)nr, (long)a0, (long)0L, (long)0L, (long)0);
-}
-
-static inline long sl_sys2(long nr, long a0, long a1) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)0L, (long)0);
-}
-
-static inline long sl_sys3(long nr, long a0, long a1, long a2) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
-}
-
-static inline long sl_sys4(long nr, long a0, long a1, long a2, long a3) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)a3);
-}
-
 /* Release a capability: delete its slot.  Stage 4 removed the handle branch —
  * every capability the loader creates is published into its workspace. */
 static inline void sl_close_cap(handle_id_t h) {
     if (h == HANDLE_INVALID) return;
-    (void)sl_sys2(SYS_CNODE_DELETE, (long)((uint32_t)h & 0xFFu),
-                  (long)((uint32_t)h >> 8));
+    (void)iris_invoke1((long)((uint32_t)h & 0xFFu), INV_CNODE_DELETE, (long)((uint32_t)h >> 8));
 }
 
 /* ── Minimal ELF64 types ─────────────────────────────────────────── */
@@ -216,7 +196,7 @@ static long sl_name_to_index(const char *name) {
 /* ── svc_load ────────────────────────────────────────────────────── */
 
 long svc_initrd_count(uint64_t initrd_c) {
-    return sl_sys2(SYS_INITRD_COUNT, (long)initrd_c, 0);
+    return iris_invoke1((long)initrd_c, INV_BOOT_INITRD_COUNT, 0);
 }
 
 long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
@@ -326,9 +306,7 @@ static inline long sl_ws_dest(uint64_t ws, uint32_t leaf) {
  * loader cannot cache that answer because it may have no writable memory. */
 static int sl_ws_ensure(uint64_t ws) {
     if (SL_WS_SLOT(ws) == 0u || SL_WS_UNTYPED(ws) == 0u) return 0;
-    long r = sl_sys4(SYS_UNTYPED_RETYPE2, (long)SL_WS_UNTYPED(ws),
-                     (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
-                     (long)((uint64_t)SL_WS_SLOT(ws) << 32), 256);
+    long r = iris_invoke((long)SL_WS_UNTYPED(ws), INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)), (long)((uint64_t)SL_WS_SLOT(ws) << 32), 256);
     return (r == 0 || r == (long)IRIS_ERR_ALREADY_EXISTS);
 }
 
@@ -407,10 +385,10 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
      * it in BootInfo at BOOT_CPTR_VSPACE — which is exactly seL4's shape:
      * seL4_CapInitThreadVSpace is a BootInfo slot, not a syscall.
      */
-    if (sl_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_OWN_VSPACE) ==
+    if (iris_invoke0((long)IRIS_CPTR_OWN_VSPACE, INV_CAP_IDENTIFY) ==
         (long)IRIS_HANDLE_TYPE_VSPACE)
         self_vs = (long)IRIS_CPTR_OWN_VSPACE;
-    else if (sl_sys1(SYS_CAP_IDENTIFY, (long)BOOT_CPTR_VSPACE) ==
+    else if (iris_invoke0((long)BOOT_CPTR_VSPACE, INV_CAP_IDENTIFY) ==
              (long)IRIS_HANDLE_TYPE_VSPACE)
         self_vs = (long)BOOT_CPTR_VSPACE;
 
@@ -420,7 +398,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
      * is long gone, so it has no children), and carve it on the first spawn. */
     {
         long pool = (long)sl_ws_cptr(ws, SL_WS_ELFPOOL);
-        long pr   = sl_sys1(SYS_UNTYPED_RESET, pool);
+        long pr   = iris_invoke0(pool, INV_UNTYPED_RESET);
         /*
          * Stage 7 Step 14: there is no fallback, because there is no default.
          *
@@ -439,10 +417,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
              * the same stranding the child budgets above refuse to do. */
             r = pr; goto out;
         } else if (pr != 0) {
-            if (sl_sys4(SYS_UNTYPED_RETYPE2, (long)SL_WS_UNTYPED(ws),
-                        (long)((uint64_t)IRIS_KOBJ_UNTYPED | (1ULL << 32)),
-                        sl_ws_dest(ws, SL_WS_ELFPOOL),
-                        (long)SL_ELF_POOL_BYTES) != 0) {
+            if (iris_invoke((long)SL_WS_UNTYPED(ws), INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_UNTYPED | (1ULL << 32)), sl_ws_dest(ws, SL_WS_ELFPOOL), (long)SL_ELF_POOL_BYTES) != 0) {
                 r = (long)IRIS_ERR_NO_MEMORY; goto out;
             }
         }
@@ -450,8 +425,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * is.  It used to be a KVMO — one of the object types seL4 has no
          * equivalent for — which meant the loader had to speak a second memory
          * ABI to read a file the kernel already had. */
-        r = sl_sys4(SYS_INITRD_FRAME, (long)initrd_c, idx,
-                    sl_ws_dest(ws, SL_WS_ELF), pool);
+        r = iris_invoke((long)initrd_c, INV_BOOT_INITRD_FRAME, idx, sl_ws_dest(ws, SL_WS_ELF), pool);
         if (r <= 0) { if (r == 0) r = (long)IRIS_ERR_NOT_FOUND; goto out; }
         elf_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_ELF);
     }
@@ -459,7 +433,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
     /* 2. Map ELF read-only at SL_ELF_VADDR for parsing.  One map covers the
      *    whole frame (D-10); the levels for the parse window are the loader's
      *    own to supply. */
-    r = iris_vspace_map(SYS_FRAME_MAP, (long)elf_h, self_vs,
+    r = iris_vspace_map(INV_FRAME_MAP, (long)elf_h, self_vs,
                         (long)SL_ELF_VADDR, 0,
                         self_vs, (long)SL_WS_UNTYPED(ws),
                         sl_ws_dest(ws, SL_WS_PTSCRATCH),
@@ -548,7 +522,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
              * use, and resetting or re-carving it would strand the live
              * child's memory.  SYS_CAP_IDENTIFY answers exactly this question
              * and takes no authority to ask. */
-            if (sl_sys1(SYS_CAP_IDENTIFY, (long)sl_ws_cptr(ws, l)) >= 0)
+            if (iris_invoke0((long)sl_ws_cptr(ws, l), INV_CAP_IDENTIFY) >= 0)
                 continue;
 
             /* Prepare this leaf's child budget.
@@ -569,14 +543,11 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
              * is the property the scan wanted in the first place. */
             uint32_t pl   = SL_WS_CHILDPOOL(l);
             long     pool = (long)sl_ws_cptr(ws, pl);
-            long     rr   = sl_sys1(SYS_UNTYPED_RESET, pool);
+            long     rr   = iris_invoke0(pool, INV_UNTYPED_RESET);
             if (rr == (long)IRIS_ERR_BUSY) continue;
             if (rr != 0) {
                 /* Nothing in the slot: first use of this leaf. */
-                if (sl_sys4(SYS_UNTYPED_RETYPE2, (long)SL_WS_UNTYPED(ws),
-                            (long)((uint64_t)IRIS_KOBJ_UNTYPED | (1ULL << 32)),
-                            sl_ws_dest(ws, pl),
-                            (long)(child_budget ? child_budget
+                if (iris_invoke((long)SL_WS_UNTYPED(ws), INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_UNTYPED | (1ULL << 32)), sl_ws_dest(ws, pl), (long)(child_budget ? child_budget
                                                 : (uint64_t)SL_CHILD_POOL_BYTES)) != 0) {
                     r = (long)IRIS_ERR_NO_MEMORY;
                     break;
@@ -588,11 +559,8 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
              * the kernel to build one from.  A process is composed out of
              * objects its creator made.
              */
-            (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws),
-                          (long)SL_WS_CHILD_VSPACE);
-            if (sl_sys4(SYS_UNTYPED_RETYPE2, pool,
-                        (long)((uint64_t)IRIS_KOBJ_VSPACE | (1ULL << 32)),
-                        sl_ws_dest(ws, SL_WS_CHILD_VSPACE), 4096) != 0) {
+            (void)iris_invoke1((long)SL_WS_SLOT(ws), INV_CNODE_DELETE, (long)SL_WS_CHILD_VSPACE);
+            if (iris_invoke(pool, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_VSPACE | (1ULL << 32)), sl_ws_dest(ws, SL_WS_CHILD_VSPACE), 4096) != 0) {
                 r = (long)IRIS_ERR_NO_MEMORY;
                 break;
             }
@@ -607,8 +575,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
              * usable, and the authority for it is a capability the loader was
              * granted rather than a kernel-side counter it can always draw on.
              */
-            if (sl_sys2(SYS_ASID_POOL_ASSIGN, (long)IRIS_CPTR_ASID_POOL,
-                        child_vs) != 0) {
+            if (iris_invoke1((long)IRIS_CPTR_ASID_POOL, INV_ASID_POOL_ASSIGN, child_vs) != 0) {
                 r = (long)IRIS_ERR_ACCESS_DENIED;
                 break;
             }
@@ -618,11 +585,8 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
              * to 99 and svcmgr's receive pool runs to 255.  The spawner picks
              * it now, which is the point — the kernel used to pick for
              * everyone. */
-            (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws),
-                          (long)SL_WS_CHILD_CNODE);
-            if (sl_sys4(SYS_UNTYPED_RETYPE2, pool,
-                        (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
-                        sl_ws_dest(ws, SL_WS_CHILD_CNODE), 256) != 0) {
+            (void)iris_invoke1((long)SL_WS_SLOT(ws), INV_CNODE_DELETE, (long)SL_WS_CHILD_CNODE);
+            if (iris_invoke(pool, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)), sl_ws_dest(ws, SL_WS_CHILD_CNODE), 256) != 0) {
                 r = (long)IRIS_ERR_NO_MEMORY;
                 break;
             }
@@ -642,9 +606,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
              * Retyping into the leaf claims it exactly as the create did: an
              * occupied destination is ALREADY_EXISTS and the scan moves on.
              */
-            r = sl_sys4(SYS_UNTYPED_RETYPE2, pool,
-                        (long)((uint64_t)IRIS_KOBJ_TCB | (1ULL << 32)),
-                        sl_ws_dest(ws, l), 0);
+            r = iris_invoke(pool, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_TCB | (1ULL << 32)), sl_ws_dest(ws, l), 0);
             if (r == 0) { proc_leaf = l; pool_c = pool; break; }
             if (r != (long)IRIS_ERR_ALREADY_EXISTS) break;
         }
@@ -682,10 +644,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
              * KVMO fabricated by the kernel.  A frame of the segment's whole
              * size, because a frame maps as a whole (D-10) — which is what
              * makes the VMO's page-at-a-time population unnecessary. */
-            r = sl_sys4(SYS_UNTYPED_RETYPE2, pool_c,
-                        (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
-                        sl_ws_dest(ws, SL_WS_SEG + i),
-                        (long)seg_map_size[i]);
+            r = iris_invoke(pool_c, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)), sl_ws_dest(ws, SL_WS_SEG + i), (long)seg_map_size[i]);
             if (r < 0) goto out;
             seg_vmo[i] = (handle_id_t)sl_ws_cptr(ws, SL_WS_SEG + i);
         }
@@ -698,8 +657,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                                          (long)sl_ws_cptr(ws, SL_WS_PTSCRATCH),
                                          slot, seg_map_size[i]);
             if (r < 0) goto out;
-            r = sl_sys4(SYS_FRAME_MAP, (long)seg_vmo[i], self_vs,
-                        (long)slot, 1 /*WRITABLE*/);
+            r = iris_invoke((long)seg_vmo[i], INV_FRAME_MAP, self_vs, (long)slot, 1 /*WRITABLE*/);
             if (r < 0) goto out;
             segs_in_loader |= (1u << i);
         }
@@ -771,7 +729,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
 
         /* 11. Unmap ELF from loader — no longer needed. */
         /* D-5: the parse window held a FRAME, so it comes down as one. */
-        sl_sys3(SYS_FRAME_UNMAP, (long)elf_h, self_vs, (long)SL_ELF_VADDR);
+        iris_invoke2((long)elf_h, INV_FRAME_UNMAP, self_vs, (long)SL_ELF_VADDR);
         elf_mapped = 0;
         sl_close_cap(elf_h);
         elf_h = HANDLE_INVALID;
@@ -796,15 +754,13 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * made it, so it never stopped holding it. */
 
         /* 14. Create user stack sparse VMO (charged to the child) and map it in. */
-        r = sl_sys4(SYS_UNTYPED_RETYPE2, pool_c,
-                    (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
-                    sl_ws_dest(ws, SL_WS_STACK), (long)USER_STACK_SIZE);
+        r = iris_invoke(pool_c, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)), sl_ws_dest(ws, SL_WS_STACK), (long)USER_STACK_SIZE);
         if (r < 0) goto out;
         stack_vmo_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_STACK);
 
         /* Stage 7 Step 9: the map names the child's ADDRESS SPACE, which the
          * loader retyped and still holds — not its process. */
-        r = iris_vspace_map(SYS_FRAME_MAP,
+        r = iris_vspace_map(INV_FRAME_MAP,
                             (long)stack_vmo_h, child_vs,
                             (long)USER_STACK_BASE, 1 /*WRITABLE*/,
                             child_vs, pool_c,
@@ -830,9 +786,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                                          (long)sl_ws_cptr(ws, SL_WS_PTSCRATCH_CH),
                                          bias + seg_map_base[i], seg_map_size[i]);
             if (r < 0) goto out;
-            r = sl_sys4(SYS_FRAME_MAP,
-                        (long)seg_vmo[i], child_vs,
-                        (long)(bias + seg_map_base[i]), flags);
+            r = iris_invoke((long)seg_vmo[i], INV_FRAME_MAP, child_vs, (long)(bias + seg_map_base[i]), flags);
             if (r < 0) goto out;
         }
 
@@ -840,7 +794,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         for (uint32_t i = 0; i < seg_count; i++) {
             if (!(segs_in_loader & (1u << i))) continue;
             uint64_t slot = SL_SEG_VADDR_BASE + (uint64_t)i * SL_SEG_SLOT_SIZE;
-            sl_sys3(SYS_FRAME_UNMAP, (long)seg_vmo[i], self_vs, (long)slot);
+            iris_invoke2((long)seg_vmo[i], INV_FRAME_UNMAP, self_vs, (long)slot);
             segs_in_loader &= ~(1u << i);
         }
 
@@ -874,10 +828,8 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             for (uint32_t mi = 0; mints && mi < mint_count; mi++)
                 if (mints[mi].slot == own_budget_slot) taken = 1;
             if (!taken)
-                (void)sl_sys3(SYS_CSPACE_MINT, pool_c,
-                              (long)((uint64_t)child_cn |
-                                     ((uint64_t)own_budget_slot << 32)),
-                              (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+                (void)iris_invoke2(pool_c, INV_CSPACE_MINT, (long)((uint64_t)child_cn |
+                                     ((uint64_t)own_budget_slot << 32)), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
         }
 
         /*
@@ -922,7 +874,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         for (uint32_t mi = 0; !has_budget && mints && mi < mint_count; mi++) {
             uint64_t src = mints[mi].src_cptr;
             if (!src) continue;
-            if (sl_sys1(SYS_CAP_IDENTIFY, (long)src) ==
+            if (iris_invoke0((long)src, INV_CAP_IDENTIFY) ==
                 (long)IRIS_HANDLE_TYPE_UNTYPED) has_budget = 1;
         }
 
@@ -931,20 +883,16 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             for (uint32_t mi = 0; mints && mi < mint_count; mi++)
                 if (mints[mi].slot == (uint16_t)IRIS_CPTR_OWN_VSPACE) taken = 1;
             if (!taken)
-                (void)sl_sys3(SYS_CSPACE_MINT, child_vs,
-                              (long)((uint64_t)child_cn |
-                                     (IRIS_CPTR_OWN_VSPACE << 32)),
-                              (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+                (void)iris_invoke2(child_vs, INV_CSPACE_MINT, (long)((uint64_t)child_cn |
+                                     (IRIS_CPTR_OWN_VSPACE << 32)), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
         }
         if (has_budget && proc_h != HANDLE_INVALID) {
             int taken = 0;
             for (uint32_t mi = 0; mints && mi < mint_count; mi++)
                 if (mints[mi].slot == (uint16_t)IRIS_CPTR_OWN_TCB) taken = 1;
             if (!taken)
-                (void)sl_sys3(SYS_CSPACE_MINT, (long)proc_h,
-                              (long)((uint64_t)child_cn |
-                                     (IRIS_CPTR_OWN_TCB << 32)),
-                              (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+                (void)iris_invoke2((long)proc_h, INV_CSPACE_MINT, (long)((uint64_t)child_cn |
+                                     (IRIS_CPTR_OWN_TCB << 32)), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
         }
         /* ...and its own root CSpace, which SYS_CSPACE_SELF used to hand over
          * on request without asking for any capability at all. */
@@ -953,10 +901,8 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             for (uint32_t mi = 0; mints && mi < mint_count; mi++)
                 if (mints[mi].slot == (uint16_t)IRIS_CPTR_OWN_CSPACE) taken = 1;
             if (!taken)
-                (void)sl_sys3(SYS_CSPACE_MINT, child_cn,
-                              (long)((uint64_t)child_cn |
-                                     (IRIS_CPTR_OWN_CSPACE << 32)),
-                              (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+                (void)iris_invoke2(child_cn, INV_CSPACE_MINT, (long)((uint64_t)child_cn |
+                                     (IRIS_CPTR_OWN_CSPACE << 32)), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
         }
 
         /* 18b (Phase 8). Mint the well-known CSpace slots BEFORE the first
@@ -980,10 +926,8 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
              * it.  The delegation is still an MDB child of our source slot, so
              * SYS_CSPACE_REVOKE on it still reaches into the child.
              */
-            (void)sl_sys3(SYS_CSPACE_MINT, (long)src,
-                          (long)((uint64_t)child_cn |
-                                 ((uint64_t)mints[mi].slot << 32)),
-                          (long)rb);
+            (void)iris_invoke2((long)src, INV_CSPACE_MINT, (long)((uint64_t)child_cn |
+                                 ((uint64_t)mints[mi].slot << 32)), (long)rb);
         }
 
         /*
@@ -1005,12 +949,11 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             /* The thread was retyped in the leaf scan above — it is what
              * claimed the leaf, and proc_h names it. */
             long tcb = (long)proc_h;
-            r = sl_sys3(SYS_TCB_CONFIGURE, tcb, child_cn, child_vs);
+            r = iris_invoke2(tcb, INV_TCB_CONFIGURE, child_cn, child_vs);
             if (r < 0) goto out;
-            r = sl_sys4(SYS_TCB_WRITE_REGS, tcb, (long)(bias + elf_entry),
-                        (long)(USER_STACK_TOP - 8ULL), 0);
+            r = iris_invoke(tcb, INV_TCB_WRITE_REGS, (long)(bias + elf_entry), (long)(USER_STACK_TOP - 8ULL), 0);
             if (r < 0) goto out;
-            r = sl_sys1(SYS_TCB_RESUME, tcb);
+            r = iris_invoke0(tcb, INV_TCB_RESUME);
             if (r < 0) goto out;
         }
     }
@@ -1021,8 +964,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
      * over.  Minted, not moved: the loader's own slot is scratch and is
      * dropped below like everything else it was holding. */
     if (keep_cnode_dest && child_cn)
-        (void)sl_sys3(SYS_CSPACE_MINT, child_cn, (long)keep_cnode_dest,
-                      (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+        (void)iris_invoke2(child_cn, INV_CSPACE_MINT, (long)keep_cnode_dest, (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
     /* Stage 7 Step 10/12: and the child's first THREAD, for a spawner that
      * supervises it.  READ|WRITE, because supervising an execution is watching
      * it, reading why it ended, arming where its faults go, and stopping it —
@@ -1032,9 +974,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
      * giving away the rest.  A spawner that wants none of it passes 0 and
      * keeps nothing. */
     if (keep_tcb_dest)
-        (void)sl_sys3(SYS_CSPACE_MINT, (long)proc_h,
-                      (long)keep_tcb_dest,
-                      (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+        (void)iris_invoke2((long)proc_h, INV_CSPACE_MINT, (long)keep_tcb_dest, (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
     /*
      * Stage 7 Step 15: and the child's ADDRESS SPACE, for a spawner that means
      * to map into it later.
@@ -1053,9 +993,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
      * child should pass 0 and hold nothing.
      */
     if (keep_vspace_dest)
-        (void)sl_sys3(SYS_CSPACE_MINT, (long)sl_ws_cptr(ws, SL_WS_CHILD_VSPACE),
-                      (long)keep_vspace_dest,
-                      (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+        (void)iris_invoke2((long)sl_ws_cptr(ws, SL_WS_CHILD_VSPACE), INV_CSPACE_MINT, (long)keep_vspace_dest, (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
 
     /* Hand back everything of the CHILD's that the loader was holding: an
      * unused level charged to its budget, and the capability to its address
@@ -1063,29 +1001,29 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
      * keeps that address space alive after the process dies, and with it every
      * page table installed in it, which is a child entry on a budget its owner
      * is entitled to RESET the moment the child is gone. */
-    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_PTSCRATCH_CH);
-    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_VSPACE);
-    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_CNODE);
+    (void)iris_invoke1((long)SL_WS_SLOT(ws), INV_CNODE_DELETE, (long)SL_WS_PTSCRATCH_CH);
+    (void)iris_invoke1((long)SL_WS_SLOT(ws), INV_CNODE_DELETE, (long)SL_WS_CHILD_VSPACE);
+    (void)iris_invoke1((long)SL_WS_SLOT(ws), INV_CNODE_DELETE, (long)SL_WS_CHILD_CNODE);
     *out_proc_h = proc_h;
     *out_chan_h  = HANDLE_INVALID;
     return 0;
 
 out:
-    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_PTSCRATCH_CH);
-    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_VSPACE);
-    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_CNODE);
+    (void)iris_invoke1((long)SL_WS_SLOT(ws), INV_CNODE_DELETE, (long)SL_WS_PTSCRATCH_CH);
+    (void)iris_invoke1((long)SL_WS_SLOT(ws), INV_CNODE_DELETE, (long)SL_WS_CHILD_VSPACE);
+    (void)iris_invoke1((long)SL_WS_SLOT(ws), INV_CNODE_DELETE, (long)SL_WS_CHILD_CNODE);
     /* Unmap ELF if still mapped.  D-5: the window holds a FRAME, so it comes
      * down the way the success path takes it down — by naming the frame, not
      * by handing the kernel an address range and letting it find out what is
      * there.  The range form had no capability in it at all. */
     if (elf_mapped)
-        sl_sys3(SYS_FRAME_UNMAP, (long)elf_h, self_vs, (long)SL_ELF_VADDR);
+        iris_invoke2((long)elf_h, INV_FRAME_UNMAP, self_vs, (long)SL_ELF_VADDR);
     /* Unmap any segment slots still mapped in loader. */
     for (uint32_t i = 0; i < SL_MAX_SEGS; i++) {
         if (!(segs_in_loader & (1u << i))) continue;
         uint64_t slot = SL_SEG_VADDR_BASE + (uint64_t)i * SL_SEG_SLOT_SIZE;
         if (seg_p_memsz[i] > 0)
-            sl_sys3(SYS_FRAME_UNMAP, (long)seg_vmo[i], self_vs, (long)slot);
+            iris_invoke2((long)seg_vmo[i], INV_FRAME_UNMAP, self_vs, (long)slot);
     }
     /* Close all handles. */
     sl_close_cap(elf_h);

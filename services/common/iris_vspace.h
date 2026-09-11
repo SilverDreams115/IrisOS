@@ -1,5 +1,6 @@
 #ifndef IRIS_COMMON_VSPACE_H
 #define IRIS_COMMON_VSPACE_H
+#include <iris/invoke.h>
 
 /*
  * iris_vspace.h — supplying your own paging levels (Stage 6-pure, Step 2).
@@ -34,6 +35,7 @@
  */
 
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/nc/error.h>
 #include <stdint.h>
 
@@ -54,9 +56,8 @@
  * radix to assume.
  */
 static inline void iris_vspace_slot_clear(long dest) {
-    (void)iris_syscall2(SYS_CNODE_DELETE,
-                        (long)((uint64_t)dest & 0xFFFFFFFFu),
-                        (long)((uint64_t)dest >> 32));
+    (void)iris_invoke1((long)((uint64_t)dest & 0xFFFFFFFFu), INV_CNODE_DELETE,
+                       (long)((uint64_t)dest >> 32));
 }
 
 /*
@@ -87,16 +88,16 @@ static inline long iris_vspace_ensure(long vspace_c, long untyped_c,
          * pre-pass whole ranges — would burn a page of the budget to discover
          * that there was nothing to do.
          */
-        if (iris_syscall1(SYS_CAP_IDENTIFY, slot_c)
+        if (iris_invoke0(slot_c, INV_CAP_IDENTIFY)
                 != (long)IRIS_HANDLE_TYPE_PAGE_TABLE) {
             iris_vspace_slot_clear(dest);
-            long rr = iris_syscall4(SYS_UNTYPED_RETYPE2, untyped_c,
-                                    (long)((uint64_t)IRIS_KOBJ_PAGE_TABLE | (1ULL << 32)),
-                                    dest, 4096);
+            long rr = iris_invoke(untyped_c, INV_UNTYPED_RETYPE,
+                                  (long)((uint64_t)IRIS_KOBJ_PAGE_TABLE | (1ULL << 32)),
+                                  dest, 4096);
             if (rr != 0) return rr;
         }
 
-        long r = iris_syscall3(SYS_VSPACE_MAP_TABLE, slot_c, vspace_c, (long)vaddr);
+        long r = iris_invoke2(slot_c, INV_PAGE_TABLE_MAP, vspace_c, (long)vaddr);
         if (r == (long)IRIS_ERR_ALREADY_EXISTS) return 0;  /* walk complete */
         if (r != 0) return r;
         /* Installed: the VSpace holds its own reference, so this capability is
@@ -140,13 +141,13 @@ static inline long iris_vspace_ensure_range(long vspace_c, long untyped_c,
  * How many bytes a mapping syscall will cover, so the fixup knows how much of
  * the walk it owes.
  *
- * The map says it itself: SYS_FRAME_SIZE reads the size off the capability
- * being mapped, which is the same number the kernel loops over.  Guessing one
- * page is what made the fixup unable to converge for anything bigger.
+ * The map says it itself: `Frame_Size` reads the size off the capability being
+ * mapped, which is the same number the kernel loops over.  Guessing one page is
+ * what made the fixup unable to converge for anything bigger.
  */
-static inline uint64_t iris_vspace_map_span(long nr, long frame_c) {
-    if (nr == SYS_FRAME_MAP) {
-        long sz = iris_syscall1(SYS_FRAME_SIZE, frame_c);
+static inline uint64_t iris_vspace_map_span(unsigned long label, long frame_c) {
+    if (label == INV_FRAME_MAP) {
+        long sz = iris_invoke0(frame_c, INV_FRAME_SIZE);
         if (sz > 0) return (uint64_t)sz;
     }
     return 4096ULL;
@@ -160,25 +161,27 @@ static inline uint64_t iris_vspace_map_span(long nr, long frame_c) {
  * is complete — a second MISSING_TABLE would mean something else unmapped a
  * level underneath us, which is a real error and not something to spin on.
  */
-static inline long iris_vspace_map(long nr, long a0, long a1, long a2, long a3,
+static inline long iris_vspace_map(unsigned long label, long a0, long a1,
+                                   long a2, long a3,
                                    long vspace_c, long untyped_c,
                                    long dest, long slot_c, uint64_t vaddr) {
-    long r = iris_syscall4(nr, a0, a1, a2, a3);
+    long r = iris_invoke(a0, label, a1, a2, a3);
     if (r != (long)IRIS_ERR_MISSING_TABLE) return r;
     long e = iris_vspace_ensure_range(vspace_c, untyped_c, dest, slot_c, vaddr,
-                                      iris_vspace_map_span(nr, a0));
+                                      iris_vspace_map_span(label, a0));
     if (e != 0) return e;
-    return iris_syscall4(nr, a0, a1, a2, a3);
+    return iris_invoke(a0, label, a1, a2, a3);
 }
 
 /*
  * The same thing, for a service that would rather fix this once at its syscall
  * wrapper than at every map site.
  *
- * The mapping syscall says where its target address space and virtual address
- * are, so the decode is a fact about the ABI rather than a guess: SYS_FRAME_MAP
- * names the address space in a1 and the VA in a2.  Anything else that returned
- * MISSING_TABLE would be a kernel bug, so it is passed through unchanged.
+ * The mapping invocation says where its target address space and virtual
+ * address are, so the decode is a fact about the ABI rather than a guess:
+ * `Frame_Map` is invoked ON the frame and names the address space in its first
+ * argument and the VA in its second.  Anything else that returned MISSING_TABLE
+ * would be a kernel bug, so it is passed through unchanged.
  *
  * Ledger D-5: there used to be three more forms here, and the difference
  * between them was where each hid its address space — SYS_VMO_MAP in the
@@ -197,13 +200,14 @@ static inline long iris_vspace_map(long nr, long a0, long a1, long a2, long a3,
  *              of a process any more.  Kept in the signature while callers
  *              still pass them.
  */
-static inline long iris_vspace_fixup(long nr, long a0, long a1, long a2, long a3,
+static inline long iris_vspace_fixup(unsigned long label, long a0, long a1,
+                                     long a2, long a3,
                                      long self_vs, long untyped_c,
                                      long pt_dest, long pt_slot,
                                      long vs_dest, long vs_slot) {
     long vs, va;
     (void)self_vs; (void)vs_dest; (void)vs_slot;
-    if (nr == SYS_FRAME_MAP) {
+    if (label == INV_FRAME_MAP) {
         vs = a1; va = a2;
     } else {
         return (long)IRIS_ERR_MISSING_TABLE;
@@ -211,10 +215,10 @@ static inline long iris_vspace_fixup(long nr, long a0, long a1, long a2, long a3
 
     long e = iris_vspace_ensure_range(vs, untyped_c, pt_dest, pt_slot,
                                       (uint64_t)va,
-                                      iris_vspace_map_span(nr, a0));
+                                      iris_vspace_map_span(label, a0));
 
     if (e != 0) return e;
-    return iris_syscall4(nr, a0, a1, a2, a3);
+    return iris_invoke(a0, label, a1, a2, a3);
 }
 
 #endif /* IRIS_COMMON_VSPACE_H */

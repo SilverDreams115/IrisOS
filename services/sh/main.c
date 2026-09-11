@@ -22,6 +22,7 @@
 
 #include <stdint.h>
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/nc/handle.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>
@@ -180,7 +181,7 @@ static int sh_vfs_ep_call(struct IrisMsg *msg, const char *path) {
         g_sh_buf[plen] = 0u;
         msg->buf_len = plen + 1u;
     }
-    return (int)sh_sys2(SYS_EP_CALL, (long)g_sh_vfs_ep_h, (long)msg);
+    return (int)iris_invoke1((long)g_sh_vfs_ep_h, INV_EP_CALL, (long)msg);
 }
 
 static void sh_cmd_ls_ep(handle_id_t con) {
@@ -278,7 +279,7 @@ static void sh_dispatch(handle_id_t con, const char *line) {
         uint8_t *b = (uint8_t *)&m;
         for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) b[i] = 0;
         m.label = TMR_OP_UPTIME;
-        long r = sh_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TIMER_EP, (long)(uintptr_t)&m);
+        long r = iris_invoke1((long)IRIS_CPTR_TIMER_EP, INV_EP_CALL, (long)(uintptr_t)&m);
         if (r != 0) {
             sh_cout(con, "uptime: no clock granted\r\n");
         } else {
@@ -350,7 +351,7 @@ void sh_main_c(handle_id_t rbx_unused) {
         struct IrisMsg pmsg;
         sh_imsg_zero(&pmsg);
         pmsg.label = IRIS_EP_OP_PING;
-        if (sh_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&pmsg) == IRIS_OK &&
+        if (iris_invoke1((long)IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (long)&pmsg) == IRIS_OK &&
             pmsg.label == IRIS_EP_REPLY_OK)
             sh_cout(console_h, "[SH] svcmgr cptr OK\n");
         else
@@ -358,7 +359,7 @@ void sh_main_c(handle_id_t rbx_unused) {
 
         sh_imsg_zero(&pmsg);
         pmsg.label = IRIS_EP_OP_PING;
-        if (sh_sys2(SYS_EP_CALL, (long)IRIS_CPTR_VFS_EP, (long)&pmsg) == IRIS_OK &&
+        if (iris_invoke1((long)IRIS_CPTR_VFS_EP, INV_EP_CALL, (long)&pmsg) == IRIS_OK &&
             pmsg.label == IRIS_EP_REPLY_OK) {
             g_sh_vfs_ep_h = (handle_id_t)IRIS_CPTR_VFS_EP;
             sh_cout(console_h, "[SH] vfs cptr OK\n");
@@ -368,7 +369,7 @@ void sh_main_c(handle_id_t rbx_unused) {
 
         sh_imsg_zero(&pmsg);
         pmsg.label = IRIS_EP_OP_PING;
-        if (sh_sys2(SYS_EP_CALL, (long)IRIS_CPTR_KBD_EP, (long)&pmsg) == IRIS_OK &&
+        if (iris_invoke1((long)IRIS_CPTR_KBD_EP, INV_EP_CALL, (long)&pmsg) == IRIS_OK &&
             pmsg.label == IRIS_EP_REPLY_OK) {
             kbd_ep_h = (handle_id_t)IRIS_CPTR_KBD_EP;
             sh_cout(console_h, "[SH] kbd cptr OK\n");
@@ -380,7 +381,7 @@ void sh_main_c(handle_id_t rbx_unused) {
          * the symmetric gated marker. */
         sh_imsg_zero(&pmsg);
         pmsg.label = IRIS_EP_OP_PING;
-        if (sh_sys2(SYS_EP_CALL, (long)IRIS_CPTR_CONSOLE_EP, (long)&pmsg) == IRIS_OK &&
+        if (iris_invoke1((long)IRIS_CPTR_CONSOLE_EP, INV_EP_CALL, (long)&pmsg) == IRIS_OK &&
             pmsg.label == IRIS_EP_REPLY_OK)
             sh_cout(console_h, "[SH] console cptr OK\n");
         else
@@ -410,7 +411,7 @@ void sh_main_c(handle_id_t rbx_unused) {
         struct IrisMsg msg;
         sh_imsg_zero(&msg);
         msg.label = KBD_EP_OP_READ;
-        if (sh_sys2(SYS_EP_CALL, (long)kbd_ep_h, (long)&msg) != IRIS_OK) {
+        if (iris_invoke1((long)kbd_ep_h, INV_EP_CALL, (long)&msg) != IRIS_OK) {
             (void)sh_sys0(SYS_YIELD);
             continue;
         }

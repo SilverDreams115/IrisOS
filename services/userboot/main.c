@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/nc/handle.h>
 #include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
@@ -62,15 +63,12 @@ static void ub_boot_panic(uint64_t ioport_control_cptr, uint64_t ioport_slot,
      * and there is nothing left to consult.  If that block is not there either
      * the create fails and the panic is silent, which is what it already did.
      */
-    long r = ub_sys4(SYS_CAP_CREATE_IOPORT, (long)ioport_control_cptr,
-                     (long)(0x3F8u | (8u << 16)),
-                     (long)BOOT_CPTR_UNTYPED_START,
-                     (long)((uint64_t)ioport_slot << 32));
+    long r = iris_invoke((long)ioport_control_cptr, INV_BOOT_CREATE_IOPORT, (long)(0x3F8u | (8u << 16)), (long)BOOT_CPTR_UNTYPED_START, (long)((uint64_t)ioport_slot << 32));
     if (r == 0) {
         long io = (long)ioport_slot;
         for (const char *p = msg; *p; p++) {
-            if (*p == '\n') (void)ub_sys3(SYS_IOPORT_OUT, io, 0, (long)'\r');
-            (void)ub_sys3(SYS_IOPORT_OUT, io, 0, (long)(uint8_t)*p);
+            if (*p == '\n') (void)iris_invoke2(io, INV_IOPORT_OUT, 0, (long)'\r');
+            (void)iris_invoke2(io, INV_IOPORT_OUT, 0, (long)(uint8_t)*p);
         }
     }
 }
@@ -94,12 +92,10 @@ static void ub_park_root_bootstrap(uint64_t boot_untyped_c, uint64_t own_cnode_c
      * a notification nobody holds blocks once and never returns, which is
      * what "parked" meant all along.
      */
-    if (ub_sys4(SYS_UNTYPED_RETYPE2, (long)boot_untyped_c,
-                (long)((uint64_t)IRIS_KOBJ_NOTIFICATION | (1ULL << 32)),
-                (long)(own_cnode_c | ((uint64_t)park_slot << 32)), 0) == 0) {
+    if (iris_invoke((long)boot_untyped_c, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_NOTIFICATION | (1ULL << 32)), (long)(own_cnode_c | ((uint64_t)park_slot << 32)), 0) == 0) {
         uint64_t bits = 0;
         for (;;) {
-            if (ub_sys2(SYS_NOTIFY_WAIT, (long)park_slot, (long)(uintptr_t)&bits) != 0)
+            if (iris_invoke1((long)park_slot, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0)
                 break;
         }
     }
@@ -116,8 +112,7 @@ static void ub_park_root_bootstrap(uint64_t boot_untyped_c, uint64_t own_cnode_c
 static int ub_untyped_matches(const struct iris_bootinfo_untyped *e) {
     uint64_t phys = 0, avail = 0;
 
-    if (ub_sys3(SYS_UNTYPED_INFO, (long)e->cptr, (long)(uintptr_t)&phys,
-                (long)(uintptr_t)&avail) != 0)
+    if (iris_invoke2((long)e->cptr, INV_UNTYPED_INFO, (long)(uintptr_t)&phys, (long)(uintptr_t)&avail) != 0)
         return 0;
     if (phys != e->paddr)      return 0;
     /* Fresh boot untypeds are untouched, so everything is still available;
@@ -216,8 +211,8 @@ void iris_userboot_main(uint64_t bootinfo_va) {
      * capability system should be able to say which CNode it means. */
     own_cnode_c = bi->cap_cnode;
     if (own_cnode_c == 0u || bi->cap_tcb == 0u ||
-        ub_sys1(SYS_CAP_IDENTIFY, (long)own_cnode_c) != (long)IRIS_KOBJ_CNODE ||
-        ub_sys1(SYS_CAP_IDENTIFY, (long)bi->cap_tcb) != (long)IRIS_KOBJ_TCB) {
+        iris_invoke0((long)own_cnode_c, INV_CAP_IDENTIFY) != (long)IRIS_KOBJ_CNODE ||
+        iris_invoke0((long)bi->cap_tcb, INV_CAP_IDENTIFY) != (long)IRIS_KOBJ_TCB) {
         ub_boot_panic(ioport_control_c, panic_slot,
                       "[USERBOOT] FATAL: BootInfo does not name this task's "
                       "own CNode and thread; halting boot\n");
@@ -299,10 +294,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
      */
     if (IRIS_CPTR_ASID_POOL < bi->empty_slot_first ||
         IRIS_CPTR_ASID_POOL >= bi->empty_slot_end  ||
-        ub_sys4(SYS_UNTYPED_RETYPE2, (long)boot_untyped_c,
-                (long)((uint64_t)IRIS_KOBJ_ASID_POOL | (1ULL << 32)),
-                (long)(own_cnode_c | (IRIS_CPTR_ASID_POOL << 32)),
-                (long)bi->cap_asid_control) != 0) {
+        iris_invoke((long)boot_untyped_c, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_ASID_POOL | (1ULL << 32)), (long)(own_cnode_c | (IRIS_CPTR_ASID_POOL << 32)), (long)bi->cap_asid_control) != 0) {
         ub_boot_panic(ioport_control_c, panic_slot,
                       "[USERBOOT] FATAL: no address-space identifier pool; "
                       "halting boot\n");

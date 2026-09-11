@@ -50,115 +50,122 @@
  * A label is never reused, for the same reason a syscall number never was.
  */
 
-enum iris_invocation_label {
-    INV_INVALID = 0,
+/*
+ * Defines rather than an enum, for the same reason the syscall numbers are:
+ * `services/kbd/main.S` is a driver written in assembly and it invokes
+ * capabilities like everything else.  A label is ABI, and ABI has to be
+ * readable by the assembler.
+ */
+#define INV_INVALID 0u
 
-    /* ── KOBJ_TCB ──────────────────────────────────────────────────────── */
-    INV_TCB_SUSPEND = 1,
-    INV_TCB_RESUME,
-    INV_TCB_SET_PRIORITY,
-    INV_TCB_EXIT,
-    INV_TCB_GET_INFO,
-    INV_TCB_READ_REGS,
-    INV_TCB_WRITE_REGS,
-    INV_TCB_CONFIGURE,
-    INV_TCB_WATCH,
-    INV_TCB_SET_FAULT_HANDLER,
-    INV_TCB_SET_TIMEOUT_HANDLER,
-    INV_TCB_EXIT_CODE,
-    INV_TCB_SET_IPC_BUFFER,
-    INV_TCB_BIND_NOTIFICATION,
 
-    /* ── KOBJ_ENDPOINT ─────────────────────────────────────────────────── */
-    INV_EP_SEND,
-    INV_EP_NB_SEND,
-    INV_EP_RECV,
-    INV_EP_NB_RECV,
-    INV_EP_CALL,
-    INV_EP_CANCEL_BADGED_SENDS,
-    INV_EP_REPLY_RECV,
+/* ── KOBJ_TCB ──────────────────────────────────────────────────────── */
+#define INV_TCB_SUSPEND                     1u
+#define INV_TCB_RESUME                      2u
+#define INV_TCB_SET_PRIORITY                3u
+#define INV_TCB_EXIT                        4u
+#define INV_TCB_GET_INFO                    5u
+#define INV_TCB_READ_REGS                   6u
+#define INV_TCB_WRITE_REGS                  7u
+#define INV_TCB_CONFIGURE                   8u
+#define INV_TCB_WATCH                       9u
+#define INV_TCB_SET_FAULT_HANDLER          10u
+#define INV_TCB_SET_TIMEOUT_HANDLER        11u
+#define INV_TCB_EXIT_CODE                  12u
+#define INV_TCB_SET_IPC_BUFFER             13u
+#define INV_TCB_BIND_NOTIFICATION          14u
 
-    /* ── KOBJ_NOTIFICATION ─────────────────────────────────────────────── */
-    INV_NOTIFY_SIGNAL,
-    INV_NOTIFY_WAIT,
-    INV_NOTIFY_POLL,
+/* ── KOBJ_ENDPOINT ─────────────────────────────────────────────────── */
+#define INV_EP_SEND                        15u
+#define INV_EP_NB_SEND                     16u
+#define INV_EP_RECV                        17u
+#define INV_EP_NB_RECV                     18u
+#define INV_EP_CALL                        19u
+#define INV_EP_CANCEL_BADGED_SENDS         20u
+#define INV_EP_REPLY_RECV                  21u
 
-    /* ── KOBJ_REPLY ────────────────────────────────────────────────────── */
-    INV_REPLY_SEND,
+/* ── KOBJ_NOTIFICATION ─────────────────────────────────────────────── */
+#define INV_NOTIFY_SIGNAL                  22u
+#define INV_NOTIFY_WAIT                    23u
+#define INV_NOTIFY_POLL                    24u
 
-    /* ── KOBJ_UNTYPED ──────────────────────────────────────────────────── */
-    INV_UNTYPED_INFO,
-    INV_UNTYPED_QUERY,
-    INV_UNTYPED_RESET,
-    INV_UNTYPED_RETYPE,
-    INV_UNTYPED_SET_DEVICE_BUDGET,
+/* ── KOBJ_REPLY ────────────────────────────────────────────────────── */
+#define INV_REPLY_SEND                     25u
 
-    /* ── KOBJ_CNODE ────────────────────────────────────────────────────── */
-    INV_CNODE_DELETE,
-    INV_CNODE_SWAP,
+/* ── KOBJ_UNTYPED ──────────────────────────────────────────────────── */
+#define INV_UNTYPED_INFO                   26u
+#define INV_UNTYPED_QUERY                  27u
+#define INV_UNTYPED_RESET                  28u
+#define INV_UNTYPED_RETYPE                 29u
+#define INV_UNTYPED_SET_DEVICE_BUDGET      30u
 
-    /* ── KOBJ_SCHED_CONTEXT ────────────────────────────────────────────── */
-    INV_SC_BIND,
-    INV_SC_CONSUMED,
-    INV_SC_YIELD_TO,
-    INV_SC_CONFIGURE,
-    INV_SC_SET_ON_CALLER,
+/* ── KOBJ_CNODE ────────────────────────────────────────────────────── */
+#define INV_CNODE_DELETE                   31u
+#define INV_CNODE_SWAP                     32u
 
-    /* ── KOBJ_FRAME ────────────────────────────────────────────────────── */
-    INV_FRAME_MAP,
-    INV_FRAME_UNMAP,
-    INV_FRAME_SIZE,
+/* ── KOBJ_SCHED_CONTEXT ────────────────────────────────────────────── */
+#define INV_SC_BIND                        33u
+#define INV_SC_CONSUMED                    34u
+#define INV_SC_YIELD_TO                    35u
+#define INV_SC_CONFIGURE                   36u
+#define INV_SC_SET_ON_CALLER               37u
 
-    /* ── KOBJ_PAGE_TABLE ───────────────────────────────────────────────── */
-    INV_PAGE_TABLE_MAP,
+/* ── KOBJ_FRAME ────────────────────────────────────────────────────── */
+#define INV_FRAME_MAP                      38u
+#define INV_FRAME_UNMAP                    39u
+#define INV_FRAME_SIZE                     40u
 
-    /* ── KOBJ_ASID_POOL ────────────────────────────────────────────────── */
-    INV_ASID_POOL_ASSIGN,
+/* ── KOBJ_PAGE_TABLE ───────────────────────────────────────────────── */
+#define INV_PAGE_TABLE_MAP                 41u
 
-    /* ── KOBJ_IRQ_CAP ──────────────────────────────────────────────────── */
-    INV_IRQ_SET_NOTIFICATION,
-    INV_IRQ_ACK,
-    INV_IRQ_CLEAR,
+/* ── KOBJ_ASID_POOL ────────────────────────────────────────────────── */
+#define INV_ASID_POOL_ASSIGN               42u
 
-    /* ── KOBJ_IOPORT ───────────────────────────────────────────────────── */
-    INV_IOPORT_IN,
-    INV_IOPORT_OUT,
+/* ── KOBJ_IRQ_CAP ──────────────────────────────────────────────────── */
+#define INV_IRQ_SET_NOTIFICATION           43u
+#define INV_IRQ_ACK                        44u
+#define INV_IRQ_CLEAR                      45u
 
-    /*
-     * ── KOBJ_BOOTSTRAP_CAP ─────────────────────────────────────────────
-     * One capability type carrying several distinct authorities, told apart by
-     * a tag the kernel checks (`kbootcap_is`).  The label says which METHOD;
-     * the tag says whether this holder may ask.  Both are checked, and they
-     * are different questions.
-     */
-    INV_BOOT_FRAMEBUFFER_INFO,
-    INV_BOOT_INITRD_COUNT,
-    INV_BOOT_INITRD_FRAME,
-    INV_BOOT_IOPORT_NARROW,
-    INV_BOOT_CREATE_IOPORT,
-    INV_BOOT_CREATE_IRQCAP,
-    INV_BOOT_KLOG_DRAIN,
-    INV_BOOT_SCHED_INFO,
-    INV_BOOT_POWEROFF,
+/* ── KOBJ_IOPORT ───────────────────────────────────────────────────── */
+#define INV_IOPORT_IN                      46u
+#define INV_IOPORT_OUT                     47u
 
-    /*
-     * ── the SLOT, whatever it holds ────────────────────────────────────
-     * What these act on is the slot rather than the object in it: copy this
-     * capability, move it, revoke what came from it, ask what it is.  seL4
-     * expresses them as CNode invocations, with the CNode as the object and
-     * (index, depth) as arguments; IRIS invokes them on the slot directly.
-     * That difference is about WHICH object a method hangs off, not about
-     * whether a method needs one, and it is recorded in A-31 rather than
-     * rounded away.
-     */
-    INV_CAP_IDENTIFY,
-    INV_CAP_SAME_OBJECT,
-    INV_CSPACE_MINT,
-    INV_CSPACE_MOVE,
-    INV_CSPACE_REVOKE,
-    INV_CSPACE_SET_GUARD,
+/* ── KOBJ_BOOTSTRAP_CAP ────────────────────────────────────────────── */
+/*
+ * One capability type carrying several distinct authorities, told apart by a
+ * tag the kernel checks (`kbootcap_is`).  The label says which METHOD; the tag
+ * says whether this holder may ask.  Both are checked, and they are different
+ * questions.
+ */
+#define INV_BOOT_FRAMEBUFFER_INFO          48u
+#define INV_BOOT_INITRD_COUNT              49u
+#define INV_BOOT_INITRD_FRAME              50u
+#define INV_BOOT_IOPORT_NARROW             51u
+#define INV_BOOT_CREATE_IOPORT             52u
+#define INV_BOOT_CREATE_IRQCAP             53u
+#define INV_BOOT_KLOG_DRAIN                54u
+#define INV_BOOT_SCHED_INFO                55u
+#define INV_BOOT_POWEROFF                  56u
 
-    INV_LABEL_COUNT   /* first unassigned; never reuse a retired label */
-};
+/* ── the SLOT, whatever it holds ───────────────────────────────────── */
+/*
+ * What these act on is the slot rather than the object in it: copy this
+ * capability, move it, revoke what came from it, ask what it is.  seL4
+ * expresses them as CNode invocations, with the CNode as the object and
+ * (index, depth) as arguments; IRIS invokes them on the slot directly.  That
+ * difference is about WHICH object a method hangs off, not about whether a
+ * method needs one, and A-31 records it rather than rounding it away.
+ */
+#define INV_CAP_IDENTIFY                   57u
+#define INV_CAP_SAME_OBJECT                58u
+#define INV_CSPACE_MINT                    59u
+#define INV_CSPACE_MOVE                    60u
+#define INV_CSPACE_REVOKE                  61u
+#define INV_CSPACE_SET_GUARD               62u
+
+/* First unassigned.  A label is never reused, for the same reason a syscall
+ * number never was: a stale caller must get a refusal, not somebody else's
+ * method. */
+#define INV_LABEL_COUNT                    63u
 
 #endif /* IRIS_INVOKE_H */

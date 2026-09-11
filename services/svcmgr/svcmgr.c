@@ -2,6 +2,7 @@
 #include <iris/kbd_proto.h>
 #include "service_catalog.h"
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/vfs_ep_proto.h>
 #include <iris/nc/error.h>
 #include <iris/nc/handle.h>
@@ -229,10 +230,8 @@ static inline int64_t svcmgr_syscall2(uint64_t num, uint64_t arg0, uint64_t arg1
 static int64_t svcmgr_retype_to_slot(uint64_t ut_cptr, uint32_t obj_type,
                                      uint32_t dest_slot, uint64_t obj_arg) {
     if (ut_cptr == 0u) return (int64_t)IRIS_ERR_NOT_FOUND;
-    (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, (uint64_t)dest_slot);
-    return svcmgr_syscall4(SYS_UNTYPED_RETYPE2, ut_cptr,
-                           (uint64_t)obj_type | (1ULL << 32),
-                           ((uint64_t)dest_slot << 32), obj_arg);
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (uint64_t)dest_slot);
+    return iris_invoke(ut_cptr, INV_UNTYPED_RETYPE, (uint64_t)obj_type | (1ULL << 32), ((uint64_t)dest_slot << 32), obj_arg);
 }
 
 
@@ -276,10 +275,9 @@ static void svcmgr_close_handle_if_valid(handle_id_t *h) {
     if (!h || *h == HANDLE_INVALID) return;
     uint32_t v = (uint32_t)*h;
     if (v >= 256u)
-        (void)svcmgr_syscall2(SYS_CNODE_DELETE, (uint64_t)(v & 0xFFu),
-                              (uint64_t)(v >> 8));
+        (void)iris_invoke1((uint64_t)(v & 0xFFu), INV_CNODE_DELETE, (uint64_t)(v >> 8));
     else
-        (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, (uint64_t)v);
+        (void)iris_invoke1(0, INV_CNODE_DELETE, (uint64_t)v);
     *h = HANDLE_INVALID;
 }
 
@@ -314,22 +312,15 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
              * Stage 5 Step 2: the authority is the IRQ control capability. */
             /* Stage 7 Step 14: arg2 names the budget the object is charged
              * to — svcmgr's own delegated pool, not one the kernel picked. */
-            int64_t r = svcmgr_syscall4(SYS_CAP_CREATE_IRQCAP,
-                                        IRIS_CPTR_IRQ_CONTROL, e->irq_num,
-                                        IRIS_CPTR_OWN_UNTYPED,
-                                        (uint64_t)slot << 32);
+            int64_t r = iris_invoke(IRIS_CPTR_IRQ_CONTROL, INV_BOOT_CREATE_IRQCAP, e->irq_num, IRIS_CPTR_OWN_UNTYPED, (uint64_t)slot << 32);
             if (r == 0) state->irq_caps[e->irq_num] = slot;
         }
 
         if (e->ioport_count > 0u && e->service_id < SVCMGR_IOPORT_CAPS_TABLE_SIZE &&
             state->ioport_caps[e->service_id] == 0u) {
             uint32_t slot = SVCMGR_IOPORT_SLOT_BASE + e->service_id;
-            int64_t r = svcmgr_syscall4(SYS_CAP_CREATE_IOPORT,
-                                        IRIS_CPTR_IOPORT_CONTROL,
-                                        (uint64_t)e->ioport_base |
-                                            ((uint64_t)e->ioport_count << 16),
-                                        IRIS_CPTR_OWN_UNTYPED,
-                                        (uint64_t)slot << 32);
+            int64_t r = iris_invoke(IRIS_CPTR_IOPORT_CONTROL, INV_BOOT_CREATE_IOPORT, (uint64_t)e->ioport_base |
+                                            ((uint64_t)e->ioport_count << 16), IRIS_CPTR_OWN_UNTYPED, (uint64_t)slot << 32);
             if (r == 0) state->ioport_caps[e->service_id] = slot;
         }
     }
@@ -351,8 +342,8 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
      * destroying them: svcmgr keeps the hardware it already claimed and loses
      * only the authority to claim more, which is precisely the intent.
      */
-    (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, IRIS_CPTR_IRQ_CONTROL);
-    (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, IRIS_CPTR_IOPORT_CONTROL);
+    (void)iris_invoke1(0, INV_CNODE_DELETE, IRIS_CPTR_IRQ_CONTROL);
+    (void)iris_invoke1(0, INV_CNODE_DELETE, IRIS_CPTR_IOPORT_CONTROL);
 }
 
 static struct svcmgr_service_state *svcmgr_service_state(struct svcmgr_state *state,
@@ -587,7 +578,7 @@ static uint32_t svcmgr_next_recv_slot(const struct svcmgr_state *state) {
 static int64_t svcmgr_delivered_cap_type(uint32_t v) {
     /* Stage 4: a delivered cap is a CPtr or nothing — handle materialisation
      * on delivery is retired, so the legacy leg has no input left. */
-    return svcmgr_syscall1(SYS_CAP_IDENTIFY, (uint64_t)v);
+    return iris_invoke0((uint64_t)v, INV_CAP_IDENTIFY);
 }
 
 /* Discard a delivered cap svcmgr will not keep: CNODE_DELETE for a CPtr
@@ -597,8 +588,7 @@ static void svcmgr_discard_delivered_cap(struct svcmgr_state *state, uint32_t v)
                     * per-state handle; the parameter stays for call-site symmetry. */
     if (v == (uint32_t)IRIS_MSG_NO_CAP) return;
     if (iris_msg_cap_is_cptr(v)) {
-        (void)svcmgr_syscall2(SYS_CNODE_DELETE,
-                              SVCMGR_OWN_ROOT_CNODE, (uint64_t)v);
+        (void)iris_invoke1(SVCMGR_OWN_ROOT_CNODE, INV_CNODE_DELETE, (uint64_t)v);
     } else {
         handle_id_t h = (handle_id_t)v;
         svcmgr_close_handle_if_valid(&h);
@@ -614,9 +604,7 @@ static void svcmgr_dynamic_clear(struct svcmgr_dynamic_service *svc, int seal) {
      * reference, so deleting the slot is the release; the pool slot becomes
      * declarable again on the next recv. */
     if (svc->public_cptr != 0u)
-        (void)svcmgr_syscall2(SYS_CNODE_DELETE,
-                              SVCMGR_OWN_ROOT_CNODE,
-                              (uint64_t)svc->public_cptr);
+        (void)iris_invoke1(SVCMGR_OWN_ROOT_CNODE, INV_CNODE_DELETE, (uint64_t)svc->public_cptr);
     svc->public_cptr = 0u;
     svc->endpoint = 0;
     svc->client_rights = RIGHT_NONE;
@@ -673,8 +661,7 @@ static int svcmgr_service_alive(struct svcmgr_state *state, uint32_t service_id)
      * state removes the last reason it also held the process for. */
     struct iris_tcb_info info;
     info.state = 0u;
-    if (svcmgr_syscall2(SYS_TCB_GET_INFO, (uint64_t)SVCMGR_MSLOT_TCB(service_id),
-                        (uint64_t)(uintptr_t)&info) != 0)
+    if (iris_invoke1((uint64_t)SVCMGR_MSLOT_TCB(service_id), INV_TCB_GET_INFO, (uint64_t)(uintptr_t)&info) != 0)
         return 0;
     return (info.state != SVCMGR_TASK_TERMINATED &&
             info.state != SVCMGR_TASK_DEAD);
@@ -789,13 +776,11 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
              * that slot, so this grant is revocable from svcmgr.  Ledger A-29:
              * the transfer is a COPY, so the scratch slot survives the reply
              * and svcmgr drops it itself once the reply has landed. */
-            (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, SVCMGR_XFER_SLOT);
+            (void)iris_invoke1(0, INV_CNODE_DELETE, SVCMGR_XFER_SLOT);
             /* Stage 4: the registry master is a CSpace slot, so serving a
              * lookup is a slot-to-slot mint.  The SYS_CNODE_MINT branch for a
              * handle master is gone with the namespace. */
-            int64_t mr = svcmgr_syscall3(SYS_CSPACE_MINT, (uint64_t)src_cptr,
-                                         ((uint64_t)SVCMGR_XFER_SLOT << 32),
-                                         (uint64_t)(client_rights | RIGHT_TRANSFER));
+            int64_t mr = iris_invoke2((uint64_t)src_cptr, INV_CSPACE_MINT, ((uint64_t)SVCMGR_XFER_SLOT << 32), (uint64_t)(client_rights | RIGHT_TRANSFER));
             if (mr == 0) {
                 reply.label              = IRIS_EP_REPLY_OK;
                 reply.words[0]           = 0u;
@@ -898,8 +883,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
             reply.label      = IRIS_EP_REPLY_OK;
             reply.words[0]   = svc->generation;   /* caller polls STATUS for +1 */
             reply.word_count = 1u;
-            (void)svcmgr_syscall1(SYS_TCB_EXIT,
-                                  (uint64_t)SVCMGR_MSLOT_TCB(sid));
+            (void)iris_invoke0((uint64_t)SVCMGR_MSLOT_TCB(sid), INV_TCB_EXIT);
         }
         break;
     }
@@ -990,8 +974,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
     }
 
     {
-        int64_t rr = svcmgr_syscall2(SYS_REPLY, (uint64_t)reply_h,
-                                     (uint64_t)(uintptr_t)&reply);
+        int64_t rr = iris_invoke1((uint64_t)reply_h, INV_REPLY_SEND, (uint64_t)(uintptr_t)&reply);
         /* Reply-cap contract, ledger A-29: the transfer is a COPY, so the
          * scratch slot holds svcmgr's own capability whether the reply landed
          * or not.  Drop it here on every path.  Delivered or not, what the
@@ -1001,7 +984,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
          * error worth branching on.) */
         (void)rr;
         if (reply.attached_handle != (uint32_t)IRIS_MSG_NO_CAP)
-            (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, SVCMGR_XFER_SLOT);
+            (void)iris_invoke1(0, INV_CNODE_DELETE, SVCMGR_XFER_SLOT);
     }
     /* A1.6: the CSpace slot keeps the authority; the resolved master was a
      * per-request working handle only.  Phase S1: reply_h is svcmgr's OWN
@@ -1242,7 +1225,7 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
             route_h = (handle_id_t)svc->irq_notif_c;
         }
         if (irqcap_c == 0u || route_h == HANDLE_INVALID ||
-            svcmgr_syscall3(SYS_IRQ_ROUTE_REGISTER, irqcap_c, route_h, 0) < 0) {
+            iris_invoke2(irqcap_c, INV_IRQ_SET_NOTIFICATION, route_h, 0) < 0) {
             svc->proc_h = HANDLE_INVALID;
             svcmgr_close_handle_if_valid(&proc_h);
             svcmgr_log(sm_str_irqfail);
@@ -1253,10 +1236,7 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
     /* Stage 7 Step 10: watch the THREAD.  A service is one thread, so this is
      * the same event named by the thing that produces it — and svcmgr holds
      * that thread, where it needed authority over a process before. */
-    if (svcmgr_syscall3(SYS_TCB_WATCH,
-                        (uint64_t)SVCMGR_MSLOT_TCB(manifest->service_id),
-                        state->death_notif_c,
-                        (uint64_t)1u << manifest->service_id) != IRIS_OK) {
+    if (iris_invoke2((uint64_t)SVCMGR_MSLOT_TCB(manifest->service_id), INV_TCB_WATCH, state->death_notif_c, (uint64_t)1u << manifest->service_id) != IRIS_OK) {
         svc->proc_h = HANDLE_INVALID;
         svcmgr_close_handle_if_valid(&proc_h);
         svcmgr_log(sm_str_spawnfail);
@@ -1351,7 +1331,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
                 svc->reply_ut_c = (ur >= 0) ? sl : 0u;
             }
             if (svc->reply_ut_c != 0u) {
-                (void)svcmgr_syscall1(SYS_UNTYPED_RESET, (uint64_t)svc->reply_ut_c);
+                (void)iris_invoke0((uint64_t)svc->reply_ut_c, INV_UNTYPED_RESET);
                 int64_t r1 = svcmgr_retype_to_slot(svc->reply_ut_c, IRIS_KOBJ_REPLY,
                                                    SVCMGR_SLOT_REPLY1, 0);
                 reply1_c = (r1 >= 0) ? SVCMGR_SLOT_REPLY1 : 0u;
@@ -1386,8 +1366,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
          * region that would never come free.  A supervisor holding a dead
          * child's thread is holding the memory it is about to need.
          */
-        (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0u,
-                              (uint64_t)SVCMGR_MSLOT_TCB(manifest->service_id));
+        (void)iris_invoke1(0u, INV_CNODE_DELETE, (uint64_t)SVCMGR_MSLOT_TCB(manifest->service_id));
 
         long r = svc_load_minted_ws(state->proc_cap_c, state->initrd_cap_c,
                                     manifest->image_name,
@@ -1403,8 +1382,8 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
          * child's CSpace slots (if minted) are now the only reply caps. */
         /* svcmgr NEVER retains a reply cap: a retained copy would suppress
          * close-wakes-caller on child death.  The child's mint is the only one. */
-        (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, SVCMGR_SLOT_REPLY1);
-        (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, SVCMGR_SLOT_REPLY2);
+        (void)iris_invoke1(0, INV_CNODE_DELETE, SVCMGR_SLOT_REPLY1);
+        (void)iris_invoke1(0, INV_CNODE_DELETE, SVCMGR_SLOT_REPLY2);
         if (r < 0) {
             svcmgr_clear_service_masters(state, manifest->service_id);
             svcmgr_log(sm_str_spawnfail);
@@ -1569,7 +1548,7 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
          * materializes nothing — the pool stays a CPtr all the way into
          * retype2, which is what gives the fabricated objects a real MDB
          * ancestor instead of LEGACY_ROOT status. */
-        int64_t ur = svcmgr_syscall3(SYS_UNTYPED_INFO, IRIS_CPTR_OWN_UNTYPED, 0, 0);
+        int64_t ur = iris_invoke2(IRIS_CPTR_OWN_UNTYPED, INV_UNTYPED_INFO, 0, 0);
         state->untyped_c = (ur >= 0) ? (uint64_t)IRIS_CPTR_OWN_UNTYPED : 0u;
 
     }
@@ -1583,9 +1562,7 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
     /* Phase S1: svcmgr's OWN reply object for the discovery endpoint, retyped
      * straight into root slot IRIS_CPTR_OWN_REPLY (dest 0 = own root). */
     if (state->untyped_c != 0u)
-        (void)svcmgr_syscall4(SYS_UNTYPED_RETYPE2, state->untyped_c,
-                              (uint64_t)IRIS_KOBJ_REPLY | (1ULL << 32),
-                              ((uint64_t)IRIS_CPTR_OWN_REPLY << 32), 0);
+        (void)iris_invoke(state->untyped_c, INV_UNTYPED_RETYPE, (uint64_t)IRIS_KOBJ_REPLY | (1ULL << 32), ((uint64_t)IRIS_CPTR_OWN_REPLY << 32), 0);
 
     /* Drain kernel boot log to console over console.ep (Phase 13/Track I).
      * console_ep_write is a synchronous per-chunk flush barrier — every byte is
@@ -1599,9 +1576,7 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
          * table — which it cannot do now that our spawn cap is a CSpace slot.
          * Stage 5 Step 2: that capability is the debug control capability,
          * which authorises reading the kernel's log and nothing else. */
-        int64_t n = svcmgr_syscall3(SYS_KLOG_DRAIN,
-                                    (uint64_t)(uintptr_t)klog_drain_buf,
-                                    4096u, IRIS_CPTR_DEBUG_CONTROL);
+        int64_t n = iris_invoke2(IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_KLOG_DRAIN, (uint64_t)(uintptr_t)klog_drain_buf, 4096u);
         if (n > 0 && state->console_ep_c != 0u) {
             klog_drain_buf[n] = 0u;
             (void)console_ep_write(state->console_ep_c, g_ep_buf,
@@ -1665,8 +1640,7 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
      * is no polling, no timeout, and no service to depend on for either.
      */
     if (state->death_notif_c != 0u)
-        (void)svcmgr_syscall2(SYS_TCB_BIND_NOTIFICATION,
-                              IRIS_CPTR_OWN_TCB, state->death_notif_c);
+        (void)iris_invoke1(IRIS_CPTR_OWN_TCB, INV_TCB_BIND_NOTIFICATION, state->death_notif_c);
 
     for (;;) {
         struct IrisMsg ep_msg;
@@ -1677,8 +1651,7 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
             /* No endpoint to serve: deaths are all there is to wait for. */
             uint64_t bits = 0;
             if (state->death_notif_c == 0u) { (void)svcmgr_syscall1(SYS_YIELD, 0); continue; }
-            if (svcmgr_syscall2(SYS_NOTIFY_WAIT, state->death_notif_c,
-                                (uint64_t)(uintptr_t)&bits) != IRIS_OK) continue;
+            if (iris_invoke1(state->death_notif_c, INV_NOTIFY_WAIT, (uint64_t)(uintptr_t)&bits) != IRIS_OK) continue;
             for (uint32_t sid = 0; sid < 64u && bits; sid++) {
                 if (bits & ((uint64_t)1u << sid)) svcmgr_handle_service_death(state, sid);
                 bits &= ~((uint64_t)1u << sid);
@@ -1696,9 +1669,7 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
          * the CSpace pool instead of the handle table. */
         iris_msg_declare_recv_slot(&ep_msg, svcmgr_next_recv_slot(state));
         /* Phase S1: our explicit reply object rides in recv arg2. */
-        ep_r = svcmgr_syscall3(SYS_EP_RECV, state->ep_c,
-                               (uint64_t)(uintptr_t)&ep_msg,
-                               IRIS_CPTR_OWN_REPLY);
+        ep_r = iris_invoke2(state->ep_c, INV_EP_RECV, (uint64_t)(uintptr_t)&ep_msg, IRIS_CPTR_OWN_REPLY);
         if (ep_r != IRIS_OK) { svcmgr_log(sm_str_recverr); continue; }
 
         if (ep_msg.label == IRIS_MSG_LABEL_NOTIFICATION) {

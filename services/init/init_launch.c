@@ -100,9 +100,7 @@ int init_spawn_timer(void) {
      * the kernel also uses for preemption; being told about it is not being
      * given it, which is why the kernel does not mask it for this holder. */
     {
-        long ir = init_sys4(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_IRQ_CONTROL, 0,
-                            (long)IRIS_CPTR_INIT_UNTYPED,
-                            (long)((uint64_t)INIT_SLOT_TIMER_IRQCAP << 32));
+        long ir = iris_invoke((long)IRIS_CPTR_IRQ_CONTROL, INV_BOOT_CREATE_IRQCAP, 0, (long)IRIS_CPTR_INIT_UNTYPED, (long)((uint64_t)INIT_SLOT_TIMER_IRQCAP << 32));
         if (ir != 0) {
             char m[40] = "[USER] timer: irqcap err ";
             uint32_t k = 0; while (m[k]) k++;
@@ -116,8 +114,7 @@ int init_spawn_timer(void) {
 
     if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
                          INIT_SLOT_TIMER_NOTIF, 0) < 0) { init_log("[USER] timer: notif\n"); return 0; }
-    if (init_sys3(SYS_IRQ_ROUTE_REGISTER, (long)INIT_SLOT_TIMER_IRQCAP,
-                  (long)INIT_SLOT_TIMER_NOTIF, 0) != 0) { init_log("[USER] timer: route\n"); return 0; }
+    if (iris_invoke2((long)INIT_SLOT_TIMER_IRQCAP, INV_IRQ_SET_NOTIFICATION, (long)INIT_SLOT_TIMER_NOTIF, 0) != 0) { init_log("[USER] timer: route\n"); return 0; }
 
     if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_REPLY,
                          INIT_SLOT_TIMER_REPLY, 0) < 0) { init_log("[USER] timer: reply\n"); return 0; }
@@ -152,7 +149,7 @@ int init_spawn_timer(void) {
     }
     /* The service holds the mints now; init keeps only the control endpoint,
      * which is what it hands on to whoever needs to wait. */
-    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_TIMER_REPLY);
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_TIMER_REPLY);
     init_close(&tm_proc_h);
     init_close(&tm_boot_h);
     return r >= 0;
@@ -186,9 +183,7 @@ int init_spawn_console(void) {
      * slot, and forwarded to console by CSpace source — so the delegation is
      * revocable from init.  Slot 41 is free in init's root CNode.
      * Stage 5 Step 2: the authority is the ioport control capability. */
-    if (init_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
-                  (long)(0x3F8u | (8u << 16)), (long)IRIS_CPTR_INIT_UNTYPED,
-                  (long)((uint64_t)INIT_CONSOLE_IOPORT_SLOT << 32)) != 0) {
+    if (iris_invoke((long)IRIS_CPTR_IOPORT_CONTROL, INV_BOOT_CREATE_IOPORT, (long)(0x3F8u | (8u << 16)), (long)IRIS_CPTR_INIT_UNTYPED, (long)((uint64_t)INIT_CONSOLE_IOPORT_SLOT << 32)) != 0) {
         init_early_serial_write(init_console_ioport_fail);
         goto fail;
     }
@@ -242,7 +237,7 @@ int init_spawn_console(void) {
                                /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
     }
     /* console's slot-13 mint is the only reply cap: drop ours. */
-    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_CONSOLE_RPLY);
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_CONSOLE_RPLY);
     if (r < 0) {
         init_early_serial_write(init_console_load_fail);
         goto fail;
@@ -406,7 +401,7 @@ handle_id_t init_spawn_svcmgr(void) {
                                /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
     }
     /* svcmgr's slot-12 mint keeps the pool alive: drop ours. */
-    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_SM_UNTYPED);
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_SM_UNTYPED);
     if (r < 0) goto fail;
 
     init_close(&svcmgr_chan_h);   /* bootstrap channel unused — svcmgr is CPtr-only */
@@ -497,7 +492,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * the same block now that every address space, process and VMO page
          * is charged to somebody's budget. */
         uint64_t test_ut_src = IRIS_CPTR_INIT_UNTYPED2;
-        if (init_sys3(SYS_UNTYPED_INFO, (long)test_ut_src, 0, 0) != 0)
+        if (iris_invoke2((long)test_ut_src, INV_UNTYPED_INFO, 0, 0) != 0)
             test_ut_src = g_init_untyped_c;
         for (uint32_t szi = 0; szi < 4u && lk_untyped == HANDLE_INVALID; szi++) {
             long ur = init_retype_slot(test_ut_src, IRIS_KOBJ_UNTYPED,
@@ -676,9 +671,9 @@ void init_spawn_iris_test(handle_id_t sm_h) {
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);
     init_close(&lk_kbd);
-    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_TEST_UNTYPED);
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_TEST_UNTYPED);
     if (fix_wrongtype != 0u)
-        (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_FIX_WRONGTY);
+        (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_FIX_WRONGTY);
     if (r < 0) {
         init_log("[USER][INIT] iris_test load FAILED\n");
         goto out;
@@ -694,12 +689,10 @@ void init_spawn_iris_test(handle_id_t sm_h) {
      * not hold by naming something it did.  init drops the root right after,
      * because keeping it is standing authority over the suite's namespace and
      * this is the only thing it needed it for. */
-    if (init_sys3(SYS_CSPACE_MINT, (long)proc_h,
-                  (long)((uint64_t)INIT_SLOT_TEST_CNODE |
-                         ((uint64_t)IRIS_CPTR_TEST_PROC << 32)),
-                  (long)RIGHT_WRITE) != 0)
+    if (iris_invoke2((long)proc_h, INV_CSPACE_MINT, (long)((uint64_t)INIT_SLOT_TEST_CNODE |
+                         ((uint64_t)IRIS_CPTR_TEST_PROC << 32)), (long)RIGHT_WRITE) != 0)
         init_log("[USER][INIT] iris_test self-proc mint FAILED\n");
-    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_TEST_CNODE);
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_TEST_CNODE);
 
     /* Phase 13 (Track I): the iris_test spawn cap is delivered as the
      * IRIS_CPTR_SPAWN_CAP pre-start mint above — no KChannel SPAWN_CAP send. */
@@ -715,7 +708,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
     watch_base_h = (handle_id_t)INIT_SLOT_WATCH_NOTIF;
 
     /* Stage 7 Step 10: wait on the THREAD iris_test was started with. */
-    r = init_sys3(SYS_TCB_WATCH, (long)INIT_SLOT_TEST_TCB, (long)watch_base_h, 1);
+    r = iris_invoke2((long)INIT_SLOT_TEST_TCB, INV_TCB_WATCH, (long)watch_base_h, 1);
     if (r < 0) {
         init_log("[USER][INIT] iris_test watch FAILED\n");
         goto out;
@@ -737,16 +730,14 @@ void init_spawn_iris_test(handle_id_t sm_h) {
      */
     {
         uint64_t bits = 0;
-        long give = init_sys3(SYS_CSPACE_MINT, (long)watch_base_h,
-                              (long)(((uint64_t)INIT_SLOT_TIMER_GIVE << 32) | 0u),
-                              (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+        long give = iris_invoke2((long)watch_base_h, INV_CSPACE_MINT, (long)(((uint64_t)INIT_SLOT_TIMER_GIVE << 32) | 0u), (long)(RIGHT_WRITE | RIGHT_TRANSFER));
         uint64_t tok = 0;
         if (give == 0)
             (void)iris_timer_arm((long)INIT_SLOT_TIMER_EP,
                                  (long)INIT_SLOT_TIMER_GIVE, IRIS_TIMER_BIT,
                                  25000000000ull, &tok);
         for (;;) {
-            r = init_sys2(SYS_NOTIFY_WAIT, (long)watch_base_h, (long)&bits);
+            r = iris_invoke1((long)watch_base_h, INV_NOTIFY_WAIT, (long)&bits);
             if (r != 0) break;
             if (bits & ~IRIS_TIMER_BIT) { r = 0; break; }
             if (bits & IRIS_TIMER_BIT)  { r = (long)IRIS_ERR_TIMED_OUT; break; }
@@ -756,7 +747,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
     if (r < 0) {
         init_log("[USER][INIT] iris_test wait TIMEOUT\n");
     } else {
-        long ec = init_sys1(SYS_TCB_EXIT_CODE, (long)INIT_SLOT_TEST_TCB);
+        long ec = iris_invoke0((long)INIT_SLOT_TEST_TCB, INV_TCB_EXIT_CODE);
         if (ec == 0)
             init_log("[USER][INIT] iris_test PASS\n");
         else
@@ -766,7 +757,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
 out:
     init_close(&proc_h);
     init_close(&boot_h);
-    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_WATCH_NOTIF);
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_WATCH_NOTIF);
     /* Step 4: nothing to close — the loader authority was our own CSpace slot,
      * not a duplicate this function owned and had to release. */
 }

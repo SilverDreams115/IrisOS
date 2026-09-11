@@ -24,6 +24,7 @@
  */
 #include <stdint.h>
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/nc/handle.h>
 #include <iris/nc/rights.h>
 #include <iris/ipc_msg.h>
@@ -113,12 +114,11 @@ static void tm_tick(void) {
     for (uint32_t i = 0; i < TMR_MAX_TIMERS; i++) {
         if (!g_timers[i].used) continue;
         if ((uint64_t)now < g_timers[i].deadline_ns) continue;
-        (void)tm_sys2(SYS_NOTIFY_SIGNAL, TMR_CLIENT_CPTR(i),
-                      (long)g_timers[i].bits);
+        (void)iris_invoke1(TMR_CLIENT_CPTR(i), INV_NOTIFY_SIGNAL, (long)g_timers[i].bits);
         /* The grant ends with the deadline: the capability goes back before
          * the slot is reused, so a client cannot be signalled by a timer it
          * did not arm. */
-        (void)tm_sys2(SYS_CNODE_DELETE, (long)TMR_SLOT_CN, (long)(i + 1u));
+        (void)iris_invoke1((long)TMR_SLOT_CN, INV_CNODE_DELETE, (long)(i + 1u));
         g_timers[i].used = 0;
         g_timers[i].generation++;
         g_fired++;
@@ -135,8 +135,7 @@ void timer_main(handle_id_t bootstrap_ch_h) {
      * interrupt, and the whole design would need a second thread to hold the
      * two halves apart.
      */
-    (void)tm_sys2(SYS_TCB_BIND_NOTIFICATION, (long)IRIS_CPTR_OWN_TCB,
-                  (long)TMR_SLOT_IRQ_NOTIF);
+    (void)iris_invoke1((long)IRIS_CPTR_OWN_TCB, INV_TCB_BIND_NOTIFICATION, (long)TMR_SLOT_IRQ_NOTIF);
 
     for (;;) {
         uint32_t slot = tm_free_slot();
@@ -148,14 +147,13 @@ void timer_main(handle_id_t bootstrap_ch_h) {
         m.attached_cap = (slot < TMR_MAX_TIMERS)
                        ? (uint32_t)TMR_CLIENT_CPTR(slot) : 0u;
 
-        long r = tm_sys3(SYS_EP_RECV, (long)TMR_SLOT_CTRL_EP,
-                         (long)(uintptr_t)&m, (long)TMR_SLOT_REPLY);
+        long r = iris_invoke2((long)TMR_SLOT_CTRL_EP, INV_EP_RECV, (long)(uintptr_t)&m, (long)TMR_SLOT_REPLY);
         if (r != 0) continue;
 
         if (m.label == IRIS_MSG_LABEL_NOTIFICATION) {
             /* The interrupt.  No caller, so nothing is owed a reply. */
             tm_tick();
-            (void)tm_sys1(SYS_IRQ_ACK, (long)TMR_SLOT_IRQ_CAP);
+            (void)iris_invoke0((long)TMR_SLOT_IRQ_CAP, INV_IRQ_ACK);
             continue;
         }
 
@@ -175,7 +173,7 @@ void timer_main(handle_id_t bootstrap_ch_h) {
             } else if (g_timers[k].owner_badge != m.sender_badge) {
                 err = TMR_ERR_NOTYOURS;       /* somebody else's wait */
             } else {
-                (void)tm_sys2(SYS_CNODE_DELETE, (long)TMR_SLOT_CN, (long)(k + 1u));
+                (void)iris_invoke1((long)TMR_SLOT_CN, INV_CNODE_DELETE, (long)(k + 1u));
                 g_timers[k].used = 0;
                 g_timers[k].generation++;
             }
@@ -201,11 +199,11 @@ void timer_main(handle_id_t bootstrap_ch_h) {
         rep.words[0]   = (m.label == TMR_OP_UPTIME) ? uptime : (uint64_t)err;
         rep.words[1]   = token;
         rep.word_count = 2u;
-        (void)tm_sys2(SYS_REPLY, (long)TMR_SLOT_REPLY, (long)(uintptr_t)&rep);
+        (void)iris_invoke1((long)TMR_SLOT_REPLY, INV_REPLY_SEND, (long)(uintptr_t)&rep);
 
         /* A refused or non-ARM request must not leave a capability in the slot
          * the next request will declare. */
         if (token == 0u && slot < TMR_MAX_TIMERS)
-            (void)tm_sys2(SYS_CNODE_DELETE, (long)TMR_SLOT_CN, (long)(slot + 1u));
+            (void)iris_invoke1((long)TMR_SLOT_CN, INV_CNODE_DELETE, (long)(slot + 1u));
     }
 }

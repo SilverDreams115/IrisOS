@@ -169,7 +169,7 @@ void test_t299(void) {
         long mr = iris_syscall4(SYS_FRAME_MAP, vmo, t299_vs,
                                 (long)0x80C0000000ULL, 1);
         if (mr == (long)IRIS_ERR_MISSING_TABLE)
-            mr = iris_vspace_fixup(SYS_FRAME_MAP, vmo, t299_vs,
+            mr = iris_vspace_fixup(INV_FRAME_MAP, vmo, t299_vs,
                                    (long)0x80C0000000ULL, 1,
                                    IT_VS, pool,
                                    (long)(((uint64_t)252 << 32) | IT_OBJ_CNODE_SLOT),

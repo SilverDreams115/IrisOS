@@ -31,6 +31,7 @@
  */
 #include <stdint.h>
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include "../common/iris_vspace.h"
 #include <iris/nc/handle.h>
 #include <iris/ipc_msg.h>
@@ -61,15 +62,19 @@ static inline long pg_sys3(long nr, long a0, long a1, long a2) {
  * issues. */
 #define PG_SLOT_PT 62u
 static long pg_self_vs_now(void);
-static inline long pg_sys4(long nr, long a0, long a1, long a2, long a3) {
-    long r = iris_syscall4(nr, a0, a1, a2, a3);
+/* Ledger A-31: a label, not a syscall number. */
+static inline long pg_invoke(long c, unsigned long label, long a1, long a2, long a3) {
+    long r = iris_invoke(c, label, a1, a2, a3);
     if (r == (long)IRIS_ERR_MISSING_TABLE)
-        r = iris_vspace_fixup(nr, a0, a1, a2, a3,
+        r = iris_vspace_fixup(label, c, a1, a2, a3,
                               pg_self_vs_now(), (long)IRIS_CPTR_OWN_UNTYPED,
                               (long)((uint64_t)PG_SLOT_PT << 32), (long)PG_SLOT_PT,
                               0, 0);
     return r;
 }
+static inline long pg_invoke0(long c, unsigned long l) { return pg_invoke(c, l, 0, 0, 0); }
+static inline long pg_invoke1(long c, unsigned long l, long a1) { return pg_invoke(c, l, a1, 0, 0); }
+static inline long pg_invoke2(long c, unsigned long l, long a1, long a2) { return pg_invoke(c, l, a1, a2, 0); }
 
 static inline uint32_t pg_rd32(const uint8_t *b, uint32_t off) {
     return (uint32_t)b[off] | ((uint32_t)b[off+1] << 8) |
@@ -145,7 +150,7 @@ static long pg_grant_query(uint32_t grant_idx, uint64_t *bid, uint64_t *gen,
     m.label      = VFS_EP_OP_GRANT_QUERY_IDENTITY;
     m.words[0]   = (uint64_t)grant_idx;
     m.word_count = 1u;
-    long r = pg_sys2(SYS_EP_CALL, (long)PGR_SLOT_VFS_EP, (long)&m);
+    long r = pg_invoke1((long)PGR_SLOT_VFS_EP, INV_EP_CALL, (long)&m);
     if (r != 0) return r;
     if (m.label != IRIS_EP_REPLY_OK) return -(long)PGR_ERR_GRANT;
     *bid = m.words[1]; *gen = m.words[2]; *rights = m.words[3];
@@ -169,7 +174,7 @@ static long pg_read_file(uint32_t grant_idx, uint64_t file_off,
         m.word_count = 3u;
         m.buf_uptr   = (uint64_t)(uintptr_t)g_pg_buf;
         m.buf_len    = 0u;
-        long r = pg_sys2(SYS_EP_CALL, (long)PGR_SLOT_VFS_EP, (long)&m);
+        long r = pg_invoke1((long)PGR_SLOT_VFS_EP, INV_EP_CALL, (long)&m);
         if (r != 0) return r;
         if (m.label != IRIS_EP_REPLY_OK) {
             g_diag.grant_denied++;
@@ -199,9 +204,7 @@ static long pg_page_frame(uint32_t kind, uint32_t idx) {
     uint32_t bit  = kind * PGR_CACHE_CAP + idx;
     uint32_t slot = PGR_FRAME_BASE + bit;
     if (g_pg_frame_made & (1u << bit)) return (long)slot;
-    long r = pg_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_OWN_UNTYPED,
-                     (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
-                     (long)((uint64_t)slot << 32), 4096);
+    long r = pg_invoke((long)IRIS_CPTR_OWN_UNTYPED, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)), (long)((uint64_t)slot << 32), 4096);
     if (r != 0) { g_diag.page_fill_fail++; return r; }
     g_pg_frame_made |= (1u << bit);
     return (long)slot;
@@ -214,24 +217,23 @@ static long pg_fill_page(uint32_t kind, uint32_t page_idx, const struct pg_backi
                          uint64_t file_off, uint32_t fb) {
     long fslot = pg_page_frame(kind, page_idx);
     if (fslot < 0) { g_diag.page_fill_fail++; return fslot; }
-    long r = pg_sys4(SYS_FRAME_MAP, fslot, g_self_vs, (long)PG_SCRATCH,
-                     1 /*W*/);
+    long r = pg_invoke(fslot, INV_FRAME_MAP, g_self_vs, (long)PG_SCRATCH, 1 /*W*/);
     if (r != 0) { g_diag.page_fill_fail++; return r; }
     uint8_t *page = (uint8_t *)(uintptr_t)PG_SCRATCH;
     pg_zero(page, PAGE_SZ);                              /* zero-fill (F11/F12) */
     if (fb > PAGE_SZ) fb = PAGE_SZ;
     if (fb > 0u) {
         long got = pg_read_file(bk->grant_idx, file_off, page, fb);
-        if (got < 0) { (void)pg_sys3(SYS_FRAME_UNMAP, fslot, g_self_vs, (long)PG_SCRATCH); g_diag.page_fill_fail++; return got; }
+        if (got < 0) { (void)pg_invoke2(fslot, INV_FRAME_UNMAP, g_self_vs, (long)PG_SCRATCH); g_diag.page_fill_fail++; return got; }
         if ((uint32_t)got < fb) {
             /* Unexpected short read mid-file: zero the shortfall (already zero)
              * but report it — no partial PTE is installed by the caller. */
-            (void)pg_sys3(SYS_FRAME_UNMAP, fslot, g_self_vs, (long)PG_SCRATCH);
+            (void)pg_invoke2(fslot, INV_FRAME_UNMAP, g_self_vs, (long)PG_SCRATCH);
             g_diag.page_fill_fail++;
             return -(long)PGR_ERR_SHORT_READ;
         }
     }
-    r = pg_sys3(SYS_FRAME_UNMAP, fslot, g_self_vs, (long)PG_SCRATCH);
+    r = pg_invoke2(fslot, INV_FRAME_UNMAP, g_self_vs, (long)PG_SCRATCH);
     if (r != 0) { g_diag.page_fill_fail++; return r; }
     g_diag.page_fill++;
     return 0;
@@ -307,8 +309,7 @@ static long pg_wait_fault(uint32_t tidx) {
         struct IrisMsg m;
         pg_msg_zero(&m);
         g_diag.notif_waits++;
-        long r = pg_sys3(SYS_EP_NB_RECV, (long)PGR_SLOT_FAULT_EP,
-                         (long)(uintptr_t)&m, PGR_FAULT_CPTR(leaf - 1u));
+        long r = pg_invoke2((long)PGR_SLOT_FAULT_EP, INV_EP_NB_RECV, (long)(uintptr_t)&m, PGR_FAULT_CPTR(leaf - 1u));
         if (r != 0) {
             pg_leaf_give(leaf);
             (void)pg_sys1(SYS_YIELD, 0);
@@ -328,7 +329,7 @@ static long pg_wait_fault(uint32_t tidx) {
              * and dropping the reply object's binding is what tells the kernel
              * so — the thread is killed rather than left blocked on an answer
              * that will never come. */
-            (void)pg_sys2(SYS_CNODE_DELETE, (long)PGR_SLOT_FAULT_CN, (long)leaf);
+            (void)pg_invoke1((long)PGR_SLOT_FAULT_CN, INV_CNODE_DELETE, (long)leaf);
             pg_leaf_give(leaf);
             continue;
         }
@@ -350,9 +351,9 @@ static long pg_fault_answer(uint32_t tidx, int resume) {
     if (resume) {
         struct IrisMsg m;
         pg_msg_zero(&m);
-        r = pg_sys2(SYS_REPLY, PGR_FAULT_CPTR(leaf - 1u), (long)(uintptr_t)&m);
+        r = pg_invoke1(PGR_FAULT_CPTR(leaf - 1u), INV_REPLY_SEND, (long)(uintptr_t)&m);
     } else {
-        r = pg_sys2(SYS_CNODE_DELETE, (long)PGR_SLOT_FAULT_CN, (long)leaf);
+        r = pg_invoke1((long)PGR_SLOT_FAULT_CN, INV_CNODE_DELETE, (long)leaf);
     }
     pg_leaf_give(leaf);
     return r;
@@ -423,7 +424,7 @@ static long pg_resolve_region(uint32_t tidx) {
         uint64_t mflags = (rg->prot & PGR_PROT_X) ? 2u : 0u;
         long cfr = pg_page_frame(PGR_VMO_CACHE, (uint32_t)slot);
         if (cfr < 0) return cfr;
-        long mr = pg_sys4(SYS_FRAME_MAP, cfr, tvs, (long)va, (long)mflags);
+        long mr = pg_invoke(cfr, INV_FRAME_MAP, tvs, (long)va, (long)mflags);
         if (mr != 0) return mr;
         /* Take a region ref on this cache slot (idempotent per region). */
         if (!(rg->cache_refmask & (1u << slot))) { rg->cache_refmask |= (1u << slot); g_cache[slot].refcount++; }
@@ -436,7 +437,7 @@ static long pg_resolve_region(uint32_t tidx) {
         if (fr != 0) return fr;
         long pfr = pg_page_frame(PGR_VMO_PRIVATE, (uint32_t)slot);
         if (pfr < 0) return pfr;
-        long mr = pg_sys4(SYS_FRAME_MAP, pfr, tvs, (long)va, 1 /*W*/);
+        long mr = pg_invoke(pfr, INV_FRAME_MAP, tvs, (long)va, 1 /*W*/);
         if (mr != 0) return mr;
         g_priv_used[slot] = 1;
         rg->priv_ownmask |= (1u << slot);
@@ -584,7 +585,7 @@ static long pg_target_reset(uint32_t tidx) {
  * returns a type or NOT_FOUND, produces no capability and retains nothing, so
  * the oracle no longer touches the handle namespace at all. */
 static int pg_slot_present(long cptr) {
-    return pg_sys1(SYS_CAP_IDENTIFY, cptr) >= 0;
+    return pg_invoke0(cptr, INV_CAP_IDENTIFY) >= 0;
 }
 
 /* Manifest presence oracle — see pager_proto.h for the bit layout. */
@@ -632,8 +633,7 @@ static long pg_serve_raw(uint32_t op, uint32_t tidx, uint32_t vidx, uint32_t fla
         uint64_t vva  = cr2 & ~0xFFFULL;
         uint64_t page = (offset & ~0xFFFULL) >> 12;
         if (page >= PGR_GRANT_PAGES) return -(long)PGR_ERR_RANGE;
-        r = pg_sys4(SYS_FRAME_MAP, (long)PGR_PSLOT(vidx, page), tvs,
-                    (long)vva, (long)(flags & 0x3u));
+        r = pg_invoke((long)PGR_PSLOT(vidx, page), INV_FRAME_MAP, tvs, (long)vva, (long)(flags & 0x3u));
         if (r != 0) return r;
     }
     /*
@@ -659,9 +659,7 @@ void pager_main(handle_id_t bootstrap_ch_h) {
      * property the oracle exists to prove. */
     /* D-6/A5: derived from the address space the spawner delegated, published
      * into the slot the manifest oracle already reports. */
-    g_self_vs = (pg_sys3(SYS_CSPACE_MINT, (long)IRIS_CPTR_OWN_VSPACE,
-                         (long)((uint64_t)PGR_SLOT_SELF_VS << 32),
-                         (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) == 0)
+    g_self_vs = (pg_invoke2((long)IRIS_CPTR_OWN_VSPACE, INV_CSPACE_MINT, (long)((uint64_t)PGR_SLOT_SELF_VS << 32), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) == 0)
                 ? (long)PGR_SLOT_SELF_VS : -1;
 
     /* D-4: a page the pager owns, registered as its IPC buffer.  Best-effort
@@ -680,8 +678,7 @@ void pager_main(handle_id_t bootstrap_ch_h) {
         pg_msg_zero(&msg);
         msg.buf_uptr = (uint64_t)(uintptr_t)(g_pg_registered ? g_pg_buf
                                                               : g_ctrl_buf);
-        long rr = pg_sys3(SYS_EP_RECV, (long)PGR_SLOT_CTRL_EP, (long)&msg,
-                          (long)PGR_SLOT_REPLY);
+        long rr = pg_invoke2((long)PGR_SLOT_CTRL_EP, INV_EP_RECV, (long)&msg, (long)PGR_SLOT_REPLY);
         if (rr != 0) { pg_sys1(SYS_EXIT, 0); for (;;) {} }
 
         /* Take the request out of the buffer before anything below composes a
@@ -739,7 +736,7 @@ void pager_main(handle_id_t bootstrap_ch_h) {
                 reply.buf_len  = (uint32_t)sizeof(g_diag);
             }
             /* Phase S1: reply_h is our reusable reply-object CPtr — no close. */
-            (void)pg_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
+            (void)pg_invoke1((long)reply_h, INV_REPLY_SEND, (long)&reply);
         }
         if (shutdown) { pg_sys1(SYS_EXIT, 0); for (;;) {} }
     }

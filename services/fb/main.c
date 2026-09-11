@@ -12,6 +12,7 @@
 
 #include <stdint.h>
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/nc/handle.h>
 #include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
@@ -33,13 +34,6 @@
 #define FB_BLUE   0x000000FFu
 #define FB_IRIS   0x008800FFu
 
-static inline long fb_sys1(long nr, long a0) {
-    return iris_syscall4((long)nr, (long)a0, (long)0L, (long)0L, (long)0);
-}
-
-static inline long fb_sys2(long nr, long a0, long a1) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)0L, (long)0);
-}
 
 /* Stage 6-pure Step 2: fb maps the framebuffer into a window nothing else has
  * touched, so it owes every level under it.  IRIS_CPTR_OWN_UNTYPED is the
@@ -47,22 +41,26 @@ static inline long fb_sys2(long nr, long a0, long a1) {
 #define FB_SLOT_SELF_VS 40u
 #define FB_SLOT_PT      41u
 static long fb_self_vs(void);
-static inline long fb_sys3(long nr, long a0, long a1, long a2) {
-    long r = iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
+/* Ledger A-31: a label, not a syscall number. */
+static inline long fb_invoke(long c, unsigned long label, long a1, long a2, long a3) {
+    long r = iris_invoke(c, label, a1, a2, a3);
     if (r == (long)IRIS_ERR_MISSING_TABLE)
-        r = iris_vspace_fixup(nr, a0, a1, a2, 0,
+        r = iris_vspace_fixup(label, c, a1, a2, a3,
                               fb_self_vs(), (long)IRIS_CPTR_OWN_UNTYPED,
                               (long)((uint64_t)FB_SLOT_PT << 32), (long)FB_SLOT_PT,
                               0, 0);
     return r;
 }
+static inline long fb_invoke0(long c, unsigned long l) { return fb_invoke(c, l, 0, 0, 0); }
+static inline long fb_invoke1(long c, unsigned long l, long a1) { return fb_invoke(c, l, a1, 0, 0); }
+static inline long fb_invoke2(long c, unsigned long l, long a1, long a2) { return fb_invoke(c, l, a1, a2, 0); }
 static long fb_self_vs(void) {
     static int ready = 0;
     if (!ready) {
         /* D-6/A5: derived from the address space the spawner delegated. */
-        if (iris_syscall3(SYS_CSPACE_MINT, (long)IRIS_CPTR_OWN_VSPACE,
-                          (long)((uint64_t)FB_SLOT_SELF_VS << 32),
-                          (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
+        if (iris_invoke2((long)IRIS_CPTR_OWN_VSPACE, INV_CSPACE_MINT,
+                         (long)((uint64_t)FB_SLOT_SELF_VS << 32),
+                         (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
             return 0;
         ready = 1;
     }
@@ -131,22 +129,16 @@ void fb_main_c(handle_id_t rbx_unused) {
         uint32_t i;
         for (i = 0; i < (uint32_t)sizeof(params); i++) raw[i] = 0;
     }
-    if (fb_sys3(SYS_FRAMEBUFFER_INFO, cap_cptr,
-                (long)(uintptr_t)&params, 0) != IRIS_OK)
+    if (fb_invoke2(cap_cptr, INV_BOOT_FRAMEBUFFER_INFO, (long)(uintptr_t)&params, 0) != IRIS_OK)
         goto out;
     if (params.width == 0 || params.height == 0 || params.size == 0) goto out;
 
     /* The headers of what comes out of MMIO are charged to fb's own budget. */
-    (void)fb_sys3(SYS_UNTYPED_SET_DEVICE_BUDGET,
-                  (long)IRIS_CPTR_DEVICE_UNTYPED,
-                  (long)IRIS_CPTR_OWN_UNTYPED, 0);
+    (void)fb_invoke2((long)IRIS_CPTR_DEVICE_UNTYPED, INV_UNTYPED_SET_DEVICE_BUDGET, (long)IRIS_CPTR_OWN_UNTYPED, 0);
 
     {
         uint64_t bytes = (params.size + 0xFFFu) & ~0xFFFULL;
-        if (fb_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_DEVICE_UNTYPED,
-                    (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
-                    (long)((uint64_t)fb_frame_slot << 32),
-                    (long)bytes) != 0)
+        if (fb_invoke((long)IRIS_CPTR_DEVICE_UNTYPED, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)), (long)((uint64_t)fb_frame_slot << 32), (long)bytes) != 0)
             goto out;
         vmo_cptr = fb_frame_slot;
     }
@@ -186,8 +178,7 @@ void fb_main_c(handle_id_t rbx_unused) {
     }
 
     /* ── Unmap (physical MMIO stays painted) ─────────────────────── */
-    (void)fb_sys3(SYS_FRAME_UNMAP, vmo_cptr, fb_self_vs(),
-                  (long)USER_VMO_BASE);
+    (void)fb_invoke2(vmo_cptr, INV_FRAME_UNMAP, fb_self_vs(), (long)USER_VMO_BASE);
 
 out:
     /* The framebuffer cap is a CSpace slot now: fb is fire-and-forget and its
@@ -195,5 +186,5 @@ out:
      * close.  Deleting the slot explicitly would also work and is what a
      * long-lived service would do. */
     if (vmo_cptr >= 0)
-        (void)fb_sys2(SYS_CNODE_DELETE, 0, vmo_cptr);
+        (void)fb_invoke1(0, INV_CNODE_DELETE, vmo_cptr);
 }

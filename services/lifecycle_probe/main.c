@@ -35,6 +35,7 @@
  */
 #include <stdint.h>
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/nc/handle.h>
 #include <iris/ipc_msg.h>
 #include <iris/fault_proto.h>
@@ -242,15 +243,19 @@ static inline long lp_sys2(long nr, long a0, long a1) {
 /* A free slot for the device-authority probes to aim at: they must be refused
  * for want of a capability, so everything else about them has to be valid. */
 #define LP_SLOT_DEVPROBE 45u
-static inline long lp_sys4(long nr, long a0, long a1, long a2, long a3) {
-    long r = iris_syscall4(nr, a0, a1, a2, a3);
+/* Ledger A-31: a label, not a syscall number. */
+static inline long lp_invoke(long c, unsigned long label, long a1, long a2, long a3) {
+    long r = iris_invoke(c, label, a1, a2, a3);
     if (r == (long)IRIS_ERR_MISSING_TABLE)
-        r = iris_vspace_fixup(nr, a0, a1, a2, a3,
+        r = iris_vspace_fixup(label, c, a1, a2, a3,
                               0, (long)LP_SLOT_BUDGET,
                               (long)((uint64_t)LP_SLOT_PT << 32), (long)LP_SLOT_PT,
                               0, 0);
     return r;
 }
+static inline long lp_invoke0(long c, unsigned long l) { return lp_invoke(c, l, 0, 0, 0); }
+static inline long lp_invoke1(long c, unsigned long l, long a1) { return lp_invoke(c, l, a1, 0, 0); }
+static inline long lp_invoke2(long c, unsigned long l, long a1, long a2) { return lp_invoke(c, l, a1, a2, 0); }
 
 /* Little-endian field reads from the SYS_PROCESS_FAULT_INFO record. */
 static inline uint32_t lp_rd32(const uint8_t *b, uint32_t off) {
@@ -271,7 +276,7 @@ static inline uint64_t lp_rd64(const uint8_t *b, uint32_t off) {
  * handle-table entry per occupied slot, per report).  SYS_CAP_IDENTIFY answers
  * presence without producing a capability. */
 static int lp_slot_present(long cptr) {
-    return lp_sys1(SYS_CAP_IDENTIFY, cptr) >= 0;
+    return lp_invoke0(cptr, INV_CAP_IDENTIFY) >= 0;
 }
 
 
@@ -281,10 +286,9 @@ static int lp_slot_present(long cptr) {
  * side-effect free. */
 #define LP_CPTR_REPLY 13u
 static long lp_recv(struct IrisMsg *m) {
-    long r = lp_sys3(SYS_EP_RECV, (long)LP_CPTR_CMD_EP, (long)(uintptr_t)m,
-                     (long)LP_CPTR_REPLY);
+    long r = lp_invoke2((long)LP_CPTR_CMD_EP, INV_EP_RECV, (long)(uintptr_t)m, (long)LP_CPTR_REPLY);
     if (r < 0 && r != (long)IRIS_ERR_CLOSED)
-        r = lp_sys3(SYS_EP_RECV, (long)LP_CPTR_CMD_EP, (long)(uintptr_t)m, 0);
+        r = lp_invoke2((long)LP_CPTR_CMD_EP, INV_EP_RECV, (long)(uintptr_t)m, 0);
     return r;
 }
 
@@ -310,7 +314,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         uint32_t slot = (uint32_t)msg.words[0];
         for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) p[i] = 0;
         msg.attached_cap = slot;               /* receive-slot declaration */
-        long rr = lp_sys3(SYS_EP_RECV, (long)LP_CPTR_CMD_EP, (long)&msg, 0);
+        long rr = lp_invoke2((long)LP_CPTR_CMD_EP, INV_EP_RECV, (long)&msg, 0);
         if (rr != 0)
             lp_sys1(SYS_EXIT, (long)(LP_EXIT_RECV_ERR_BASE | (uint32_t)-rr));
         /* Stage 4: a delivered cap is a CPtr or nothing — handle
@@ -320,7 +324,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
          * the two cases apart. */
         uint32_t got = msg.attached_handle;    /* 0 or a CPtr */
         if (got != 0u)
-            (void)lp_sys2(SYS_NOTIFY_SIGNAL, (long)got, 1L);
+            (void)lp_invoke1((long)got, INV_NOTIFY_SIGNAL, 1L);
         lp_sys1(SYS_EXIT, (long)got);
         for (;;) {}
     }
@@ -365,14 +369,11 @@ void lp_main(handle_id_t bootstrap_ch_h) {
          * base|count packed in arg1, a real budget in arg2, a free slot in
          * arg3 — so what refuses it is the missing capability and not a
          * malformed request. */
-        if (lp_sys4(SYS_CAP_CREATE_IOPORT, 6, (long)(0x2F8u | (8u << 16)),
-                    (long)LP_SLOT_BUDGET,
-                    (long)((uint64_t)LP_SLOT_DEVPROBE << 32)) >= 0) breach |= (1u << 0);
-        if (lp_sys2(SYS_IOPORT_IN, 10, (long)msg.words[0]) >= 0) breach |= (1u << 1);
-        if (lp_sys3(SYS_IOPORT_OUT, 10, (long)msg.words[0], 0) >= 0) breach |= (1u << 2);
-        if (lp_sys4(SYS_CAP_CREATE_IRQCAP, 6, 9, (long)LP_SLOT_BUDGET,
-                    (long)((uint64_t)LP_SLOT_DEVPROBE << 32)) >= 0) breach |= (1u << 3);
-        if (lp_sys1(SYS_IRQ_ACK, 11) >= 0) breach |= (1u << 4);
+        if (lp_invoke(6, INV_BOOT_CREATE_IOPORT, (long)(0x2F8u | (8u << 16)), (long)LP_SLOT_BUDGET, (long)((uint64_t)LP_SLOT_DEVPROBE << 32)) >= 0) breach |= (1u << 0);
+        if (lp_invoke1(10, INV_IOPORT_IN, (long)msg.words[0]) >= 0) breach |= (1u << 1);
+        if (lp_invoke2(10, INV_IOPORT_OUT, (long)msg.words[0], 0) >= 0) breach |= (1u << 2);
+        if (lp_invoke(6, INV_BOOT_CREATE_IRQCAP, 9, (long)LP_SLOT_BUDGET, (long)((uint64_t)LP_SLOT_DEVPROBE << 32)) >= 0) breach |= (1u << 3);
+        if (lp_invoke0(11, INV_IRQ_ACK) >= 0) breach |= (1u << 4);
         lp_sys1(SYS_EXIT, (long)breach);
         for (;;) {}
     }
@@ -395,8 +396,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
              * syscalls and a mailbox became one receive. */
             struct IrisMsg fm;
             lp_msg_zero(&fm);
-            long r = lp_sys3(SYS_EP_RECV, (long)LP_PGR_SLOT_FAULT_EP,
-                             (long)(uintptr_t)&fm, LP_PGR_FAULT_CPTR);
+            long r = lp_invoke2((long)LP_PGR_SLOT_FAULT_EP, INV_EP_RECV, (long)(uintptr_t)&fm, LP_PGR_FAULT_CPTR);
             if (r != 0) { err = r; break; }
             const uint8_t *fb = (const uint8_t *)fm.words;
             uint32_t vector  = lp_rd32(fb, FAULT_OFF_VECTOR);
@@ -410,8 +410,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
             if (sub == 1u) {
                 /* Phase 25: install a raw frame (slot 14) at the fault page. */
                 uint64_t va = va_ovr ? va_ovr : (cr2 & ~0xFFFULL);
-                r = lp_sys4(SYS_FRAME_MAP, (long)LP_PGR_SLOT_FRAME,
-                            (long)LP_PGR_SLOT_TVS, (long)va, (long)mflags);
+                r = lp_invoke((long)LP_PGR_SLOT_FRAME, INV_FRAME_MAP, (long)LP_PGR_SLOT_TVS, (long)va, (long)mflags);
                 if (r != 0) { err = r; break; }
             }
             /* Answer it, or refuse to: replying resumes the thread, and
@@ -419,11 +418,11 @@ void lp_main(handle_id_t bootstrap_ch_h) {
              * is what the kill mode is now — a pager holds no thread
              * authority, so it cannot kill anything directly. */
             if (sub == 3u) {
-                r = lp_sys2(SYS_CNODE_DELETE, (long)LP_PGR_SLOT_FAULTCN, 1);
+                r = lp_invoke1((long)LP_PGR_SLOT_FAULTCN, INV_CNODE_DELETE, 1);
             } else {
                 struct IrisMsg rm;
                 lp_msg_zero(&rm);
-                r = lp_sys2(SYS_REPLY, LP_PGR_FAULT_CPTR, (long)(uintptr_t)&rm);
+                r = lp_invoke1(LP_PGR_FAULT_CPTR, INV_REPLY_SEND, (long)(uintptr_t)&rm);
             }
             if (r != 0) { err = r; break; }
         }
@@ -459,16 +458,12 @@ void lp_main(handle_id_t bootstrap_ch_h) {
              */
             struct IrisMsg xm;
             lp_msg_zero(&xm);
-            if (lp_sys2(SYS_REPLY, LP_PGR_XFAULT_CPTR,
-                        (long)(uintptr_t)&xm) >= 0) breach |= (1u << 0);
-            if (lp_sys2(SYS_REPLY, LP_PGR_FAULT_CPTR,
-                        (long)(uintptr_t)&xm) >= 0) breach |= (1u << 1);
+            if (lp_invoke1(LP_PGR_XFAULT_CPTR, INV_REPLY_SEND, (long)(uintptr_t)&xm) >= 0) breach |= (1u << 0);
+            if (lp_invoke1(LP_PGR_FAULT_CPTR, INV_REPLY_SEND, (long)(uintptr_t)&xm) >= 0) breach |= (1u << 1);
         }
         /* map / unmap in the victim VSpace through a no-WRITE vspace cap */
-        if (lp_sys4(SYS_FRAME_MAP, (long)LP_PGR_SLOT_FRAME, (long)LP_PGR_SLOT_XVS,
-                    (long)va, 0) >= 0) breach |= (1u << 2);
-        if (lp_sys3(SYS_FRAME_UNMAP, (long)LP_PGR_SLOT_FRAME, (long)LP_PGR_SLOT_XVS,
-                    (long)va) >= 0) breach |= (1u << 3);
+        if (lp_invoke((long)LP_PGR_SLOT_FRAME, INV_FRAME_MAP, (long)LP_PGR_SLOT_XVS, (long)va, 0) >= 0) breach |= (1u << 2);
+        if (lp_invoke2((long)LP_PGR_SLOT_FRAME, INV_FRAME_UNMAP, (long)LP_PGR_SLOT_XVS, (long)va) >= 0) breach |= (1u << 3);
         /* ...and the pager's OWN target capability resolves nothing about the
          * victim either: a process capability is not a thread, and a thread is
          * the only thing RESUME accepts. */
@@ -478,8 +473,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
              * nothing else. */
             struct IrisMsg tm;
             lp_msg_zero(&tm);
-            if (lp_sys2(SYS_REPLY, (long)LP_PGR_SLOT_TPROC,
-                        (long)(uintptr_t)&tm) >= 0) breach |= (1u << 4);
+            if (lp_invoke1((long)LP_PGR_SLOT_TPROC, INV_REPLY_SEND, (long)(uintptr_t)&tm) >= 0) breach |= (1u << 4);
         }
         (void)vtid;
         /* the victim's fault must not appear through the unrelated target cap */
@@ -489,16 +483,12 @@ void lp_main(handle_id_t bootstrap_ch_h) {
              * does hold cannot produce it. */
             struct IrisMsg pm;
             lp_msg_zero(&pm);
-            if (lp_sys3(SYS_EP_NB_RECV, (long)LP_PGR_SLOT_FAULT_EP,
-                        (long)(uintptr_t)&pm, LP_PGR_FAULT_CPTR) == 0)
+            if (lp_invoke2((long)LP_PGR_SLOT_FAULT_EP, INV_EP_NB_RECV, (long)(uintptr_t)&pm, LP_PGR_FAULT_CPTR) == 0)
                 breach |= (1u << 5);
         }
         /* device/spawn forgery — a pager holds neither */
-        if (lp_sys4(SYS_CAP_CREATE_IOPORT, 6, (long)(0x2F8u | (8u << 16)),
-                    (long)LP_SLOT_BUDGET,
-                    (long)((uint64_t)LP_SLOT_DEVPROBE << 32)) >= 0) breach |= (1u << 6);
-        if (lp_sys4(SYS_CAP_CREATE_IRQCAP, 6, 9, (long)LP_SLOT_BUDGET,
-                    (long)LP_SLOT_DEVPROBE) >= 0) breach |= (1u << 7);
+        if (lp_invoke(6, INV_BOOT_CREATE_IOPORT, (long)(0x2F8u | (8u << 16)), (long)LP_SLOT_BUDGET, (long)((uint64_t)LP_SLOT_DEVPROBE << 32)) >= 0) breach |= (1u << 6);
+        if (lp_invoke(6, INV_BOOT_CREATE_IRQCAP, 9, (long)LP_SLOT_BUDGET, (long)LP_SLOT_DEVPROBE) >= 0) breach |= (1u << 7);
         lp_sys1(SYS_EXIT, (long)breach);
         for (;;) {}
     }

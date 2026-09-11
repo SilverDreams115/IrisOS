@@ -16,6 +16,7 @@
 #include "../common/iris_vspace.h"
 #include <iris/console_proto.h>
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/nc/error.h>
 #include <iris/nc/handle.h>
 #include <iris/nc/rights.h>
@@ -81,47 +82,36 @@ static long vfs_self_vs(void);
  * syscall boundary rather than at each map site. */
 #define VFS_SLOT_SELF_VS  60u
 #define VFS_SLOT_PT       61u
-static inline int64_t vfs_syscall4(uint64_t num, uint64_t arg0, uint64_t arg1,
-                                   uint64_t arg2, uint64_t arg3) {
-    long r = iris_syscall4((long)num, (long)arg0, (long)arg1, (long)arg2,
-                           (long)arg3);
+/* Ledger A-31: a label, not a syscall number.  The fixup is the same one —
+ * what changed is that the operation is now named by the capability it acts
+ * on, so the wrapper passes a method rather than a table index. */
+static inline int64_t vfs_invoke(uint64_t c, unsigned long label, uint64_t a1,
+                                 uint64_t a2, uint64_t a3) {
+    long r = iris_invoke((long)c, label, (long)a1, (long)a2, (long)a3);
     if (r == (long)IRIS_ERR_MISSING_TABLE)
-        r = iris_vspace_fixup((long)num, (long)arg0, (long)arg1, (long)arg2,
-                              (long)arg3,
+        r = iris_vspace_fixup(label, (long)c, (long)a1, (long)a2, (long)a3,
                               vfs_self_vs(), (long)IRIS_CPTR_OWN_UNTYPED,
                               (long)((uint64_t)VFS_SLOT_PT << 32), (long)VFS_SLOT_PT,
                               0, 0);
     return (int64_t)r;
 }
-static inline int64_t vfs_syscall3(uint64_t num, uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    long r = iris_syscall3((long)num, (long)arg0, (long)arg1, (long)arg2);
-    if (r == (long)IRIS_ERR_MISSING_TABLE)
-        r = iris_vspace_fixup((long)num, (long)arg0, (long)arg1, (long)arg2, 0,
-                              vfs_self_vs(), (long)IRIS_CPTR_OWN_UNTYPED,
-                              (long)((uint64_t)VFS_SLOT_PT << 32), (long)VFS_SLOT_PT,
-                              0, 0);
-    return (int64_t)r;
-}
+static inline int64_t vfs_invoke0(uint64_t c, unsigned long l) { return vfs_invoke(c, l, 0, 0, 0); }
+static inline int64_t vfs_invoke1(uint64_t c, unsigned long l, uint64_t a1) { return vfs_invoke(c, l, a1, 0, 0); }
+static inline int64_t vfs_invoke2(uint64_t c, unsigned long l, uint64_t a1, uint64_t a2) { return vfs_invoke(c, l, a1, a2, 0); }
 static long vfs_self_vs(void) {
     static int ready = 0;
     if (!ready) {
         /* D-6/A5: derived from the address space the spawner delegated. */
-        if (iris_syscall3(SYS_CSPACE_MINT, (long)IRIS_CPTR_OWN_VSPACE,
-                          (long)((uint64_t)VFS_SLOT_SELF_VS << 32),
-                          (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
+        if (iris_invoke2((long)IRIS_CPTR_OWN_VSPACE, INV_CSPACE_MINT,
+                         (long)((uint64_t)VFS_SLOT_SELF_VS << 32),
+                         (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
             return 0;
         ready = 1;
     }
     return (long)VFS_SLOT_SELF_VS;
 }
 
-static inline int64_t vfs_syscall2(uint64_t num, uint64_t arg0, uint64_t arg1) {
-    return vfs_syscall3(num, arg0, arg1, 0);
-}
 
-static inline int64_t vfs_syscall1(uint64_t num, uint64_t arg0) {
-    return vfs_syscall3(num, arg0, 0, 0);
-}
 
 /* g_vfs_console_h retired — Phase 13/Track G (console.ep only). */
 /* Console endpoint (Phase 8): the well-known slot IRIS_CPTR_CONSOLE_EP,
@@ -159,7 +149,7 @@ static void vfs_copy_bytes(uint8_t *dst, const uint8_t *src, uint32_t len) {
 #define VFS_INITRD_VMO_DEST   ((uint64_t)VFS_SLOT_INITRD_VMO << 32)
 
 static void vfs_slot_delete(uint32_t slot) {
-    (void)vfs_syscall2(SYS_CNODE_DELETE, 0, (uint64_t)slot);
+    (void)vfs_invoke1(0, INV_CNODE_DELETE, (uint64_t)slot);
 }
 
 static void vfs_copy_cstr(char *dst, const uint8_t *src, uint32_t len) {
@@ -211,7 +201,7 @@ static void vfs_seed_initrd_exports(struct vfs_state *state) {
 
     if (!state || state->initrd_c == HANDLE_INVALID) return;
 
-    count_rc = vfs_syscall1(SYS_INITRD_COUNT, (uint64_t)state->initrd_c);
+    count_rc = vfs_invoke0((uint64_t)state->initrd_c, INV_BOOT_INITRD_COUNT);
     if (count_rc <= 0) return;
     count = (uint32_t)count_rc;
     if (count > VFS_INITRD_NAME_COUNT) count = VFS_INITRD_NAME_COUNT;
@@ -237,16 +227,13 @@ static void vfs_seed_initrd_exports(struct vfs_state *state) {
         /* Ledger D-5: a boot image arrives as a FRAME, and the call that
          * hands it over answers how big it is — a caller that has to ask the
          * size of the thing it was just given has been given two things. */
-        sz_rc = vfs_syscall4(SYS_INITRD_FRAME, (uint64_t)state->initrd_c,
-                             (uint64_t)i, VFS_INITRD_VMO_DEST,
-                             IRIS_CPTR_OWN_UNTYPED);
+        sz_rc = vfs_invoke((uint64_t)state->initrd_c, INV_BOOT_INITRD_FRAME, (uint64_t)i, VFS_INITRD_VMO_DEST, IRIS_CPTR_OWN_UNTYPED);
         if (sz_rc <= 0) continue;
 
         virt = VFS_INITRD_MAP_BASE + (uint64_t)i * VFS_INITRD_MAP_SLOT;
         /* One map covers the whole frame (D-10), so the page-at-a-time
          * machinery a VMO needed is gone with the VMO. */
-        map_rc = vfs_syscall4(SYS_FRAME_MAP, (uint64_t)VFS_SLOT_INITRD_VMO,
-                              (uint64_t)vfs_self_vs(), virt, 0);
+        map_rc = vfs_invoke((uint64_t)VFS_SLOT_INITRD_VMO, INV_FRAME_MAP, (uint64_t)vfs_self_vs(), virt, 0);
         vfs_slot_delete(VFS_SLOT_INITRD_VMO);
         if (map_rc != 0) continue;
 
@@ -277,14 +264,11 @@ static int vfs_seed_one_fixture(struct vfs_state *state, uint32_t index,
 
     vfs_slot_delete(VFS_SLOT_INITRD_VMO);
     /* D-5: a frame, and the call answers its size. */
-    sz_rc = vfs_syscall4(SYS_INITRD_FRAME, (uint64_t)state->initrd_c,
-                         (uint64_t)index, VFS_INITRD_VMO_DEST,
-                         IRIS_CPTR_OWN_UNTYPED);
+    sz_rc = vfs_invoke((uint64_t)state->initrd_c, INV_BOOT_INITRD_FRAME, (uint64_t)index, VFS_INITRD_VMO_DEST, IRIS_CPTR_OWN_UNTYPED);
     if (sz_rc <= 0) return 0;
 
     virt = VFS_INITRD_MAP_BASE + (uint64_t)index * VFS_INITRD_MAP_SLOT;
-    map_rc = vfs_syscall4(SYS_FRAME_MAP, (uint64_t)VFS_SLOT_INITRD_VMO,
-                          (uint64_t)vfs_self_vs(), virt, 0);
+    map_rc = vfs_invoke((uint64_t)VFS_SLOT_INITRD_VMO, INV_FRAME_MAP, (uint64_t)vfs_self_vs(), virt, 0);
     vfs_slot_delete(VFS_SLOT_INITRD_VMO);
     if (map_rc != 0) return 0;
 
@@ -367,7 +351,7 @@ static void vfs_ep_serve(struct vfs_state *state, struct IrisMsg *req) {
     /* Phase S1: reply_h is the vfs's OWN reply-object CPtr (echoed by the
      * kernel from the recv arg2).  The object is reusable — never closed. */
     if (reply_h == HANDLE_INVALID) return;
-    (void)vfs_syscall2(SYS_REPLY, reply_h, (uint64_t)(uintptr_t)&reply);
+    (void)vfs_invoke1(reply_h, INV_REPLY_SEND, (uint64_t)(uintptr_t)&reply);
 }
 
 void vfs_server_main_c(handle_id_t rbx_unused) {
@@ -412,8 +396,7 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
         uint8_t *p = (uint8_t *)&pmsg;
         for (uint32_t i = 0; i < (uint32_t)sizeof(pmsg); i++) p[i] = 0;
         pmsg.label = IRIS_EP_OP_PING;
-        if (vfs_syscall2(SYS_EP_CALL, IRIS_CPTR_CONSOLE_EP,
-                         (uint64_t)(uintptr_t)&pmsg) == IRIS_OK &&
+        if (vfs_invoke1(IRIS_CPTR_CONSOLE_EP, INV_EP_CALL, (uint64_t)(uintptr_t)&pmsg) == IRIS_OK &&
             pmsg.label == IRIS_EP_REPLY_OK)
             g_vfs_console_ep_h = (handle_id_t)IRIS_CPTR_CONSOLE_EP;
     }
@@ -444,8 +427,7 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
         smsg.label    = IRIS_SVCMGR_EP_STATUS;
         smsg.buf_uptr = (uint64_t)(uintptr_t)g_vfs_reply;
         smsg.buf_len  = (uint32_t)sizeof(vfs_self_name);
-        if (vfs_syscall2(SYS_EP_CALL, IRIS_CPTR_SVCMGR_EP,
-                         (uint64_t)(uintptr_t)&smsg) == IRIS_OK &&
+        if (vfs_invoke1(IRIS_CPTR_SVCMGR_EP, INV_EP_CALL, (uint64_t)(uintptr_t)&smsg) == IRIS_OK &&
             smsg.label == IRIS_EP_REPLY_OK && smsg.word_count >= 2u)
             epoch = smsg.words[1];
         state.ep_state.exports      = state.exports;
@@ -474,8 +456,7 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
         req.buf_uptr = (uint64_t)(uintptr_t)g_vfs_in;
 
         /* Phase S1: explicit reply object (svcmgr mints it at slot 13). */
-        r = vfs_syscall3(SYS_EP_RECV, state.ep_h, (uint64_t)(uintptr_t)&req,
-                         IRIS_CPTR_OWN_REPLY);
+        r = vfs_invoke2(state.ep_h, INV_EP_RECV, (uint64_t)(uintptr_t)&req, IRIS_CPTR_OWN_REPLY);
         if (r != IRIS_OK) {
             vfs_log(vfs_str_ep_lost);
             goto fail;
