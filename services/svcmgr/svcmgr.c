@@ -165,25 +165,12 @@ static const char sm_str_restart_exhausted[] = "[SVCMGR] WARN: restart budget ex
 static const char sm_str_ep_ready[]          = "[SVCMGR] ep ready\n";
 static const char sm_str_lookup_name_ok[]    = "[SVCMGR] lookup-name reply OK\n";
 
-static inline int64_t svcmgr_syscall4(uint64_t num, uint64_t arg0, uint64_t arg1,
-                                      uint64_t arg2, uint64_t arg3) {
-    return (int64_t)iris_syscall4((long)num, (long)arg0, (long)arg1, (long)arg2, (long)arg3);
-}
-
 static inline int64_t svcmgr_syscall3(uint64_t num, uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return (int64_t)iris_syscall4((long)num, (long)arg0, (long)arg1, (long)arg2, (long)0);
 }
 
-static inline int64_t svcmgr_syscall0(uint64_t num) {
-    return svcmgr_syscall3(num, 0, 0, 0);
-}
-
 static inline int64_t svcmgr_syscall1(uint64_t num, uint64_t arg0) {
     return svcmgr_syscall3(num, arg0, 0, 0);
-}
-
-static inline int64_t svcmgr_syscall2(uint64_t num, uint64_t arg0, uint64_t arg1) {
-    return svcmgr_syscall3(num, arg0, arg1, 0);
 }
 
 /*

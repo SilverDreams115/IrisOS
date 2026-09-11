@@ -47,12 +47,6 @@
 static inline long pg_sys1(long nr, long a0) {
     return iris_syscall4((long)nr, (long)a0, (long)0L, (long)0L, (long)0);
 }
-static inline long pg_sys2(long nr, long a0, long a1) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)0L, (long)0);
-}
-static inline long pg_sys3(long nr, long a0, long a1, long a2) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
-}
 /* Stage 6-pure Step 2: the pager maps on behalf of others, so it owes paging
  * levels for address spaces that are not its own.  They come from
  * IRIS_CPTR_OWN_UNTYPED — the budget its own address space was built from

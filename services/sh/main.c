@@ -40,8 +40,6 @@
 static inline long sh_sys3(long nr, long a0, long a1, long a2) {
     return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
 }
-static inline long sh_sys2(long nr, long a0, long a1) { return sh_sys3(nr, a0, a1, 0); }
-static inline long sh_sys1(long nr, long a0)           { return sh_sys3(nr, a0, 0, 0); }
 static inline long sh_sys0(long nr)                    { return sh_sys3(nr, 0, 0, 0); }
 
 static void sh_imsg_zero(struct IrisMsg *msg) {

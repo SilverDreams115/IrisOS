@@ -9,24 +9,8 @@
 #include <iris/root_bootinfo.h>
 #include "../../services/common/svc_loader.h"
 
-static inline long ub_sys0(long nr) {
-    return iris_syscall4((long)nr, (long)0L, (long)0L, (long)0L, (long)0);
-}
-
 static inline long ub_sys1(long nr, long a0) {
     return iris_syscall4((long)nr, (long)a0, (long)0L, (long)0L, (long)0);
-}
-
-static inline long ub_sys2(long nr, long a0, long a1) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)0L, (long)0);
-}
-
-static inline long ub_sys3(long nr, long a0, long a1, long a2) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
-}
-
-static inline long ub_sys4(long nr, long a0, long a1, long a2, long a3) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)a3);
 }
 
 /* Stage 4: nothing userboot holds is a handle.  ub_close was the release

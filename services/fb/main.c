@@ -67,10 +67,6 @@ static long fb_self_vs(void) {
     return (long)FB_SLOT_SELF_VS;
 }
 
-static inline long fb_sys4(long nr, long a0, long a1, long a2, long a3) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)a3);
-}
-
 static void fb_draw_rect(uint32_t *pixels, uint32_t stride,
                          uint32_t x, uint32_t y,
                          uint32_t w, uint32_t h, uint32_t color) {

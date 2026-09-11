@@ -27,26 +27,12 @@
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>
 
-/* ── Raw syscall helpers ────────────────────────────────────────────────── */
-
-static inline long init_sys4(long nr, long a0, long a1, long a2, long a3) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)a3);
-}
-
 static inline long init_sys3(long nr, long a0, long a1, long a2) {
     return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
 }
 
-static inline long init_sys2(long nr, long a0, long a1) {
-    return init_sys3(nr, a0, a1, 0);
-}
-
 static inline long init_sys1(long nr, long a0) {
     return init_sys3(nr, a0, 0, 0);
-}
-
-static inline long init_sys0(long nr) {
-    return init_sys3(nr, 0, 0, 0);
 }
 
 /* ── Shared boot constants ──────────────────────────────────────────────── */

@@ -217,14 +217,6 @@ static inline long lp_sys1(long nr, long a0) {
     return iris_syscall4((long)nr, (long)a0, (long)0L, (long)0L, (long)0);
 }
 
-static inline long lp_sys3(long nr, long a0, long a1, long a2) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
-}
-
-static inline long lp_sys2(long nr, long a0, long a1) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)0L, (long)0);
-}
-
 /*
  * Stage 6-pure Step 2: this image is spawned in two roles, and the difference
  * is entirely in what it was handed.  As a CONTAINED probe it holds no budget,

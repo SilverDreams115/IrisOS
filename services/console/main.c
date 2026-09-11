@@ -25,19 +25,6 @@
 #include <iris/nc/error.h>
 #include "../common/iris_ipc_buffer.h"
 
-static inline long con_sys2(long nr, long a0, long a1) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)0L, (long)0);
-}
-
-static inline long con_sys3(long nr, long a0, long a1, long a2) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
-}
-
-static inline long con_sys1(long nr, long a0) {
-    return con_sys2(nr, a0, 0);
-}
-
-
 /* Poll the UART Line Status Register (offset 5) until bit 5 (THRE) is set,
  * then write one byte to the Transmit Holding Register (offset 0). */
 static void con_uart_write_byte(handle_id_t ioport_h, uint8_t byte) {

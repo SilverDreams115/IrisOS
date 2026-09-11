@@ -34,13 +34,6 @@
 static inline long tm_sys1(long nr, long a0) {
     return iris_syscall4(nr, a0, 0L, 0L, 0);
 }
-static inline long tm_sys2(long nr, long a0, long a1) {
-    return iris_syscall4(nr, a0, a1, 0L, 0);
-}
-static inline long tm_sys3(long nr, long a0, long a1, long a2) {
-    return iris_syscall4(nr, a0, a1, a2, 0);
-}
-
 static void tm_msg_zero(struct IrisMsg *m) {
     uint8_t *b = (uint8_t *)m;
     for (uint32_t i = 0; i < (uint32_t)sizeof(*m); i++) b[i] = 0;
