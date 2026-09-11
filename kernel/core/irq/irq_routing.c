@@ -24,7 +24,7 @@
  * receiving its interrupt, with nobody having to remember who registered it.
  */
 struct irq_route_entry {
-    struct KNotification *notif;  /* signal route (kbd, Phase 7.6) */
+    struct KNotification *notif;  /* the notification this line signals */
 };
 
 static struct irq_route_entry irq_table[IRQ_ROUTE_MAX];

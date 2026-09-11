@@ -24,7 +24,7 @@
  *   - knotification_wait() must only be called from task context.
  */
 
-#define KNOTIF_POOL_SIZE     0  /* no static pool — kpage-backed; 0 = unbounded allocator ceiling */
+#define KNOTIF_POOL_SIZE     0  /* no static pool: a notification is retyped */
 /*
  * There is no waiter ceiling.
  *

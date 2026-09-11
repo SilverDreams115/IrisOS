@@ -5,7 +5,7 @@
  * Early-boot serial driver — ring-0, boot-phase and fatal-path ONLY.
  *
  * serial_init()  : called once by kernel_main before ring-3 exists.
- * serial_write() : used by fatal/panic paths (kstack, kpage, phase3_selftest).
+ * serial_write() : used by fatal/panic paths (phase3_selftest, exception dumps).
  *
  * Normal output goes through klog → SYS_KLOG_DRAIN → ring-3 console service.
  * No serial I/O should happen in ring-0 after the first task switch.

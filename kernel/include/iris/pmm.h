@@ -26,7 +26,8 @@ void     pmm_free_page(uint64_t phys_addr);
 
 /* Free n contiguous pages starting at phys_base that were allocated as a
  * single pmm_alloc_pages(n) call.  n is rounded up to the buddy block
- * size internally.  Replaces the old per-page free loop in kpage_free. */
+ * size internally.  It replaced a per-page free loop in an allocator that is
+ * itself gone now. */
 void     pmm_free_contig(uint64_t phys_base, uint32_t n);
 
 uint64_t pmm_total_pages(void);

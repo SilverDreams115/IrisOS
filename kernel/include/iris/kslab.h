@@ -15,7 +15,7 @@
  * kslab_alloc rounds up to the next class; kslab_free returns to the same class.
  *
  * kslab_init must be called once after pmm_buddy_setup and before any kobject
- * allocation.  Returned memory is zeroed (matching kpage_alloc semantics).
+ * allocation.  Returned memory is zeroed.
  */
 void  kslab_init (uint64_t phys_base, uint32_t num_pages);
 void *kslab_alloc(uint32_t size);
