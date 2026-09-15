@@ -71,7 +71,7 @@ against seL4 turned up, including one A9 defect it fixed.
 | 12-pol — mechanism, not policy (P2) | ✅ CLOSED — the kernel futex, the notification waiter ceiling, the default CSpace size and the THREAD ceiling are gone; what is left is classified as mechanism with a reason each (A-19) |
 | 11-life — object lifetime (D-7) | ✅ SEMANTICS CLOSED — an object exists exactly while a capability names it, measured for every type (T322), over generated MDB shapes (T323) and through a CSpace cycle (T321).  The MECHANISM stays a refcount, registered as a permanent divergence; the one disagreement it produced (a donated scheduling context released twice) is fixed and T324 reads every pool slot each run to catch the next |
 | 13-form — the four FORM divergences (A-20's audit) | ✅ 3 of 4 CLOSED, the fourth decided.  **A-21** address-space identity is `ASIDControl`/`ASIDPool`; **A-22** a fault is an IPC message on an endpoint answered by a reply capability; **A-24** the kernel cannot block a thread on time — waiting is a ring-3 service — with **A-23** (`seL4_TCB_BindNotification`) as its enabler and **A-25** (`CancelBadgedSends`) closing the audit's last item.  The fourth, the ABI SHAPE, is a permanent deliberate divergence (charter §4) |
-| 9 — SMP | **PLANNED** — the locking model precondition is written (§9.1 hierarchy, §9.2 catalog, §9.3 five steps).  Not started |
+| 9 — SMP | 🔶 **3 of 5 steps done.**  §9.1 hierarchy and §9.2 catalog written and enforced (`make check-locks`); step 1 (the one-core kernel made SMP-correct) ✅, step 2 (TLB shootdown) ✅, step 3 (APs discovered and started — four come up and the suite passes) ✅.  Remaining: step 4, let them schedule; step 5, the adversarial phase |
 | 10 — General-purpose platform | pending |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
@@ -1870,40 +1870,36 @@ two are indistinguishable from ring 3 and only one is what D-1 is about.
 **Step 2 already paid for itself**: it is what made ledger **D-8** closable.  A
 preemptible revoke needs somewhere to park a continuation, and step 1 built it.
 
-**Step 3 — ONE kernel stack per core. 🔶 HALF DONE.**  What remains, and the
-first analysis of this stage missed it: it is not enough for syscalls to stop
-keeping state on the stack.  A timer interrupt fires while a task runs in USER mode and
-lands on the kernel stack named by `TSS.RSP0`; if that stack is per-core and
-the ISR then preempts to another task, the outgoing task's interrupt frame sits
-on a stack the incoming task is about to use.  So step 3 additionally requires
-the IRQ path to save the full user context into the TCB rather than leave it on
-a kernel stack — a second conversion, of the preemption path, comparable in
-size to the first.  Syscalls themselves are not the obstacle: `SFMASK` clears
-IF, so no syscall is ever preempted mid-flight, and step 1's restart points are
-the only places a thread gives up the CPU inside the kernel.
+**Step 3 — ONE kernel stack per core. ✅ CLOSED.**  The paragraphs that used
+to stand here described the state mid-stage and outlived it; they are replaced
+rather than kept, because a roadmap that says a closed step is half done is
+worse than one that says nothing.
 
-That conversion is now half done.  `struct iris_user_ctx` is a field of
-`struct task`, and every ring-3 kernel entry saves the thread's whole register
-state into its own TCB while every ring-3 exit rebuilds the frame from the TCB
-of whatever thread is current by then.  With per-thread stacks still in place
-the two are an identity — deliberately, because doing the move while the frame
-is still authoritative means the rest of step 3 changes where execution
-RESUMES and not what gets RESTORED.  It is measured rather than assumed
-(`irq_ctx_saves`, and T314's register-integrity spin across thousands of
-preemptions), because a path whose effect is currently invisible is a path
-that rots.
+What it needed, and the first analysis of this stage missed it: it is not
+enough for syscalls to stop keeping state on the stack.  A timer interrupt
+fires while a task runs in USER mode and lands on the kernel stack named by
+`TSS.RSP0`; if that stack is per-core and the ISR then preempts to another
+task, the outgoing task's interrupt frame sits on a stack the incoming task is
+about to use.  So step 3 additionally required converting the PREEMPTION path
+to save the full user context into the TCB — a second conversion, comparable
+in size to the first.  Syscalls were never the obstacle: `SFMASK` clears IF, so
+no syscall is preempted mid-flight, and step 1's restart points are the only
+places a thread gives up the CPU inside the kernel.
 
-What is left: `TSS.RSP0` becomes a per-core stack, and the reschedule taken
-inside the timer ISR stops going through `context_switch` — which exists to
-swap kernel stacks — and becomes a choice of which TCB the exit path restores.
-Two cases, and steps 1 and 2 are what make both expressible: a thread
-preempted in ring 3 resumes through that restore, and a thread parked in a
-syscall resumes at its restart trampoline on the core's stack, holding
-nothing.
+All of it landed.  `struct iris_user_ctx` is a field of `struct task`; every
+ring-3 entry saves the thread's whole register state into its own TCB and every
+ring-3 exit rebuilds the frame from the TCB of whatever thread is current by
+then.  `TSS.RSP0` and the syscall stack pointer are set ONCE, in
+`core_dispatch_init`, and are the core's for its lifetime — they used to be
+rewritten on every context switch, because the stack belonged to whichever
+thread was about to run.  `context_switch` is deleted: a reschedule is a choice
+of which TCB the exit path restores, not a swap of kernel stacks.  And the
+per-thread stacks went with it, so kernel memory stopped scaling with thread
+count and a retyped TCB stopped costing memory its payer did not pay for.
 
-Then, and only then, the per-thread stacks can go: kernel memory stops scaling
-with thread count, and a retyped TCB stops costing memory its payer did not pay
-for.
+Measured rather than assumed (`irq_ctx_saves`, and T314's register-integrity
+spin across thousands of preemptions), because a path whose effect is invisible
+is a path that rots.
 
 What the whole stage buys, and why it is not optional for a serious product:
 
