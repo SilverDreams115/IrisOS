@@ -14,6 +14,7 @@
 #include <iris/fb_info.h>
 #include <iris/irq_routing.h>
 #include <iris/acpi.h>
+#include <iris/smp.h>
 #include <iris/tlb.h>
 #include <iris/nc/kbootcap.h>
 #include <iris/root_bootinfo.h>
@@ -187,6 +188,20 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     /* Stage 9-evt step 3: publish this core's kernel stack before anything can
      * park — the dispatcher reads it GS-relative and has no fallback. */
     core_dispatch_init();
+
+    /*
+     * Start the application processors (SMP roadmap §9.3 step 3).
+     *
+     * AFTER `core_dispatch_init`, because that is what fills in the per-core
+     * kernel stacks an arriving processor lands on, and after `idt_init` and
+     * the LAPIC, because an AP that takes a fault before there is an IDT
+     * triple-faults with nothing to say about why.  BEFORE the first user
+     * task, because every processor should be up before anything schedules —
+     * a CPU arriving mid-run would be a second thing to reason about.
+     *
+     * They park.  Nothing here makes them schedule; that is step 4.
+     */
+    (void)smp_start_aps(&saved_boot_info);
 
     /* ── 8. First user task ─────────────────────────────────────── */
     klog_write("[IRIS][USER] preparing bootstrap task...\n");

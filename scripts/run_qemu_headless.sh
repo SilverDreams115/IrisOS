@@ -83,6 +83,20 @@ if ! grep -Fq "[IRIS][ACPI] processors: ${EXPECT_CPUS}" "$LOG_FILE"; then
   exit 1
 fi
 
+# ...and every one of them has to actually ARRIVE.  A processor that does not
+# start is reported and left alone rather than hung on (SMP roadmap 9.3 step
+# 3), so without this gate a machine quietly running on half its cores looks
+# exactly like a healthy one.
+if [ "$EXPECT_CPUS" -gt 1 ] && \
+   ! grep -Fq "[IRIS][SMP] processors online: ${EXPECT_CPUS}" "$LOG_FILE"; then
+  echo "[headless] not every processor came online (wanted ${EXPECT_CPUS}):"
+  grep -F "[IRIS][SMP]" "$LOG_FILE" | sed 's/^/           /'
+  echo "           A trampoline progress of 1..5 says how far the last one got;"
+  echo "           AP_TRAMPOLINE_TRACE in ap_trampoline.S prints each stage."
+  cat "$LOG_FILE"
+  exit 1
+fi
+
 if ! grep -Fq "[SVCMGR] ready" "$LOG_FILE"; then
   echo "[headless] missing svcmgr ready marker"
   cat "$LOG_FILE"

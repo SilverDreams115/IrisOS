@@ -140,6 +140,11 @@ void     paging_destroy_user_space_from(uint64_t cr3, int pml4_pooled);
 /* Invalidate the paging-structure caches for one walk — owed by any caller
  * that detaches an interior entry from a LIVE address space. */
 void     paging_flush_table_walk(uint64_t virt);
+/* Make one identity-mapped page below 2 MiB executable (or not).  The AP
+ * trampoline is the only caller and the only code that runs there: the
+ * instruction after enabling paging fetches from that linear address, and the
+ * low region is NX.  Splits the huge page rather than opening all 2 MiB. */
+int      paging_set_low_exec(uint64_t phys_page, int executable);
 int      paging_detach_table_in(uint64_t cr3, uint64_t virt, int level,
                                 uint64_t table_phys);
 /* Stage 6-pure Step 4: initialise a page the HOLDER supplied as a user PML4 —

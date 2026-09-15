@@ -45,6 +45,16 @@ uint8_t  lapic_id(void);
  */
 #define RESCHEDULE_IPI_VECTOR 0xF0u
 
+/*
+ * Starting an application processor: INIT, then STARTUP.
+ *
+ * `vector` for the startup is a PAGE NUMBER below 1 MiB — the processor begins
+ * in 16-bit real mode at `vector << 12`.  That is why the trampoline lives in
+ * low memory no matter where the rest of the kernel does.
+ */
+void lapic_send_init(uint8_t dest_lapic_id);
+void lapic_send_startup(uint8_t dest_lapic_id, uint8_t vector);
+
 void lapic_send_ipi(uint8_t lapic_id, uint8_t vector);
 
 #endif

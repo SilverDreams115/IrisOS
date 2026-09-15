@@ -79,6 +79,19 @@ static uint8_t df_ist3_stacks[MAX_CPUS][4096]     __attribute__((aligned(16)));
 static struct gdt_entry   gdt[GDT_ENTRIES];
 static struct gdt_descriptor gdtr;
 
+/*
+ * Per-AP GDT and its descriptor.
+ *
+ * An application processor cannot share the BSP's GDT, because slots 5-6 are
+ * a TSS descriptor and a TSS belongs to one processor: `ltr` on a descriptor
+ * another CPU has already loaded is the busy-TSS fault.  Everything else in
+ * the table is identical, so an AP takes a COPY and rewrites only that
+ * descriptor — which keeps "what the segments are" in one place and "whose
+ * task state" in the copy.
+ */
+static struct gdt_entry      ap_gdt[MAX_CPUS][GDT_ENTRIES];
+static struct gdt_descriptor ap_gdtr[MAX_CPUS];
+
 static void gdt_set_entry(int index, uint8_t access, uint8_t granularity) {
     gdt[index].limit_low   = 0xFFFF;
     gdt[index].base_low    = 0;
@@ -180,6 +193,62 @@ void tss_set_ist(int index, uint64_t rsp) {
     if (index < 1 || index > 7) return;
     /* cpu_self() safe: only called post-gdt_init() from ring-0 with GS_BASE valid */
     kernel_tss[cpu_self()->cpu_id].ist[index - 1] = rsp;
+}
+
+/*
+ * Give this application processor its own GDT, TSS and IST stacks, and point
+ * GS at its per-CPU block.
+ *
+ * Steps 1, 2 and 4 of the recipe written at the top of this file, finally
+ * executed.  Step 3 (`sti`) is deliberately NOT here: an AP that ends this
+ * function parks with interrupts off, because it has no scheduler state and
+ * nothing to do with a tick.  Taking interrupts is step 4's.
+ */
+void gdt_init_ap(uint32_t cpu_id) {
+    if (cpu_id == 0u || cpu_id >= MAX_CPUS) return;
+
+    for (int i = 0; i < GDT_ENTRIES; i++) ap_gdt[cpu_id][i] = gdt[i];
+
+    kernel_tss[cpu_id].iopb_offset = sizeof(struct tss);
+    kernel_tss[cpu_id].ist[0] =
+        (uint64_t)(uintptr_t)(fault_ist1_stacks[cpu_id] + sizeof(fault_ist1_stacks[cpu_id]));
+    kernel_tss[cpu_id].ist[1] =
+        (uint64_t)(uintptr_t)(nmi_ist2_stacks[cpu_id]   + sizeof(nmi_ist2_stacks[cpu_id]));
+    kernel_tss[cpu_id].ist[2] =
+        (uint64_t)(uintptr_t)(df_ist3_stacks[cpu_id]    + sizeof(df_ist3_stacks[cpu_id]));
+
+    {   /* the TSS descriptor, written into THIS processor's copy */
+        uint64_t addr = (uint64_t)(uintptr_t)&kernel_tss[cpu_id];
+        uint32_t size = sizeof(struct tss) - 1u;
+        /* Entries 5-6, exactly as gdt_set_tss writes the BSP's. */
+        struct gdt_tss_entry *e =
+            (struct gdt_tss_entry *)&ap_gdt[cpu_id][5];
+        e->limit_low   = (uint16_t)(size & 0xFFFF);
+        e->base_low    = (uint16_t)(addr & 0xFFFF);
+        e->base_mid    = (uint8_t)((addr >> 16) & 0xFF);
+        e->access      = GDT_TSS_TYPE;
+        e->granularity = 0;
+        e->base_high   = (uint8_t)((addr >> 24) & 0xFF);
+        e->base_upper  = (uint32_t)(addr >> 32);
+        e->reserved    = 0;
+    }
+
+    ap_gdtr[cpu_id].size   = sizeof(ap_gdt[cpu_id]) - 1;
+    ap_gdtr[cpu_id].offset = (uint64_t)(uintptr_t)&ap_gdt[cpu_id];
+    gdt_flush((uint64_t)(uintptr_t)&ap_gdtr[cpu_id]);
+    tss_flush(GDT_TSS_SEL);
+
+    /* SWAPGS ABI: ring-0 resting has GS_BASE = &cpu_local[cpu_id] and
+     * KERNEL_GS_BASE = 0, the same arrangement gdt_init makes for the BSP. */
+    cpu_local[cpu_id].self   = &cpu_local[cpu_id];
+    cpu_local[cpu_id].cpu_id = cpu_id;
+    {
+        uint64_t addr = (uint64_t)(uintptr_t)&cpu_local[cpu_id];
+        uint32_t lo   = (uint32_t)(addr & 0xFFFFFFFFULL);
+        uint32_t hi   = (uint32_t)(addr >> 32);
+        __asm__ volatile ("wrmsr" :: "c"(0xC0000101u), "a"(lo), "d"(hi));
+        __asm__ volatile ("wrmsr" :: "c"(0xC0000102u), "a"(0u), "d"(0u));
+    }
 }
 
 void tss_set_rsp0(uint64_t rsp0) {

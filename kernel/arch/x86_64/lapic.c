@@ -79,8 +79,68 @@ uint8_t lapic_id(void) {
 #define LAPIC_REG_ICR_LO  0x300u
 #define LAPIC_REG_ICR_HI  0x310u
 
+/* ICR_LO fields. */
+#define ICR_DELIVERY_FIXED   (0u << 8)
+#define ICR_DELIVERY_INIT    (5u << 8)
+#define ICR_DELIVERY_STARTUP (6u << 8)
+#define ICR_LEVEL_ASSERT     (1u << 14)
+#define ICR_TRIGGER_LEVEL    (1u << 15)
+#define ICR_SEND_PENDING     (1u << 12)   /* read-only: delivery in progress */
+
+/*
+ * Wait for the previous IPI to be accepted.
+ *
+ * The ICR holds ONE message.  Writing a second before the first has been
+ * delivered loses it, and the startup sequence below writes four in a row —
+ * so every write is preceded by this.  It is a spin with no timeout on
+ * purpose: the alternative is to carry on having silently failed to start a
+ * processor, and a machine that hangs here is telling the truth about its
+ * interrupt controller.
+ */
+static void lapic_ipi_wait(void) {
+    if (!lapic_active) return;
+    while (lapic_base[LAPIC_REG_ICR_LO / 4] & ICR_SEND_PENDING)
+        __asm__ volatile ("pause");
+}
+
+static void lapic_icr_write(uint8_t dest, uint32_t low) {
+    lapic_ipi_wait();
+    lapic_base[LAPIC_REG_ICR_HI / 4] = (uint32_t)dest << 24;
+    lapic_base[LAPIC_REG_ICR_LO / 4] = low;
+}
+
 void lapic_send_ipi(uint8_t dest_lapic_id, uint8_t vector) {
     if (!lapic_active) return;
-    lapic_base[LAPIC_REG_ICR_HI / 4] = (uint32_t)dest_lapic_id << 24;
-    lapic_base[LAPIC_REG_ICR_LO / 4] = (uint32_t)vector; /* Fixed delivery, edge, assert */
+    lapic_icr_write(dest_lapic_id,
+                    (uint32_t)vector | ICR_DELIVERY_FIXED | ICR_LEVEL_ASSERT);
+}
+
+/*
+ * INIT: put the target processor into its wait-for-SIPI state.
+ *
+ * Sent as assert then de-assert, which is what the older multiprocessor
+ * specification required and what every firmware still expects to see.  Modern
+ * parts ignore the de-assert; sending it costs one ICR write and removes a
+ * class of "works on my machine" that is very hard to debug from the other
+ * side, because the symptom is a processor that never runs anything.
+ */
+void lapic_send_init(uint8_t dest_lapic_id) {
+    if (!lapic_active) return;
+    lapic_icr_write(dest_lapic_id,
+                    ICR_DELIVERY_INIT | ICR_LEVEL_ASSERT | ICR_TRIGGER_LEVEL);
+    lapic_icr_write(dest_lapic_id, ICR_DELIVERY_INIT | ICR_TRIGGER_LEVEL);
+    lapic_ipi_wait();
+}
+
+/*
+ * STARTUP: begin executing at `vector << 12`, in 16-bit real mode.
+ *
+ * The vector is a PAGE NUMBER below 1 MiB, not an address — which is why the
+ * trampoline has to live in low memory whatever the rest of the kernel does.
+ */
+void lapic_send_startup(uint8_t dest_lapic_id, uint8_t vector) {
+    if (!lapic_active) return;
+    lapic_icr_write(dest_lapic_id,
+                    (uint32_t)vector | ICR_DELIVERY_STARTUP | ICR_LEVEL_ASSERT);
+    lapic_ipi_wait();
 }

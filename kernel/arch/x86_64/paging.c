@@ -532,6 +532,76 @@ void paging_unmap_in(uint64_t cr3, uint64_t virt) {
  * level whose subtree is NOT empty, so that precondition is enforced rather
  * than assumed.
  */
+/*
+ * Make ONE identity-mapped low page executable, or take it back.
+ *
+ * The first two megabytes are mapped NX on purpose: no kernel code executes
+ * from physical 0..2 MiB — except for the twenty instructions of the AP
+ * trampoline, which have no choice about where they live, because a STARTUP
+ * IPI's vector is a page number in the first megabyte.
+ *
+ * And it is exactly the instruction after `mov cr0` (setting PG) that needs
+ * it: the processor continues fetching at the same linear address, which is
+ * now translated, and an NX page there faults into a processor with no IDT.
+ * The symptom is silence — which is what it was, until the trampoline started
+ * writing progress bytes to COM1.
+ *
+ * The low region is one huge page, so making a 4 KiB window executable means
+ * SPLITTING it: 512 small pages, all as they were, except the one.  The
+ * alternative — making the whole 2 MiB executable — would leave a
+ * 2-megabyte executable hole at physical zero for the life of the system, to
+ * run a page of code once at boot.
+ */
+int paging_set_low_exec(uint64_t phys_page, int executable) {
+    if (phys_page >= KERNEL_PHYS_BASE) return -1;
+    if (phys_page & 0xFFFULL) return -1;
+
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+
+    int rc = -1;
+    uint64_t *pml4 = phys_to_ptr(pml4_phys);
+    uint64_t *pdpt = get_or_create(pml4, PML4_IDX(phys_page),
+                                   PAGE_PRESENT | PAGE_WRITABLE);
+    if (pdpt) {
+        uint64_t  pd_idx = PDPT_IDX(phys_page);
+        uint64_t *pd     = get_or_create(pdpt, pd_idx, PAGE_PRESENT | PAGE_WRITABLE);
+        if (pd) {
+            uint64_t idx = PD_IDX(phys_page);
+            uint64_t e   = pd[idx];
+            if (e & PAGE_HUGE) {
+                /* Split the 2 MiB mapping into a page table that says exactly
+                 * what it said before, one entry at a time. */
+                uint64_t base = e & ~(HUGE_SIZE - 1) & ~0xFFFULL;
+                /* NX is bit 63, so the low twelve bits are NOT the flags.
+                 * Masking to 0xFFF dropped it from all 512 entries and made
+                 * the whole two megabytes executable to open one page — the
+                 * opposite of what splitting is for. */
+                uint64_t flags = (e & 0xFFFULL & ~PAGE_HUGE) | (e & PAGE_NX);
+                uint64_t pt_phys = alloc_table();
+                if (pt_phys) {
+                    uint64_t *pt = phys_to_ptr(pt_phys);
+                    for (uint64_t k = 0; k < ENTRIES; k++)
+                        pt[k] = (base + k * PAGE_SIZE) | flags;
+                    pd[idx] = pt_phys | PAGE_PRESENT | PAGE_WRITABLE;
+                    e = pd[idx];
+                }
+            }
+            if (!(e & PAGE_HUGE) && (e & PAGE_PRESENT)) {
+                uint64_t *pt = phys_to_ptr(e & ~0xFFFULL);
+                uint64_t k = PT_IDX(phys_page);
+                if (executable) pt[k] &= ~PAGE_NX;
+                else            pt[k] |=  PAGE_NX;
+                __asm__ volatile ("invlpg (%0)" : : "r"(phys_page) : "memory");
+                rc = 0;
+            }
+        }
+    }
+
+    __asm__ volatile ("pushq %0; popfq" : : "r"(rflags) : "memory");
+    return rc;
+}
+
 void paging_flush_table_walk(uint64_t virt) {
     __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
     __atomic_fetch_add(&paging_tlb_invlpg, 1u, __ATOMIC_RELAXED);

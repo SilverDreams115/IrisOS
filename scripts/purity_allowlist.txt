@@ -30,9 +30,22 @@ kernel/new_core/src/kvspace.c kslab_alloc 1
 # Nothing in kernel/core/syscall/ can reach any of it, and that is now CHECKED
 # rather than asserted: the reachability closure follows the PMM as well as the
 # slab.  This list is the inventory; the closure is the property.
-kernel/include/iris/pmm.h pmm_alloc 4
-kernel/mm/pmm/pmm.c pmm_alloc 3
+kernel/include/iris/pmm.h pmm_alloc 5
+kernel/mm/pmm/pmm.c pmm_alloc 4
 kernel/kernel_main.c pmm_alloc 4
 kernel/core/scheduler/task_lifecycle.c pmm_alloc 2
 kernel/arch/x86_64/paging.c pmm_alloc 2
 kernel/new_core/src/kframe.c pmm_alloc 1
+# SMP roadmap 9.3 step 3.  `smp_start_aps` claims ONE page below 1 MiB for the
+# AP trampoline, because a STARTUP IPI's vector is a page number in the first
+# megabyte and the code has nowhere else to live.
+#
+# It is a claim rather than a choice, and that distinction is the reason this
+# row exists: the first version read the memory map for a "usable" page below
+# 1 MiB, and the PMM initialises from that same map — so the page it picked was
+# one the allocator had already handed out.  Copying the trampoline over it
+# corrupted live memory and hung the boot with no output.
+#
+# Boot-only: called once from kernel_main, before kslab_seal, and the gate's
+# own reachability closure proves no syscall handler reaches it.
+kernel/core/smp/smp.c pmm_alloc 1

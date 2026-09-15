@@ -215,6 +215,43 @@ void pmm_buddy_setup(void) {
     buddy_active = 1;
 }
 
+/*
+ * A page below `limit`, for the callers whose constraint is the ADDRESS rather
+ * than the size.
+ *
+ * There is one today — the AP trampoline, which a STARTUP IPI can only reach
+ * in the first megabyte because the vector it carries is a page number there.
+ * DMA-capable devices have the same shape of requirement at other boundaries,
+ * which is why this takes a limit rather than hardcoding 1 MiB.
+ *
+ * It scans the BITMAP directly and does not consult the buddy allocator: the
+ * buddy serves order-based requests and has no notion of "low", and a caller
+ * that needs an address cannot use an allocator that only understands sizes.
+ * Low memory is a handful of pages and this runs once at boot, so a linear
+ * scan is the whole implementation.
+ *
+ * Returns 0 when nothing below `limit` is free — which a caller must handle,
+ * because on some machines that is simply the truth.
+ */
+uint64_t pmm_alloc_page_below(uint64_t limit) {
+    uint64_t result = 0;
+    uint64_t saved  = irq_spinlock_lock(&pmm_lock);
+
+    uint64_t max_idx = limit / PMM_PAGE_SIZE;
+    if (max_idx > PMM_MAX_PAGES) max_idx = PMM_MAX_PAGES;
+
+    for (uint64_t idx = 1; idx < max_idx; idx++) {   /* page 0 is never free */
+        if (bitmap_test(idx)) continue;
+        bitmap_set(idx);
+        used_pages_count++;
+        result = idx * PMM_PAGE_SIZE;
+        break;
+    }
+
+    irq_spinlock_unlock(&pmm_lock, saved);
+    return result;
+}
+
 uint64_t pmm_alloc_page(void) {
     uint64_t result = 0;
     uint64_t saved  = irq_spinlock_lock(&pmm_lock);

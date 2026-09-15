@@ -2242,12 +2242,41 @@ hang the machine.  Zero is the evidence the skip works.
 The cross-CPU behaviour is **step 3's to test**, when there is a second CPU to
 test it with.
 
-**Step 3 — discover and start the APs.**  ACPI MADT to enumerate them, a
-real-mode trampoline, INIT-SIPI-SIPI (the LAPIC driver needs delivery modes it
-does not have), then the four steps already written in `gdt.c`.  **The APs end
-this step parked in idle, scheduling nothing.**  That is deliberate: "N cores
-are up" is a marker that can fail on its own, separately from anything about
-dispatch.
+**Step 3 — discover and start the APs.**  ✅ **DONE.**  Four processors come
+up on a four-CPU machine and the full suite passes; one CPU is unchanged.
+
+The chain: the bootloader forwards the ACPI RSDP out of the EFI configuration
+table (BootInfo 2 → 3), because that table stops existing at ExitBootServices
+and nobody can ask afterwards.  The kernel walks RSDP → XSDT → MADT, reads
+processor entries, and stops — every other ACPI table describes something that
+is a ring-3 concern here.  Then a real-mode trampoline, INIT-SIPI-SIPI, and the
+four steps `gdt.c` had written down and never executed.
+
+**The APs park with interrupts off, scheduling nothing**, which is the
+checkpoint rather than an unfinished implementation: "N processors are up" can
+fail entirely on its own, and keeping it separate from "N processors are
+running threads" means a failure in either is legible.
+
+**Gated**: the smoke script takes `IRIS_QEMU_SMP`, checks the MADT count
+against it, and checks that every processor actually ARRIVED — a processor that
+does not start is reported and left alone rather than hung on, so without the
+second gate a machine quietly running on half its cores looks healthy.
+
+**What bring-up cost, recorded because the next architecture will cost it
+again.**  Four bugs, none of which produced any output at all:
+
+| Symptom | Cause |
+|---|---|
+| Boot hangs, no output | The trampoline page was CHOSEN from the memory map rather than CLAIMED from the PMM — which initialises from that same map, so the page was already somebody's.  The copy corrupted live memory |
+| APs execute a descriptor table | The trampoline's GDT was written at offset 0x20 — inside its own real-mode entry code |
+| Reaches protected mode, dies at `mov cr0` | Physical 0..2 MiB is mapped **NX**, and the instruction after enabling paging fetches from exactly that page |
+| Reaches 64-bit, faults entering C | The AP never set **EFER.NXE**.  The BSP did, so the kernel's tables have bit 63 set on every non-executable mapping — and with NXE clear that bit is RESERVED, so the first touch of its own stack is a reserved-bit fault |
+
+Every one was found with `AP_TRAMPOLINE_TRACE`, which writes a stage byte
+straight to COM1.  The in-memory progress bytes the BSP reads on failure were
+useless for all four, because a faulting AP took the machine down before the
+BSP could read them.  The switch stays, off, with the two signatures in its
+comment.
 
 **Step 4 — let the APs schedule.**  Decide the tick: per-CPU LAPIC timers, or
 keep the PIT as the single source and IPI the others.  Threads distribute over

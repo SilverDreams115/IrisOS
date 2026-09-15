@@ -14,6 +14,10 @@ void     pmm_init(struct iris_boot_info *boot_info);
 void     pmm_buddy_setup(void);
 
 uint64_t pmm_alloc_page(void);
+/* A page below `limit`, for callers whose constraint is the ADDRESS: the AP
+ * trampoline must be in the first megabyte because a STARTUP IPI's vector is a
+ * page number there.  Returns 0 if nothing below the limit is free. */
+uint64_t pmm_alloc_page_below(uint64_t limit);
 uint64_t pmm_alloc_pages(uint32_t n); /* allocates 2^ceil_log2(n) contiguous pages */
 
 /* Allocate the largest available buddy block.
