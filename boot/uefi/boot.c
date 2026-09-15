@@ -273,6 +273,40 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     BootInfo.magic            = IRIS_BOOTINFO_MAGIC;
     BootInfo.version          = IRIS_BOOTINFO_VERSION;
     BootInfo.mmap_entry_count = 0;
+    BootInfo.acpi_rsdp        = 0;
+
+    /*
+     * The ACPI RSDP, out of the EFI configuration table.
+     *
+     * It has to happen HERE rather than in the kernel: the configuration
+     * table is a boot-services structure, and after ExitBootServices nobody
+     * can ask.  Scanning low memory for the "RSD PTR " signature is the
+     * pre-UEFI way and it is a guess; the firmware already knows the answer
+     * and is standing right here holding it.
+     *
+     * ACPI 2.0's GUID is preferred over 1.0's because only the 2.0 RSDP has
+     * the XSDT pointer, and a machine with more than a handful of tables may
+     * describe them only there.  Both are recorded if both are present — the
+     * later loop keeps the 2.0 one, which is what the reversed comparison
+     * order below is for.
+     */
+    {
+        EFI_GUID Acpi10 = ACPI_TABLE_GUID;
+        EFI_GUID Acpi20 = ACPI_20_TABLE_GUID;
+        UINTN    i;
+        for (i = 0; i < SystemTable->NumberOfTableEntries; i++) {
+            EFI_GUID *g = &SystemTable->ConfigurationTable[i].VendorGuid;
+            if (CompareGuid(g, &Acpi20) == 0) {
+                BootInfo.acpi_rsdp =
+                    (UINT64)(UINTN)SystemTable->ConfigurationTable[i].VendorTable;
+                break;                       /* 2.0 wins; stop looking */
+            }
+            if (CompareGuid(g, &Acpi10) == 0 && BootInfo.acpi_rsdp == 0) {
+                BootInfo.acpi_rsdp =
+                    (UINT64)(UINTN)SystemTable->ConfigurationTable[i].VendorTable;
+            }
+        }
+    }
 
     Status = load_file_into_memory(ImageHandle, SystemTable,
                                    IRIS_KERNEL_PATH, &KernelBuffer, &KernelSize);

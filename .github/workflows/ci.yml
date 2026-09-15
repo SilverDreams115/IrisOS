@@ -126,6 +126,15 @@ jobs:
       - name: Run selftest-enabled headless runtime smoke
         run: IRIS_QEMU_TIMEOUT_SECS=60 make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests
 
+      # A four-CPU machine using one of them.  Two things are being checked and
+      # only one is obvious: that the MADT walk finds four (the gate inside the
+      # script), and that a kernel which enumerates processors it never starts
+      # still boots and passes its whole suite.  Getting the second wrong is
+      # quiet — the kernel would run perfectly well believing the machine has
+      # one CPU (SMP roadmap 9.3 step 3).
+      - name: Runtime smoke on a 4-CPU machine (enumeration only)
+        run: IRIS_QEMU_TIMEOUT_SECS=60 IRIS_QEMU_SMP=4 make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests
+
       - name: Upload selftest runtime serial log
         if: always()
         uses: actions/upload-artifact@v4

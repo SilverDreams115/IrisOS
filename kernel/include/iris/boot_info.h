@@ -70,7 +70,7 @@
 #define BOOT_CPTR_UNTYPED_END    255u   /* last boot KUntyped CPtr (root CNode has 256 slots) */
 
 #define IRIS_BOOTINFO_MAGIC   0x49524953424F4F54ULL
-#define IRIS_BOOTINFO_VERSION 2ULL
+#define IRIS_BOOTINFO_VERSION 3ULL
 
 #define IRIS_MMAP_MAX_ENTRIES 256
 
@@ -103,6 +103,19 @@ struct iris_boot_info {
     uint64_t magic;
     uint64_t version;
     struct iris_framebuffer_info framebuffer;
+    /*
+     * v3 (SMP roadmap §9.3 step 3): the physical address of the ACPI RSDP, or
+     * 0 when firmware published none.
+     *
+     * The kernel needs it for exactly one thing: the MADT, which is the only
+     * description of how many CPUs this machine has and what their LAPIC ids
+     * are.  Nothing else in the kernel reads ACPI, and nothing else should —
+     * power management, thermal, PCI routing are all ring-3 concerns reached
+     * through capabilities, and the kernel having a table parser is how that
+     * stops being true.  This is a pointer the FIRMWARE already computed,
+     * forwarded because ExitBootServices is the last moment anyone can ask.
+     */
+    uint64_t acpi_rsdp;
     uint64_t mmap_entry_count;
     struct iris_mmap_entry mmap[IRIS_MMAP_MAX_ENTRIES];
 };

@@ -13,6 +13,7 @@
 #include <iris/syscall.h>
 #include <iris/fb_info.h>
 #include <iris/irq_routing.h>
+#include <iris/acpi.h>
 #include <iris/tlb.h>
 #include <iris/nc/kbootcap.h>
 #include <iris/root_bootinfo.h>
@@ -157,6 +158,19 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
 
     klog_write("[IRIS][IRQ] initializing routing table...\n");
     irq_routing_init();
+
+    /*
+     * How many CPUs does this machine have?  (SMP roadmap §9.3 step 3.)
+     *
+     * Asked here, once, and answered from the MADT — the only description of
+     * the machine's processors, and reachable only through an RSDP the
+     * firmware handed over before ExitBootServices.  Nothing is STARTED by
+     * this: the count and the LAPIC ids are recorded, and bringing an
+     * application processor up is the next step.  A machine that answers
+     * "one", or does not answer, is a machine IRIS runs on exactly as it did
+     * before this call existed.
+     */
+    (void)acpi_parse_madt(saved_boot_info.acpi_rsdp);
 
     /* Cross-CPU TLB invalidation (SMP roadmap §9.3 step 2).  Its lock is the
      * only state; the mechanism itself does nothing until a second CPU can be

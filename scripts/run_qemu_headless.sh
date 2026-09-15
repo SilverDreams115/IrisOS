@@ -52,6 +52,7 @@ set +e
 timeout "${TIMEOUT_SECS}s" qemu-system-x86_64 \
   -machine q35 \
   -cpu max \
+  -smp "${IRIS_QEMU_SMP:-1}" \
   -m 512M \
   -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
   -drive if=pflash,format=raw,file="$PROJECT_ROOT/build/OVMF_VARS.headless.fd" \
@@ -67,6 +68,17 @@ set -e
 
 if ! grep -Fq "[IRIS][SCHED] running" "$LOG_FILE"; then
   echo "[headless] missing scheduler running marker"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+# The MADT walk must find exactly the processors QEMU was told to create.
+# Getting this wrong is quiet: the kernel runs perfectly well believing a
+# four-CPU machine has one, and would simply never start the other three.
+EXPECT_CPUS="${IRIS_QEMU_SMP:-1}"
+if ! grep -Fq "[IRIS][ACPI] processors: ${EXPECT_CPUS}" "$LOG_FILE"; then
+  echo "[headless] ACPI reported the wrong processor count (wanted ${EXPECT_CPUS}):"
+  grep -F "[IRIS][ACPI]" "$LOG_FILE" | sed 's/^/           /'
   cat "$LOG_FILE"
   exit 1
 fi
