@@ -71,7 +71,7 @@ against seL4 turned up, including one A9 defect it fixed.
 | 12-pol — mechanism, not policy (P2) | ✅ CLOSED — the kernel futex, the notification waiter ceiling, the default CSpace size and the THREAD ceiling are gone; what is left is classified as mechanism with a reason each (A-19) |
 | 11-life — object lifetime (D-7) | ✅ SEMANTICS CLOSED — an object exists exactly while a capability names it, measured for every type (T322), over generated MDB shapes (T323) and through a CSpace cycle (T321).  The MECHANISM stays a refcount, registered as a permanent divergence; the one disagreement it produced (a donated scheduling context released twice) is fixed and T324 reads every pool slot each run to catch the next |
 | 13-form — the four FORM divergences (A-20's audit) | ✅ 3 of 4 CLOSED, the fourth decided.  **A-21** address-space identity is `ASIDControl`/`ASIDPool`; **A-22** a fault is an IPC message on an endpoint answered by a reply capability; **A-24** the kernel cannot block a thread on time — waiting is a ring-3 service — with **A-23** (`seL4_TCB_BindNotification`) as its enabler and **A-25** (`CancelBadgedSends`) closing the audit's last item.  The fourth, the ABI SHAPE, is a permanent deliberate divergence (charter §4) |
-| 9 — SMP | 🔶 **4 of 5 steps done.**  §9.1 hierarchy and §9.2 catalog written and enforced (`make check-locks`); step 1 (the one-core kernel made SMP-correct) ✅, step 2 (TLB shootdown) ✅, step 3 (APs discovered and started) ✅, step 4 (they schedule — four processors dispatch threads, `online=4 dispatching=4`, full suite green on `-smp 1` and `-smp 4`) ✅.  Remaining: step 5, the adversarial phase |
+| 9 — SMP | ✅ **All 5 steps done.**  §9.1 hierarchy and §9.2 catalog written and enforced (`make check-locks`); step 1 (the one-core kernel made SMP-correct), step 2 (TLB shootdown), step 3 (APs discovered and started), step 4 (they schedule — `online=4 dispatching=4`), step 5 (the adversarial phase — four tests aiming four cores at one object, which found four real defects: a rollback that freed another core's memory, a release-then-use, a teardown gate that was not atomic, and a dispatch that overwrote a Suspend).  Full suite green on `-smp 1` and `-smp 4`.  What remains is NOT mechanism: the model-based fuzzer is not yet aimed at N cores, and §9.4's limit stands — TCG interleaves, it does not reorder |
 | 10 — General-purpose platform | pending |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
@@ -2348,9 +2348,78 @@ is online has dispatched a thread, and the tick broadcast is still advancing.
 `online=4 dispatching=4` is what step 4 means; step 3 could have said
 `online=4 dispatching=1`.
 
-**Step 5 — the adversarial phase.**  Concurrent syscalls from several cores
-against the same objects; the model-based fuzzer extended to N cores; the
-lifecycle and revocation suites run cross-core.
+**Step 5 — the adversarial phase.**  ✅ **DONE.**  Four tests that AIM four
+processors at one object and check something only a properly serialised kernel
+can satisfy.  **They found four defects, all of them real, none of them in the
+code written for SMP.**
+
+The distinction the step exists for: after step 4 the whole suite passed on
+four processors, and that is a weaker statement than it sounds.  Its threads
+happened to be spread across cores, so it exercised whatever interleavings fell
+out — never the ones it did not happen to produce.  These do not merely RUN on
+several processors; each is pointed at one piece of machinery.
+
+| Test | Aimed at | Reports |
+|---|---|---|
+| **T347** | the reply object and the endpoint queue: four callers on four cores calling one server, each requiring ITS OWN answer.  A reply delivered to the wrong caller is the classic multiprocessor IPC defect and is invisible to a test with one client | `cores=4 attempts≈1400 won=1400` |
+| **T348** | the derivation tree: four cores minting and deleting from one capability while a fifth revokes it underneath them | `cores=4 attempts≈250000` |
+| **T349** | the retype sequence: four cores retyping into the SAME slot, where exactly one may win and the losers must lose cleanly.  §9.2 re-derived that path's atomicity and found the code right for a different reason than its comment gave; this runs it | `cores=4 attempts≈550000 won≈400` |
+| **T350** | step 4's death machinery: four cores killing the same four threads, so every thread is killed four times and one of those kills races the thread's own core | `cores=4 attempts≈15000` |
+
+**What they found.**
+
+| Defect | What it was |
+|---|---|
+| **A rollback that freed another core's memory** | RETYPE2 recorded its carve window with two separate reads of `ut->used`, one on each side of the allocation.  On one processor those bracket exactly this caller's blocks; on four they bracket whatever else was carved in between, and the failure path un-bumped the whole window — handing a live block back to the allocator while another core's object sat in it.  Two cores then built objects in one block, the first destroy zero-filled it, and the second release read a header of zeroes.  **The window is reported by the allocator now**, under the hold that reserved it: only that code can answer the question |
+| **Release, then use** | `sys_tcb_exit` dropped the resolve's reference on the line ABOVE `task_kill_external(target)` and then dereferenced the pointer.  Safe on one processor by an argument nobody wrote down — nothing else was running — and on four the other core's kill completes the teardown in that window |
+| **A teardown gate that was not a gate** | `task->terminal` was a plain byte, set near the END of teardown and tested by an unlocked read at the top.  Four cores calling Exit on one thread all passed that test, so all four tore the same thread down: the registry slot, the CSpace, the address space and the scheduling context each released four times.  It is `_Atomic` and claimed with an **exchange** now, which makes "am I the one" and "say so" a single act |
+| **A dispatch that overwrote a Suspend** | `Suspend` takes a thread out of the run queue — but a thread ALREADY DEQUEUED cannot be taken out of a queue it is no longer in.  Between the dequeue and the commit it belongs to no queue and to no processor, and a `Suspend` landing there set SUSPENDED on a thread the dispatcher then marked RUNNING, clearing `need_resched` on the way: the suspend was simply lost and the caller was told its thread had stopped.  The dispatcher re-checks after the `on_cpu` hand-over now and drops a SUSPENDED choice.  **SUSPENDED and nothing else**, which cost a wrong turn worth recording: the first version dropped anything that was not READY, on the reasoning that a queued thread is a runnable thread.  That is not true of this kernel — a thread is put in a queue and its state written by two different pieces of code, so one can legitimately be queued while BLOCKED_REPLY — and dropping a single such thread wedged the whole system.  Found by **T333**, which suspends a thread and then reads its registers, an operation the kernel refuses for a RUNNING one |
+
+Three of the four present identically — `kobject_retain: resurrect from
+refcount 0`, or a refcount underflow, on an object whose `type` field reads 0,
+a type nothing creates.  That is the signature of a header that has already been zero-filled
+by `kuntyped_release_child`, and it says use-after-free without saying whose.
+So the three reference asserts now NAME the object — type, both counters, and
+whether its storage came from an Untyped or the slab — on the panic's own
+channel rather than through `klog`, which is a ring that ring 3 drains and the
+machine halts before anybody asks.  That one line is what turned each of these
+from "something is wrong" into a specific path in an afternoon.
+
+**What step 5 could not do.**  There is no `TCB_SetAffinity`: nothing migrates
+a thread, so a test cannot CHOOSE which processors contend.  It can only read
+where the round robin put them, which `iris_tcb_info.home_cpu` now reports —
+so each test says how many distinct cores its workers actually landed on, and a
+run that was taking turns rather than contending is legible instead of
+indistinguishable.  Adding affinity means deciding when a thread may move,
+which is a scheduling policy and belongs to ring 3; it is a genuine seL4
+invocation IRIS does not have, and it is recorded as that rather than smuggled
+in to make a test more convenient.
+
+**And what it cannot prove**, restated because it is easy to overclaim from a
+green run: §9.4.  QEMU's TCG interleaves and does not reorder.  These find
+LOGIC races — two cores reaching one structure in an order nobody arranged for
+— and they will not find a wrong `memory_order` on a relaxed atomic.  Four
+defects found this way is evidence the method works, not evidence the kernel is
+now free of the other kind.
+
+**And the rest of the suite's waits were converted rather than left to be found
+one at a time.**  Step 4 caught three yield-bounded waits by having them fail
+(T083, T118, T308); twenty-nine more of the same shape —
+`for (i = 0; i < N && !flag; i++) yield;` — were still there, each one a wait
+that had stopped waiting the moment the thread it waits for could be on another
+processor.  They are one `IT_AWAIT(cond, ticks)` each now, bounded in elapsed
+time.  Fixing them after they flake is how the first three were found; it is
+not a method.
+
+**Still open, and named rather than implied**: the model-based fuzzer is not
+extended to N cores.  It RUNS there and passes, and T108 already races two of
+its workers against one endpoint while a third closes it — what it does not do
+is aim its whole operation set at shared objects the way these four tests do.
+That is the next thing this file should say is done.
+
+There is also no `TCB_SetAffinity`, so nothing here CHOOSES which processors
+contend; each test reads where the round robin put its workers
+(`iris_tcb_info.home_cpu`) and reports it.
 
 ### 9.4 — What this stage cannot prove
 

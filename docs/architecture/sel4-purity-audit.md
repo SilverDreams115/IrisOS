@@ -8,7 +8,7 @@ and it found things the layer view could not.
 the measurements the tree takes of itself. Where the answer is a number, the
 number is the tree's, not an estimate.
 
-**Gates**: 313/313 runtime tests — on one processor and on four — 27414 host
+**Gates**: 317/317 runtime tests — on one processor and on four — 27414 host
 assertions, `check_purity` OK with the kernel-memory-reachable closure at 26
 functions and **zero ring-3 exemptions**, and `check_locks` OK over 18 ranked
 locks.
@@ -18,10 +18,11 @@ locks.
 > "absent" lists have shrunk to SMP, IOMMU and formal verification. Details
 > in Part 7.
 >
-> **SINCE THAT PASS — SMP schedules.** Four processors dispatch threads
-> (roadmap §9.3 step 4); the "absent" list is IOMMU and formal verification,
-> with SMP's adversarial phase still open. The rows below that call IRIS
-> single-core are marked where they were wrong.
+> **SINCE THAT PASS — SMP is done.** Four processors dispatch threads and the
+> adversarial phase (§9.3 step 5) has run: four tests aiming four cores at one
+> object, which found four real defects. The "absent" list is IOMMU and formal
+> verification. The rows below that call IRIS single-core are marked where they
+> were wrong.
 
 > **What the second pass changed.** One real defect (charter A9, fixed and
 > regression-tested), one gap in the enforcement itself (the purity gate
@@ -302,7 +303,7 @@ runtime test.
 
 | Missing | State |
 |---|---|
-| **SMP** | ~~absent~~ — **four fifths built** (roadmap §9.3 steps 1–4). The processors are discovered from the MADT, started, and they SCHEDULE: `online=4 dispatching=4`, full suite green on one processor and on four. What is left is step 5, the adversarial phase — the suite RUNS on four cores, it does not yet DRIVE contention, so "it passes" is a statement about the interleavings the suite happens to produce and not about the ones it does not. |
+| **SMP** | ~~absent~~ — **built** (roadmap §9.3, all five steps). The processors are discovered from the MADT, started, and they SCHEDULE: `online=4 dispatching=4`, full suite green on one processor and on four. The adversarial phase found four defects, none of them in the code written for SMP — every one an existing correctness argument with "there is one processor" inside it. What is NOT done is aiming the model-based fuzzer at N cores, and §9.4's limit stands: TCG interleaves, it does not reorder. |
 | **IOMMU / IOSpace** | zero references. A device with DMA is trusted with memory, which is the one place IRIS's isolation is weaker than seL4-on-x86-with-VT-d. Needs PCI enumeration first, which IRIS also does not have. |
 
 The **domain scheduler** was the third item on this list and is now
@@ -536,7 +537,13 @@ If the question is *how close to 100% pure seL4*, the honest decomposition is:
   permanent divergence twice and retired twice, both times because the row had
   priced the work correctly and the gain not at all.
 - **The kernel architecture: complete**, as of D-1.
-- **Invocation coverage: complete.** Every generic seL4 invocation exists.
+- **Invocation coverage: complete for the generic set.** Every generic seL4
+  invocation exists.  One SMP-specific one does not: `seL4_TCB_SetAffinity`.
+  Nothing in IRIS migrates a thread — a kernel that moves threads has to decide
+  WHEN, and "when" is a scheduling policy that belongs to ring 3 — so a
+  processor is chosen once, when a TCB is configured, and reported through
+  `iris_tcb_info.home_cpu`.  Recorded as a gap rather than argued away: seL4
+  has it, and a principal that wants to place its own threads cannot.
 - **Feature coverage: one subsystem short.** IOMMU is what seL4 has and IRIS
   has not built. Domains were the third and are done; SMP was the second and
   now schedules on every processor the machine has, with the adversarial phase

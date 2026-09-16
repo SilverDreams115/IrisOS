@@ -2276,7 +2276,7 @@ acceptable and why a root anywhere else is not.
 **What is left after this**: SMP, IOMMU and formal verification.  None of the
 three is shape IRIS got wrong.
 
-**SMP is four fifths done** (roadmap §9.1–§9.3).  Four processors dispatch
+**SMP is done** (roadmap §9.1–§9.3, all five steps).  Four processors dispatch
 threads on a four-CPU machine and the full suite passes there and on one.  What
 it cost is the entry worth keeping, because the pattern will repeat for the
 IOMMU: **not one of the six kernel defects was in the code written for SMP.**
@@ -2300,8 +2300,46 @@ claim about the CALLING thread.  **T346** pins what step 4 actually delivers —
 `online=N dispatching=N`, which step 3 could have satisfied with
 `online=4 dispatching=1`.
 
-What remains is the adversarial phase (§9.3 step 5): the suite RUNS on four
-processors, it does not yet DRIVE contention.
+**And the adversarial phase found four more** (§9.3 step 5), which is the part
+worth keeping because it changes what "the suite passes on four processors"
+was worth.  It was worth less than it sounded: the suite's threads happened to
+be spread across cores, so it exercised whatever interleavings fell out.  Four
+tests that AIM four processors at one object found, in one afternoon:
+
+- a RETYPE rollback that un-bumped a carve window read with two separate lock
+  holds — on four cores that window covers another core's allocation, so the
+  rollback handed a live block back to the allocator and two cores built
+  objects in one block;
+- a release-then-use: `sys_tcb_exit` dropped the resolve's reference on the
+  line above the call that dereferenced the pointer;
+- a teardown gate that was not a gate: `task->terminal` was a plain byte tested
+  by an unlocked read, so four cores calling Exit on one thread all entered its
+  teardown and released one reference four times;
+- a dispatch that overwrote a `Suspend`: a thread already dequeued is in no
+  queue, so the suspend could not take it out of one, and the dispatcher then
+  marked it RUNNING.  The caller was told its thread had stopped while it went
+  on running — an API that lies, which is the same class as the `Suspend` that
+  did not stall (step 4) one layer down.  **The fix's first version was too
+  broad and is worth recording as such**: it dropped any dispatch choice that
+  was not READY, on the reasoning that a queued thread is a runnable thread.
+  That reasoning is false here — a thread is put in a queue and its state
+  written by two different pieces of code, so one can legitimately be queued
+  while BLOCKED_REPLY — and dropping a single such thread wedged the system.
+  A rule that is true of a kernel in general is not automatically true of
+  THIS kernel.
+
+Three of the four presented identically — a refcount assert on an object whose `type`
+field read 0, a type nothing creates, which is the signature of a header
+already zero-filled by the free.  The asserts NAME the object now, on the
+panic's own channel, because `klog` is a ring that ring 3 drains and the
+machine halts first.  That one line is what turned "something is wrong" into a
+specific path.  The fourth was found by a test that had passed for a year:
+T333 suspends a thread and reads its registers, and the kernel refuses that for
+a RUNNING one.
+
+What remains is not mechanism: the model-based fuzzer is not yet aimed at N
+cores, and §9.4's limit stands — TCG interleaves, it does not reorder, so this
+method finds logic races and not a wrong `memory_order`.
 
 ## Non-regression guard
 

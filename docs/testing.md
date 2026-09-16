@@ -11,7 +11,7 @@ Four gates, and a green tree means all four — on **one processor and on four**
 | Host unit tests | `make test-unit` | 27414 assertions across 28 suites, 0 failed |
 | Purity gate | `make check-purity` | allowlist respected; the kernel-memory-reachable closure is 26 functions and only ever shrinks |
 | Lock-order gate | `make check-locks` | 18 ranked locks, no inversions — it holds SMP roadmap §9.1's hierarchy and follows calls three hops |
-| Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests` | `SUITE PASS 313/313` plus the P3/P41 markers |
+| Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests` | `SUITE PASS 317/317` plus the P3/P41 markers |
 
 ### The core-count dimension
 
@@ -30,12 +30,23 @@ too, and would pass the first two.  The QEMU timeout is multiplied by the core
 count, because TCG emulates four vCPUs at roughly a third of the speed while
 doing strictly more work, and a timeout reads exactly like a hang.
 
-**Tests are waits, and a wait is not a yield count.**  The three shared
-primitives — `it_settle`, `it_quiesce_reaper`, `it_fault_wait_ep` — were all
-bounded in yields, which is a real wait only while every yield is a dispatch
-that hands the CPU to the thread being waited for.  They are bounded in elapsed
-time or on the actual condition now.  A new test that waits by counting its own
-syscalls is a test that will pass on one processor and flake on four.
+**Tests are waits, and a wait is not a yield count.**  On one processor every
+yield is a dispatch, so counting yields and counting other threads' turns are
+the same count.  On four, a hundred yields are a hundred fast syscalls on THIS
+core that can all complete before the core being waited for has taken a single
+timer interrupt.
+
+Everything that waits is bounded in elapsed TIME or on the actual condition:
+
+| Primitive | Waits for |
+|---|---|
+| `it_settle(n)` | `n` scheduler ticks of real time, with the yields kept underneath |
+| `it_quiesce_reaper()` | `deaths_pending` reaching zero, after one tick — the tick being the part yields cannot replace, since a thread that died on another core is not in the reap ring until that core dispatches |
+| `it_fault_wait_ep()` | the fault, with a two-second tail after the fast path; T308's fault is a TIMEOUT and cannot arrive until a server has burned a budget measured in ticks |
+| `IT_AWAIT(cond, ticks)` | any condition another thread has to make true.  It replaced twenty-nine `for (i = 0; i < N && !flag; i++) yield;` loops |
+
+A new test that waits by counting its own syscalls is a test that will pass on
+one processor and flake on four.  Use `IT_AWAIT`.
 
 The suite count moves when a stage retires the mechanism a test was about, or
 adds one.  Stage 7 took it from 276 to 273: T144 and T184 lost their "a process
@@ -140,6 +151,7 @@ names itself rather than showing up as a boot hang:
 
 | Test | Pins |
 |---|---|
+| T347–T350 | SMP roadmap §9.3 step 5, the adversarial phase — four tests that AIM four processors at ONE object rather than merely running on several.  T347: four callers on four cores calling one server, each requiring its own answer, which is how a reply delivered to the wrong caller becomes visible at all.  T348: four cores minting and deleting from one capability while a fifth revokes it.  T349: four cores retyping into the SAME slot, where exactly one may win and the losers must lose cleanly — and the sub-untyped's budget must come all the way back after a RESET, which is the assertion about the ROLLBACK.  T350: four cores killing the same four threads, so one kill always races the thread's own core.  Between them they found four defects — a retype rollback that freed another core's memory, a reference released on the line above the call that used it, a teardown gate that was a plain byte tested unlocked, and a dispatch that overwrote a `Suspend` on a thread already dequeued (that one surfaced in T333, which suspends a thread and then reads its registers).  Each reports how many distinct cores its workers landed on, so a run that was taking turns rather than contending says so |
 | T346 | SMP roadmap §9.3 step 4: the other processors SCHEDULE.  On one processor, exactly one has ever dispatched and no tick was broadcast — that zero is not a formality, since the timer ISR calls the broadcast on every tick and a version that did not check would be firing IPIs into an empty destination mask a hundred times a second.  On more than one: every processor that is ONLINE has dispatched a thread (not "at least two" — a machine that brought four up and schedules on three has a quarter of its cores idle for ever and looks healthy from everywhere else), and the tick broadcast is still ADVANCING across real elapsed time, because a processor that stops being told the time never charges its thread's budget and never runs its slice down |
 | T345 | SMP roadmap §9.3 step 2, and it asks the machine how many processors it has rather than assuming: always, an unmap still issues its LOCAL `invlpg`; on one processor, zero shootdowns, which is the evidence the target scan skips the CALLING CPU — without that skip the first unmap would IPI itself and spin, with interrupts off, for an acknowledgement it cannot deliver; on several, shootdowns have HAPPENED, and reaching the assertion at all is the ack handshake working, since a core that did not answer would have hung the machine rather than failed a comparison |
 | T095, T096 | Stage 4's structural zeros: no handle is live, delivered, or produced by a TOCTOU fallback |

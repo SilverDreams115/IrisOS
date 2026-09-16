@@ -141,7 +141,9 @@ no receive-slot, reply-cap or staged-atomicity adjustment was needed.
   thread being waited for.  They are bounded in elapsed time or on the actual
   condition now.  What is still NOT exercised is deliberate CONTENTION — two
   cores driving the same endpoint at once — which is the adversarial phase,
-  §9.3 step 5.
+  §9.3 step 5, which is now done: T347–T350 aim four processors at one object
+  each and found four defects doing it.  What is still not done is aiming the
+  FUZZER itself that way.
 - svcmgr stress trusts the current "one log line per lookup" behavior (see
   accounting note) — intentional coupling, revisit if svcmgr logging moves.
 

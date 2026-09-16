@@ -32,14 +32,37 @@ and `make check-locks` enforces the hierarchy statically.
 | TLB | shootdown IPIs, targeted at the processors whose `current_task` names the VSpace, spinning for an acknowledgement with no timeout |
 | Proof | **T346**: every processor that is online has dispatched a thread, and the tick broadcast is still advancing.  `online=4 dispatching=4` is the claim; a machine that brought four up and schedules on one would read `online=4 dispatching=1` and look healthy everywhere else |
 
+## The adversarial phase
+
+"The suite passes on four processors" was worth less than it sounded: its
+threads happened to be spread across cores, so it exercised whatever
+interleavings fell out.  Four tests (§9.3 step 5) AIM four processors at one
+object instead — one endpoint with four callers, one capability being minted
+from while it is revoked, one slot being retyped into, one thread being killed
+by four cores at once.
+
+They found four defects, none of them in the code written for SMP: a retype
+rollback that un-bumped a carve window covering another core's allocation, a
+reference released on the line above the call that used the pointer, a teardown
+gate that was a plain byte tested by an unlocked read so four cores entered one
+thread's teardown, and a dispatch that overwrote a `Suspend` on a thread that
+had already been dequeued — the fourth surfacing not in the new tests but in
+T333, which suspends a thread and then reads its registers.
+
 ## What is not done
 
-The adversarial phase — SMP roadmap §9.3 step 5.  The suite RUNS on four
-processors; it does not yet DRIVE contention.  Its threads happen to be spread
-across cores rather than being aimed at the same object at the same time, and
-the model-based fuzzer is not yet extended to N cores.  Until that exists, "the
-full suite passes on four processors" is a real statement about the paths the
-suite happens to interleave and not a statement about the ones it does not.
+The model-based fuzzer is not extended to N cores.  It RUNS there and passes;
+it does not aim several cores at one object the way those four do.
+
+There is no `TCB_SetAffinity`.  Nothing migrates a thread, so a test cannot
+choose which processors contend — it reads where the round robin put them
+(`iris_tcb_info.home_cpu`) and says so.  Adding affinity means deciding when a
+thread may move, which is a scheduling policy and belongs in ring 3.
+
+And §9.4's limit stands: QEMU's TCG interleaves, it does not reorder.  This
+method finds logic races; it will not find a wrong `memory_order` on a relaxed
+atomic.  Four defects found this way is evidence the method works, not
+evidence the kernel is free of the other kind.
 
 Per-core APIC timers are the other open item, and they are a performance
 question rather than a correctness one: they would remove three interrupts per
