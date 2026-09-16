@@ -89,9 +89,12 @@ Stage 1 of the [roadmap](sel4-convergence-roadmap.md).
     FORBIDDEN to run destructive callbacks (kobject_active_release /
     kobject_release) while holding `mdb_lock` — every release happens after
     releasing the lock (CNode destructors re-enter the MDB). The lock does not
-    sleep. This is the S3 strategy (uniprocessor); its per-CNode refinement is
-    a prerequisite of SMP (Stage 9), not of this stage — but correctness no
-    longer depends on "there is no preemption": it depends on the lock.
+    sleep. One global `mdb_lock` for the whole derivation tree is still the
+    strategy, and it holds on four processors — SMP roadmap §9.3 step 4 runs
+    the full suite there.  Splitting it per-CNode is a CONTENTION question, not
+    a correctness one, and the honest time to answer it is when a measurement
+    says the tree is a bottleneck.  Correctness never depended on "there is no
+    preemption"; it depends on the lock.
 18. **Complexity**: copy/mint/install O(1); move O(direct children); delete
     O(direct children) (splice); revoke O(subtree nodes) with O(subtree) lock
     acquisitions (one per victim — short IRQ-off windows); validator

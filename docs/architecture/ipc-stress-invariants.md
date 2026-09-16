@@ -133,9 +133,15 @@ no receive-slot, reply-cap or staged-atomicity adjustment was needed.
 - **Multi-endpoint contention** (many endpoints, interleaved waiters) is
   only exercised pairwise; a table-pressure variant near `FZ_SLOT_LIMIT`
   and near handle-table max would sharpen I17.
-- **SMP**: the whole suite (and the reap-queue reasoning) is single-CPU;
-  every A1.11 test must be revisited when SMP lands (the reap queue has an
-  explicit SMP TODO).
+- **SMP**: the suite runs on four processors as well as one, and the reap-queue
+  reasoning was revisited when it did (SMP roadmap §9.3 step 4).  What it cost
+  was not the kernel's IPC paths but the suite's WAITS: `it_settle`,
+  `it_quiesce_reaper` and `it_fault_wait_ep` were all bounded in yields, which
+  is a real wait only when a yield is a dispatch that hands the CPU to the
+  thread being waited for.  They are bounded in elapsed time or on the actual
+  condition now.  What is still NOT exercised is deliberate CONTENTION — two
+  cores driving the same endpoint at once — which is the adversarial phase,
+  §9.3 step 5.
 - svcmgr stress trusts the current "one log line per lookup" behavior (see
   accounting note) — intentional coupling, revisit if svcmgr logging moves.
 

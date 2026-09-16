@@ -4,20 +4,42 @@ This document defines the minimum testing baseline that IRIS must keep green on 
 
 ## Current test layers
 
-IRIS currently has four practical validation layers, and the numbers below are
-what a green tree looks like today (Stage 7 closed — `KProcess` deleted):
+Four gates, and a green tree means all four — on **one processor and on four**.
 
 | Layer | Command | Green means |
 |---|---|---|
-| Host unit tests | `make test-unit` | 19018 assertions across 27 suites, 0 failed |
-| Purity gate | `make check-purity` | allowlist respected (14 files, 17 permitted `kslab_alloc` occurrences; it only ever shrinks) |
-| Runtime suite | `make smoke-runtime` | healthy boot signature |
-| Runtime + kernel selftests | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests` | `SUITE PASS 280/280` plus the P3/P41 markers |
+| Host unit tests | `make test-unit` | 27414 assertions across 28 suites, 0 failed |
+| Purity gate | `make check-purity` | allowlist respected; the kernel-memory-reachable closure is 26 functions and only ever shrinks |
+| Lock-order gate | `make check-locks` | 18 ranked locks, no inversions — it holds SMP roadmap §9.1's hierarchy and follows calls three hops |
+| Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests` | `SUITE PASS 313/313` plus the P3/P41 markers |
 
-The suite count moves when a stage retires the mechanism a test was about.
-Stage 7 took it from 276 to 273: T144 and T184 lost their "a process capability
-is not a thread" checks because a spawn hands back a thread, and the tests that
-asked a process for its liveness now ask the execution.
+### The core-count dimension
+
+`IRIS_QEMU_SMP=N` runs the same image on N processors, and the runtime suite
+must pass on both 1 and 4:
+
+```
+make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests
+IRIS_QEMU_SMP=4 make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests
+```
+
+On more than one processor the script gates three claims that fail
+independently: the MADT reports N, N actually arrived, and T346's
+`online=N dispatching=N` — a processor that arrived and then halted is online
+too, and would pass the first two.  The QEMU timeout is multiplied by the core
+count, because TCG emulates four vCPUs at roughly a third of the speed while
+doing strictly more work, and a timeout reads exactly like a hang.
+
+**Tests are waits, and a wait is not a yield count.**  The three shared
+primitives — `it_settle`, `it_quiesce_reaper`, `it_fault_wait_ep` — were all
+bounded in yields, which is a real wait only while every yield is a dispatch
+that hands the CPU to the thread being waited for.  They are bounded in elapsed
+time or on the actual condition now.  A new test that waits by counting its own
+syscalls is a test that will pass on one processor and flake on four.
+
+The suite count moves when a stage retires the mechanism a test was about, or
+adds one.  Stage 7 took it from 276 to 273: T144 and T184 lost their "a process
+capability is not a thread" checks because a spawn hands back a thread.
 
 The runtime suite is the gate that matters for capability behaviour: it runs in
 ring 3 as a real service and observes the kernel only through syscalls.
@@ -118,6 +140,8 @@ names itself rather than showing up as a boot hang:
 
 | Test | Pins |
 |---|---|
+| T346 | SMP roadmap §9.3 step 4: the other processors SCHEDULE.  On one processor, exactly one has ever dispatched and no tick was broadcast — that zero is not a formality, since the timer ISR calls the broadcast on every tick and a version that did not check would be firing IPIs into an empty destination mask a hundred times a second.  On more than one: every processor that is ONLINE has dispatched a thread (not "at least two" — a machine that brought four up and schedules on three has a quarter of its cores idle for ever and looks healthy from everywhere else), and the tick broadcast is still ADVANCING across real elapsed time, because a processor that stops being told the time never charges its thread's budget and never runs its slice down |
+| T345 | SMP roadmap §9.3 step 2, and it asks the machine how many processors it has rather than assuming: always, an unmap still issues its LOCAL `invlpg`; on one processor, zero shootdowns, which is the evidence the target scan skips the CALLING CPU — without that skip the first unmap would IPI itself and spin, with interrupts off, for an acknowledgement it cannot deliver; on several, shootdowns have HAPPENED, and reaching the assertion at all is the ack handshake working, since a core that did not answer would have hung the machine rather than failed a comparison |
 | T095, T096 | Stage 4's structural zeros: no handle is live, delivered, or produced by a TOCTOU fallback |
 | T292–T295 | CSpace-native introspection; a CPtr addresses exactly one capability |
 | T296 | Stage 5: one capability, one authority — each boot control capability authorises its own syscall and nothing else |

@@ -68,19 +68,33 @@ slot-allocation scans skip `awaiting_reap` slots.
 
 ## Deferred reap queue
 
-`reap_queue` (size 8, power-of-two ring) holds self-exited tasks awaiting
-off-CPU cleanup.  A dying task enqueues itself once when it context-switches
-away (`scheduler.c`, `old->state == TASK_DEAD`).  `reap_pending_dead_task`
-drains **one** entry per `task_yield` / `scheduler_tick`; if the head is still
-`current_task` it re-enqueues (the task hasn't switched off yet).  On
-single-CPU only one task dies per yield interval, so the queue never nears 8 —
-`reap_queue_hwm` (exposed via SYS_SCHED_INFO) proves this empirically under
-the T114/T118 churn.
+`reap_queue` (a power-of-two ring, sized from `MAX_CPUS` so it can hold one
+dying thread per processor plus the empty slot a ring needs) holds dead threads
+awaiting off-CPU cleanup.  A thread reaches it when its processor next
+dispatches and finds it DEAD; `reap_pending_dead_task` drains **one** entry per
+dispatch, and puts the head back if `task->on_cpu` says a processor is still
+standing on it.
 
-Consequence for tests: a batch of self-exited children releases their
-`KProcess` creation refs only across the next handful of scheduler ticks.
-`it_quiesce_reaper()` (200 yields) drains that backlog before a
-live-process snapshot so the baseline is stable.
+Two paths enqueue now, and neither can tell whether the other already has: the
+core the thread was running on, and the core that KILLED it — which marks the
+thread DEAD from outside and cannot know whether that core's last dispatch has
+already been and gone.  So the enqueue is idempotent (it scans the ring under
+the lock it already holds), and both do it.  Without the second, a thread that
+left its processor between the kill's test and its mark was a death nobody
+finished: marked DEAD, in no run queue, in no ring, never torn down.
+
+`reap_queue_hwm` (via SYS_SCHED_INFO) shows how deep it has ever been and
+`deaths_pending` how deep it is now — the second being the only one a waiter
+can use, and it counts threads marked DEAD that have not reached the ring as
+well as the ring itself.
+
+Consequence for tests: a batch of self-exited children releases its last
+references only across the next handful of dispatches, and on more than one
+processor those dispatches are not this thread's to make.  `it_quiesce_reaper()`
+waits for `deaths_pending` to reach zero, after one real tick — the tick being
+the part yields cannot replace, since a thread that died on another core is not
+even in the ring until that core dispatches.  It used to be 200 yields, which
+was a real wait only while every yield was a dispatch.
 
 ## Cleanup chains
 
@@ -120,7 +134,7 @@ converge without double-free.
 | External kill | everything inline | `task_kill_external` | T113, T114-T117 | none observed |
 | Kill multi-thread proc | per-task kill; last triggers teardown | `task_kill_process` | (indirect) | current-task skip — SYS_PROCESS_KILL forbids suicide |
 | Child respawn | immediate reuse of freed slot | allocator skips `awaiting_reap` | T112, T114 | reuse-before-reap — **closed** |
-| Reap-queue pressure | 1 drain / yield, ring of 8 | `reap_pending_dead_task` | T114, T118 (`reap_queue_hwm`) | single-CPU bound holds |
+| Reap-queue pressure | 1 drain / dispatch, ring sized from `MAX_CPUS`, idempotent enqueue | `reap_pending_dead_task` | T114, T118 (`reap_queue_hwm`), T344 (drops == 0) | bound is one entry per processor, plus one |
 | Watcher notification | one signal per armed watch | `kprocess_emit_exit_watch` | T117 | dup/lost — guarded by `teardown_complete` |
 | EP_RECV waiter death | dequeued, ep IDLE | `kendpoint_cancel_waiter` | T101, T115 | dead waiter — none |
 | EP_SEND waiter death | dequeued, staged cap released | `kendpoint_cancel_waiter` | T115 | source-cap consume — none (A1.10) |
@@ -168,10 +182,11 @@ No new syscall, no layout break.
 - **Multi-threaded process kill** is exercised only indirectly; a test with a
   child that spawns its own threads and is then killed mid-flight would lock
   the per-task teardown ordering explicitly.
-- **Reap-queue saturation** cannot be provoked on single-CPU (one death per
-  yield).  Under SMP the queue, the `awaiting_reap` handshake and the
-  `reap_dead_task_off_cpu` off-CPU assumption all need revisiting — the reap
-  queue already carries an explicit SMP TODO.
+- **Reap-queue saturation** is bounded by construction: the ring holds one
+  entry per processor plus one, the enqueue is idempotent, and T344 pins the
+  refusal counter at zero.  The off-CPU precondition is no longer an assumption
+  about which core is running — `task->on_cpu` is the fact, and the reaper puts
+  a thread back if a processor is still on it.
 - **Thread external-kill**: there is no userland `SYS_THREAD_KILL`; a
   non-current thread only dies with its process.  Caller-death mid-call is
   therefore tested at process granularity (T113), not thread granularity.

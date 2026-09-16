@@ -476,9 +476,12 @@ working:
   unique PCID (1–4094) — the tag belongs to the walk, not to a process — and
   the kernel runs PCID 0, so context switches don't evict another address
   space's TLB entries.
-- **SMP foundation**: per-CPU `iris_cpu_local` (GS-relative), LAPIC
-  detected/software-enabled; PIC + PIT (100 Hz) remain the active interrupt
-  source; AP bringup deferred (scheduling is single-CPU).
+- **SMP**: the processors are discovered from the ACPI MADT, started through a
+  real-mode trampoline, and they SCHEDULE — each on its own run queue, its own
+  kernel stack and its own dispatcher.  The PIT stays the single time source
+  and IPIs the other cores with the tick, so the machine has one clock by
+  construction.  Threads are distributed round-robin at TCB configure and
+  nothing migrates.  Full suite green on one processor and on four.
 - **IRQ delivery**: seL4-style deferred ACK — kernel masks + EOIs, signals a
   `KNotification`, the ring-3 handler reads hardware and calls `SYS_IRQ_ACK`.
 - **Hardening**: `-fstack-protector-strong` with RDTSC-seeded per-service
@@ -642,8 +645,7 @@ and nothing PENDING.
 IRIS is not a general-purpose OS yet — by sequencing, not by ambition: the
 platform work is Stage 10 of the roadmap and lands only on a consolidated
 microkernel (charter §5).  The current tree does not provide a persistent
-disk filesystem, a mutable filesystem or writeback, networking, full SMP / AP
-bringup (foundation present, scheduling is single-CPU), a global page cache,
+disk filesystem, a mutable filesystem or writeback, networking, a global page cache,
 copy-on-write, full ELF demand paging (the pager has the groundwork), a dynamic
 linker, a POSIX layer, or hardware support beyond QEMU x86-64.
 

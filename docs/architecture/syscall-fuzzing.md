@@ -204,9 +204,11 @@ T155  full syscall stress: seeded rounds combining object churn, map/unmap,
 - **TCB/SC family** hostile combinations are covered by the Phase 17 tests
   (T119–T124) rather than re-fuzzed here; a future pass could fold them into
   the T151 stream.
-- **Multi-threaded intra-process races** are out of scope on single-CPU with
-  cooperative-plus-timer scheduling; real concurrency fuzzing belongs to an
-  SMP-groundwork phase.
+- **Multi-threaded intra-process races**: the fuzz now RUNS on four processors
+  (SMP roadmap §9.3 step 4) and passes, but it does not yet DRIVE concurrency —
+  its threads happen to be spread across cores rather than being aimed at the
+  same object at the same time.  Extending it to N cores deliberately is §9.3
+  step 5, the adversarial phase.
 - The fuzz asserts CSpace has no ghost slot indirectly (via object liveness and
   RESET gating); a direct CNode-slot enumerator from ring 3 does not exist by
   design, so ghost-slot detection stays indirect.

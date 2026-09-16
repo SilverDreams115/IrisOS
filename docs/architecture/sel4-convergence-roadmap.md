@@ -71,7 +71,7 @@ against seL4 turned up, including one A9 defect it fixed.
 | 12-pol — mechanism, not policy (P2) | ✅ CLOSED — the kernel futex, the notification waiter ceiling, the default CSpace size and the THREAD ceiling are gone; what is left is classified as mechanism with a reason each (A-19) |
 | 11-life — object lifetime (D-7) | ✅ SEMANTICS CLOSED — an object exists exactly while a capability names it, measured for every type (T322), over generated MDB shapes (T323) and through a CSpace cycle (T321).  The MECHANISM stays a refcount, registered as a permanent divergence; the one disagreement it produced (a donated scheduling context released twice) is fixed and T324 reads every pool slot each run to catch the next |
 | 13-form — the four FORM divergences (A-20's audit) | ✅ 3 of 4 CLOSED, the fourth decided.  **A-21** address-space identity is `ASIDControl`/`ASIDPool`; **A-22** a fault is an IPC message on an endpoint answered by a reply capability; **A-24** the kernel cannot block a thread on time — waiting is a ring-3 service — with **A-23** (`seL4_TCB_BindNotification`) as its enabler and **A-25** (`CancelBadgedSends`) closing the audit's last item.  The fourth, the ABI SHAPE, is a permanent deliberate divergence (charter §4) |
-| 9 — SMP | 🔶 **3 of 5 steps done.**  §9.1 hierarchy and §9.2 catalog written and enforced (`make check-locks`); step 1 (the one-core kernel made SMP-correct) ✅, step 2 (TLB shootdown) ✅, step 3 (APs discovered and started — four come up and the suite passes) ✅.  Remaining: step 4, let them schedule; step 5, the adversarial phase |
+| 9 — SMP | 🔶 **4 of 5 steps done.**  §9.1 hierarchy and §9.2 catalog written and enforced (`make check-locks`); step 1 (the one-core kernel made SMP-correct) ✅, step 2 (TLB shootdown) ✅, step 3 (APs discovered and started) ✅, step 4 (they schedule — four processors dispatch threads, `online=4 dispatching=4`, full suite green on `-smp 1` and `-smp 4`) ✅.  Remaining: step 5, the adversarial phase |
 | 10 — General-purpose platform | pending |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
@@ -2052,12 +2052,16 @@ More than the "pending" label suggests, and it changes the shape of the work:
 | IPI | `lapic_send_ipi` and a reschedule vector wired into the IDT |
 | AP bring-up recipe | Written down in `gdt.c`, four steps, never executed |
 
-| Absent | Consequence |
-|---|---|
-| AP startup | No MADT parse, no trampoline, no INIT-SIPI-SIPI.  `lapic_send_ipi` does FIXED delivery only |
-| TLB shootdown | `paging.c` says so in as many words.  An unmap is one `invlpg` on the CPU that ran it |
-| Per-CPU timer | The tick is the PIT: one global source, one CPU |
-| A lock on `sched_thread_list` | There is none, and it is walked twice per idle |
+This table is what §9.0 found when the stage opened.  Every row but the last is
+now closed; it is kept in the shape it was written because the point of §9.0 is
+what the stage STARTED from.
+
+| Absent, when the stage opened | Consequence, then | Now |
+|---|---|---|
+| AP startup | No MADT parse, no trampoline, no INIT-SIPI-SIPI.  `lapic_send_ipi` does FIXED delivery only | step 3 |
+| TLB shootdown | `paging.c` says so in as many words.  An unmap is one `invlpg` on the CPU that ran it | step 2 |
+| Per-CPU timer | The tick is the PIT: one global source, one CPU | **still the PIT, on purpose** — step 4 split the tick instead and IPIs the other cores, so the machine keeps ONE clock.  Per-core APIC timers need four calibrations of a quantity MCS deadlines are counted in |
+| A lock on `sched_thread_list` | There is none, and it is walked twice per idle | step 1 |
 
 ### 9.1 — The lock hierarchy
 
@@ -2227,10 +2231,13 @@ paths pass NULL, because a VSpace dies when its last capability goes and a
 running thread holds one through its TCB) and `PageTable_Unmap`, where an
 interior entry is exactly what a paging-structure cache holds.
 
-**The caveat, stated rather than implied**: there is one CPU, so the target set
-is always empty and the cross-CPU path has never executed.  **T345** pins what
-CAN be checked — that an unmap still issues its local `invlpg`, and that zero
-IPIs are sent.  The second is not a formality: the target scan skips the
+**The caveat as it stood when step 2 closed**: there was one CPU, so the target
+set was always empty and the cross-CPU path had never executed.  **Step 4 ran
+it** — with threads spread across four processors the shootdown fires, and
+T345 now asks the machine how many processors it has and checks the right thing
+for the answer.  What T345 pinned then, and still pins on one processor, is
+that an unmap still issues its local `invlpg` and that zero IPIs are sent.  The
+second is not a formality: the target scan skips the
 CALLING CPU, and without that skip a shootdown would IPI itself and spin for an
 acknowledgement it cannot deliver, with interrupts off.  The first unmap would
 hang the machine.  Zero is the evidence the skip works.
@@ -2274,9 +2281,72 @@ useless for all four, because a faulting AP took the machine down before the
 BSP could read them.  The switch stays, off, with the two signatures in its
 comment.
 
-**Step 4 — let the APs schedule.**  Decide the tick: per-CPU LAPIC timers, or
-keep the PIT as the single source and IPI the others.  Threads distribute over
-`home_cpu`, which already exists and is already read by `rq_enqueue`.
+**Step 4 — let the APs schedule.**  ✅ **DONE.**  Four processors dispatch
+threads on a four-CPU machine and the full suite passes on both `-smp 1` and
+`-smp 4`.
+
+**The tick: the PIT stays the single source and IPIs the others.**  The tick
+split in two along a line that was always there and never had to be drawn —
+what is true of the MACHINE (the clock, the domain schedule, the replenishment
+sweep, the idle fast-forward) and what is true of a CORE (charging the running
+thread's budget, noticing a higher-priority thread, running a time slice down).
+The first has one owner; the second every core does for itself, from a tick IPI
+on vector 0xF2.
+
+Per-core APIC timers are what seL4 uses and what this should eventually be.
+They are not what this is for one reason worth stating: a per-core timer has to
+be CALIBRATED, and four calibrations give four slightly different ideas of how
+long a tick is — while `kschedctx_charge_tick` takes the tick NUMBER and every
+MCS deadline is expressed in it.  One timer and an IPI has one clock by
+construction.  The cost is three interrupts per tick, three hundred a second at
+100 Hz: real, bounded, and the thing to fix when there is a reason to.
+
+**Threads distribute** round-robin over the processors that are actually
+online, chosen once when a TCB is configured.  The root task and the idle
+thread stay on the boot processor.  Nothing MIGRATES — a kernel that moves
+threads has to decide when, and "when" is a policy that belongs to ring 3.
+
+**What making them schedule actually cost.**  Six defects, and not one of them
+was in the SMP code written for step 4.  Every one was an existing correctness
+argument that had "there is one processor" inside it, unstated:
+
+| Symptom | Cause |
+|---|---|
+| Kernel instruction fetch from inside `core_stacks`, no output | Both ring-3 entry paths wrote `IA32_KERNEL_GS_BASE = &cpu_local[0]` as a link-time constant.  A thread started on CPU 2 took its first syscall with CPU 0's per-CPU block, so `%gs:48` handed it CPU 0's kernel stack — two processors on one stack |
+| Threads die with #UD on some cores and not others | An AP leaves INIT with CR0/CR4 at RESET values.  **CR4.OSFXSR** was never set on it, so every SSE instruction a thread executed there was an invalid opcode.  The same register was missing **PCIDE** — and the dispatcher ORs a PCID into CR3's low bits, which without PCIDE are part of the page-table ADDRESS — and **SMEP/SMAP**, absent silently on a machine that reports them on |
+| Nondeterministic corruption under load | "Which thread is running" was one global pointer.  The tick charged CPU 1's budget to CPU 0's thread; a teardown asked "is this thread still on a CPU" about the wrong one |
+| A thread resumed while another core was still releasing it | A thread becomes wakeable the instant it blocks, which is several hundred instructions before the core it was on has finished saving its FPU and flushing its scheduling context.  Closed with `task->on_cpu`: raised by the dispatcher that commits to a thread, lowered by the one that has finished releasing it, and the picker spins on it holding no lock |
+| `Suspend` returned success and the thread kept running; `kill` killed nothing | Changing a thread's state from another core changes nothing about the core executing it.  Both now mark and send a reschedule IPI; the external kill marks DEAD exactly as a self-exit does and the owning core hands it to the reap ring |
+| An unlocked list spliced on every thread create and destroy | `task_list_head`'s circular `task->next` list.  It had two uses — a pointer comparison meaning "the idle thread", and a walk to find a dying thread's predecessor — and no readers.  DELETED rather than locked; the list the kernel uses is `sched_thread_list` |
+
+**And three defects in the TEST SUITE, which are worth separating from the
+kernel's because they are a different kind of mistake.**  Every one was a wait
+that had quietly stopped waiting:
+
+- `it_settle(n)` was `n*16+8` yields.  On one core every yield was a dispatch,
+  so counting yields counted other threads' turns.  On four it is that many
+  fast syscalls on THIS core, all of which can complete before another core
+  takes a single timer interrupt.  It now has a floor of real elapsed TIME.
+- `it_quiesce_reaper` was 200 yields, with "on single-CPU" in its own comment.
+  It now waits on the condition: `deaths_pending` reaching zero, which counts
+  the reap ring's depth PLUS the threads marked DEAD that have not reached it —
+  the second half being the one a killed thread on another core sits in.
+- `it_fault_wait_ep` was 3000 polls.  T308 waits for a TIMEOUT fault, which
+  cannot arrive until a server has burned a budget measured in ticks; a bound
+  expressed in this thread's syscalls cannot express "three ticks from now".
+
+Two more assertions were reading a GLOBAL counter to make a claim about the
+CALLING thread — the syscall-restart gauge (T310, T311) and the shootdown
+gauge (T345).  The first got a per-thread counterpart; the second became a
+test that asks the machine how many processors it has and checks the right
+thing for the answer.
+
+**Gated**: `IRIS_QEMU_SMP=4` runs the full suite, the smoke script scales its
+timeout with the core count (four vCPUs under TCG need it, and a timeout reads
+exactly like a hang), and **T346** pins the claim itself — every processor that
+is online has dispatched a thread, and the tick broadcast is still advancing.
+`online=4 dispatching=4` is what step 4 means; step 3 could have said
+`online=4 dispatching=1`.
 
 **Step 5 — the adversarial phase.**  Concurrent syscalls from several cores
 against the same objects; the model-based fuzzer extended to N cores; the

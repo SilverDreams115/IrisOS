@@ -2276,6 +2276,33 @@ acceptable and why a root anywhere else is not.
 **What is left after this**: SMP, IOMMU and formal verification.  None of the
 three is shape IRIS got wrong.
 
+**SMP is four fifths done** (roadmap §9.1–§9.3).  Four processors dispatch
+threads on a four-CPU machine and the full suite passes there and on one.  What
+it cost is the entry worth keeping, because the pattern will repeat for the
+IOMMU: **not one of the six kernel defects was in the code written for SMP.**
+Every one was an existing correctness argument with "there is one processor"
+inside it, unstated — a per-CPU value stored globally (`current_task`, and the
+syscall path's shadow copies of the kernel stack and the user CR3), a
+link-time constant where a per-CPU read belonged (`&cpu_local[0]` written into
+`KERNEL_GS_BASE` by both ring-3 entry paths), a register the boot processor
+configured and an arriving one never did (CR4: SSE, PCIDE, SMEP, SMAP), an
+ownership handover with no flag to mark it (`task->on_cpu`), an operation that
+returned success without doing anything to the core concerned (`Suspend` and
+the external kill), and a list maintained only in order to be maintained
+(`task_list_head`'s ring — deleted rather than locked).
+
+Three more were in the TEST SUITE, and they are a different kind of mistake
+worth separating: every one was a wait that had quietly stopped waiting.
+`it_settle`, `it_quiesce_reaper` and `it_fault_wait_ep` were bounded in yields,
+which is a real wait only while every yield is a dispatch that hands the CPU to
+the thread being waited for.  Two assertions read a GLOBAL counter to make a
+claim about the CALLING thread.  **T346** pins what step 4 actually delivers —
+`online=N dispatching=N`, which step 3 could have satisfied with
+`online=4 dispatching=1`.
+
+What remains is the adversarial phase (§9.3 step 5): the suite RUNS on four
+processors, it does not yet DRIVE contention.
+
 ## Non-regression guard
 
 - T251 pins the closed manifest of RETYPE2-creatable types, and the boundary

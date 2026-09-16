@@ -1,58 +1,47 @@
-# IRIS — SMP Readiness & Scheduler Indirection (Phase S2)
+# IRIS — the scheduler on more than one processor
 
-State of the scheduler's indirection away from the static task pool and its
-implications for SMP and for moving `struct task` to Untyped.
+This file used to be called SMP *readiness*, and it described a migration
+(Phase S2) that was a prerequisite: getting the scheduler's identity out of a
+static `tasks[TASK_MAX]` array and into pointers, so that a TCB could be an
+object carved from Untyped rather than a slot.  That migration is finished —
+the array is gone, the run queue is pointer-based, the registry that replaced
+the array is itself gone in favour of an intrusive list — and readiness stopped
+being the question when the processors started scheduling.
 
-## Current scheduler model
+**The detailed account is SMP roadmap §9.1–§9.4**
+(`sel4-convergence-roadmap.md`): the lock hierarchy with every edge at
+`file:line`, the catalog of shared mutable state, the five steps and what the
+stage deliberately cannot prove.  This file is the short version of where
+things stand and where to look.
 
-- `struct task tasks[TASK_MAX]` (TASK_MAX=256): a static pool that TODAY backs
-  the real state of each runtime TCB (registers, kstack ptr, scheduler
-  linkage, blocking state). It is neither kslab nor a dynamic allocator, but it
-  IS the execution object's storage → classified ACTIVE_LEGACY / REMOVE in the
-  ledger.
-- Per-CPU run queue (`CpuRunQueue`): O(1), per-priority FIFO lists represented
-  with **indices** (`next[TASK_MAX]`, `queued[TASK_MAX]`, `head/tail[256]`),
-  and `rq_*` derives the index with `(t - tasks)`.
-- `current_task`, the reap queue, the wait queues (EP/notif/reply/fault): all
-  pointers to `struct task` — already pointer indirection, array-agnostic.
+## Where it stands
 
-## Phase S2 increment 2 — indirection achieved
+Four processors dispatch threads on a four-CPU machine; one processor behaves
+exactly as it did before any of it existed.  The full suite is green on both,
+and `make check-locks` enforces the hierarchy statically.
 
-1. **`task_rsp[TASK_MAX]` REMOVED** (inc.2 step 1). The kernel RSP lived in an
-   index-keyed parallel array; it now lives in `struct task.saved_krsp`. The
-   context switch no longer derives `old_idx = old - tasks` or indexes
-   `task_rsp[]`.
-2. **Run queue 100% pointer-based** (inc.2B Block A). `CpuRunQueue.head/tail`
-   move from indices to `struct task *`; the parallel arrays
-   `next[TASK_MAX]`/`queued[TASK_MAX]` are retired and their data live in the
-   TCB (`t->rq_next`, `t->rq_queued`). `rq_enqueue/remove/dequeue` no longer
-   use `(t - tasks)` or `&tasks[idx]`: they operate on TCB pointers. No
-   run-queue identity derives from an array position (I2B.1 closed).
-3. **Canonical SC binding** (`SYS_SC_BIND`) and `SYS_THREAD_SET_SC` frozen.
+| | |
+|---|---|
+| Discovery | ACPI MADT, out of an RSDP the bootloader forwards from the EFI configuration table — that table stops existing at ExitBootServices |
+| Bring-up | a real-mode trampoline in a page CLAIMED from the PMM, INIT-SIPI-SIPI, serialised so two processors never share one stack |
+| What an AP adopts | its own GDT/TSS/GS, the IDT (the table is shared, IDTR is not), its LAPIC, its syscall MSRs, its core stack — and the BSP's **CR0 and CR4**, copied rather than re-derived, because an AP leaves INIT at reset values and would otherwise have no SSE, no PCIDE, no SMEP and no SMAP |
+| The tick | the PIT interrupts one processor, which does the MACHINE's half (clock, domain schedule, replenishment sweep, idle fast-forward) and then IPIs the others, which each do their own CORE's half (budget, preemption, time slice) |
+| Where threads run | round-robin over the processors that are online, chosen once at TCB configure.  Nothing migrates: a kernel that moves threads has to decide when, and "when" is a ring-3 policy |
+| Handing a thread over | `task->on_cpu`, raised by the dispatcher that commits to a thread and lowered by the one that has finished releasing it.  A thread becomes wakeable the instant it blocks — several hundred instructions before its core is done with it |
+| Stopping a remote thread | `Suspend` stalls until the thread is off its processor; a kill marks it and leaves, because a killer is often inside an endpoint and the dispatch it would wait for takes endpoint locks |
+| TLB | shootdown IPIs, targeted at the processors whose `current_task` names the VSpace, spinning for an acknowledgement with no timeout |
+| Proof | **T346**: every processor that is online has dispatched a thread, and the tick broadcast is still advancing.  `online=4 dispatching=4` is the claim; a machine that brought four up and schedules on one would read `online=4 dispatching=1` and look healthy everywhere else |
 
-After Block A, the only uses of `tasks[]` are: (a) the per-tick timeout scans
-(`scheduler_tick`, `sched_handle_idle`) — iteration over the backing, not
-identity; (b) the free-slot search in task allocation; (c) `idle = tasks[0]`.
-None is run-queue identity.
+## What is not done
 
-## What blocks moving `struct task` to Untyped
+The adversarial phase — SMP roadmap §9.3 step 5.  The suite RUNS on four
+processors; it does not yet DRIVE contention.  Its threads happen to be spread
+across cores rather than being aimed at the same object at the same time, and
+the model-based fuzzer is not yet extended to N cores.  Until that exists, "the
+full suite passes on four processors" is a real statement about the paths the
+suite happens to interleave and not a statement about the ones it does not.
 
-It is no longer the run queue. It is the **storage source**: moving
-`struct task`/KTCB to a non-contiguous Untyped region requires (Blocks C/D/H):
-
-1. Turning `tasks[TASK_MAX]` into a **pointer + generation registry**
-   (`{KTcb *tcb; uint32_t generation; bool occupied}`), with no payload;
-   converting the timeout scans to registry iteration.
-2. Sourcing the TCB storage from **Untyped**: trivial for the canonical path
-   (user space retypes the TCB), but the legacy productive path (svc_loader →
-   THREAD_START creates the TCB in the kernel) has no Untyped at hand → it
-   requires migrating that path to user-space construction + TCB_CONFIGURE +
-   a kernel-stack decision. Boot-critical, staged in phases with a boot test
-   at each one.
-3. Idle task: a static bootstrap exception, outside Retype (ledger).
-
-## SMP
-
-`saved_krsp` in the TCB (instead of a global array) is also pro-SMP: each CPU
-saves/restores from its own TCB with no contention on a shared array. The rest
-of the SMP contract (per-CPU run queues, wakeup IPIs) is the earlier one.
+Per-core APIC timers are the other open item, and they are a performance
+question rather than a correctness one: they would remove three interrupts per
+tick, and they cost four independent calibrations of a quantity that MCS
+deadlines are counted in.

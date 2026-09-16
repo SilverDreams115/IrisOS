@@ -58,10 +58,15 @@ U15 a partial failure consumes no memory (exact rollback kuntyped_unbump_exact
     + destroy of unpublished objects; T253)
 ```
 
-Atomicity note: IRIS is today uniprocessor with IRQ-off spinlocks and a
-non-preemptive kernel (no yield inside retype), so the
-validate→reserve→initialize→publish→commit sequence is atomic against any
-other syscall; the locks keep the discipline for a future SMP.
+Atomicity note: the validate→reserve→initialize→publish→commit sequence is
+atomic against any other syscall, and on more than one processor that is the
+LOCKS doing it rather than the core count.  The claim used to read "IRIS is
+uniprocessor and the kernel is non-preemptive, so nothing can interleave"; SMP
+roadmap §9.2 re-derived it and found the code already right for a different
+reason — the occupancy scan is an optimisation, and the authoritative check is
+the exclusive install under the tree's lock, which a lost race rolls back
+exactly.  Interrupts-off excludes a handler on this core; the spinlock excludes
+the other three.  Only the first ever needed a premise about preemption.
 
 ## SYS_UNTYPED_RETYPE2 (111) — canonical path
 

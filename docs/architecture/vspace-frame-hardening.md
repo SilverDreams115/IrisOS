@@ -251,12 +251,19 @@ documented, not hidden.
 - **Current local behavior:** `paging_unmap_in` issues one `invlpg` on the
   current CPU per PTE removal; map installs a fresh PTE (no stale entry, no flush
   needed).  `tlb_invalidate_count` makes local invalidation observable (V21).
-- **Unsafe future assumptions:** no cross-CPU TLB shootdown exists.  On SMP, a
-  PTE removed on one CPU could remain cached in another CPU's TLB — a stale
-  translation.  The mapping list, `mapped_count`, and `invlpg` are all local.
-- **Required before SMP:** a shootdown IPI on unmap / VSpace invalidate for any
-  page reachable from more than one CPU; per-CPU accounting is not required (the
-  counters are already atomic).
+- **Cross-CPU TLB shootdown exists and fires** (SMP roadmap §9.3 step 2,
+  exercised once threads spread across cores in step 4).  The design is smaller
+  than it looks because IRIS loads CR3 on every dispatch with bit 63 clear,
+  which with `CR4.PCIDE` invalidates every entry for the PCID being loaded — so
+  a CPU switching INTO an address space throws away what it cached for it on a
+  write it was making anyway.  That leaves exactly one case needing an IPI: a
+  CPU running a thread in that address space RIGHT NOW.  The shootdown targets
+  the processors whose `current_task` names the VSpace, skips the caller, and
+  spins for an acknowledgement with no timeout — a core that does not answer is
+  wedged, and continuing would mean freeing memory it can still write.
+  `tlb_shootdown_count` makes it observable; T345 pins zero on one processor
+  and non-zero on several.
+- Per-CPU accounting is still not required: the counters are atomic.
 
 ## Remaining gaps
 
@@ -265,7 +272,7 @@ documented, not hidden.
 - Ring 3 cannot introspect raw PTE flags or safely fault on a write/NX
   violation; enforcement is asserted at the authority layer + host paging code.
   A fault-handling endpoint would let a future test observe the `#PF` directly.
-- No SMP TLB shootdown (single-CPU only).
+- The SMP TLB shootdown exists and fires (SMP roadmap §9.3 step 2, exercised by step 4): it targets the processors whose `current_task` names the VSpace, skips the caller, and spins for an acknowledgement with no timeout.  T345 pins zero shootdowns on one processor and a non-zero count on several.
 
 ## Validation
 

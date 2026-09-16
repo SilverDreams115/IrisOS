@@ -260,36 +260,50 @@ TASK-live and PROCESS-live baselines.
 
 ---
 
-## Single-core assumptions and SMP-readiness
+## The scheduler on more than one processor
 
-The scheduler is correct for the BSP and structured for SMP (per-CPU run
-queues, `home_cpu`, `cpu_local`, IPI hooks in `task_wakeup`) but **runs on one
-CPU today**.  A future SMP port MUST revisit:
+IRIS schedules on every processor the machine has (SMP roadmap §9.3 step 4).
+Four processors dispatch threads on a four-CPU machine; one processor behaves
+exactly as it did before any of this existed.  The table below is what each
+line of this section USED to say — "required before SMP" — and what it is now,
+kept in that shape because the interesting part is which of the predictions
+survived contact.
 
-| Area | Current single-core assumption | Required before SMP |
-|------|-------------------------------|---------------------|
-| `current_task` | one global + `cpu_local[0].current_task` kept in sync | per-CPU current; no global reads on the hot path |
-| Run queue | one wired queue (`cpu_local[0].rq`); `rq_dequeue_best` uses `cpu_self()->rq` | wire every AP's queue; cross-CPU enqueue already locks the *target* queue |
-| Duplicate-enqueue guard (S4) | `queued[]` under the (single) run-queue lock | same guard under the *target* CPU's run-queue lock — the counter makes the guard's firing visible |
-| Deferred reap | one death per yield interval; `reap_queue` (8) never nears full | per-CPU dead lists drained on each CPU's tick; cross-CPU reap via IPI/work-queue |
-| `awaiting_reap` | reaper on the same CPU that ran the dying task | the reaping CPU must own the slot; publish with acquire/release |
-| Endpoint wakeups | `task_wakeup` enqueues then IPIs a non-home CPU (hook present, APs down) | validate the IPI path once APs boot |
-| Timeout scan | runs under CLI on the IRQ-handling CPU | per-CPU timer wheel to avoid cross-CPU wake IPIs |
-| TLB | no cross-CPU shootdown (single address space active) | shootdown IPI on unmap/reap of shared mappings |
-| Lock ordering | `ht->lock → ep->lock`; run-queue lock is a leaf | preserve; the reaper must not hold the run-queue lock across `kprocess_free` |
+| Area | What it was | What it is |
+|------|-------------|------------|
+| `current_task` | one global, with `cpu_local[0].current_task` kept in sync | the global is DELETED.  `task_current()` reads `%gs`.  A global made the tick charge one core's budget to another core's thread |
+| Run queue | one wired queue (`cpu_local[0].rq`) | every processor's queue is built at `task_init`, before any processor exists — a thread can be homed to a core that has not started, and a queue built by the arriving core would drop that wakeup |
+| Duplicate-enqueue guard (S4) | `rq_queued` under the one run-queue lock | unchanged, and it was already right: the guard is taken under the TARGET queue's lock |
+| Deferred reap | one death per yield interval | the ring is deduplicated and its depth is readable.  Two paths hand a thread over now — its own core, and the core that killed it — because neither can tell whether the other already has |
+| `awaiting_reap` | the reaper runs on the CPU that ran the dying task | any core reaps; `task->on_cpu` is what says whether a core is still standing on the thread, and the reaper puts a thread back if one is |
+| Endpoint wakeups | `task_wakeup` enqueues then IPIs a non-home CPU (hook present, APs down) | exercised.  Every cross-CPU reschedule goes through `smp_send_reschedule`, which counts them, so a claim about them can be tested |
+| Timeout scan | runs under CLI on the IRQ-handling CPU | still does.  The tick split in two: the machine's half (clock, domains, replenishment sweep) on the processor that owns the PIT, each core's half (budget, preemption, time slice) everywhere, via a tick IPI |
+| TLB | no cross-CPU shootdown | the shootdown targets the processors whose `current_task` names the VSpace, and on four cores it fires |
+| Suspend / kill of a remote thread | not considered | `Suspend` STALLS until the thread is off its processor — an answer rather than a promise.  A kill marks and leaves, because a killer is often already inside an endpoint and the dispatch it would wait for takes endpoint locks |
+| Lock ordering | `ht->lock → ep->lock`; run-queue lock is a leaf | eight ranks, written down in SMP roadmap §9.1 and enforced by `make check-locks` |
 
-`kernel/core/scheduler/scheduler_priv.h` documents the `cpu_local` / GS_BASE
-wiring; `scheduler.c`/`task_lifecycle.c` carry the per-loop SMP notes.  T124 is
-the runtime tripwire that the single-core assumptions still hold.
+`kernel/include/iris/task.h` documents `on_cpu`, which is the flag the whole
+hand-over turns on; `kernel/core/scheduler/scheduler.c` carries the note on why
+the tick has one owner rather than one timer per core.
+
+**T346** is the tripwire: every processor that is online has dispatched a
+thread, and the tick broadcast is still advancing.  It replaces T124's job of
+checking that the single-core assumptions still hold, because they no longer
+do and the question became the opposite one.
 
 ---
 
 ## Remaining scheduler work
 
-- Replace the O(TASK_MAX) `wake_tick` scan with a per-CPU timer wheel.
-- Bring up APs and exercise the cross-CPU `task_wakeup` IPI + per-CPU reap.
+- Replace the O(live threads) `wake_tick` scan with a release queue ordered by
+  release time, which is the shape seL4 uses and removes the walk entirely.
+- Per-core APIC timers instead of the PIT and a tick IPI.  They need
+  calibrating, and four calibrations are four slightly different ideas of how
+  long a tick is while MCS deadlines are counted in ticks — so this waits for a
+  reason better than saving three interrupts per tick.
+- Per-CPU dead lists, which remove a cross-CPU cache line rather than a bug.
 - Optional anti-starvation / priority aging if a fairness policy is adopted.
 - Widen SchedContext accounting (sub-tick budget, bandwidth groups) if real-time
   guarantees are pursued.
 
-None of these is required for correctness on the current single-CPU target.
+None of these is required for correctness.
