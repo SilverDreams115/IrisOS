@@ -2,25 +2,23 @@
 .extern syscall_dispatch
 .extern syscall_save_user_ctx
 
-.section .bss
-.align 16
-syscall_kstack_base:
-    .space 4096
-syscall_kstack_top:
-
-.section .data
 /*
- * Shadow globals — kept in sync by syscall_set_kstack / syscall_set_user_cr3
- * in syscall_dispatch.c for debugging; the live path uses GS-relative reads.
+ * The shadow globals are DELETED (SMP roadmap §9.3 step 4).
+ *
+ * `syscall_kstack_ptr` and `syscall_user_cr3` were RIP-relative copies of two
+ * per-CPU fields, written on every dispatch and described as kept "for
+ * debugging" — the live read path here has been GS-relative for some time.
+ * They were not harmless.  A per-CPU value with a global copy beside it is an
+ * invitation to read the copy, and something did: both ring-3 entry paths in
+ * user_trampoline.S took the user CR3 from the global, so on four processors
+ * the last core to dispatch chose which address space every other core's
+ * thread resumed into.  The fix was to read %gs there; deleting the globals is
+ * what stops it coming back.
+ *
+ * The 4 KiB `syscall_kstack_base` went with them.  It was the kernel's single
+ * syscall stack before the stack belonged to a core (Stage 9-evt step 3), and
+ * since then nothing but the shadow's initialiser has named it.
  */
-.align 8
-.global syscall_kstack_ptr
-syscall_kstack_ptr:
-    .quad syscall_kstack_top
-.align 8
-.global syscall_user_cr3
-syscall_user_cr3:
-    .quad 0
 
 .section .text
 /*

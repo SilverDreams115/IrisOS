@@ -350,25 +350,22 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
     }
 }
 
-/* syscall_kstack_ptr / syscall_user_cr3: RIP-relative shadow globals in
- * syscall_entry.S .data, kept in sync for debug.  The live read path in
- * syscall_entry.S uses GS-relative access (cpu_local.syscall_kstack at %gs:48,
- * cpu_local.syscall_user_cr3 at %gs:56) after SWAPGS at syscall entry.
+/*
+ * Where a syscall lands, and which address space it came from — both per-CPU.
  *
- * SMP note: syscall_set_kstack / syscall_set_user_cr3 are always called from
- * task_yield() which runs post-SWAPGS.  cpu_self() here resolves to the current
- * CPU's block — correct for any CPU once per-CPU GS is initialized.
+ * They also wrote a RIP-relative global copy of each, "for debug".  The copies
+ * are deleted (SMP roadmap §9.3 step 4): a per-CPU value with a global twin is
+ * a value that will eventually be read from the wrong one, and it was — see
+ * the note where the globals used to live, at the top of syscall_entry.S.
+ *
+ * `cpu_self()` is this core's block from any ring-0 context, so both of these
+ * are correct on any processor and always have been.
  */
-extern uint64_t syscall_kstack_ptr;
-extern uint64_t syscall_user_cr3;
-
 void syscall_set_kstack(uint64_t kstack_top) {
-    syscall_kstack_ptr = kstack_top;
     cpu_self()->syscall_kstack = kstack_top;
 }
 
 void syscall_set_user_cr3(uint64_t val) {
-    syscall_user_cr3 = val;
     cpu_self()->syscall_user_cr3 = val;
 }
 

@@ -1191,6 +1191,31 @@ int it_sched_ext4(uint32_t w4[5]) {
     return 1;
 }
 
+/*
+ * The processor tier (SMP roadmap §9.3 step 4).
+ *
+ *   [0] cpus_online       how many processors are running IRIS code
+ *   [1] cpus_dispatching  how many have ever dispatched a thread
+ *   [2] tick_ipis         ticks broadcast to the other processors
+ *   [3] reschedule_ipis   reschedules broadcast likewise
+ *   [4] deaths_pending    deaths that have not finished yet
+ *
+ * This is what lets a test written once say the right thing on a machine with
+ * one processor and on a machine with four, instead of encoding a core count
+ * it cannot know.
+ */
+int it_sched_ext6(uint32_t w6[5]) {
+    uint8_t buf[208];
+    long r = it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 208);
+    if (r != 0) return 0;
+    for (uint32_t i = 0; i < 5u; i++) {
+        uint32_t o = 184u + 4u * i;
+        w6[i] = (uint32_t)buf[o] | ((uint32_t)buf[o + 1u] << 8) |
+                ((uint32_t)buf[o + 2u] << 16) | ((uint32_t)buf[o + 3u] << 24);
+    }
+    return 1;
+}
+
 int it_sched_ext5(uint32_t w5[5]) {
     uint8_t buf[184];
     long r = it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 184);

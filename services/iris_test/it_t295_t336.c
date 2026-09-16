@@ -2494,22 +2494,33 @@ void test_t344(void) {
  * returns to it, or flushes it on the way in, because a CR3 load with bit 63
  * clear invalidates the PCID it loads.
  *
- * With one CPU that set is always empty, so what this test pins is the SHAPE
- * of the mechanism rather than its cross-CPU behaviour, which cannot run yet:
+ * What it checks depends on how many processors the machine has, and that is
+ * read rather than assumed — the same binary runs on one core and on four.
  *
- *  1. `tlb_shootdown_count` is ZERO after the suite has unmapped a great many
- *     pages.  Not a formality — the target scan skips the CALLING CPU, and if
- *     it did not, a shootdown would IPI itself and then spin waiting for an
- *     acknowledgement it cannot deliver, with interrupts off.  The first unmap
- *     would hang the machine.  A zero here is the evidence that skip works;
- *  2. the LOCAL invalidation still happens, so the mechanism was added beside
- *     the existing `invlpg` rather than in place of it.  An unmap bumps the
- *     local counter, which is what makes the pair meaningful: many local
- *     invalidations, zero cross-CPU ones, is exactly the one-core regime.
+ * Always:
+ *  · the LOCAL invalidation still happens, so the shootdown was added BESIDE
+ *    the existing `invlpg` rather than in place of it.  An unmap bumps the
+ *    local counter.
  *
- * The cross-CPU half is SMP roadmap §9.3 step 3's to test, when there is a
- * second CPU to test it with.  Saying that here beats a test name implying
- * coverage that does not exist.
+ * One processor:
+ *  · `tlb_shootdown_count` is ZERO.  Not a formality — the target scan skips
+ *    the CALLING CPU, and if it did not, a shootdown would IPI itself and then
+ *    spin waiting for an acknowledgement it cannot deliver, with interrupts
+ *    off.  The first unmap would hang the machine.  A zero is the evidence
+ *    that the skip works.
+ *
+ * More than one:
+ *  · shootdowns have HAPPENED.  The suite unmaps constantly and threads are
+ *    spread across processors, so by the time this runs another core has been
+ *    inside an address space something was unmapping from.  A zero here would
+ *    mean the target scan never finds anybody, which is the same bug the
+ *    one-core case rules out from the other side — and it would mean the
+ *    kernel is freeing frames other cores still have cached translations for.
+ *  · and reaching this line at all is the acknowledgement handshake working:
+ *    the shootdown spins for an ack with no timeout, so a core that did not
+ *    answer would have hung the machine rather than failed a comparison.
+ *    That is the one assertion here that cannot be written down, only
+ *    survived.
  * Invariants: M2. */
 #define T345_FRAME IT_SCRATCH_0
 #define T345_VA    (0x0000600000000000ULL + 0xC00000ULL)
@@ -2557,15 +2568,104 @@ void test_t345(void) {
         it_log_num(shoot1);
         it_serial_write("\n");
 
-        /* 2. the local invalidation still happens. */
+        /* The local invalidation still happens, on any number of cores. */
         if (local1 <= local0) { ok = 0; why = "an unmap issued no local invlpg"; }
-        /* 1. and nothing was sent anywhere. */
-        if (ok && (shoot0 != 0u || shoot1 != 0u)) {
-            ok = 0; why = "a shootdown IPI was sent with one CPU running";
+
+        uint32_t w6[5];
+        uint32_t cpus = it_sched_ext6(w6) ? w6[IT_S6_ONLINE] : 1u;
+        if (ok && cpus <= 1u) {
+            /* One core: the target set is structurally empty. */
+            if (shoot0 != 0u || shoot1 != 0u) {
+                ok = 0; why = "a shootdown IPI was sent with one CPU running";
+            }
+        } else if (ok) {
+            /* More than one: they must have happened, and the machine is still
+             * here, which is the ack handshake. */
+            if (shoot1 == 0u) {
+                ok = 0; why = "no shootdown was ever sent with several CPUs running";
+            }
         }
     }
 
     it_slot_delete(T345_FRAME);
     it_quiesce_reaper();
     if (ok) it_pass("T345"); else it_fail("T345", why);
+}
+
+/* ── T346: the application processors SCHEDULE, not merely exist ──────────
+ *
+ * SMP roadmap §9.3 step 4.  Step 3 started the other processors and parked
+ * them with interrupts off: they were online, they had a GDT, a TSS and a
+ * per-CPU block, and they ran nothing.  "N processors are up" and "N
+ * processors are running threads" are two claims and the whole point of
+ * separating the steps was that either can fail on its own.
+ *
+ * So this is the second claim, and it is asked of the machine the suite is
+ * actually on rather than of a core count compiled in — the same binary runs
+ * on one processor and on four, and must say something true on both.
+ *
+ * One processor:
+ *   · exactly one has ever dispatched, and it is this one;
+ *   · no tick was ever broadcast, because there is nobody to broadcast to.
+ *     That zero is not a formality: `smp_tick_others` is called from the timer
+ *     ISR on every tick, and a version that did not check would be sending
+ *     IPIs into an empty destination mask a hundred times a second.
+ *
+ * More than one:
+ *   · every processor that is online has dispatched a thread.  Not "at least
+ *     two" — a machine that brought four up and schedules on three is a
+ *     machine with a quarter of its cores idle for ever, which looks exactly
+ *     like a healthy one from everywhere except here;
+ *   · the tick broadcast is ADVANCING, sampled across real elapsed time.  A
+ *     processor that never receives the tick never charges its thread's
+ *     budget and never runs its time slice down — it would run one thread for
+ *     ever without preempting it, and every MCS guarantee on that core would
+ *     be silently absent.  A total that moves is the evidence the other cores
+ *     are being told what time it is;
+ *   · and reschedules have been broadcast too, which is how a thread suspended
+ *     or killed from one processor stops on another.
+ * Invariants: S1, S4. */
+void test_t346(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "the other processors schedule";
+
+    uint32_t a[5], b[5];
+    if (!it_sched_ext6(a)) { it_fail("T346", "processor tier"); return; }
+
+    uint32_t online = a[IT_S6_ONLINE];
+    if (online == 0u) { it_fail("T346", "no processor is online"); return; }
+
+    it_serial_write("[IRIS][TEST] T346 online=");
+    it_log_num(online);
+    it_serial_write(" dispatching=");
+    it_log_num(a[IT_S6_DISPATCHING]);
+    it_serial_write(" tick_ipis=");
+    it_log_num(a[IT_S6_TICK_IPIS]);
+    it_serial_write("\n");
+
+    if (online == 1u) {
+        if (a[IT_S6_DISPATCHING] != 1u) { ok = 0; why = "one processor, and it is not the one dispatching"; }
+        if (ok && a[IT_S6_TICK_IPIS] != 0u) { ok = 0; why = "a tick was broadcast with nobody to broadcast to"; }
+        if (ok && a[IT_S6_RESCHED_IPIS] != 0u) { ok = 0; why = "a reschedule was broadcast likewise"; }
+    } else {
+        if (a[IT_S6_DISPATCHING] != online) { ok = 0; why = "a processor is online and has never dispatched"; }
+
+        /* The tick has to be still arriving, not merely to have arrived once.
+         * Real elapsed time between the samples, because this thread's yields
+         * are not what makes another processor's clock advance. */
+        if (ok) {
+            it_settle(3);
+            if (!it_sched_ext6(b)) { ok = 0; why = "processor tier 2"; }
+            else if (b[IT_S6_TICK_IPIS] <= a[IT_S6_TICK_IPIS]) {
+                ok = 0; why = "the tick stopped reaching the other processors";
+            }
+        }
+        if (ok && b[IT_S6_RESCHED_IPIS] == 0u && a[IT_S6_RESCHED_IPIS] == 0u) {
+            ok = 0; why = "no reschedule was ever broadcast";
+        }
+    }
+
+    it_quiesce_reaper();
+    if (ok) it_pass("T346"); else it_fail("T346", why);
 }

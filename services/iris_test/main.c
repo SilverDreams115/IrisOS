@@ -406,6 +406,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t343();
     test_t344();
     test_t345();
+    test_t346();
     test_t324();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */

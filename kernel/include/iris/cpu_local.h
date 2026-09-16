@@ -55,9 +55,12 @@ struct iris_cpu_local {
      * them GS-relative after SWAPGS at syscall entry (Phase 1 complete):
      *   movq %gs:48, %rsp   → kernel stack top
      *   movq %gs:56, %r8    → user CR3
-     * The RIP-relative globals syscall_kstack_ptr / syscall_user_cr3 in
-     * syscall_entry.S .data are shadow copies kept for debug; the live read
-     * path is GS-relative.
+     * They had RIP-relative shadow copies in syscall_entry.S .data, "kept for
+     * debug".  Those are DELETED (SMP roadmap §9.3 step 4): a per-CPU value
+     * with a global twin is a value that will eventually be read from the
+     * wrong one, and it was — both ring-3 entry paths took the user CR3 from
+     * the global, so on four processors the last core to dispatch chose which
+     * address space every other core's thread resumed into.
      *
      * DO NOT change the offset of these fields without updating syscall_entry.S.
      * syscall_kstack: offset 48; syscall_user_cr3: offset 56.

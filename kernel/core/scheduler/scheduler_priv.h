@@ -105,9 +105,10 @@ extern struct task        *sched_thread_list;   /* head; NULL before init */
  * against the dispatcher's walk. */
 extern irq_spinlock_t      sched_list_lock;
 extern struct task         ktcb_backing[TASK_BOOTSTRAP_MAX]; /* idle + root task */
-extern struct task        *current_task;
-extern struct task        *task_list_head;
-extern struct task        *task_list_tail;
+/* The idle thread — the one object the run queue excludes and the idle
+ * fast-forward skips.  It was the head of a second, circular list of every
+ * thread; that list had no readers and is deleted (SMP roadmap §9.3 step 4). */
+extern struct task        *sched_idle_thread;
 extern _Atomic uint32_t    next_id;
 /* Phase S2: task_rsp[TASK_MAX] retired — saved kernel RSP lives in
  * struct task.saved_krsp (scheduler indirection: no index-keyed parallel
@@ -116,15 +117,19 @@ extern uint64_t            kernel_cr3;
 extern uint8_t             initial_fpu_state[512];
 
 /*
- * set_current_task — update both the global current_task and the per-CPU
- * cpu_local.current_task.  Must only be called from post-SWAPGS ring-0 context
- * (syscall entry or ISR entry) where GS_BASE = &cpu_local[cpu_id].
+ * set_current_task — record which thread THIS processor is running.
  *
- * Boot-time task_init() sets the idle task directly via cpu_local[0] array
- * access (pre-SWAPGS) and does NOT call this helper.
+ * It used to write two places: a global `current_task` and the per-CPU slot.
+ * The global is gone (SMP roadmap §9.3 step 4).  "Which thread is running" is
+ * not a fact about the machine, it is a fact about a processor, and a single
+ * pointer answered it for whichever core had dispatched most recently — so a
+ * tick on CPU 1 charged its budget to CPU 0's thread, and a teardown on CPU 0
+ * asked "is this thread still on a CPU?" about the wrong one.
+ *
+ * Safe from any ring-0 context: gdt_init/gdt_init_ap leave GS_BASE pointing at
+ * this core's block, so cpu_self() needs no SWAPGS.
  */
 static inline void set_current_task(struct task *t) {
-    current_task = t;
     cpu_self()->current_task = t;
 }
 
@@ -152,7 +157,6 @@ extern void context_switch(struct cpu_context *old,
 
 void task_init_fpu_state(struct task *t);
 void task_reset_slot(struct task *t);
-void unlink_task(struct task *t);
 void reap_enqueue_dead(struct task *t);
 void reap_pending_dead_task(void);
 

@@ -175,12 +175,17 @@ void test_t150(void) {
      * clamped to the largest tier (not an overflow) and succeeds into a valid
      * buffer. */
     if (ok) {
-        uint8_t buf[184];
+        /* Sized from the ABI's published clamp, not from the largest tier that
+         * happened to exist when this was written.  The probe below tells the
+         * kernel the buffer is two gigabytes; the kernel writes as much as it
+         * has, and the only thing standing between that and this function's
+         * return address is that this number is the same number. */
+        uint8_t buf[IRIS_SCHED_INFO_MAX_BYTES];
         if (it_invoke1((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size 0"; }
         if (ok && it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 8) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size below base"; }
         if (ok && it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 0x7FFFFFFFL) != 0) { ok = 0; why = "huge size not clamped"; }
         /* A valid call still works — reject paths left nothing wedged. */
-        if (ok && it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 184) != 0) { ok = 0; why = "valid after fuzz"; }
+        if (ok && it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, (long)IRIS_SCHED_INFO_MAX_BYTES) != 0) { ok = 0; why = "valid after fuzz"; }
     }
 
     it_quiesce_reaper();

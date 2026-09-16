@@ -2,6 +2,7 @@
 #define IRIS_TASK_H
 
 #include <stdint.h>
+#include <stdatomic.h>
 #include <iris/ipc_msg.h>
 #include <iris/ipc_stage.h>
 #include <iris/user_ctx.h>
@@ -641,6 +642,29 @@ struct task {
      * Set at creation time; stays constant for the task's lifetime. */
     uint8_t           home_cpu;
 
+    /*
+     * Is a processor still standing on this thread?  (SMP roadmap §9.3 step 4.)
+     *
+     * Not "is it RUNNING" — that is a scheduling state, and a thread stops
+     * being RUNNING at the instant it decides to block, which is several
+     * hundred instructions before the core that was executing it is finished
+     * with it.  In that gap the core still has to save the thread's FPU
+     * registers, flush its scheduling context and read its state; and in that
+     * same gap the thread is already visible to whoever it blocked on, so
+     * another core can satisfy the wait, mark it READY, put it in a run queue
+     * and RESUME IT.  Two processors then run one thread: one of them restores
+     * an FPU image the other is in the middle of writing, and iretqs into a
+     * register set that is being rewritten under it.
+     *
+     * This flag is what a core holds instead.  It is raised by the dispatcher
+     * that commits to the thread and lowered by the dispatcher that has
+     * finished releasing it, and nothing may resume a thread while it is up.
+     * It is the only thing in the kernel that answers "is this thread on a
+     * processor" truthfully; `state` answers a different question, and
+     * `cpu_local[].current_task` answers it one instruction too early.
+     */
+    _Atomic uint8_t   on_cpu;
+
     /* The scheduling DOMAIN this thread runs in (seL4's tcbDomain).  A thread
      * is dispatchable only while its domain holds the CPU, whatever its
      * priority.  Every thread starts in domain 0, so a system that never
@@ -653,7 +677,18 @@ struct task {
      * across task boundaries. Placed last to keep alignment padding minimal. */
     uint8_t           fpu_state[512] __attribute__((aligned(16)));
 
-    struct task      *next;
+    /*
+     * `next` is DELETED (SMP roadmap §9.3 step 4).
+     *
+     * It threaded every thread onto a circular list whose head was
+     * `task_list_head`.  Two things used that list: a pointer comparison
+     * meaning "the idle thread", and a walk to find a dying thread's
+     * predecessor so it could be spliced out.  Nothing read it otherwise — so
+     * it was a list maintained in order to be maintained, and with four
+     * processors it was an unlocked structure being spliced on every thread
+     * create and destroy.  The list the kernel actually uses is
+     * `sched_thread_list`, under `sched_list_lock`, with the links above.
+     */
 };
 
 /* Phase S2 D2: canonical KTCB name for the unified structure. */

@@ -4,7 +4,13 @@
 #include <stdint.h>
 
 void     scheduler_init(void);
+/* The timer ISR, on the processor the PIT interrupts: the machine's half of
+ * the tick, this core's half, and then the other cores are told. */
 void     scheduler_tick(void);
+
+/* The tick IPI, on every other processor: that core's half only.  See the note
+ * above `sched_tick_global` in scheduler.c for the line between them. */
+void     scheduler_tick_remote(void);
 
 /*
  * Diagnostics accessors — cheap, read-only, safe to call from syscall context.
@@ -48,6 +54,10 @@ uint32_t sched_reap_queue_hwm(void);
  *   signal proving cooperative tasks reach the scheduler (T119/T122).
  */
 uint32_t sched_run_queue_hwm(void);
+/* Deaths that have not finished: the reap ring's current depth plus the
+ * threads marked DEAD that have not reached it.  The high-water mark beside it
+ * says how deep the ring has ever been; only this one can be waited on. */
+uint32_t sched_deaths_pending(void);
 uint32_t sched_run_queue_live(void);
 uint32_t sched_duplicate_enqueue_count(void);
 /* Phase S2 Step C — KTCB registry gauges (references, not payload). */

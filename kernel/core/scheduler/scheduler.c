@@ -1,4 +1,5 @@
 #include "scheduler_priv.h"
+#include <iris/smp.h>
 #include <iris/panic.h>
 #include <iris/tss.h>
 #include <iris/paging.h>
@@ -114,8 +115,15 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
      * lose to; with two, one can rewind the other's advance.  The compare and
      * the exchange become one act, and the loop retries against whatever the
      * clock has actually become.
+     *
+     * And it is now done only by the core that owns the timer (§9.3 step 4).
+     * Making the exchange atomic keeps two fast-forwarders from corrupting the
+     * counter; it does not make it RIGHT for three idle processors to drag the
+     * machine's clock forward while a fourth is running a thread whose budget
+     * is measured in it.  Advancing time is the timekeeper's act, exactly as
+     * the tick's own counter is.
      */
-    if (min_wake != UINT64_MAX) {
+    if (min_wake != UINT64_MAX && smp_is_timekeeper()) {
         uint64_t cur = sched_ticks_load();
         while (min_wake > cur &&
                !atomic_compare_exchange_weak_explicit(&scheduler_ticks, &cur,
@@ -189,7 +197,7 @@ __attribute__((noreturn)) void syscall_restart_trampoline(void);
  * is what the idle task used to be for.
  */
 __attribute__((noreturn)) void task_park_restart(void) {
-    struct task *t = current_task;
+    struct task *t = task_current();
     if (t) {
         t->kentry      = syscall_restart_trampoline;
         t->resume_user = TASK_RESUME_KERNEL;
@@ -211,14 +219,14 @@ __attribute__((noreturn)) void task_park_restart(void) {
  *     must re-run from its restart trampoline.  That is a CALL, on the stack
  *     this is already standing on, which is the core's.
  *
- * `outgoing` may be NULL (the dispatcher was entered with no thread to account
- * for); its FPU is saved because the thread left ring 3 with its user's SSE
- * registers live, and losing them would corrupt a computation that merely
- * happened to be interrupted.
+ * `outgoing` is no longer touched here at all.  Its FPU image was saved by the
+ * pick, which is also where this core let go of it — by the time control
+ * reaches this function another processor may already be running it, and a
+ * write here would be a write to somebody else's thread.
  */
 __attribute__((noreturn))
 void sched_resume(struct task *next, struct task *outgoing) {
-    if (outgoing) fpu_save_to(outgoing->fpu_state);
+    (void)outgoing;   /* its FPU was saved by the pick, before it was released */
     fpu_restore_from(next->fpu_state);
 
     switch (next->resume_user) {
@@ -264,6 +272,20 @@ struct task *sched_pick_for_dispatch(struct task *outgoing) {
 
     atomic_fetch_add_explicit(&sched_yield_ctr, 1u, memory_order_relaxed);
 
+    /*
+     * The outgoing thread's FPU, saved HERE and not in `sched_resume`.
+     *
+     * Two reasons, and the second is why it moved.  It has to happen before
+     * this core lets go of the thread (`on_cpu`, below), and a core that finds
+     * nothing to run never calls `sched_resume` at all — so a thread that
+     * parked when the machine had nothing else to do had its SSE registers
+     * saved by nobody.
+     *
+     * `outgoing` may be NULL: the dispatcher was entered with no thread to
+     * account for, which is what an application processor's first pass is.
+     */
+    if (outgoing) fpu_save_to(outgoing->fpu_state);
+
     reap_pending_dead_task();
 
     if (outgoing && outgoing->timeout_pending) {
@@ -281,16 +303,45 @@ struct task *sched_pick_for_dispatch(struct task *outgoing) {
         if (outgoing->sched_ctx) kschedctx_flush_run(outgoing->sched_ctx);
         if (outgoing->state == TASK_RUNNING) {
             outgoing->state = TASK_READY;
-            if (outgoing != task_list_head) rq_enqueue(outgoing);
+            if (outgoing != sched_idle_thread) rq_enqueue(outgoing);
         }
         if (outgoing->state == TASK_DEAD) reap_enqueue_dead(outgoing);
+
+        /*
+         * Let it go — and this is the LAST thing done to it, deliberately.
+         *
+         * Everything above writes the outgoing thread: its FPU image, its
+         * scheduling context, its state, its place in a run queue.  From this
+         * store on, another processor may pick it up and resume it, so
+         * anything added below this line would be a write to a thread somebody
+         * else is running.  See `on_cpu` in task.h for what that costs.
+         */
+        atomic_store_explicit(&outgoing->on_cpu, 0u, memory_order_release);
     }
 
     struct task *chosen = rq_dequeue_best();
     if (!chosen) {
-        sched_handle_idle(task_list_head, &chosen);
+        sched_handle_idle(sched_idle_thread, &chosen);
         if (!chosen) return 0;
     }
+
+    /*
+     * Wait for the core that had it to finish with it.
+     *
+     * A thread reaches a run queue the moment its wait is satisfied, and the
+     * core it was running on may still be several hundred instructions from
+     * being done with it — that gap is exactly what `on_cpu` names.  Almost
+     * always the flag is already clear and this is one load.
+     *
+     * It cannot deadlock, and the reason is that the spin holds NOTHING: the
+     * run-queue lock was released by `rq_dequeue_best` before this line, and
+     * the core being waited for needs no lock this one holds.  It is bounded
+     * by that core's remaining release path, which runs with interrupts off
+     * and does not block.
+     */
+    while (atomic_load_explicit(&chosen->on_cpu, memory_order_acquire))
+        __asm__ volatile ("pause");
+    atomic_store_explicit(&chosen->on_cpu, 1u, memory_order_relaxed);
 
     chosen->state        = TASK_RUNNING;
     chosen->ticks_left   = chosen->time_slice;
@@ -406,20 +457,62 @@ void scheduler_init(void) {
     task_init();
 }
 
-void scheduler_tick(void) {
-    reap_pending_dead_task();
+/*
+ * ── The tick, on a machine with more than one processor (§9.3 step 4) ───────
+ *
+ * It was one function, and it could be: one processor, one timer, one thread
+ * running.  Four processors split it in two along a line that was always
+ * there but never had to be drawn — what is true of the MACHINE and what is
+ * true of a CORE.
+ *
+ * The clock, the domain schedule and the replenishment sweep are facts about
+ * the machine.  Running them on every core would make time pass four times as
+ * fast, advance the domain schedule four times per tick, and have four cores
+ * walk the thread list to wake the same sleeper.  They belong to whoever owns
+ * the timer, and that is the boot processor: IRQ0 comes from the PIT through
+ * the PIC, and the PIC delivers to one core.
+ *
+ * Charging the running thread's budget, noticing a higher-priority thread has
+ * become runnable, and counting down a time slice are facts about a core, and
+ * every core has to do its own — a core whose thread is never charged never
+ * preempts it.
+ *
+ * ── Why the PIT and an IPI, and not a timer per core ────────────────────────
+ *
+ * The alternative is the local APIC timer, one per core, which is what seL4
+ * uses on x86 and what this should eventually be.  It is not what this is, for
+ * one reason worth stating plainly: a per-core timer has to be CALIBRATED, and
+ * four independently calibrated timers give four slightly different ideas of
+ * how long a tick is — while `kschedctx_charge_tick` takes the tick NUMBER as
+ * its argument and MCS deadlines are expressed in it.  One timer and an IPI
+ * has one clock by construction.  The cost is three interrupts per tick that a
+ * local timer would not need, which at 100 Hz is three hundred a second: real,
+ * bounded, and the thing to fix when there is a reason to.
+ */
 
+/*
+ * The half that belongs to the machine.  Called by the processor that owns the
+ * timer, once per tick, and by nobody else.
+ */
+static void sched_tick_global(void) {
     atomic_fetch_add_explicit(&scheduler_ticks, 1u, memory_order_relaxed);
     atomic_fetch_add_explicit(&wall_ticks,       1u, memory_order_relaxed);
 
     /* The domain schedule advances on the same tick that drives preemption,
      * and a domain change forces a reschedule: the outgoing domain's thread
      * must stop running now, not at the end of its own quantum, or the
-     * partition would be a suggestion rather than a boundary. */
-    if (sched_domain_tick() && current_task)
-        current_task->need_resched = 1;
-    if (current_task == task_list_head)
-        cpu_self()->idle_ticks++;
+     * partition would be a suggestion rather than a boundary.
+     *
+     * The reschedule is forced on EVERY core, not on this one: the domain is
+     * machine-wide, so a thread of the outgoing domain running on CPU 2 has to
+     * stop for exactly the same reason this core's does. */
+    if (sched_domain_tick()) {
+        for (uint32_t c = 0; c < MAX_CPUS; c++) {
+            struct task *ct = cpu_local[c].current_task;
+            if (ct) ct->need_resched = 1;
+        }
+        smp_reschedule_others();
+    }
 
     /*
      * O(N) replenishment scan — Phase 1 TODO:
@@ -451,6 +544,22 @@ void scheduler_tick(void) {
         }
     }
     irq_spinlock_unlock(&sched_list_lock, tf);
+}
+
+/*
+ * The half that belongs to a core.  Every processor runs this on every tick —
+ * the one that owns the timer from its own ISR, the others from the tick IPI.
+ *
+ * Everything it touches belongs to this core's thread, so there is no lock:
+ * `need_resched`, `ticks_left` and the scheduling context of a RUNNING thread
+ * are written only by the core running it.  `rq_top_priority` reads this
+ * core's run queue under that queue's own lock.
+ */
+static void sched_tick_local(void) {
+    struct task *current_task = task_current();
+
+    if (current_task == sched_idle_thread)
+        cpu_self()->idle_ticks++;
 
     if (!current_task) return;
 
@@ -501,6 +610,23 @@ void scheduler_tick(void) {
         current_task->ticks_left--;
     if (current_task->ticks_left == 0)
         current_task->need_resched = 1;
+}
+
+/*
+ * What the timer ISR calls on the processor the PIT interrupts.  Both halves,
+ * then the other processors are told the tick happened.
+ */
+void scheduler_tick(void) {
+    reap_pending_dead_task();
+    sched_tick_global();
+    sched_tick_local();
+    smp_tick_others();
+}
+
+/* What the tick IPI calls on every other processor: its own half, and nothing
+ * of the machine's. */
+void scheduler_tick_remote(void) {
+    sched_tick_local();
 }
 
 /* scheduler_add_task / task_create are DELETED: nothing called them.  A kernel

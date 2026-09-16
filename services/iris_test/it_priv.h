@@ -1728,7 +1728,10 @@ struct it_utq_global {
     uint32_t kernel_free_pages;
     /* Stage 9-evt: 1 once the kernel's boot arena is sealed. */
     uint32_t kernel_heap_sealed;
-    uint32_t _pad1;
+    /* SMP roadmap §9.3 step 4: this thread's own restarts.  The global above
+     * counts every core's, which stopped being an answer about the caller the
+     * moment there was more than one core. */
+    uint32_t syscall_restarts_self;
     /* Ledger A-32: calls that still came through the NUMBERED door.  Must be
      * falling while the invocation ABI is adopted, and zero when it closes. */
     uint64_t syscall_numbered_calls;
@@ -2680,6 +2683,12 @@ int it_task_live(uint32_t *out);
 int it_sched_ext3(uint32_t w3[6]);
 int it_sched_ext4(uint32_t w4[5]);
 int it_sched_ext5(uint32_t w5[5]);
+int it_sched_ext6(uint32_t w6[5]);
+#define IT_S6_ONLINE      0u
+#define IT_S6_DISPATCHING 1u
+#define IT_S6_TICK_IPIS   2u
+#define IT_S6_RESCHED_IPIS 3u
+#define IT_S6_DEATHS_PENDING 4u
 int it_setup_self_vspace(void);
 long it_map_fixup(long nr, long a0, long a1, long a2, long a3);
 long it_map_fixup_inv(unsigned long label, long c, long a1, long a2, long a3);
@@ -3016,6 +3025,7 @@ void test_t342(void);
 void test_t343(void);
 void test_t344(void);
 void test_t345(void);
+void test_t346(void);
 void test_t324(void);
 void test_t319(void);
 void test_t296(void);

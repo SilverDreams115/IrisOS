@@ -316,8 +316,50 @@ long it_cs_reduce(long src_cptr, uint32_t rights) {
  *     notification with a reserved bit, then wait normally.  The bit is how a
  *     timeout is told from the event.
  */
+/*
+ * "Let the others run" — and on more than one processor that stopped being
+ * the same thing as "yield a lot" (SMP roadmap §9.3 step 4).
+ *
+ * It was a fixed count of yields, `rounds * 16 + 8`.  On one core that WAS a
+ * wait: every yield handed the CPU to somebody else and did not come back
+ * until they had run, so counting yields and counting other threads' turns
+ * were the same count.  On four cores it is not a wait at all.  The yields
+ * cycle THIS core's run queue at syscall speed while the thread being waited
+ * for sits in another core's queue, and eighty-eight of them can pass before
+ * that core has taken a single timer interrupt.
+ *
+ * Three tests failed exactly this way when threads began to spread across
+ * processors — a helper's counter had not moved (T083), a killed thread had
+ * not been reaped (T118, T119).  None of them was a race in the kernel; each
+ * was a wait that had quietly stopped waiting.
+ *
+ * So a floor of real elapsed TIME goes underneath the yields, one scheduler
+ * tick per round, because a tick is the unit in which another core actually
+ * gets around to its run queue.  The yields stay: they are still how this
+ * thread gives its own core away, and on one processor they are still what
+ * makes the wait short.
+ *
+ * `SYS_CLOCK_GET` and not the timer service: this is called from tests that
+ * have not looked the timer up yet, from tests that are testing the timer, and
+ * from threads with no capability to it.  The iteration cap is there so that a
+ * clock which answers nothing degrades this to exactly what it used to be
+ * rather than hanging the suite.
+ */
 void it_settle(uint32_t rounds) {
-    for (uint32_t i = 0; i < rounds * 16u + 8u; i++) (void)it_sys1(SYS_YIELD, 0);
+    uint32_t yields = rounds * 16u + 8u;
+    long     t0     = it_sys0(SYS_CLOCK_GET);
+    uint64_t want   = (uint64_t)rounds * IRIS_TICK_NS;
+    uint32_t cap    = yields * 64u;
+
+    for (uint32_t i = 0; i < yields; i++) (void)it_sys1(SYS_YIELD, 0);
+    if (t0 <= 0 || want == 0u) return;
+
+    for (uint32_t i = 0; i < cap; i++) {
+        long now = it_sys0(SYS_CLOCK_GET);
+        if (now <= 0) return;                       /* no clock: yields only */
+        if ((uint64_t)(now - t0) >= want) return;
+        (void)it_sys1(SYS_YIELD, 0);
+    }
 }
 
 /*

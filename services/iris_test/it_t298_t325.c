@@ -996,7 +996,23 @@ static void t308_server(void) {
     for (;;) { }
 }
 
+/*
+ * The client waits to be told to go, and that is not politeness.
+ *
+ * The claim is about a client WITH a budget calling a passive server, and the
+ * budget is bound after this thread is created — there is no way round that,
+ * since binding a scheduling context needs a thread to bind it to.  With one
+ * processor the ordering came free: the supervisor held the CPU until it chose
+ * to yield, so the client could not possibly run in between.  With four, this
+ * thread starts on another core the instant it is created and can make its
+ * call before the bind — and a call from a client with NO scheduling context
+ * donates nothing, so the server runs unbudgeted, never overruns, and the
+ * fault this test waits for never comes.
+ */
+static volatile int g_t308_go;
+
 static void t308_client(void) {
+    while (!g_t308_go) { (void)it_sys0(SYS_YIELD); }
     struct iris_msg m;
     iris_msg_zero(&m);
     m.label = 0x8CULL;
@@ -1014,7 +1030,7 @@ void test_t308(void) {
     long rp = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
     long notif = it_ep_create_slot();   /* A-22: the server's timeout endpoint */
     if (ep < 0 || rp < 0 || notif < 0) { it_fail("T308", "objects"); return; }
-    g_t308_ep = ep; g_t308_reply = rp; g_t308_served = 0;
+    g_t308_ep = ep; g_t308_reply = rp; g_t308_served = 0; g_t308_go = 0;
 
     /* The server: started with NO scheduling context. */
     long srv = it_thread_create((uint64_t)(uintptr_t)t308_server,
@@ -1044,6 +1060,9 @@ void test_t308(void) {
     if (sc < 0) { it_fail("T308", "sc"); return; }
     if (ok && it_invoke(sc, INV_SC_CONFIGURE, 3, 4000, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc configure"; }
     if (ok && it_invoke1(sc, INV_SC_BIND, cli) != 0)          { ok = 0; why = "sc bind"; }
+
+    /* Now it has a budget to lend. */
+    g_t308_go = 1;
 
     /*
      * The assertion.  A timeout fault on the SERVER can only happen if the
@@ -1211,7 +1230,10 @@ void test_t310(void) {
         }
     }
     if (ok && !it_utq_g(&g1))             { ok = 0; why = "query"; }
-    if (ok && g1.syscall_restarts != g0.syscall_restarts) {
+    /* THIS THREAD'S restarts, not the machine's.  The global counter answers a
+     * different question once other processors are running threads of their
+     * own, and every claim below is about the syscall this thread just made. */
+    if (ok && g1.syscall_restarts_self != g0.syscall_restarts_self) {
         ok = 0; why = "a wait that could finish took the restart path";
     }
 
@@ -1231,7 +1253,7 @@ void test_t310(void) {
             (bits & 0x4ull) == 0) { ok = 0; why = "blocking wait failed"; }
     }
     if (ok && !it_utq_g(&g2))             { ok = 0; why = "query"; }
-    if (ok && g2.syscall_restarts <= g1.syscall_restarts) {
+    if (ok && g2.syscall_restarts_self <= g1.syscall_restarts_self) {
         ok = 0; why = "blocking wait did not re-execute";
     }
 
@@ -1280,7 +1302,7 @@ void test_t311(void) {
     if (ok && !it_utq_g(&g1)) { ok = 0; why = "query"; }
 
     /* (1) it really gave the CPU up part-way. */
-    if (ok && g1.syscall_restarts <= g0.syscall_restarts) {
+    if (ok && g1.syscall_restarts_self <= g0.syscall_restarts_self) {
         ok = 0; why = "revoke ran to completion without preempting";
     }
     /* (2) and still answered for the whole job, not just the last slice. */

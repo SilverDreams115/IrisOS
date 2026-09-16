@@ -1,9 +1,36 @@
 .global user_entry_trampoline
-.extern syscall_user_cr3
-.extern cpu_local
 
+/*
+ * ── Why both paths below start by reading %gs, and what they used to do ─────
+ *
+ * Each of these hands a thread to ring 3, and each has to leave two things
+ * behind it: the thread's CR3, and IA32_KERNEL_GS_BASE holding the per-CPU
+ * block the next SYSCALL's swapgs will pull back in.
+ *
+ * They used to take both from a fixed place — `syscall_user_cr3(%rip)`, a
+ * global shadow of the per-CPU field, and `leaq cpu_local(%rip)`, which is
+ * cpu_local[0] and no other.  On one processor that is right, and it is right
+ * for the reason that makes it wrong on four: there was only one of each.
+ *
+ * With four cores, a thread started on CPU 2 went to ring 3 with
+ * KERNEL_GS_BASE pointing at CPU 0's block — so its first syscall's swapgs
+ * gave CPU 2 CPU 0's per-CPU data, and `%gs:48` handed it CPU 0's kernel
+ * stack.  Two processors then ran kernel code on the same stack, which
+ * presents as an instruction fetch from inside `core_stacks` and nothing
+ * legible before it.  The CR3 shadow is the same defect one field over:
+ * whichever core dispatched most recently decided which address space every
+ * other core's thread resumed into.
+ *
+ * Both are read GS-relative here, BEFORE `movw %ax, %gs` clears GS_BASE —
+ * after that instruction this core cannot find its own block at all.  The
+ * values ride in r12/r13, which are about to be zeroed anyway and so are the
+ * two registers that cost nothing to borrow.
+ */
 .section .text
 user_entry_trampoline:
+    movq %gs:0,  %r12           /* this core's cpu_local (offset 0: self)   */
+    movq %gs:56, %r13           /* this core's syscall_user_cr3             */
+
     /* preparar segmentos de datos de usuario antes de iretq */
     movw $0x1B, %ax    /* user data selector (GDT[3]) — matches iretq SS */
     movw %ax, %ds
@@ -11,25 +38,22 @@ user_entry_trampoline:
     movw %ax, %fs
     movw %ax, %gs      /* also sets IA32_GS_BASE = 0 (GDT[3].base = 0) */
 
-    /* switch to user CR3 (no-flush PCID) before returning to ring-3; rax is
-     * used as a scratch register and is zeroed by the xorq below */
-    movq syscall_user_cr3(%rip), %rax
-    testq %rax, %rax
+    /* switch to user CR3 (no-flush PCID) before returning to ring-3 */
+    testq %r13, %r13
     jz .Ltramp_no_user_cr3
-    movq %rax, %cr3
+    movq %r13, %cr3
 .Ltramp_no_user_cr3:
 
     /* Restore ring-3 SWAPGS state unconditionally.
      *
-     * Fase 2 ABI: ring-3 must have GS_BASE=0, KGS_BASE=&cpu_local so the next
-     * SYSCALL's SWAPGS yields GS_BASE=&cpu_local for the kernel.
+     * Fase 2 ABI: ring-3 must have GS_BASE=0, KGS_BASE=&cpu_local[this core]
+     * so the next SYSCALL's SWAPGS yields GS_BASE=&cpu_local for the kernel.
      *
      * The movw above sets GS_BASE=0 (GDT[3] base=0).  KGS_BASE could be 0 if
      * the trampoline was entered from syscall context (where SWAPGS at entry
-     * left KGS_BASE=0).  Unconditionally restore KGS_BASE=&cpu_local[0] so the
-     * invariant holds regardless of which context triggered the first task run. */
-    leaq cpu_local(%rip), %rax
-    movq %rax, %rdx
+     * left KGS_BASE=0), so it is written unconditionally. */
+    movq %r12, %rax
+    movq %r12, %rdx
     shrq $32, %rdx
     movl $0xC0000102, %ecx          /* IA32_KERNEL_GS_BASE */
     wrmsr
@@ -61,8 +85,8 @@ user_entry_trampoline:
  *
  * Everything below is what user_entry_trampoline does and why: the data
  * selectors have to be set once (iretq reloads CS and SS, never DS/ES/FS/GS),
- * CR3 has to become the thread's, and IA32_KERNEL_GS_BASE has to hold
- * &cpu_local so the FIRST syscall's swapgs finds it — there is no swapgs here
+ * CR3 has to become the thread's, and IA32_KERNEL_GS_BASE has to hold this
+ * core's &cpu_local so the FIRST syscall's swapgs finds it — there is no swapgs here
  * to put it there, because this path was never in the kernel on this thread's
  * behalf before.  The registers are zeroed rather than left as whatever the
  * dispatcher had in them: a new thread's first instruction should not be able
@@ -97,20 +121,24 @@ start_user_ctx_and_iretq:
      */
     movq 104(%rdi), %rbx
 
+    /* This core's block and this core's user CR3, while %gs still names them.
+     * See the note at the top of this file. */
+    movq %gs:0,  %r12
+    movq %gs:56, %r13
+
     movw $0x1B, %ax             /* user data selector (GDT[3]) */
     movw %ax, %ds
     movw %ax, %es
     movw %ax, %fs
     movw %ax, %gs               /* also sets IA32_GS_BASE = 0 */
 
-    movq syscall_user_cr3(%rip), %rax
-    testq %rax, %rax
+    testq %r13, %r13
     jz .Lstart_no_user_cr3
-    movq %rax, %cr3
+    movq %r13, %cr3
 .Lstart_no_user_cr3:
 
-    leaq cpu_local(%rip), %rax
-    movq %rax, %rdx
+    movq %r12, %rax
+    movq %r12, %rdx
     shrq $32, %rdx
     movl $0xC0000102, %ecx      /* IA32_KERNEL_GS_BASE */
     wrmsr

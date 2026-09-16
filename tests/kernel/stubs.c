@@ -442,6 +442,24 @@ uint32_t sched_reap_queue_hwm(void)          { return 0; }
 uint32_t sched_run_queue_hwm(void)           { return 0; }
 uint64_t sched_wall_ticks(void)              { return 0; }
 
+/*
+ * The processor tier (SMP roadmap §9.3 step 4).  A host test is one thread on
+ * one processor with no scheduler behind it: nothing has ever dispatched, no
+ * IPI has ever been sent, and no death is in flight because there is no
+ * reaper.  One processor online, and every other answer zero, is that machine
+ * described rather than a placeholder.
+ */
+uint32_t sched_deaths_pending(void)          { return 0; }
+uint32_t smp_online_count(void)              { return 1u; }
+uint32_t smp_dispatching_count(void)         { return 0u; }
+uint32_t smp_tick_ipi_count(void)            { return 0u; }
+uint32_t smp_reschedule_ipi_count(void)      { return 0u; }
+int      smp_is_timekeeper(void)             { return 1; }
+int      smp_is_online(uint32_t c)           { return c == 0u; }
+void     smp_tick_others(void)               { }
+void     smp_reschedule_others(void)         { }
+void     smp_send_reschedule(uint32_t c)      { (void)c; }
+
 void     scheduler_sleep_current(uint64_t ticks) { (void)ticks; }
 
 /*
@@ -479,7 +497,7 @@ void     task_backing_free_on_destroy(struct task *t) { (void)t; }
 uint64_t tsc_boot(void)                      { return 0; }
 uint64_t tsc_hz(void)                        { return 1000000000ULL; }
 /* Assembly entry points the MSR setup names.  syscall_init is never called
- * here — it writes model-specific registers — but the symbols must resolve. */
+ * here — it writes model-specific registers — but the symbols must resolve.
+ * The two shadow globals that used to live beside this are deleted with their
+ * definitions in syscall_entry.S. */
 void syscall_entry(void) { }
-uint64_t syscall_kstack_ptr;
-uint64_t syscall_user_cr3;

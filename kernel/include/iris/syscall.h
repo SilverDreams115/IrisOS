@@ -748,8 +748,18 @@ static inline long iris_syscall0(long nr) {
  *   and IPC-delivery diagnostics at offsets 40..87 (see syscall_diag.c for
  *   the field layout).  Callers passing 40..87 get the exact historical
  *   40-byte snapshot — no signature, number, or legacy-behavior change.
+ *
+ * `buf_size` is CLAMPED to the largest tier the kernel knows, and that is why
+ * the largest tier's size is published here rather than living only in
+ * syscall_diag.c.  A caller that passes a size larger than its buffer — a
+ * fuzzer probing the clamp, most obviously — is told "at most this much" by a
+ * number it can size its buffer with.  It used to be able to pass anything and
+ * be safe by coincidence, because its buffer happened to match the largest
+ * tier of the day; the next tier added turned that coincidence into a
+ * smashed stack in the CALLER, one test after the one doing the probing.
  */
 #define SYS_SCHED_INFO 69
+#define IRIS_SCHED_INFO_MAX_BYTES 208u
 
 /*
  * Nanosleep — modern/conforming (iris_error_t).
@@ -2058,7 +2068,24 @@ struct iris_untyped_query_global {
      * that stops being true without anyone noticing.
      */
     uint32_t kernel_heap_sealed;
-    uint32_t _pad1;
+    /*
+     * SMP roadmap §9.3 step 4 — the CALLER'S OWN restarts, beside the
+     * machine's total.
+     *
+     * `syscall_restarts` above is a global, and a global counter can say "a
+     * syscall restarted" but not "MY syscall restarted".  With one processor
+     * those were the same sentence: nothing else was running between two reads
+     * of it.  With four they are not, and the test that reads it either way —
+     * T310, which asserts that a wait able to complete does NOT take the
+     * restart path — was reading other threads' restarts on other cores and
+     * calling them its own.
+     *
+     * A per-thread count is the quantity the claim was always about.  It is a
+     * thread's own total since it started, so a caller compares it with itself
+     * across the syscall it is asking about, and nothing another processor
+     * does can move it.
+     */
+    uint32_t syscall_restarts_self;
     /*
      * Ledger A-32 — calls that still came through the NUMBERED door.
      *

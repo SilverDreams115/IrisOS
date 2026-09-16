@@ -1,4 +1,5 @@
 #include "scheduler_priv.h"
+#include <iris/smp.h>
 #include <iris/lapic.h>
 #include <iris/pmm.h>
 #include <iris/tss.h>
@@ -61,7 +62,30 @@ struct task        *sched_thread_list = 0;
  * mind two.
  */
 irq_spinlock_t      sched_list_lock;
-struct task        *current_task    = 0;
+
+/*
+ * Is a processor still standing on this thread?  (SMP roadmap §9.3 step 4.)
+ *
+ * This used to be `t == current_task` — one pointer for the whole machine, so
+ * the question could only ever be asked about the CPU doing the asking.  With
+ * one core that was the same question.  With four it is not: tearing a thread
+ * down frees the stack and the address space an instruction pointer on another
+ * core may still be inside, and "not me" is not "nobody".
+ *
+ * The answer is the thread's own `on_cpu` and not a scan of
+ * `cpu_local[].current_task`, because the scan answers one instruction too
+ * early: a dispatcher points its CPU at the incoming thread before it has
+ * finished releasing the outgoing one.  See `on_cpu` in task.h.
+ *
+ * No lock, and it does not need one.  The callers ask about a thread that is
+ * already DEAD and already out of every run queue, and the only thing that
+ * raises `on_cpu` is a dispatch — which takes its thread from a run queue.  So
+ * the answer can only go from yes to no, which is the direction that makes an
+ * unlocked read safe.
+ */
+static int task_is_on_some_cpu(const struct task *t) {
+    return atomic_load_explicit(&t->on_cpu, memory_order_acquire) != 0u;
+}
 
 /* ── Phase S2 D2 — registry + backing instrumentation (QUERY kind 4) ── */
 static _Atomic uint32_t reg_active;
@@ -163,8 +187,27 @@ static struct task *task_registry_find_free(void) {
     return t;
 }
 
-struct task        *task_list_head  = 0;
-struct task        *task_list_tail  = 0;
+/*
+ * The idle thread, named (SMP roadmap §9.3 step 4).
+ *
+ * It was `task_list_head`, the head of a CIRCULAR LIST threaded through
+ * `task->next` — and that list had exactly two uses left: this pointer, which
+ * three places compare against to mean "the idle thread", and the walk that
+ * removed a dying thread from it.  Nothing else read it, so
+ * it was a list maintained in order to be maintained.
+ *
+ * On one core that was merely redundant.  With four it was an unlocked shared
+ * mutable structure on the thread create and destroy paths — two writes to
+ * `tail->next` and `tail` with nothing between them, and a walk that follows
+ * `next` while another core is splicing it — which is the one thing §9.2's
+ * catalog is for.  The choice was to give it the ninth lock or to notice that
+ * the list itself was the only thing that needed one.
+ *
+ * The threads still have a list, and it is the one the kernel actually uses:
+ * `sched_thread_list` under `sched_list_lock`, walked by the tick and by the
+ * idle fast-forward.  This is a pointer to one thread.
+ */
+struct task        *sched_idle_thread = 0;
 /* Thread ids are a DIAGNOSTIC (charter: nothing selects an object by number),
  * but a diagnostic that hands two threads the same id is a diagnostic that
  * lies.  Three call sites increment it and none held a lock. */
@@ -244,6 +287,43 @@ static inline void rq_live_inc(void) {
 
 static inline void rq_live_dec(void) {
     atomic_fetch_sub_explicit(&rq_live_count, 1u, memory_order_relaxed);
+}
+
+/*
+ * How many deaths have not finished.
+ *
+ * Ring 3 needs this because "has the reaper caught up" stopped being
+ * answerable by yielding a fixed number of times the moment a thread could die
+ * on a processor other than the one asking (SMP roadmap §9.3 step 4).  The
+ * reap ring's high-water mark beside it says how deep the ring has ever been;
+ * only a CURRENT depth can be waited on.
+ *
+ * It is the ring's depth PLUS the threads that are dead and not in it yet, and
+ * the second half is the half that matters.  A thread killed from another
+ * processor is marked DEAD where it stands and reaches the ring only when its
+ * own core next dispatches — so the ring can be empty while a death is very
+ * much still in flight, and a waiter that looked only at the ring would
+ * declare the system settled and then measure a thread that is about to
+ * disappear.
+ *
+ * Derived by walking, not maintained in a variable: a counter would be a third
+ * place every death path has to remember to touch, and this is asked only when
+ * somebody is already waiting.  The two locks are taken one after the other
+ * rather than nested — there is no moment the sum has to be consistent, since
+ * the caller is waiting for it to reach zero and stay there.
+ */
+uint32_t sched_deaths_pending(void) {
+    uint64_t f = irq_spinlock_lock(&reap_queue_lock);
+    unsigned int ring = (reap_queue_head - reap_queue_tail) & (REAP_QUEUE_SIZE - 1u);
+    irq_spinlock_unlock(&reap_queue_lock, f);
+
+    uint32_t marked = 0;
+    uint64_t lf = irq_spinlock_lock(&sched_list_lock);
+    for (struct task *t = sched_thread_list; t; t = t->sched_next)
+        if (t->state == TASK_DEAD) marked++;
+    irq_spinlock_unlock(&sched_list_lock, lf);
+
+    return (uint32_t)ring + marked;
 }
 
 uint32_t sched_run_queue_hwm(void) {
@@ -393,6 +473,35 @@ void sched_set_domain(struct task *t, uint8_t domain) {
     if (was_queued) rq_enqueue(t);
 }
 
+/*
+ * Which processor does a new thread belong to?  (SMP roadmap §9.3 step 4.)
+ *
+ * Round robin over the processors that are actually online, which is the
+ * policy a kernel should have and not a placeholder for a better one: seL4
+ * does not balance either.  A thread's core is chosen once, by whoever
+ * configured it, and thereafter it is a property of the thread — because a
+ * kernel that MOVES threads has to decide when, and "when" is a policy that
+ * belongs to a scheduler in ring 3, not to the dispatcher.
+ *
+ * `smp_online_count()` and not MAX_CPUS: a processor that never arrived has a
+ * run queue nothing dequeues from, and homing a thread there would be a thread
+ * that is runnable and never runs.
+ *
+ * The counter is relaxed on purpose.  Two configures racing may both get the
+ * same core, and the cost of that is one imbalanced thread — against a
+ * read-modify-write on every thread creation to make a decision that is
+ * already arbitrary.
+ */
+static _Atomic uint32_t home_cpu_rr;
+
+static uint8_t sched_pick_home_cpu(void) {
+    uint32_t n = smp_online_count();
+    if (n > MAX_CPUS) n = MAX_CPUS;
+    if (n <= 1u) return 0u;
+    uint32_t i = atomic_fetch_add_explicit(&home_cpu_rr, 1u, memory_order_relaxed);
+    return (uint8_t)(i % n);
+}
+
 void task_wakeup(struct task *t) {
     /* Phase S2 D2: t->terminal guards against a wakeup arriving mid-teardown
      * (e.g. kreply_cancel_caller waking its own caller when that caller is
@@ -401,17 +510,83 @@ void task_wakeup(struct task *t) {
      * and TASK_DEAD; a terminal task must never re-enter the run queue. */
     if (!t || t->state == TASK_DEAD || t->terminal) return;
     t->state = TASK_READY;
-    if (t != task_list_head) {
+    if (t != sched_idle_thread) {
         rq_enqueue(t);
-        if (t->home_cpu != cpu_self()->cpu_id)
-            lapic_send_ipi(cpu_local[t->home_cpu].lapic_id, RESCHEDULE_IPI_VECTOR);
+        smp_send_reschedule(t->home_cpu);
     }
+}
+
+/*
+ * Make the processor that is running `t` notice that `t` should stop.
+ * (SMP roadmap §9.3 step 4.)
+ *
+ * Changing a thread's state from another core changes nothing about the core
+ * executing it.  That core is in ring 3, or on its way back there; it will not
+ * look at the thread's TCB again until something brings it into the kernel,
+ * and nothing does.  So `Suspend` on a thread running elsewhere used to set
+ * SUSPENDED, remove it from a run queue it was not in, and return success to a
+ * caller whose thread went on running — which is what T083 caught the moment
+ * threads began to spread across processors.
+ *
+ * The reschedule IPI is what brings that core in.  Its handler marks whatever
+ * the core is running and the interrupt's own exit path runs the dispatcher,
+ * which reads the new state and declines to put the thread back.
+ *
+ * It is not synchronous and does not need to be: the caller is told the thread
+ * WILL stop, not that it already has, and every path that must not race a
+ * still-running thread — teardown above all — waits on `on_cpu` instead, which
+ * is the fact rather than a proxy for it.  A core caught in ring 0 acts on the
+ * mark when it next leaves, and at the latest on its next tick.
+ */
+static void sched_kick(struct task *t) {
+    if (!t) return;
+    t->need_resched = 1;
+    if (!atomic_load_explicit(&t->on_cpu, memory_order_acquire)) return;
+    smp_send_reschedule(t->home_cpu);
 }
 
 void task_suspend(struct task *t) {
     if (!t || t->state == TASK_DEAD || t->terminal) return;
     t->state = TASK_SUSPENDED;
     rq_remove(t);
+    sched_kick(t);
+
+    /*
+     * And WAIT for it to actually stop — seL4 calls this stalling the remote
+     * thread, and it is the difference between an answer and a promise.
+     *
+     * Marking a thread SUSPENDED and sending its core an IPI says it WILL
+     * stop.  The caller was told it HAS.  Between the two, the thread keeps
+     * executing ring-3 instructions on another processor — which is not a
+     * theoretical window: T083 suspends a helper, reads its counter, and
+     * requires the counter to be frozen, and the helper incremented it once
+     * more after Suspend returned.  Every caller of Suspend is in that
+     * position; most of them just have no counter to notice with.
+     *
+     * Bounded, and by something real.  The IPI is taken as soon as the target
+     * core has interrupts on, which is immediately in ring 3 and at the end of
+     * the current syscall in ring 0 (SFMASK clears IF on entry) — and the
+     * dispatch it forces clears `on_cpu` before it does anything else with the
+     * thread.  Nothing can deadlock against it: clearing `on_cpu` is a store on
+     * a straight-line path that waits for nothing, so there is no cycle to
+     * close, and this spin holds no lock — the syscall layer holds a reference
+     * to the target, not a lock on it.
+     *
+     * No timeout, for the reason the TLB shootdown has none: a core that never
+     * answers is a core that is wedged, and continuing past it would mean
+     * telling a caller its thread has stopped when it has not.
+     *
+     * PRECONDITION, and it is why the external KILL below does not do this:
+     * the caller must hold no lock that the target core's dispatch can need.
+     * `Suspend`'s one caller holds a reference to the target and nothing else.
+     * A killer, by contrast, is often already inside an endpoint — and the
+     * dispatch it would be waiting for reaps dead threads, which cancels their
+     * blocked waits, which takes endpoint locks.  That is a cycle, so a kill
+     * marks and leaves rather than stalls.
+     */
+    if (t == task_current()) return;    /* suspending ourselves; we stop on the way out */
+    while (atomic_load_explicit(&t->on_cpu, memory_order_acquire))
+        __asm__ volatile ("pause");
 }
 
 /* Initial FPU state captured at boot; copied into every new task. */
@@ -420,7 +595,7 @@ uint8_t initial_fpu_state[512] __attribute__((aligned(16)));
 /* ── Internal helpers ────────────────────────────────────────────────────── */
 
 /*
- * The boot thread's entry, kept only because `task_list_head` is still the
+ * The boot thread's entry, kept only because `sched_idle_thread` is still the
  * object the run queue excludes and the fast-forward skips.
  *
  * It used to be the IDLE LOOP, and that is why IRIS had an idle task at all:
@@ -488,30 +663,15 @@ void task_backing_free_on_destroy(struct task *t) {
     t->reg_slot = -1;
 }
 
-void unlink_task(struct task *t) {
-    if (!t || !task_list_head) return;
-
-    if (task_list_head == t && t->next == t) {
-        task_list_head = 0;
-        task_list_tail = 0;
-        t->next = 0;
-        return;
-    }
-
-    struct task *pred = task_list_head;
-    do {
-        if (pred->next == t) {
-            pred->next = t->next;
-            if (task_list_head == t)
-                task_list_head = t->next;
-            if (task_list_tail == t)
-                task_list_tail = pred;
-            t->next = 0;
-            return;
-        }
-        pred = pred->next;
-    } while (pred && pred != task_list_head);
-}
+/*
+ * unlink_task is DELETED (SMP roadmap §9.3 step 4).
+ *
+ * It removed a dying thread from the circular `task->next` list by walking it
+ * for the predecessor.  That list is gone — see `sched_idle_thread` above for
+ * why — and the list a dying thread must actually leave is `sched_thread_list`,
+ * which `task_registry_release` already removes it from, under the lock, in
+ * O(1), because those links are doubly threaded.
+ */
 
 static void task_cancel_blocked_waits(struct task *t) {
     if (!t) return;
@@ -618,7 +778,6 @@ static void task_execution_teardown_off_cpu(struct task *t) {
      */
 
     atomic_fetch_sub_explicit(&sched_live_count, 1u, memory_order_relaxed);
-    unlink_task(t);
     task_release_sched_ctx(t);
 
     /*
@@ -750,6 +909,23 @@ uint32_t sched_reap_queue_hwm(void) {
 
 void reap_enqueue_dead(struct task *t) {
     uint64_t flags = irq_spinlock_lock(&reap_queue_lock);
+
+    /*
+     * Already waiting?  (SMP roadmap §9.3 step 4.)
+     *
+     * Two paths hand the same thread over now: the core it was running on, at
+     * its next dispatch, and the core that KILLED it — which cannot tell
+     * whether that dispatch has already happened.  A duplicate is harmless in
+     * itself, because the second teardown sees `terminal` and returns; what it
+     * is not harmless to is the ring's capacity, which is argued from one
+     * entry per processor.  Sixteen slots and a scan of at most sixteen, under
+     * a lock this path already takes.
+     */
+    for (unsigned int i = reap_queue_tail; i != reap_queue_head;
+         i = (i + 1u) & (REAP_QUEUE_SIZE - 1u)) {
+        if (reap_queue[i] == t) { irq_spinlock_unlock(&reap_queue_lock, flags); return; }
+    }
+
     unsigned int next = (reap_queue_head + 1u) & (REAP_QUEUE_SIZE - 1u);
     if (next != reap_queue_tail) {
         reap_queue[reap_queue_head] = t;
@@ -785,7 +961,7 @@ void reap_pending_dead_task(void) {
     irq_spinlock_unlock(&reap_queue_lock, flags);
 
     if (!t) return;
-    if (t == current_task) {
+    if (task_is_on_some_cpu(t)) {
         /* Task hasn't context-switched off-CPU yet; re-enqueue for next call. */
         reap_enqueue_dead(t);
         return;
@@ -851,14 +1027,27 @@ void task_init(void) {
     irq_spinlock_init(&sched_list_lock);
     kernel_cr3 = pml4_get_current();
 
-    /* Initialize CPU 0's run queue and wire it before any rq_* call. */
-    struct CpuRunQueue *rq0 = &cpu_rqs[0];
-    irq_spinlock_init(&rq0->lock);
-    for (uint32_t d = 0; d < IRIS_NUM_DOMAINS; d++) {
-        for (int i = 0; i < 256; i++) { rq0->head[d][i] = 0; rq0->tail[d][i] = 0; }
-        rq0->mask[d][0] = rq0->mask[d][1] = rq0->mask[d][2] = rq0->mask[d][3] = 0;
+    /*
+     * Every processor's run queue, initialised and wired here — not when the
+     * processor arrives (SMP roadmap §9.3 step 4).
+     *
+     * An AP's queue has to exist before the AP does, because a thread can be
+     * homed to a CPU that has not started yet: `rq_enqueue` reads
+     * `cpu_local[t->home_cpu].rq` on whatever core is doing the waking, and a
+     * queue built by the arriving AP would leave a window where that read
+     * returns NULL and the wakeup is silently dropped.  Building all of them
+     * here costs a few kilobytes of zeroing at boot and removes the window
+     * entirely.
+     */
+    for (uint32_t c = 0; c < MAX_CPUS; c++) {
+        struct CpuRunQueue *rq = &cpu_rqs[c];
+        irq_spinlock_init(&rq->lock);
+        for (uint32_t d = 0; d < IRIS_NUM_DOMAINS; d++) {
+            for (int i = 0; i < 256; i++) { rq->head[d][i] = 0; rq->tail[d][i] = 0; }
+            rq->mask[d][0] = rq->mask[d][1] = rq->mask[d][2] = rq->mask[d][3] = 0;
+        }
+        cpu_local[c].rq = rq;
     }
-    cpu_local[0].rq = rq0;
 
     atomic_store_explicit(&sched_live_count, 1u, memory_order_relaxed); /* idle */
 
@@ -874,16 +1063,15 @@ void task_init(void) {
     task_registry_bind_idle(idle);
     idle->id    = atomic_fetch_add_explicit(&next_id, 1u, memory_order_relaxed);
     idle->state = TASK_RUNNING;
-    idle->next  = idle;
 
     setup_initial_context(idle, idle_task);
     task_init_fpu_state(idle);
 
-    task_list_head = idle;
-    task_list_tail = idle;
-    /* Boot-time BSP init: GS_BASE = 0 here (pre-SWAPGS), so cpu_self() is not
-     * yet safe.  Set both the global and the BSP cpu_local slot directly. */
-    current_task = idle;
+    sched_idle_thread = idle;
+    /* The BSP's slot, written directly rather than through set_current_task:
+     * this runs on the BSP and is only ever about the BSP.  An AP arrives with
+     * its own slot NULL, which is exactly right — it is running nothing until
+     * its dispatcher picks something. */
     cpu_local[0].current_task = idle;
 }
 
@@ -939,6 +1127,10 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     t->mcp        = (uint8_t)TASK_PRIORITY_MAX;
     t->time_slice = TASK_DEFAULT_SLICE;
     t->ticks_left = TASK_DEFAULT_SLICE;
+    /* The root task stays on the boot processor, and not for want of a policy:
+     * it is created before `smp_start_aps` has finished counting, and it is the
+     * thread the boot sequence hands the CPU to.  Every thread IT configures
+     * gets a core from the round robin. */
     t->home_cpu   = 0;
 
     /*
@@ -1074,9 +1266,6 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     rq_enqueue(t);
     atomic_fetch_add_explicit(&sched_live_count, 1u, memory_order_relaxed);
 
-    task_list_tail->next = t;
-    t->next              = task_list_head;
-    task_list_tail       = t;
     return t;
 
 fail_copy:
@@ -1216,14 +1405,12 @@ iris_error_t ktcb_configure(struct task *t,
     t->ring       = TASK_RING3;
     t->time_slice = TASK_DEFAULT_SLICE;
     t->ticks_left = TASK_DEFAULT_SLICE;
-    t->home_cpu   = 0;
+    t->home_cpu   = sched_pick_home_cpu();
 
-    /* Linked into the global task list like every other thread: the list is
-     * what the timeout/fault sweeps walk, and a thread that can run must be
-     * visible to them from the moment it can. */
-    task_list_tail->next = t;
-    t->next              = task_list_head;
-    task_list_tail       = t;
+    /* The list a thread must join is `sched_thread_list` — what the tick and
+     * the idle fast-forward walk — and `task_registry_alloc` below is what
+     * puts it there, under the lock.  There used to be a second, circular list
+     * spliced in by hand here; it had no readers. */
 
     /* The scheduler's live-count is a creation-time fact, not a run-queue one:
      * teardown decrements it unconditionally, so a thread that skipped the
@@ -1291,14 +1478,55 @@ iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
 /* ── Task termination ────────────────────────────────────────────────────── */
 
 struct task *task_current(void) {
-    return current_task;
+    return cpu_self()->current_task;
 }
 
-/* Must not be called on current_task: this function frees resources that the
- * calling stack may still reference.  The one caller that could pass it
- * (SYS_TCB_EXIT) checks for self and takes the exit path instead. */
+
+/* Must not be called on a thread any processor is running: this function frees
+ * resources that a live stack may still reference.  The one caller that could
+ * pass its own (SYS_TCB_EXIT) checks for self and takes the exit path instead;
+ * the check below covers the other three cores. */
 void task_kill_external(struct task *t) {
-    if (!t || t == current_task || t->state == TASK_DEAD || t->terminal) return;
+    if (!t || t->state == TASK_DEAD || t->terminal) return;
+
+    /*
+     * A thread another processor is executing cannot be torn down from here —
+     * this frees the address space it is running in — but it must not simply
+     * be left alone either, which is what returning did (SMP roadmap §9.3
+     * step 4).  `Suspend` on such a thread was a lie; a `kill` that returned
+     * success and killed nothing was a worse one.
+     *
+     * So it is marked the way a thread marks ITSELF on the way out, and its
+     * processor is told to look.  That core's next dispatch finds a DEAD
+     * outgoing thread, hands it to the reap ring exactly as a self-exit is
+     * handed over, and the teardown happens on a core that is no longer inside
+     * it.  Nothing here is special-cased: the machinery is the one self-exit
+     * already uses, and the only difference is who set the state.
+     */
+    if (task_is_on_some_cpu(t)) {
+        t->awaiting_reap = 1;
+        t->state         = TASK_DEAD;
+        sched_kick(t);
+        /*
+         * And hand it over from HERE as well, rather than trusting that its
+         * own core will.
+         *
+         * The test above and the mark below it are two instants, and a thread
+         * can leave its processor in between.  Then that core's final dispatch
+         * read a state that was not yet DEAD and handed nothing over, while
+         * this core decided somebody else would — and the death is lost: a
+         * thread marked DEAD, in no run queue, in no reap ring, that nothing
+         * will ever tear down.  It is the reason T287 could kill a thread
+         * through its capability and then watch it never reach TERMINATED.
+         *
+         * Enqueuing here closes it without having to know which happened.  If
+         * the thread is still on a processor, the reaper finds it there and
+         * puts it back; if it is not, this IS the hand-over.  The enqueue is
+         * idempotent, so the core that owned it may safely do the same.
+         */
+        reap_enqueue_dead(t);
+        return;
+    }
     task_execution_teardown_off_cpu(t);
 }
 

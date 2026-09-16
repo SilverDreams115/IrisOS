@@ -1,8 +1,8 @@
 /*
- * smp.c — starting application processors (SMP roadmap §9.3 step 3).
+ * smp.c — starting application processors (§9.3 step 3) and handing them the
+ * dispatcher (§9.3 step 4).
  *
- * See iris/smp.h for what this step delivers and what it deliberately stops
- * short of.  The APs end here parked with interrupts off, scheduling nothing.
+ * See iris/smp.h for the shape of both steps.
  */
 
 #include <iris/smp.h>
@@ -14,17 +14,114 @@
 #include <iris/pmm.h>
 #include <iris/klog.h>
 #include <iris/gdt.h>
+#include <iris/idt.h>
+#include <iris/syscall.h>
+#include <iris/scheduler.h>
 #include <stdatomic.h>
 
 extern char ap_trampoline_start[], ap_trampoline_end[];
 extern char tramp_gdtr[], tramp_cr3[], tramp_stack[], tramp_entry[];
 extern char tramp_progress[], tramp_pm_ptr[], tramp_lm_ptr[];
+extern char tramp_cr4[], tramp_cr0[];
 extern char tramp_pm[], tramp_lm[];
 
 extern uint64_t core_stack_top_for(uint32_t cpu_id);
 
 static _Atomic uint32_t smp_online = 1u;   /* the BSP is running this */
 static uint32_t         smp_progress_last;
+
+/*
+ * Which processors can be sent an IPI, as a bitmask of cpu ids.
+ *
+ * Not "everything below smp_online_count()": the count says how many arrived,
+ * and the cpu ids come from the MADT's order, so a machine where the third
+ * entry fails to start has two processors online with ids 0 and 1 — or 0 and
+ * 2.  A mask records which, and it is set by the arriving processor itself,
+ * which is the only code that knows for certain that it got here.
+ */
+static _Atomic uint32_t smp_ipi_mask = 1u;   /* the BSP */
+
+/* How many IPIs this kernel has sent for each purpose.  Relaxed and
+ * independent: they are evidence, not synchronisation.  The tick count is what
+ * makes "the other processors are being told the time" checkable from ring 3
+ * — the alternative is inferring it from threads making progress, which is a
+ * much weaker statement about a much later effect. */
+static _Atomic uint32_t smp_tick_ipis;
+static _Atomic uint32_t smp_resched_ipis;
+
+uint32_t smp_tick_ipi_count(void) {
+    return atomic_load_explicit(&smp_tick_ipis, memory_order_relaxed);
+}
+uint32_t smp_reschedule_ipi_count(void) {
+    return atomic_load_explicit(&smp_resched_ipis, memory_order_relaxed);
+}
+
+/*
+ * How many processors have actually DISPATCHED a thread.
+ *
+ * Not the same question as how many are online, and it is the one step 4 is
+ * about: an AP that arrived, took its GDT and halted was online too.  Every
+ * dispatch bumps its core's `context_switches`, so a core that has ever run a
+ * thread is a core with a non-zero count, and counting those counts the
+ * processors that are doing the work rather than the ones that answered the
+ * roll call.
+ */
+uint32_t smp_dispatching_count(void) {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < MAX_CPUS; i++)
+        if (cpu_local[i].context_switches != 0u) n++;
+    return n;
+}
+
+static void smp_send_others(uint8_t vector) {
+    uint32_t mask = atomic_load_explicit(&smp_ipi_mask, memory_order_acquire);
+    if ((mask & (mask - 1u)) == 0u) return;   /* only one processor: nobody to tell */
+    uint32_t self = cpu_self()->cpu_id;
+    for (uint32_t i = 0; i < MAX_CPUS; i++) {
+        if (i == self || !(mask & (1u << i))) continue;
+        lapic_send_ipi((uint8_t)cpu_local[i].lapic_id, vector);
+    }
+}
+
+int  smp_is_timekeeper(void)      { return cpu_self()->cpu_id == 0u; }
+
+int smp_is_online(uint32_t cpu_id) {
+    if (cpu_id >= MAX_CPUS) return 0;
+    return (atomic_load_explicit(&smp_ipi_mask, memory_order_acquire)
+            & (1u << cpu_id)) != 0u;
+}
+
+void smp_tick_others(void) {
+    if (smp_online_count() <= 1u) return;
+    atomic_fetch_add_explicit(&smp_tick_ipis, 1u, memory_order_relaxed);
+    smp_send_others(SCHED_TICK_IPI_VECTOR);
+}
+
+void smp_reschedule_others(void) {
+    if (smp_online_count() <= 1u) return;
+    atomic_fetch_add_explicit(&smp_resched_ipis, 1u, memory_order_relaxed);
+    smp_send_others(RESCHEDULE_IPI_VECTOR);
+}
+
+/*
+ * Poke ONE processor.
+ *
+ * Every cross-CPU reschedule goes through here rather than reaching for
+ * `lapic_send_ipi` directly, and the reason is the counter: two call sites
+ * were sending this IPI by hand — a wakeup whose thread lives on another core,
+ * and a suspend or kill of a thread another core is running — so a gauge that
+ * counted only the broadcast form reported zero on a machine sending hundreds.
+ * A number that is structurally unable to see the common case is worse than no
+ * number, because something will eventually assert on it.
+ */
+void smp_send_reschedule(uint32_t cpu_id) {
+    if (cpu_id >= MAX_CPUS) return;
+    if (cpu_id == cpu_self()->cpu_id) return;
+    if (!(atomic_load_explicit(&smp_ipi_mask, memory_order_acquire) & (1u << cpu_id)))
+        return;
+    atomic_fetch_add_explicit(&smp_resched_ipis, 1u, memory_order_relaxed);
+    lapic_send_ipi((uint8_t)cpu_local[cpu_id].lapic_id, RESCHEDULE_IPI_VECTOR);
+}
 
 uint32_t smp_online_count(void)  { return atomic_load_explicit(&smp_online, memory_order_acquire); }
 uint32_t smp_last_progress(void) { return smp_progress_last; }
@@ -114,6 +211,8 @@ uint32_t smp_start_aps(const struct iris_boot_info *bi) {
     uint64_t off_lmp  = (uint64_t)(tramp_lm_ptr   - ap_trampoline_start);
     uint64_t off_pm   = (uint64_t)(tramp_pm       - ap_trampoline_start);
     uint64_t off_lm   = (uint64_t)(tramp_lm       - ap_trampoline_start);
+    uint64_t off_cr4  = (uint64_t)(tramp_cr4      - ap_trampoline_start);
+    uint64_t off_cr0  = (uint64_t)(tramp_cr0      - ap_trampoline_start);
 
     /* The GDTR: limit and the LINEAR base of the table we just built. */
     *(uint16_t *)(page + off_gdtr)     = (uint16_t)(4u * 8u - 1u);
@@ -126,6 +225,24 @@ uint32_t smp_start_aps(const struct iris_boot_info *bi) {
 
     *(uint64_t *)(page + off_cr3) = pml4_get_current() & ~0xFFFull;
     *(uint64_t *)(page + off_ent) = (uint64_t)(uintptr_t)&ap_main;
+
+    /*
+     * What kind of processor this machine's processors are — read off the one
+     * that is already running, and read HERE rather than written as constants.
+     *
+     * By this point the BSP's CR4 carries everything the firmware left (SSE
+     * through OSFXSR above all) and everything the kernel added (SMEP, SMAP,
+     * PCIDE).  An AP out of INIT has none of it, and the trampoline copies
+     * these two registers verbatim so there is exactly one description of the
+     * machine's configuration rather than two that must be kept in step.
+     */
+    {
+        uint64_t cr4, cr0;
+        __asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
+        __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
+        *(uint64_t *)(page + off_cr4) = cr4;
+        *(uint64_t *)(page + off_cr0) = cr0;
+    }
 
     /*
      * The page has to be EXECUTABLE, and only now.
@@ -212,11 +329,38 @@ uint32_t smp_start_aps(const struct iris_boot_info *bi) {
  * Where an application processor arrives, in 64-bit long mode on its own
  * stack.  It never returns.
  *
- * It does exactly two things: take its own GDT/TSS/GS, and say it is here.
- * Then it halts with interrupts off.  Everything a running CPU needs — a run
- * queue, a tick, a thread — is step 4, and an AP that took interrupts before
- * it had any of that would take a timer tick into a scheduler that has never
- * heard of it.
+ * Step 3 stopped here with a `cli; hlt`.  Step 4 gives it the rest of what a
+ * processor needs and then hands it the dispatcher — the SAME dispatcher the
+ * boot processor runs, on this core's own stack, picking from this core's own
+ * run queue.  There is no AP-specific scheduler and no AP idle loop; if there
+ * were, "the scheduler" would be two things that have to agree.
+ *
+ * The order below is not arbitrary.  Each line is something that must be true
+ * before the next can be:
+ *
+ *   gdt_init_ap        this core's GDT, TSS and GS base.  Everything after
+ *                      this reads %gs, including cpu_self().
+ *   idt_load_ap        the IDT register is per-processor even though the table
+ *                      is not.  Until this, any fault here is a triple fault.
+ *   lapic_software_enable  a LAPIC that is not software-enabled accepts no
+ *                      IPIs — so the tick would never arrive.
+ *   syscall_init       LSTAR/STAR/SFMASK are per-processor MSRs.  Without
+ *                      them a ring-3 thread on this core would `syscall` into
+ *                      whatever address zero happens to be.
+ *   core_dispatch_init TSS.RSP0 and the syscall stack pointer, both this
+ *                      core's own stack.  The dispatcher reads it GS-relative
+ *                      and has no fallback.
+ *
+ * Only then does it announce itself, and announcing is the last thing before
+ * the dispatcher: the BSP's bring-up loop waits on that count and starts the
+ * next processor when it moves, so a core that announced and then failed to
+ * reach the dispatcher would be counted as running and never run anything.
+ * There is nothing between the two but the store.
+ *
+ * Interrupts are still off here.  They are enabled by `core_dispatch` itself,
+ * in the `sti; hlt` it uses when there is nothing to run — which means this
+ * core takes its first interrupt only once it is inside the dispatcher and
+ * able to answer it.
  */
 void ap_main(void) {
     uint32_t cpu_id = 0;
@@ -229,7 +373,15 @@ void ap_main(void) {
     gdt_init_ap(cpu_id);
     cpu_local[cpu_id].lapic_id = id;
 
+    idt_load_ap();
+    if (lapic_is_active()) lapic_software_enable();
+    syscall_init();
+    core_dispatch_init();
+
+    atomic_fetch_or_explicit(&smp_ipi_mask, 1u << cpu_id, memory_order_release);
     atomic_fetch_add_explicit(&smp_online, 1u, memory_order_release);
 
-    for (;;) __asm__ volatile ("cli; hlt");
+    /* Nothing is running on this core, so there is no outgoing thread and no
+     * FPU state to save. */
+    core_dispatch(0);
 }

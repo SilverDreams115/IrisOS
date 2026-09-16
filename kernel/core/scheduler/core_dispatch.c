@@ -75,11 +75,12 @@ void core_dispatch_init(void) {
  * The dispatcher.  Entered on the core stack by core_dispatch_enter, with the
  * stack reset under it; never returns.
  *
- * `outgoing` is the thread that just gave the CPU up, and it is here for one
- * reason: its FPU state has to be saved before another thread's is loaded.
- * Everything else about it — where it was in the kernel, what it had on the
- * stack — is gone by construction, which is the property step 2 established
- * and this depends on.
+ * `outgoing` is the thread that just gave the CPU up, and it is here so that
+ * `sched_pick_for_dispatch` can finish with it: save its FPU state, flush its
+ * scheduling context, put it back in a queue if it is still runnable, and only
+ * then release it to the other processors.  Everything else about it — where
+ * it was in the kernel, what it had on the stack — is gone by construction,
+ * which is the property step 2 established and this depends on.
  *
  * The idle case is a `hlt`, not a task.  IRIS used to make the boot thread the
  * idle task and yield to it, which is why the scheduler had a special case for
@@ -101,6 +102,9 @@ void core_dispatch(struct task *outgoing) {
          */
         sched_idle_account();
         __asm__ volatile ("sti; hlt; cli" : : : "memory");
-        outgoing = 0;    /* its FPU was saved on the way in, once */
+        /* The pick above already finished with it and released it to the other
+         * processors; passing it again would be this core writing a thread
+         * another core may by now be running. */
+        outgoing = 0;
     }
 }

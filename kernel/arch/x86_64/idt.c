@@ -7,6 +7,7 @@
 #include <iris/irq_routing.h>
 #include <iris/lapic.h>
 #include <iris/tlb.h>
+#include <iris/smp.h>
 #include <iris/nc/kfault.h>
 #include <stdint.h>
 
@@ -55,6 +56,7 @@ extern void isr43(void); extern void isr44(void); extern void isr45(void);
 extern void isr46(void); extern void isr47(void);
 extern void isr240(void); /* RESCHEDULE_IPI_VECTOR */
 extern void isr241(void); /* TLB_SHOOTDOWN_IPI_VECTOR */
+extern void isr242(void); /* SCHED_TICK_IPI_VECTOR */
 
 extern void idt_flush(uint64_t idtr_addr);
 
@@ -256,6 +258,25 @@ void isr_handler(struct full_frame *frame) {
         return;
     }
 
+    if (frame->vector == SCHED_TICK_IPI_VECTOR) {
+        /*
+         * The tick, on a processor the PIT does not interrupt (§9.3 step 4).
+         *
+         * Only the core's half of it: the clock, the domain schedule and the
+         * replenishment sweep were done by the processor that owns the timer,
+         * before it sent this.  Running them again here would make time pass
+         * once per processor.
+         *
+         * No `irq_routing_signal`: the tick is offered to ring 3 once, by the
+         * core that took the real interrupt.  A timer service told four times
+         * per tick would be a service whose sense of time depends on how many
+         * processors the machine has.
+         */
+        lapic_eoi();
+        scheduler_tick_remote();
+        return;
+    }
+
     /*
      * Every other line, and the kernel knows nothing about any of them.
      *
@@ -390,7 +411,21 @@ void idt_init(void) {
     idt_set_entry(RESCHEDULE_IPI_VECTOR, isr240);
     idt_set_entry(TLB_SHOOTDOWN_IPI_VECTOR, isr241);
 
+    idt_set_entry(SCHED_TICK_IPI_VECTOR, isr242);
+
     idtr.size   = sizeof(idt) - 1;
     idtr.offset = (uint64_t)(uintptr_t)&idt;
+    idt_flush((uint64_t)(uintptr_t)&idtr);
+}
+
+/*
+ * An application processor loads the table the BSP built (§9.3 step 4).
+ *
+ * `idtr` is already filled in — it is a static the BSP wrote once — so this is
+ * the `lidt` and nothing else.  Building a second table per core would mean
+ * four copies of a thing that is identical by construction, and four places
+ * for a vector to be registered in three of them.
+ */
+void idt_load_ap(void) {
     idt_flush((uint64_t)(uintptr_t)&idtr);
 }

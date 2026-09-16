@@ -651,7 +651,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
      *
      * The dispatcher's answer is a `hlt` on the core's own stack.  The boot
      * thread stops being current the moment anything else is picked, is never
-     * enqueued (it is `task_list_head`, which the run queue excludes), and its
+     * enqueued (it is `sched_idle_thread`, which the run queue excludes), and its
      * stack is never used again.
      */
     /*

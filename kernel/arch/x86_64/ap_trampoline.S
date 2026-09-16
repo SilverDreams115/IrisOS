@@ -39,6 +39,11 @@
  *   "12"     the far jump to 32-bit worked, paging did not        (NX low page)
  *   "12345"  long mode reached, the jump into C faulted           (EFER.NXE)
  *
+ * The stages are "1" real mode, "2" protected, "3" paging on, "4" 64-bit, "6"
+ * the BSP's CR4/CR0 adopted, "5" about to call C.  "6" is out of order because
+ * it was added between the last two and renumbering would invalidate the two
+ * signatures above, which is the only thing the letters are for.
+ *
  * Turn it on by defining AP_TRAMPOLINE_TRACE and rebuilding.
  */
 #ifdef AP_TRAMPOLINE_TRACE
@@ -60,6 +65,8 @@
 .global tramp_stack
 .global tramp_entry
 .global tramp_progress
+.global tramp_cr4
+.global tramp_cr0
 .global tramp_pm_ptr
 .global tramp_lm_ptr
 .global tramp_pm
@@ -158,6 +165,42 @@ tramp_lm:
     movb    $4, OFF(tramp_progress)(%rbx)   /* 4: 64-bit long mode */
     TRACE(0x34)
 
+    /*
+     * Become the same kind of processor the boot processor is (§9.3 step 4).
+     *
+     * An AP leaves INIT with CR0 and CR4 at their RESET values.  The BSP's are
+     * not reset values: some bits came from the firmware, which ran in long
+     * mode with SSE on, and some the kernel set itself — SMEP and SMAP in
+     * `paging_init`, PCIDE in `paging_enable_pcid`.  None of that reaches a
+     * processor that was asleep for all of it, and every missing bit is a
+     * different failure with no announcement:
+     *
+     *   CR4.OSFXSR   every SSE instruction a thread on this core executes
+     *                raises #UD.  Ring-3 code is full of them — a struct copy
+     *                is enough — so threads die on this core and only on this
+     *                core, at whatever offset the compiler put the first one.
+     *   CR4.PCIDE    the dispatcher ORs a PCID into the low twelve bits of
+     *                CR3.  With PCIDE clear those bits are part of the PML4
+     *                ADDRESS, so this core would load a page table that is not
+     *                one.
+     *   CR4.SMEP/SMAP  the protection is simply absent here, silently, on a
+     *                machine that reports it as on.
+     *
+     * Copied rather than re-derived.  The BSP's values are the definition of
+     * what this machine is configured to do, and a second derivation is a
+     * second thing that can disagree.
+     *
+     * It happens HERE and not in the 32-bit section where CR4.PAE was set,
+     * because CR4.PCIDE may only be set in 64-bit mode and only while CR3's
+     * low twelve bits are zero — which is exactly the CR3 that was just
+     * loaded, and stops being true the moment the dispatcher runs.
+     */
+    movq    OFF(tramp_cr4)(%rbx), %rax
+    movq    %rax, %cr4
+    movq    OFF(tramp_cr0)(%rbx), %rax
+    movq    %rax, %cr0
+    TRACE(0x36)
+
     /* The stack and the entry point were written by the BSP for THIS
      * processor, which is why bring-up is serialised: the page holds one
      * processor's parameters at a time. */
@@ -200,6 +243,10 @@ tramp_entry:
     .quad   0                           /* ap_main */
 tramp_progress:
     .quad   0                           /* how far the last AP got */
+tramp_cr4:
+    .quad   0                           /* the BSP's CR4, once it is finished */
+tramp_cr0:
+    .quad   0                           /* the BSP's CR0 */
 
 ap_trampoline_end:
 .section .note.GNU-stack,"",@progbits

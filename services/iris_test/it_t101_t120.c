@@ -1620,14 +1620,47 @@ void test_t112(void) {
     }
 }
 
-/* Drain the deferred-reap queue before a lifecycle baseline snapshot: a
- * prior test's self-exited children release their KProcess creation ref only
- * when the reaper runs on a later scheduler tick, so without this the live-
- * process baseline is racy (a not-yet-reaped zombie inflates `before`).  The
- * reaper drains one entry per task_yield; 200 yields clears any realistic
- * backlog on single-CPU. */
+/*
+ * Drain the deferred-reap queue before a lifecycle baseline snapshot.
+ *
+ * A prior test's self-exited children release their last reference only when
+ * the reaper runs, and the reaper runs inside a DISPATCH — so "wait for the
+ * reaper" means "wait for the processor that owes me a dispatch to make one".
+ *
+ * It was 200 yields, and the comment said what made that work: "on
+ * single-CPU".  There, every yield was a dispatch, and 200 of them drained any
+ * backlog because the backlog could only be on the one core doing the
+ * yielding.  With four processors a dying thread is reaped by ITS core, which
+ * this thread's yields do not reach at all — they are 200 fast syscalls on a
+ * different core, and they can all complete before the other core has taken a
+ * single timer interrupt.
+ *
+ * So the wait is on the CONDITION instead of on a count of yields: the live
+ * task total stops moving, sampled a tick apart so the other processors have
+ * actually run in between.  Two consecutive equal samples end it; the cap ends
+ * it if the number never settles, which turns "quiesced" back into "waited a
+ * while" rather than hanging the suite.
+ */
 void it_quiesce_reaper(void) {
-    for (int i = 0; i < 200; i++) it_sys0(SYS_YIELD);
+    /*
+     * One real tick first, and it is the part the yields cannot replace: a
+     * thread that died on another processor is not even IN the reap ring yet.
+     * It gets there when its own core next dispatches, and a tick is what
+     * guarantees that has happened everywhere.
+     */
+    it_settle(1);
+
+    /* Then drain.  Yields are still how this thread hands its core to the
+     * reaper, and the ring's DEPTH is the answer rather than a count of
+     * attempts — on one processor it is empty after the first burst, which is
+     * what the old two hundred yields were really doing. */
+    for (uint32_t i = 0; i < 16u; i++) {
+        uint32_t w6[5];
+        for (int y = 0; y < 64; y++) (void)it_sys0(SYS_YIELD);
+        if (!it_sched_ext6(w6)) return;        /* no gauge: the yields stand */
+        if (w6[IT_S6_DEATHS_PENDING] == 0u) return;
+        it_settle(1);
+    }
 }
 
 /* ── Phase 16: lifecycle/process hardening (T113–T118) ───────────────────────

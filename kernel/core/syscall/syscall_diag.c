@@ -1,6 +1,7 @@
 #include "syscall_priv.h"
 #include <iris/tlb.h>
 #include <iris/cpu_local.h>
+#include <iris/smp.h>
 
 
 
@@ -119,6 +120,21 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *   offset 176: uint32_t fault_cleanup_count   — Phase 20 (pending faults cleared)
  *   offset 180: uint32_t _pad3
  * Extended-5 total: 184 bytes.
+ *
+ * SMP roadmap §9.3 step 4 — additive processor tier, written ONLY when the
+ * caller passes buf_size >= 200:
+ *   offset 184: uint32_t cpus_online     — processors running IRIS code
+ *   offset 188: uint32_t cpus_dispatching— processors that have ever dispatched
+ *                                          a thread.  The difference between
+ *                                          this and cpus_online is the
+ *                                          difference between step 3 and step 4
+ *   offset 192: uint32_t tick_ipis       — ticks broadcast to other processors
+ *   offset 196: uint32_t reschedule_ipis — reschedules broadcast likewise
+ *   offset 200: uint32_t deaths_pending  — deaths not finished: the reap ring's
+ *                                          depth plus threads marked DEAD that
+ *                                          have not reached it
+ *   offset 204: uint32_t _pad4
+ * Extended-6 total: 208 bytes.
  */
 #define SCHED_INFO_BASE_BYTES 40u
 #define SCHED_INFO_EXT_BYTES  96u
@@ -126,6 +142,13 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 #define SCHED_INFO_EXT3_BYTES 136u
 #define SCHED_INFO_EXT4_BYTES 160u
 #define SCHED_INFO_EXT5_BYTES 184u
+#define SCHED_INFO_EXT6_BYTES 208u
+/* The clamp is part of the ABI, so the number lives in the protocol header and
+ * this asserts the two have not drifted.  Adding a tier means changing both,
+ * and the compiler is what makes that true rather than a comment. */
+_Static_assert(SCHED_INFO_EXT6_BYTES == IRIS_SCHED_INFO_MAX_BYTES,
+               "the largest sched-info tier and the size published to ring 3 "
+               "must be the same number");
 
 uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
@@ -135,7 +158,8 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     if (arg1 < SCHED_INFO_BASE_BYTES) return syscall_err(IRIS_ERR_INVALID_ARG);
     uint32_t want;
-    if      (arg1 >= SCHED_INFO_EXT5_BYTES) want = SCHED_INFO_EXT5_BYTES;
+    if      (arg1 >= SCHED_INFO_EXT6_BYTES) want = SCHED_INFO_EXT6_BYTES;
+    else if (arg1 >= SCHED_INFO_EXT5_BYTES) want = SCHED_INFO_EXT5_BYTES;
     else if (arg1 >= SCHED_INFO_EXT4_BYTES) want = SCHED_INFO_EXT4_BYTES;
     else if (arg1 >= SCHED_INFO_EXT3_BYTES) want = SCHED_INFO_EXT3_BYTES;
     else if (arg1 >= SCHED_INFO_EXT2_BYTES) want = SCHED_INFO_EXT2_BYTES;
@@ -143,7 +167,7 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     else                                    want = SCHED_INFO_BASE_BYTES;
     if (!user_range_writable(arg0, want)) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    uint64_t buf[23];
+    uint64_t buf[26];
     buf[0] = sched_current_ticks();
     buf[1] = sched_wall_ticks();
     buf[2] = sched_context_switches();
@@ -239,6 +263,19 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         buf[20] = (uint64_t)g0 | ((uint64_t)g1 << 32);
         buf[21] = (uint64_t)g2 | ((uint64_t)g3 << 32);
         buf[22] = (uint64_t)g4;   /* high half = _pad3 (0) */
+    }
+
+    if (want >= SCHED_INFO_EXT6_BYTES) {
+        /* SMP words (offsets 184..196).  `cpus_dispatching` is the one that
+         * says step 4 happened: a processor that arrived and parked is online
+         * and has never dispatched anything. */
+        uint32_t c0 = smp_online_count();
+        uint32_t c1 = smp_dispatching_count();
+        uint32_t c2 = smp_tick_ipi_count();
+        uint32_t c3 = smp_reschedule_ipi_count();
+        buf[23] = (uint64_t)c0 | ((uint64_t)c1 << 32);
+        buf[24] = (uint64_t)c2 | ((uint64_t)c3 << 32);
+        buf[25] = (uint64_t)sched_deaths_pending(); /* high half = _pad4 (0) */
     }
 
     if (!copy_to_user_checked(arg0, buf, want))

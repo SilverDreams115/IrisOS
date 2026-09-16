@@ -1359,24 +1359,53 @@ static int it_fault_spawn(handle_id_t *ep_h, handle_id_t *proc_h,
  * timeout for exactly this reason; a receive has no timeout, so the bound is
  * the retry count with a yield between tries.
  */
+static int it_fault_try(long fault_ep, uint32_t mbox) {
+    struct iris_msg m;
+    iris_msg_zero(&m);
+    if ((m.reply = (long)(IT_FAULT_CPTR(mbox)), iris_msg_nb_recv((long)fault_ep, &m)) != 0)
+        return 0;
+    for (uint32_t b = 0; b < FAULT_MSG_LEN; b++)
+        g_it_fault_rec[mbox][b] = ((const uint8_t *)m.words)[b];
+    g_it_fault_have[mbox]  = 1u;
+    g_it_fault_label[mbox] = m.label;
+    g_it_fault_badge[mbox] = m.sender_badge;
+    return 1;
+}
+
 int it_fault_wait_ep(long fault_ep, uint32_t mbox) {
     if (mbox >= IT_FAULT_LEAVES) return 0;
     /* ONE fresh reply object for the whole wait.  Retyping one per poll would
      * churn the object pool T324 measures — and a reply object that nothing
      * bound to is reusable, so there is nothing to refresh between tries. */
     if (!it_fault_reply_fresh(mbox)) return 0;
+
+    /* The fast path, unchanged: most faults are already waiting, and the ones
+     * that are not arrive within a handful of dispatches. */
     for (uint32_t tries = 0; tries < 3000u; tries++) {
-        struct iris_msg m;
-        iris_msg_zero(&m);
-        if ((m.reply = (long)(IT_FAULT_CPTR(mbox)), iris_msg_nb_recv((long)fault_ep, &m)) == 0) {
-            for (uint32_t b = 0; b < FAULT_MSG_LEN; b++)
-                g_it_fault_rec[mbox][b] = ((const uint8_t *)m.words)[b];
-            g_it_fault_have[mbox]  = 1u;
-            g_it_fault_label[mbox] = m.label;
-            g_it_fault_badge[mbox] = m.sender_badge;
-            return 1;
-        }
+        if (it_fault_try(fault_ep, mbox)) return 1;
         (void)it_sys1(SYS_YIELD, 0);
+    }
+
+    /*
+     * And a tail bounded in TIME (SMP roadmap §9.3 step 4).
+     *
+     * Three thousand yields was the whole bound, and on one processor it was a
+     * real one — every yield was a dispatch, so three thousand of them was
+     * thousands of chances for the faulting thread to run.  On four it is
+     * three thousand fast syscalls on THIS core that can all complete before
+     * another core has taken a single timer interrupt.
+     *
+     * T308 is the case that needs it: the fault it waits for is a TIMEOUT, so
+     * it cannot arrive until the server has burned a budget measured in ticks.
+     * A bound expressed in this thread's syscalls cannot express "three ticks
+     * from now" on a machine where this thread is not the one being charged.
+     *
+     * Two seconds, and it only costs that when the fault genuinely never
+     * comes — which is a test failing, where two seconds is not the problem.
+     */
+    for (uint32_t t = 0; t < 200u; t++) {
+        if (it_fault_try(fault_ep, mbox)) return 1;
+        it_settle(1);
     }
     return 0;
 }

@@ -89,6 +89,8 @@ ISR_NOERR 47  /* IRQ15 — spurious PIC2 */
 
 ISR_NOERR 240 /* RESCHEDULE_IPI_VECTOR (0xF0) — cross-CPU reschedule */
 ISR_NOERR 241 /* TLB_SHOOTDOWN_IPI_VECTOR (0xF1) — drop a translation */
+ISR_NOERR 242 /* SCHED_TICK_IPI_VECTOR (0xF2) — the tick, on a core the PIT
+               * does not interrupt */
 
 isr_common:
     /*

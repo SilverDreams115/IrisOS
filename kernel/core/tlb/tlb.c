@@ -5,6 +5,7 @@
  */
 
 #include <iris/tlb.h>
+#include <iris/smp.h>
 #include <iris/cpu_local.h>
 #include <iris/lapic.h>
 #include <iris/paging.h>
@@ -77,7 +78,15 @@ void tlb_shootdown_page(struct KVSpace *vs, uint64_t va) {
     uint32_t targets = 0u;
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
         if (i == self) continue;
-        if (!cpu_local[i].rq) continue;             /* CPU not brought up */
+        /* Did it arrive?  This used to ask whether the CPU had a run queue,
+         * which stopped being the question when every processor's queue began
+         * to be built at boot (SMP roadmap §9.3 step 4) — a queue has to exist
+         * before its processor does, because a thread can be homed to a core
+         * that has not started yet.  A processor that never arrived also has a
+         * `lapic_id` of zero, which is the BOOT processor's on most machines,
+         * so an IPI aimed at it would be a self-IPI this then spins waiting for
+         * an answer to. */
+        if (!smp_is_online(i)) continue;
         struct task *t = cpu_local[i].current_task;
         if (t && t->vspace == vs) targets |= (1u << i);
     }
