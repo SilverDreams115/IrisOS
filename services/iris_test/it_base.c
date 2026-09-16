@@ -345,6 +345,36 @@ long it_cs_reduce(long src_cptr, uint32_t rights) {
  * clock which answers nothing degrades this to exactly what it used to be
  * rather than hanging the suite.
  */
+/*
+ * A bounded wait for something ANOTHER THREAD has to do.  See IT_AWAIT in
+ * it_priv.h for why it is shaped this way.
+ */
+void it_await_open(struct it_await *w, uint32_t yields) {
+    if (!w) return;
+    w->t0     = 0;
+    w->yields = yields ? yields : 1u;
+    w->spins  = 0u;
+}
+
+int it_await_more(struct it_await *w) {
+    if (!w) return 0;
+    (void)it_sys1(SYS_YIELD, 0);
+    w->spins++;
+
+    /* Phase 1: the yields the loop this replaces did, and no more. */
+    if (w->spins < w->yields) return 1;
+
+    /* Phase 2: one scheduler tick, which is the unit in which another core
+     * gets around to its run queue.  Entered only when phase 1 came up empty —
+     * which on one processor means the wait was going to fail anyway. */
+    if (w->spins == w->yields) { w->t0 = it_sys0(SYS_CLOCK_GET); return 1; }
+    if (w->spins > w->yields + IT_AWAIT_TAIL_SPINS) return 0;
+    if (w->t0 <= 0) return 0;                       /* no clock: yields only */
+    long now = it_sys0(SYS_CLOCK_GET);
+    if (now <= 0) return 0;
+    return (uint64_t)(now - w->t0) < IRIS_TICK_NS;
+}
+
 void it_settle(uint32_t rounds) {
     uint32_t yields = rounds * 16u + 8u;
     long     t0     = it_sys0(SYS_CLOCK_GET);

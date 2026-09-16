@@ -643,7 +643,7 @@ static int fz_cmd(int idx, uint32_t op, uint64_t a, uint64_t b, uint64_t c) {
 
 /* Bounded wait for worker `idx` to publish a result. */
 static int fz_wait(int idx) {
-    for (int i = 0; i < 4000 && !g_fz_done[idx]; i++) it_sys0(SYS_YIELD);
+    IT_AWAIT(g_fz_done[idx], 4000);
     return g_fz_done[idx];
 }
 

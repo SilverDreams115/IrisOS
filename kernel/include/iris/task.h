@@ -619,7 +619,23 @@ struct task {
                                   * once — after that its kernel stack holds
                                   * live state and the entry frame must not be
                                   * rewritten (TCB_WRITE_REGS refuses) */
-    uint8_t        terminal;     /* execution ended (TERMINATED) */
+    /*
+     * Execution has ended, or is ending (TERMINATED).
+     *
+     * ATOMIC, and it is the gate that lets exactly one processor tear a thread
+     * down (SMP roadmap §9.3 step 5).  It used to be a plain byte set near the
+     * END of teardown, and every entry to teardown tested it first — an
+     * unlocked read that four cores calling Exit on one thread all pass, so
+     * all four tore the same thread down: the registry slot released four
+     * times, the CSpace, the address space and the scheduling context released
+     * four times, and a TCB whose storage had gone back to its Untyped while
+     * somebody was still walking it.
+     *
+     * It is claimed with an exchange at the top of teardown now, so the flag
+     * means "this thread is being torn down OR has been".  Every reader uses
+     * it as "do not touch this thread", and that is true of both.
+     */
+    _Atomic uint8_t terminal;
     /*
      * Scheduler membership, as a LIST rather than an index.
      *

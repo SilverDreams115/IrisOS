@@ -729,7 +729,27 @@ static void free_user_text_pages(struct task *t) {
  * Preconditions: t is OFF-CPU (never the running task on its own kstack).
  */
 static void task_execution_teardown_off_cpu(struct task *t) {
-    if (!t || t->terminal) return;
+    if (!t) return;
+
+    /*
+     * CLAIM the thread, exactly once, before anything is released.
+     *
+     * The test used to be `if (t->terminal) return;` — an unlocked read that
+     * four processors calling Exit on the same thread all pass, so all four
+     * ran this function on it.  Everything below releases a reference or a
+     * slot, so four teardowns meant four releases of one reference: the
+     * registry slot, the CSpace, the address space, the scheduling context.
+     * The symptom was `kobject_retain: resurrect from refcount 0` on an object
+     * whose type field read 0 — a type nothing creates, because the storage
+     * had already gone back to its Untyped and been zero-filled.  T350 is the
+     * test: four cores killing the same four threads.
+     *
+     * An exchange makes "am I the one" and "say so" a single act, which is the
+     * whole of what was missing.
+     */
+    if (atomic_exchange_explicit(&t->terminal, (uint8_t)1u,
+                                 memory_order_acq_rel) != 0u)
+        return;
 
     /*
      * Make t unreachable and unwakeable FIRST, atomically with respect to a
@@ -759,7 +779,9 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     task_registry_release(t);
     t->awaiting_reap = 0;
     t->state    = TASK_TERMINATED;
-    t->terminal = 1;
+    /* `terminal` was claimed at the top; this is where it used to be set, and
+     * the ordering that mattered — unreachable and unwakeable before the slow
+     * releases below — is still what this section establishes. */
     __asm__ volatile ("pushq %0; popfq" : : "r"(irq_flags) : "memory");
 
     task_cancel_blocked_waits(t);

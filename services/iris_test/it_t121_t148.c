@@ -37,7 +37,7 @@ void test_t121(void) {
         /* close the endpoint's only handle → close op wakes the waiter CLOSED */
         it_close(&g_sh_ep);
         /* wait for the worker to observe the wake-up and record its result */
-        if (ok) for (int y = 0; y < 4000 && !g_sh_done[0]; y++) it_sys0(SYS_YIELD);
+        if (ok) IT_AWAIT(g_sh_done[0], 4000);
         if (ok && !g_sh_done[0]) { ok = 0; why = "waiter not woken"; }
         if (ok && g_t121_res[kind] != (long)IRIS_ERR_CLOSED) { ok = 0; why = "wrong wake error"; }
         it_quiesce_reaper();
@@ -190,7 +190,7 @@ void test_t123(void) {
         uint64_t entry = (uint64_t)(uintptr_t)g_sh_entries[0];
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_sh_stk[0] + sizeof(g_sh_stk[0]))) & ~0xFULL;
         if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "sc worker create"; }
-        if (ok) for (int y = 0; y < 4000 && !g_sh_done[0]; y++) it_sys0(SYS_YIELD);
+        if (ok) IT_AWAIT(g_sh_done[0], 4000);
         if (ok && !g_sh_done[0]) { ok = 0; why = "sc worker stuck"; }
         it_quiesce_reaper();
     }
@@ -646,7 +646,7 @@ void test_t129(void) {
 
     /* Close the last handle → endpoint close fires → waiter wakes CLOSED. */
     it_close(&g_sh_ep);
-    if (ok) for (int y = 0; y < 4000 && !g_sh_done[0]; y++) it_sys0(SYS_YIELD);
+    if (ok) IT_AWAIT(g_sh_done[0], 4000);
     if (ok && !g_sh_done[0]) { ok = 0; why = "waiter not woken"; }
     if (ok && g_t129_res != (long)IRIS_ERR_CLOSED) { ok = 0; why = "wrong wake error"; }
 

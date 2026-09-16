@@ -748,7 +748,7 @@ void test_t333(void) {
         if (tcb < 0) { it_fail("T333", "victim"); return; }
         /* Let it run and then stop it: a RUNNING thread's registers are in the
          * CPU, which is the case the syscall refuses. */
-        for (uint32_t i = 0; i < 200u && !g_t333_ran; i++) (void)it_sys1(SYS_YIELD, 0);
+        IT_AWAIT(g_t333_ran, 200);
         if (ok && it_invoke0(tcb, INV_TCB_SUSPEND) != 0) { ok = 0; why = "suspend"; }
         if (ok && it_invoke1(tcb, INV_TCB_READ_REGS, (long)(uintptr_t)&ctx) != 0) {
             ok = 0; why = "read regs";

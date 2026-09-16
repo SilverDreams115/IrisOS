@@ -796,13 +796,41 @@ uint64_t sys_tcb_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!target->configured) { kobject_release(&target->base); return syscall_err(IRIS_ERR_NOT_SUPPORTED); }
 
     int is_self = (target == caller);
-    kobject_release(&target->base);
 
     if (is_self) {
+        /*
+         * The reference goes first here, and it has to: `task_exit_current`
+         * does not return, so anything after it never runs.  It is safe for
+         * the one reason that makes the self case different — this thread IS
+         * the target, and a thread executing on a processor cannot be torn
+         * down under itself.  `task->on_cpu` is exactly that guarantee.
+         */
+        kobject_release(&target->base);
         task_exit_current(); /* does not return */
-    } else {
-        task_kill_external(target);
     }
+
+    /*
+     * Hold the resolve's reference ACROSS the kill (SMP roadmap §9.3 step 5).
+     *
+     * It used to be released first, on the line above the call, and on one
+     * processor that was safe by an argument nobody wrote down: nothing else
+     * could destroy the object between the release and the use, because
+     * nothing else was running.  With four processors it can — another core
+     * killing the same thread completes the teardown and drops the CSpace
+     * slot's reference in that window, and this core then walks a TCB whose
+     * storage has already gone back to its Untyped, zero-filled.
+     *
+     * T350 is the test: four cores calling Exit on the same four threads.  The
+     * symptom was `kobject_retain: resurrect from refcount 0` on an object
+     * whose type field read 0 — a type nothing creates, because the header had
+     * been cleared by the free.
+     *
+     * The fix is the obvious one and the reason references exist: keep it
+     * until the last use.  Holding it across the teardown only delays the
+     * final destroy to this release.
+     */
+    task_kill_external(target);
+    kobject_release(&target->base);
     return 0;
 }
 
@@ -826,8 +854,8 @@ uint64_t sys_tcb_get_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     info.task_id  = target->id;
     info.priority = target->priority;
     info.state    = (uint8_t)target->state;
+    info.home_cpu = target->home_cpu;
     info._pad[0]  = 0;
-    info._pad[1]  = 0;
     irq_spinlock_unlock(&target->obj_lock, flags);
     kobject_release(&target->base);
 

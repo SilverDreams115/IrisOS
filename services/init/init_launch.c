@@ -1,4 +1,17 @@
 /*
+ * How long init waits for `iris_test` before calling it hung.
+ *
+ * A CEILING, not a budget: the suite finishing is what normally ends the wait,
+ * and this only decides how long a genuinely stuck run takes to say so.  It
+ * was 25 s, sized when the suite was a one-processor suite whose waits were
+ * counted in yields.  Its waits are counted in TIME now (SMP roadmap §9.3), and
+ * on four processors it legitimately spends more of it — enough that the old
+ * ceiling reported a healthy run as a hang.  QEMU's own timeout, which the
+ * smoke script scales by the core count, is the outer bound.
+ */
+#define INIT_TEST_WATCHDOG_NS 120000000000ull
+
+/*
  * init_launch.c — service launch for init (Phase 14 extraction).
  *
  * Everything here is MOVED VERBATIM from main.c (no functional change): the
@@ -797,7 +810,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         if (give == 0)
             (void)iris_timer_arm((long)INIT_SLOT_TIMER_EP,
                                  (long)INIT_SLOT_TIMER_GIVE, IRIS_TIMER_BIT,
-                                 25000000000ull, &tok);
+                                 INIT_TEST_WATCHDOG_NS, &tok);
         for (;;) {
             r = iris_invoke1((long)watch_base_h, INV_NOTIFY_WAIT, (long)&bits);
             if (r != 0) break;

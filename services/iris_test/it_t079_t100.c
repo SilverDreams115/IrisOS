@@ -339,7 +339,7 @@ void test_t083(void) {
     long tid = it_thread_create(entry, rsp, IT_THREAD_ARG_SELF_TCB);
     if (tid < 0) { it_fail("T083", "thread create"); return; }
 
-    for (int i = 0; i < 200 && !g_t083_ready; i++) it_sys0(SYS_YIELD);
+    IT_AWAIT(g_t083_ready, 200);
     if (!g_t083_ready || g_t083_tcb < 0) { it_fail("T083", "tcb self"); return; }
     handle_id_t tcb_h = (handle_id_t)g_t083_tcb;
 
@@ -513,7 +513,7 @@ void test_t084(void) {
     if (ok && iris_msg_recv((long)g_t084_cmd_ep, &r) != 0) ok = 0;
     if (ok && r.got_cap != (uint32_t)IRIS_MSG_NO_CAP) ok = 0;
 
-    for (int i = 0; i < 200 && !g_t084_done; i++) it_sys0(SYS_YIELD);
+    IT_AWAIT(g_t084_done, 200);
     if (!g_t084_done || g_t084_s1 != 0 || g_t084_s2 != 0) ok = 0;
 
     it_close(&epx_h);
@@ -585,7 +585,7 @@ void test_t085(void) {
             (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
     }
 
-    for (int i = 0; i < 200 && !g_t085_done; i++) it_sys0(SYS_YIELD);
+    IT_AWAIT(g_t085_done, 200);
     if (!g_t085_done || g_t085_s1 != 0) ok = 0;
 
     it_xfer_release((long)g_t085_cap);   /* A-29: sender's copy survived */
@@ -676,7 +676,7 @@ void test_t086(void) {
             bits != 0x86u) ok = 0;
     }
 
-    for (int i = 0; i < 200 && !g_t086_done; i++) it_sys0(SYS_YIELD);
+    IT_AWAIT(g_t086_done, 200);
     if (!g_t086_done || g_t086_s1 != 0) ok = 0;
 
     it_xfer_release((long)g_t086_cap);   /* A-29 */
@@ -776,7 +776,7 @@ void test_t087(void) {
             bits != 0x87u) ok = 0;
     }
 
-    for (int i = 0; i < 200 && !g_t087_done; i++) it_sys0(SYS_YIELD);
+    IT_AWAIT(g_t087_done, 200);
     if (!g_t087_done) ok = 0;
     if (ok && g_t087_got_cap != T087_SRV_SLOT) ok = 0;      /* landed as CPtr */
     /* Phase S1: the reply value is the server's OWN reply-object CPtr (echoed
@@ -863,7 +863,7 @@ void test_t088(void) {
         uint64_t entry = (uint64_t)(uintptr_t)t088_recv1;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t088_stack1 + sizeof(g_t088_stack1))) & ~0xFULL;
         if (it_thread_create(entry, rsp, IT_THREAD_ARG_SELF_TCB) < 0) ok = 0;
-        for (int i = 0; i < 200 && !g_t088_r1_ready; i++) it_sys0(SYS_YIELD);
+        IT_AWAIT(g_t088_r1_ready, 200);
         it_settle(2);            /* let it block in EP_RECV */
         if (ok && (g_t088_r1_tcb < 0 ||
                    it_invoke0(g_t088_r1_tcb, INV_TCB_EXIT) != 0)) ok = 0;
@@ -895,7 +895,7 @@ void test_t088(void) {
             if (iris_msg_send((long)g_t088_ep, &m) != 0) ok = 0;
         }
         it_xfer_release(c);
-        for (int i = 0; i < 200 && !g_t088_r2_done; i++) it_sys0(SYS_YIELD);
+        IT_AWAIT(g_t088_r2_done, 200);
         if (!g_t088_r2_done || g_t088_r2_got != T088_SLOT_A ||
             g_t088_r2_sig != 0) ok = 0;
         if (ok) {
@@ -912,7 +912,7 @@ void test_t088(void) {
         if (it_thread_create(entry, rsp, 0) < 0) ok = 0;
         it_settle(2);            /* let it block with slot 41 declared */
         it_close(&g_t088_ep2);            /* close wakes the blocked receiver */
-        for (int i = 0; i < 200 && !g_t088_r3_done; i++) it_sys0(SYS_YIELD);
+        IT_AWAIT(g_t088_r3_done, 200);
         if (!g_t088_r3_done || g_t088_r3_rr != (long)IRIS_ERR_CLOSED) ok = 0;
         if (ok && it_invoke0((long)T088_SLOT_C, INV_CAP_IDENTIFY) >= 0) ok = 0;
     }
@@ -1519,7 +1519,7 @@ void test_t094(void) {
     if (it_thread_create(entry, rsp, 0) < 0) {
         ok = 0; why = "thread create";
     }
-    for (int i = 0; i < 200 && !g_t094_ready; i++) it_sys0(SYS_YIELD);
+    IT_AWAIT(g_t094_ready, 200);
     it_settle(2);                     /* blocked with slot 51 declared */
 
     /* Fill the declared slot BEFORE delivery (the TOCTOU race). */
@@ -1542,7 +1542,7 @@ void test_t094(void) {
             }
         }
     }
-    for (int i = 0; i < 200 && !g_t094_done; i++) it_sys0(SYS_YIELD);
+    IT_AWAIT(g_t094_done, 200);
     if (ok && !g_t094_done) { ok = 0; why = "recv incomplete"; }
 
     /* Step 2: FAIL CLOSED — no cap delivered, and above all NO handle. */

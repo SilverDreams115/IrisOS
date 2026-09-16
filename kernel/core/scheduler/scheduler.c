@@ -319,29 +319,64 @@ struct task *sched_pick_for_dispatch(struct task *outgoing) {
         atomic_store_explicit(&outgoing->on_cpu, 0u, memory_order_release);
     }
 
-    struct task *chosen = rq_dequeue_best();
-    if (!chosen) {
-        sched_handle_idle(sched_idle_thread, &chosen);
-        if (!chosen) return 0;
-    }
+    struct task *chosen;
+    for (;;) {
+        chosen = rq_dequeue_best();
+        if (!chosen) {
+            sched_handle_idle(sched_idle_thread, &chosen);
+            if (!chosen) return 0;
+        }
 
-    /*
-     * Wait for the core that had it to finish with it.
-     *
-     * A thread reaches a run queue the moment its wait is satisfied, and the
-     * core it was running on may still be several hundred instructions from
-     * being done with it — that gap is exactly what `on_cpu` names.  Almost
-     * always the flag is already clear and this is one load.
-     *
-     * It cannot deadlock, and the reason is that the spin holds NOTHING: the
-     * run-queue lock was released by `rq_dequeue_best` before this line, and
-     * the core being waited for needs no lock this one holds.  It is bounded
-     * by that core's remaining release path, which runs with interrupts off
-     * and does not block.
-     */
-    while (atomic_load_explicit(&chosen->on_cpu, memory_order_acquire))
-        __asm__ volatile ("pause");
-    atomic_store_explicit(&chosen->on_cpu, 1u, memory_order_relaxed);
+        /*
+         * Wait for the core that had it to finish with it.
+         *
+         * A thread reaches a run queue the moment its wait is satisfied, and
+         * the core it was running on may still be several hundred instructions
+         * from being done with it — that gap is exactly what `on_cpu` names.
+         * Almost always the flag is already clear and this is one load.
+         *
+         * It cannot deadlock, and the reason is that the spin holds NOTHING:
+         * the run-queue lock was released by `rq_dequeue_best` before this
+         * line, and the core being waited for needs no lock this one holds.
+         * It is bounded by that core's remaining release path, which runs with
+         * interrupts off and does not block.
+         */
+        while (atomic_load_explicit(&chosen->on_cpu, memory_order_acquire))
+            __asm__ volatile ("pause");
+        atomic_store_explicit(&chosen->on_cpu, 1u, memory_order_relaxed);
+
+        /*
+         * Was it SUSPENDED after it was queued?  (SMP roadmap §9.3 step 5.)
+         *
+         * `Suspend` takes a thread out of the run queue — but a thread that
+         * has ALREADY been dequeued cannot be taken out of a queue it is no
+         * longer in, and between the dequeue and this line it belongs to no
+         * queue and to no processor.  A Suspend landing in that window set
+         * SUSPENDED on a thread this core then marked RUNNING three lines
+         * below, clearing `need_resched` on the way, so the suspend was simply
+         * lost and the caller was told its thread had stopped while it went on
+         * running.  T333 is the test: suspend a thread, then read its
+         * registers, which the kernel refuses for a RUNNING one.
+         *
+         * SUSPENDED and nothing else, which is narrower than it first looks
+         * and deliberately so.  The first version of this dropped anything
+         * that was not READY, on the reasoning that a queued thread is a
+         * runnable thread — and that is not true of this kernel: a thread is
+         * put in a queue and its state written by two different pieces of
+         * code, so a thread can legitimately be queued while BLOCKED_REPLY,
+         * and dropping ONE of those wedged the whole system.  The rule that
+         * holds is the narrow one: a thread nobody may run until somebody
+         * resumes it must not be run, and `Suspend` is the only thing that
+         * says that.
+         *
+         * Checked HERE, after the hand-over and not before it, because until
+         * `on_cpu` is ours the previous core may still be writing the state we
+         * are reading.  Dropped rather than requeued: `Suspend` owns it now,
+         * and `task_wakeup` is what puts it back.
+         */
+        if (chosen->state != TASK_SUSPENDED) break;
+        atomic_store_explicit(&chosen->on_cpu, 0u, memory_order_release);
+    }
 
     chosen->state        = TASK_RUNNING;
     chosen->ticks_left   = chosen->time_slice;

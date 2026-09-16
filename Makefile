@@ -20,7 +20,14 @@ BUILD_CONFIG_ON_DISK := $(strip $(shell cat $(BUILD_CONFIG_STAMP) 2>/dev/null))
 ifneq ($(BUILD_CONFIG_ON_DISK),$(BUILD_CONFIG_MODE))
   $(info [build] configuration changed to $(BUILD_CONFIG_MODE); cleaning stale artifacts)
   $(shell rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/*.so $(BUILD_DIR)/*.elf $(BUILD_DIR)/*.d $(BUILD_DIR)/OVMF_VARS.fd)
-  $(shell rm -rf $(BUILD_DIR)/efi_root)
+  # The boot IMAGE is deliberately not deleted.  Everything in it — BOOTX64.EFI
+  # and KERNEL.ELF — is produced by an ordinary rule from a file this line
+  # above has just removed, so make rebuilds both either way; the `rm -rf` was
+  # redundant.  It was also the one thing here that could leave the image half
+  # made: make caches directory listings, so a tree emptied at parse time can
+  # still be believed to hold its files, and the run boots to the UEFI shell
+  # with no kernel and no explanation.  Seen for real after `make test-unit`
+  # (which flips this config) and before a selftest run.
   $(shell rm -f services/svcmgr/svcmgr.elf services/kbd/kbd.elf services/vfs/vfs.elf services/init/init.elf services/console/console.elf services/fb/fb.elf services/sh/sh.elf services/iris_test/iris_test.elf services/lifecycle_probe/lifecycle_probe.elf services/pager/pager.elf services/userboot/userboot.bin)
   $(shell mkdir -p $(BUILD_DIR))
   $(shell printf '%s\n' "$(BUILD_CONFIG_MODE)" > $(BUILD_CONFIG_STAMP))

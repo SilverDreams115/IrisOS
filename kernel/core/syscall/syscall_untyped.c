@@ -506,17 +506,23 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         else                                  err = retype_vspace(ut, obj_arg, &objs[0]);
     } else {
         void *ptrs[KUNTYPED_RETYPE_MAX_COUNT];
-        {
-            /* Record the carve window for exact rollback (U15). */
-            uint64_t f = irq_spinlock_lock(&ut->lock);
-            carve_start = ut->used;
-            irq_spinlock_unlock(&ut->lock, f);
-        }
-        err = kuntyped_alloc_children_atomic(ut, payload, count, ptrs);
+        /*
+         * The carve window comes back FROM the allocator (U15, SMP roadmap
+         * §9.3 step 5).
+         *
+         * It used to be two separate reads of `ut->used`, one on each side of
+         * the call.  On one processor those bracket exactly this caller's
+         * blocks.  On four they bracket whatever else was carved in between —
+         * and the rollback below un-bumps the whole window, handing another
+         * core's live block back to the allocator.  Two cores then build
+         * objects in one block; the first to be destroyed zeroes it, and the
+         * second release reads a header of zeroes.  T349 is the test that
+         * found it, and the symptom was a refcount underflow on an object
+         * whose type field had become 0 — a type nothing creates.
+         */
+        err = kuntyped_alloc_children_atomic(ut, payload, count, ptrs,
+                                             &carve_start, &carve_end);
         if (err == IRIS_OK) {
-            uint64_t f = irq_spinlock_lock(&ut->lock);
-            carve_end = ut->used;
-            irq_spinlock_unlock(&ut->lock, f);
             for (uint32_t i = 0; i < count; i++) {
                 switch (obj_type) {
                     case KOBJ_ENDPOINT:

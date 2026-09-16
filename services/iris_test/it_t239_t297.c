@@ -844,7 +844,7 @@ void test_t255(void) {
             for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
             if (h >= 0) { it_slot_delete((uint32_t)h); h = -1; }
             it_slot_delete(S1_SLOT_A);      /* last cap → close fires */
-            for (int y = 0; y < 4000 && !g_t255_done; y++) it_sys0(SYS_YIELD);
+            IT_AWAIT(g_t255_done, 4000);
             if (!g_t255_done) { ok = 0; why = "waiter zombie"; }
             else if (g_t255_res != (long)IRIS_ERR_CLOSED) { ok = 0; why = "wrong wake"; }
         }
@@ -916,7 +916,7 @@ void test_t256(void) {
             for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
             if (h >= 0) { it_slot_delete((uint32_t)h); h = -1; }
             it_slot_delete(S1_SLOT_A);
-            for (int y = 0; y < 4000 && !g_t256_done; y++) it_sys0(SYS_YIELD);
+            IT_AWAIT(g_t256_done, 4000);
             if (!g_t256_done) { ok = 0; why = "waiter zombie"; }
             else if (g_t256_res != (long)IRIS_ERR_CLOSED) { ok = 0; why = "wrong wake"; }
         }
@@ -983,7 +983,7 @@ void test_t257(void) {
         if (iris_msg_reply((long)S1_SLOT_B, &rm) != (long)IRIS_ERR_NOT_FOUND) {
             ok = 0; why = "one-shot broken (S18)"; break;
         }
-        for (int y = 0; y < 4000 && !g_t257_done; y++) it_sys0(SYS_YIELD);
+        IT_AWAIT(g_t257_done, 4000);
         if (!g_t257_done) { ok = 0; why = "caller stuck"; break; }
     }
 
@@ -1024,7 +1024,7 @@ void test_t257(void) {
                 if ((m.reply = (long)S1_SLOT_B, iris_msg_recv((long)S1_SLOT_A, &m)) != 0) { ok = 0; why = "recv 3"; }
                 struct iris_msg rm; iris_msg_zero(&rm);
                 if (ok && iris_msg_reply((long)S1_SLOT_B, &rm) != 0) { ok = 0; why = "reply 3"; }
-                for (int y = 0; y < 4000 && !g_t257_done; y++) it_sys0(SYS_YIELD);
+                IT_AWAIT(g_t257_done, 4000);
                 if (!g_t257_done) { ok = 0; why = "caller 3 stuck"; }
             }
         }
@@ -1082,7 +1082,7 @@ void test_t258(void) {
         else {
             for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
             it_slot_delete(S1_SLOT_A);
-            for (int y = 0; y < 4000 && !g_t258_done; y++) it_sys0(SYS_YIELD);
+            IT_AWAIT(g_t258_done, 4000);
             if (!g_t258_done) { ok = 0; why = "sender zombie (S25)"; }
             else if (g_t258_res != (long)IRIS_ERR_CLOSED) { ok = 0; why = "sender wake err"; }
         }
@@ -1669,7 +1669,7 @@ void test_t285(void) {
     long tid = it_thread_create(entry, rsp, IT_THREAD_ARG_SELF_TCB);
     if (tid < 0) { it_fail("T285", "thread create"); return; }
 
-    for (int i = 0; i < 200 && !g_t285_ready; i++) it_sys0(SYS_YIELD);
+    IT_AWAIT(g_t285_ready, 200);
     if (!g_t285_ready || g_t285_tcb < 0) { it_fail("T285", "tcb self"); return; }
     handle_id_t tcb_h = (handle_id_t)g_t285_tcb;
 
@@ -1823,7 +1823,7 @@ void test_t287(void) {
     uint64_t rsp_a   = ((uint64_t)(uintptr_t)(g_t285_stack + sizeof(g_t285_stack))) & ~0xFULL;
     long tid_a = it_thread_create(entry_a, rsp_a, IT_THREAD_ARG_SELF_TCB);
     if (tid_a < 0) { it_fail("T287", "thread A create"); return; }
-    for (int i = 0; i < 200 && !g_t285_ready; i++) it_sys0(SYS_YIELD);
+    IT_AWAIT(g_t285_ready, 200);
     if (!g_t285_ready || g_t285_tcb < 0) { it_fail("T287", "A tcb self"); return; }
     handle_id_t a_h = (handle_id_t)g_t285_tcb;
 
@@ -1849,7 +1849,7 @@ void test_t287(void) {
         uint64_t rsp_b   = ((uint64_t)(uintptr_t)(g_t287_stack + sizeof(g_t287_stack))) & ~0xFULL;
         long tid_b = it_thread_create(entry_b, rsp_b, IT_THREAD_ARG_SELF_TCB);
         if (tid_b < 0) { ok = 0; why = "thread B create"; }
-        for (int i = 0; ok && i < 200 && !g_t287_ready; i++) it_sys0(SYS_YIELD);
+        if (ok) IT_AWAIT(g_t287_ready, 200);
         if (ok && (!g_t287_ready || g_t287_tcb < 0)) { ok = 0; why = "B never ran"; }
         uint32_t id_b = 0u;
         if (ok) {
@@ -2269,7 +2269,7 @@ void test_t294(void) {
             != (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "occupied deep slot"; }
     }
 
-    for (int i = 0; i < 200 && !g_t294_done; i++) it_sys0(SYS_YIELD);
+    IT_AWAIT(g_t294_done, 200);
     if (ok && (!g_t294_done || g_t294_s1 != 0)) { ok = 0; why = "sender"; }
 
     it_slot_delete((uint32_t)T294_CPTR);
@@ -2385,7 +2385,7 @@ void test_t297(void) {
     }
     g_t297_ran = 0;
     if (ok && it_invoke0(tcb, INV_TCB_RESUME) != 0) { ok = 0; why = "resume"; }
-    for (int i = 0; ok && i < 200 && !g_t297_ran; i++) it_sys0(SYS_YIELD);
+    if (ok) IT_AWAIT(g_t297_ran, 200);
     if (ok && !g_t297_ran) { ok = 0; why = "never ran"; }
 
     /* Its entry frame is frozen now: it is standing on that kernel stack. */

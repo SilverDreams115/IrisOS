@@ -1045,8 +1045,11 @@ void test_t308(void) {
         ok = 0; why = "arm server timeout";
     }
 
-    /* Let the server reach EP_RECV before anybody calls it. */
-    for (int i = 0; ok && i < 50 && !g_t308_served; i++) (void)it_sys0(SYS_YIELD);
+    /* Let the server reach EP_RECV before anybody calls it.  A plain delay and
+     * not an IT_AWAIT: `g_t308_served` is set AFTER the server's receive
+     * returns, which cannot happen until the client below exists, so there is
+     * no condition here to wait ON. */
+    if (ok) it_settle(1);
 
     /* The client: a small budget in a long period, so what the server spends
      * is visibly the CLIENT's and runs out quickly. */
@@ -1162,7 +1165,7 @@ void test_t309(void) {
     if (ok && it_invoke1(sc, INV_SC_BIND, cli) != 0)           { ok = 0; why = "sc bind"; }
 
     /* Bounded: a server that stops after one request never sets done. */
-    for (int i = 0; ok && i < 4000 && !g_t309_done; i++) (void)it_sys0(SYS_YIELD);
+    if (ok) IT_AWAIT(g_t309_done, 4000);
 
     if (ok && !g_t309_done) {
         ok = 0;
@@ -1392,7 +1395,7 @@ void test_t312(void) {
         }
     }
     if (ok) {
-        for (int i = 0; i < 4000 && !g_t312_done; i++) (void)it_sys0(SYS_YIELD);
+        IT_AWAIT(g_t312_done, 4000);
         if (!g_t312_done) { ok = 0; why = "child never ran"; }
     }
 
@@ -1549,7 +1552,7 @@ void test_t313(void) {
                                 ((uint64_t)(uintptr_t)(g_t313_srv_stack +
                                     sizeof(g_t313_srv_stack))) & ~0xFULL, IT_THREAD_ARG_SELF_TCB);
     if (srv < 0) { ok = 0; why = "server thread"; }
-    for (int i = 0; ok && i < 2000 && !g_t313_srv_ready; i++) (void)it_sys0(SYS_YIELD);
+    if (ok) IT_AWAIT(g_t313_srv_ready, 2000);
     if (ok && !g_t313_srv_ready) { ok = 0; why = "server never registered"; }
     if (ok && g_t313_srv_err)    { ok = 0; why = "server registration failed"; }
 

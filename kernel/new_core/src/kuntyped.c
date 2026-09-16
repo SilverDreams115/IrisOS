@@ -319,7 +319,11 @@ void kuntyped_release_child(void *obj_ptr, uint64_t obj_bytes) {
 iris_error_t kuntyped_alloc_children_atomic(struct KUntyped *u,
                                             uint64_t obj_bytes,
                                             uint32_t count,
-                                            void **out_ptrs) {
+                                            void **out_ptrs,
+                                            uint64_t *out_start,
+                                            uint64_t *out_end) {
+    if (out_start) *out_start = 0;
+    if (out_end)   *out_end   = 0;
     if (!u || !obj_bytes || !count || !out_ptrs) return IRIS_ERR_INVALID_ARG;
     if (count > KUNTYPED_RETYPE_MAX_COUNT) return IRIS_ERR_INVALID_ARG;
     if (u->is_device) return IRIS_ERR_NOT_SUPPORTED; /* U11: no kernel objects in device memory */
@@ -348,6 +352,11 @@ iris_error_t kuntyped_alloc_children_atomic(struct KUntyped *u,
         out_ptrs[i] = blk + KUNTYPED_ALIGN;
     }
     atomic_fetch_add_explicit(&u->child_count, count, memory_order_relaxed);
+    /* The window this call reserved, read under the hold that reserved it.
+     * A caller reading `u->used` on its own gets a window that includes
+     * whatever another processor carved in between. */
+    if (out_start) *out_start = start;
+    if (out_end)   *out_end   = start + total;
     irq_spinlock_unlock(&u->lock, flags);
 
     /* One parent lifecycle retain per child (released by kuntyped_release_child). */

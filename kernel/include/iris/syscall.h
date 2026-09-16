@@ -2209,7 +2209,22 @@ struct iris_tcb_info {
     uint32_t task_id;
     uint8_t  priority;
     uint8_t  state;    /* task_state_t cast to uint8_t */
-    uint8_t  _pad[2];
+    /*
+     * Which processor this thread runs on (SMP roadmap §9.3 step 5).
+     *
+     * Chosen once, when the TCB is configured, and constant thereafter —
+     * nothing migrates a thread, because a kernel that moves threads has to
+     * decide when and "when" is a ring-3 policy.  Reported because a holder
+     * that cannot see it cannot tell "these two threads contend" from "these
+     * two threads take turns", and the adversarial tests need the difference:
+     * a race test whose threads happen to share a core tests nothing and
+     * passes.
+     *
+     * It fills the first of two padding bytes, so a caller compiled against
+     * the older struct reads the same size and the same fields.
+     */
+    uint8_t  home_cpu;
+    uint8_t  _pad[1];
 };
 #endif
 

@@ -152,15 +152,34 @@ uint32_t kuntyped_live_count(void);
  *
  * out_ptrs[i] receives the object area of child i (block + KUNTYPED_ALIGN).
  * Children are destroyed individually via kuntyped_release_child.
+ *
+ * `out_start` / `out_end` report the carve window, and they are outputs rather
+ * than something the caller reads for itself (SMP roadmap §9.3 step 5).
+ *
+ * The caller used to bracket this call with two separate reads of `u->used` —
+ * one before, one after — which is the same window on one processor and a
+ * DIFFERENT one on four: another core's carve lands in between, so the window
+ * covers somebody else's block as well as this caller's.  The rollback then
+ * un-bumps both, and the other core's object is sitting in memory the
+ * allocator has just handed back.  Two cores build objects in one block, one
+ * destroys it, and the second release finds a header full of zeroes.
+ *
+ * Only this function can answer the question, because only this function holds
+ * the lock across the decision and the bump.  Either may be NULL.
  */
 iris_error_t kuntyped_alloc_children_atomic(struct KUntyped *u,
                                             uint64_t obj_bytes,
                                             uint32_t count,
-                                            void **out_ptrs);
+                                            void **out_ptrs,
+                                            uint64_t *out_start,
+                                            uint64_t *out_end);
 
 /* Phase S1: exact rollback of a batch that could not be published.  Only
  * succeeds when no later carve happened (used == the batch end); the caller
- * must already have released every child (child_count decremented). */
+ * must already have released every child (child_count decremented).
+ *
+ * That condition is the whole safety of it, so the window has to be the one
+ * the allocator actually reserved — see the note above. */
 void kuntyped_unbump_exact(struct KUntyped *u, uint64_t start_used,
                            uint64_t end_used);
 

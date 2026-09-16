@@ -2547,6 +2547,39 @@ extern uint32_t g_it_pool_evict_by_type[20];
 long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg);
 long it_cs_badge(long src_cptr, uint32_t rights, uint32_t badge);
 long it_cs_reduce(long src_cptr, uint32_t rights);
+/*
+ * IT_AWAIT(cond, yields) — wait until `cond`, the way the loop it replaces did,
+ * and then a little longer in REAL TIME.
+ *
+ * It replaces `for (i = 0; i < yields && !cond; i++) yield;`.  On one
+ * processor that loop was a real wait: every yield is a dispatch, so counting
+ * yields and counting the other thread's turns are the same count.  On four it
+ * is that many fast syscalls on THIS core, all of which can complete before the
+ * core the other thread is on has taken a single timer interrupt — and the loop
+ * falls through having waited for nothing.
+ *
+ * So the yields stay, unchanged and with their original count, and ONE
+ * scheduler tick is added after them.  The count is kept rather than replaced
+ * because it is what makes this affordable: a condition that was going to come
+ * true still costs exactly what it used to, and only a wait that would
+ * otherwise have FAILED pays the tick.  Replacing the count with a time budget
+ * outright made the suite five times slower on four processors — several of
+ * these sit inside per-round loops, so a wait that always paid its full budget
+ * multiplied by the round count.
+ *
+ * The condition is checked before the first yield, exactly as the loop did.
+ */
+#define IT_AWAIT_TAIL_SPINS 200000u
+struct it_await { long t0; uint32_t yields; uint32_t spins; };
+void it_await_open(struct it_await *w, uint32_t yields);
+int  it_await_more(struct it_await *w);
+#define IT_AWAIT(cond, yields)                        \
+    do {                                              \
+        struct it_await it_aw_;                       \
+        it_await_open(&it_aw_, (yields));             \
+        while (!(cond) && it_await_more(&it_aw_)) { } \
+    } while (0)
+
 void it_settle(uint32_t rounds);
 long it_timer_uptime(uint64_t *out_ns);
 long it_wait_timeout(long notif, long out_bits_uptr, long ns);
@@ -3026,6 +3059,10 @@ void test_t343(void);
 void test_t344(void);
 void test_t345(void);
 void test_t346(void);
+void test_t347(void);
+void test_t348(void);
+void test_t349(void);
+void test_t350(void);
 void test_t324(void);
 void test_t319(void);
 void test_t296(void);
