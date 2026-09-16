@@ -6,6 +6,17 @@ EFI_ROOT="$PROJECT_ROOT/build/efi_root"
 LOG_FILE="${IRIS_QEMU_LOG:-$PROJECT_ROOT/build/qemu-headless.log}"
 TIMEOUT_SECS="${IRIS_QEMU_TIMEOUT_SECS:-25}"
 EXPECT_SELFTESTS="${IRIS_QEMU_EXPECT_SELFTESTS:-0}"
+SMP="${IRIS_QEMU_SMP:-1}"
+
+# More processors, more wall clock — and it is QEMU that needs it, not IRIS.
+# TCG emulates every vCPU on one host thread apiece and multiplexes them, so a
+# four-processor guest runs the same work at roughly a third of the speed while
+# doing strictly more of it (three extra cores taking a timer tick each).  A
+# caller who asks for four CPUs and the same deadline is asking for a timeout,
+# and a timeout reads exactly like a hang.
+if [ "$SMP" -gt 1 ]; then
+  TIMEOUT_SECS=$(( TIMEOUT_SECS * SMP ))
+fi
 
 pick_first() {
   for f in "$@"; do
@@ -52,7 +63,7 @@ set +e
 timeout "${TIMEOUT_SECS}s" qemu-system-x86_64 \
   -machine q35 \
   -cpu max \
-  -smp "${IRIS_QEMU_SMP:-1}" \
+  -smp "$SMP" \
   -m 512M \
   -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
   -drive if=pflash,format=raw,file="$PROJECT_ROOT/build/OVMF_VARS.headless.fd" \
@@ -75,7 +86,7 @@ fi
 # The MADT walk must find exactly the processors QEMU was told to create.
 # Getting this wrong is quiet: the kernel runs perfectly well believing a
 # four-CPU machine has one, and would simply never start the other three.
-EXPECT_CPUS="${IRIS_QEMU_SMP:-1}"
+EXPECT_CPUS="$SMP"
 if ! grep -Fq "[IRIS][ACPI] processors: ${EXPECT_CPUS}" "$LOG_FILE"; then
   echo "[headless] ACPI reported the wrong processor count (wanted ${EXPECT_CPUS}):"
   grep -F "[IRIS][ACPI]" "$LOG_FILE" | sed 's/^/           /'
@@ -95,6 +106,26 @@ if [ "$EXPECT_CPUS" -gt 1 ] && \
   echo "           AP_TRAMPOLINE_TRACE in ap_trampoline.S prints each stage."
   cat "$LOG_FILE"
   exit 1
+fi
+
+# ...and every one of them has to actually SCHEDULE, which is a different claim
+# (SMP roadmap 9.3 step 4).  A processor that arrived, took its GDT and then
+# halted was online too: `online=4 dispatching=1` is a machine running on one
+# core that passes every gate above.  T346 prints both; this is the gate.
+#
+# Only when the suite ran — T346 is part of it — so a plain runtime smoke is
+# unaffected.
+if [ "$EXPECT_CPUS" -gt 1 ] && grep -Fq "[IRIS][TEST] T346 online=" "$LOG_FILE"; then
+  t346_line="$(grep -F "[IRIS][TEST] T346 online=" "$LOG_FILE" | tail -1)"
+  t346_online="$(printf '%s' "$t346_line" | sed -n 's/.*online=\([0-9]*\).*/\1/p')"
+  t346_disp="$(printf '%s' "$t346_line" | sed -n 's/.*dispatching=\([0-9]*\).*/\1/p')"
+  if [ "$t346_online" != "$EXPECT_CPUS" ] || [ "$t346_disp" != "$EXPECT_CPUS" ]; then
+    echo "[headless] processors are online but not all of them schedule:"
+    echo "           $t346_line"
+    echo "           wanted online=${EXPECT_CPUS} dispatching=${EXPECT_CPUS}"
+    cat "$LOG_FILE"
+    exit 1
+  fi
 fi
 
 if ! grep -Fq "[SVCMGR] ready" "$LOG_FILE"; then

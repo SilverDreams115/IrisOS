@@ -126,11 +126,18 @@ jobs:
       - name: Run selftest-enabled headless runtime smoke
         run: IRIS_QEMU_TIMEOUT_SECS=60 make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests
 
-      # A four-CPU machine, all four started.  The script gates both halves:
-      # that the MADT walk finds four, and that four actually ARRIVED.  A
-      # processor that fails to start is reported and left alone rather than
-      # hung on, so without the second gate a machine quietly running on half
-      # its cores looks exactly like a healthy one (SMP roadmap 9.3 step 3).
+      # A four-CPU machine, all four started, all four SCHEDULING.  The script
+      # gates three separate claims, and they fail independently:
+      #   · the MADT walk finds four processors;
+      #   · four actually ARRIVED — one that fails to start is reported and
+      #     left alone rather than hung on, so without this a machine quietly
+      #     running on half its cores looks exactly like a healthy one
+      #     (SMP roadmap 9.3 step 3);
+      #   · T346's `online=4 dispatching=4` — a processor that arrived and then
+      #     halted is online too, and passes both gates above (step 4).
+      # The timeout is not scaled here: the script multiplies it by the core
+      # count, because TCG emulates four vCPUs at roughly a third of the speed
+      # while doing strictly more work, and a timeout reads exactly like a hang.
       - name: Runtime smoke on a 4-CPU machine
         run: IRIS_QEMU_TIMEOUT_SECS=60 IRIS_QEMU_SMP=4 make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests
 
