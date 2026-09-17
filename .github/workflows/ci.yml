@@ -123,8 +123,16 @@ jobs:
             qemu-system-x86 \
             coreutils
 
+      # 180s, not 60.  The suite takes about fifty seconds of wall clock on one
+      # processor now and a hosted runner is not faster than a workstation at
+      # TCG: Stage 9 step 5's adversarial tests wait out eight ticks of REAL
+      # time apiece, and Stage 10-dma step 6's driver waits out six DMA
+      # transfers the device schedules a hundred milliseconds apart.  The
+      # number is a CEILING and also a cost — `-no-shutdown` means qemu always
+      # runs until the deadline — so it is set once with headroom rather than
+      # trimmed to the last measurement.
       - name: Run selftest-enabled headless runtime smoke
-        run: IRIS_QEMU_TIMEOUT_SECS=60 make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests
+        run: IRIS_QEMU_TIMEOUT_SECS=180 make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests
 
       # A four-CPU machine, all four started, all four SCHEDULING.  The script
       # gates three separate claims, and they fail independently:
@@ -139,7 +147,7 @@ jobs:
       # count, because TCG emulates four vCPUs at roughly a third of the speed
       # while doing strictly more work, and a timeout reads exactly like a hang.
       - name: Runtime smoke on a 4-CPU machine
-        run: IRIS_QEMU_TIMEOUT_SECS=60 IRIS_QEMU_SMP=4 make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests
+        run: IRIS_QEMU_TIMEOUT_SECS=180 IRIS_QEMU_SMP=4 make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests
 
       - name: Upload selftest runtime serial log
         if: always()

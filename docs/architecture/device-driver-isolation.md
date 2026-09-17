@@ -110,6 +110,11 @@ the machine has a remapping unit; on one that does not, the kernel says so
 (`DMA is unrestricted on this machine`) rather than reporting containment it
 cannot deliver.
 
+And that is watched rather than asserted: **T353** drives a real DMA-capable
+device at a real frame and checks the memory afterwards, in both
+configurations.  See the bottom of this document for what it does and does not
+establish.
+
 If `kbd` is fully compromised it can: read/write ports 0x60–0x64, wait on and
 ack IRQ1, and serve/receive on its own endpoint.  It CANNOT: reach any other
 port (cap range-bounded), route or ack any other IRQ (cap embeds line 1, and it
@@ -197,13 +202,18 @@ IRQ 5 (unused) as the dummy line.
   gauge).  A dedicated killable-router test would need a proc-ROUTE cap.
 - **MMIO beyond the framebuffer**: IRIS has no general MMIO-cap model yet; when
   one is added it must carry the same range-bounded, rights-checked contract.
-- **The DMA containment is not WATCHED to work**: no device under IRIS's
-  control issues DMA in the test environment, so T351 and T352 assert what the
-  kernel accepted, refused and wrote into the translation tables — not a bus
-  transaction that failed.  The unit's fault-status register is reported for
-  exactly this reason: a non-zero value would be a device that tried and was
-  refused, the one piece of direct evidence available here.  Closing this needs
-  a driver for a DMA-capable device.
+- ~~**The DMA containment is not WATCHED to work**~~ — closed by **T353**.
+  It is now: QEMU's `edu` DMA engine is attached on every headless run and T353
+  is a ring-3 driver for it, which finds the device by scanning PCI
+  configuration space through a port capability, maps its BAR uncached out of
+  the PCI-hole device Untyped, and points its DMA engine at a frame.  With a
+  remapping unit and no `IOSpace` mapping the target frame is untouched and the
+  unit's fault record names the device's source-id; with the frame mapped the
+  transfer arrives; revoking the mapping refuses it again.  On a machine with
+  no unit the same driver reaches memory nobody granted it, which is the other
+  half of the claim and the reason the device is attached to those runs too.
+  What remains open is that the device is EMULATED: real VT-d errata, and
+  devices behind bridges whose source-id is not their devfn, are not exercised.
 
 ## Adding a new driver without widening authority
 

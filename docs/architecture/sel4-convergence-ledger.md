@@ -2365,13 +2365,60 @@ either.  Enumeration is what ring 3 needs to make this USEFUL; it is not what
 the kernel needs to make it SAFE, and a bus scanner in the kernel would have
 bent charter P1/P2 for nothing.
 
-**And the limit, which belongs in the same breath as the claim**: nothing in
-the test environment watches a device be refused.  There is no DMA engine under
-IRIS's control, so every assertion is about what the kernel accepted, refused,
-and wrote into the translation tables.  The hardware's fault-status register is
-read and reported because a non-zero value would be the one piece of direct
-evidence available — and it is reported rather than required, because nothing
-here can make a device try.
+**The limit that used to go in the same breath as the claim is gone.**  It read:
+nothing in the test environment watches a device be refused, there is no DMA
+engine under IRIS's control, so every assertion is about what the kernel
+accepted, refused and wrote into the translation tables.  That was true and it
+mattered, because all of it is consistent with hardware that ignored the
+kernel completely.
+
+**D-11 — a device is watched being refused (Stage 10-dma §10.2 step 6).**
+QEMU's `edu` DMA engine is on the command line of every headless run and
+**T353** is a ring-3 driver for it: an I/O-port capability for 0xCF8/0xCFC, a
+bus scan that finds 1234:11e8, a frame retyped over the window the firmware
+assigned its BAR out of the PCI-hole device Untyped and mapped uncached, and a
+DMA target frame retyped from the suite's own Untyped.  One frame, two halves:
+the processor writes a pattern into the first, the device is told to copy it
+through its internal buffer into the second, and what the second half holds
+afterwards is the answer.  With a unit and no mapping the sentinel stands and
+the unit's fault record names source-id 0x10; with the frame mapped the pattern
+arrives; with the mapping revoked the sentinel stands again; with no unit at
+all the pattern arrives with nobody having granted anything.  The middle cases
+are what make the first mean something — an untouched sentinel is also what a
+DMA that was never issued looks like.
+
+**What the driver found, which is the reason to write drivers.**  Three
+defects, all pre-existing, none reachable from steps 1–5:
+
+- `paging_virt_to_phys` returned `entry & ~0xFFF`, which strips a page-table
+  entry's LOW flags and keeps every high one — so every physical address it
+  produced for a non-executable page carried **NX at bit 63**.  Harmless for
+  every caller that compared it against zero or fed it into another walk;
+  fatal the first time such an address was written into a VT-d root entry,
+  whose bits 63:39 are reserved.  The unit answered fault reason 10 and refused
+  every device on the bus.  `PAGE_PA_MASK` / `PAGE_PA_MASK_2M` now name the
+  address field, and the AP trampoline's CR3 was carrying the same passenger.
+- The I/O-port ABI had **only byte-wide** `IN`/`OUT`, and PCI configuration
+  space is reached through a 32-bit index register that discards anything
+  narrower — so the kernel could not host a PCI driver at all.
+  `INV_IOPORT_IN16/OUT16/IN32/OUT32` are seL4's `seL4_X86_IOPort_In8/16/32`
+  family; the range check became `offset + width <= count`, because a dword
+  read at the last byte of a range reads three bytes the capability does not
+  cover.
+- Every frame mapping was write-back.  `SYS_FRAME_MAP` flag bit 2 now asks for
+  an uncached one (`PAGE_PCD | PAGE_PWT`), which is a property of the MAPPING
+  and not of the frame.
+
+`INV_IOSPACE_FAULT` is new and is not a defect: it reports the unit's fault
+RECORD — source-id, address, reason, direction — on the IOSPACE_CONTROL
+authority, because "a fault happened" and "MY device was refused" are different
+claims and only the second is worth anything to a driver.
+
+**And the limit that remains**: the device is emulated.  What T353 establishes
+is that IRIS programs a VT-d unit correctly enough that a bus master behind it
+reaches exactly the frames somebody mapped, as QEMU implements VT-d.  Real
+errata, and devices behind bridges whose source-id is not their devfn, are not
+exercised.  The bus scan is bus 0 function 0 because that is the machine.
 
 ## Non-regression guard
 
@@ -2416,6 +2463,12 @@ here can make a device try.
   the derivation edges travel with the capability — including a parent swapped
   with its own child, the case the implementation's stack temporary exists
   for.  A naive content-only swap fails it.
+- T353 pins that DMA containment is real and not merely programmed: the same
+  driver, the same device and the same frame produce an untouched sentinel with
+  no IOSpace mapping and the transferred pattern with one, and the machine with
+  no remapping unit shows what that costs.  The headless gate requires the
+  device to have been FOUND on every selftest run, because a `-device edu`
+  dropped from the command line would otherwise read as a green run.
 - T260 pins the retirement of the create syscalls and their no-effect.
 - T125/T126 pin the rejection of the migrated family on the legacy retype.
 - The `IRIS_KOBJ_* == KOBJ_*` asserts pin the type ABI.

@@ -490,6 +490,11 @@ working:
   the space takes the reach back, from the unit's translation cache as well as
   the tables.  Without this, user-space drivers are contained only on paper: a
   driver holding an I/O port capability can program a device to write anywhere.
+  Watched, not asserted: a ring-3 driver in the test suite enumerates PCI,
+  finds a DMA-capable device, maps its BAR and points its DMA engine at a
+  frame — which is refused with no mapping, arrives with one, and is refused
+  again once the mapping is revoked.  On a machine with no remapping unit the
+  same driver reaches memory nobody granted it.
 - **IRQ delivery**: seL4-style deferred ACK — kernel masks + EOIs, signals a
   `KNotification`, the ring-3 handler reads hardware and calls `SYS_IRQ_ACK`.
 - **Hardening**: `-fstack-protector-strong` with RDTSC-seeded per-service
@@ -560,7 +565,7 @@ make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
 make test-unit                                             # host unit suites (27418)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (305/305)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (320/320)
 make run                                                   # interactive QEMU
 ```
 

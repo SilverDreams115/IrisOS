@@ -804,18 +804,27 @@ smoke:
 smoke-runtime: all
 	bash scripts/run_qemu_headless.sh
 
+# The budget is 90s and a caller's own is honoured.
+#
+# It was a hardcoded 35, which stopped being enough twice over: Stage 9 step 5
+# added four adversarial tests that wait out eight ticks of REAL time apiece,
+# and Stage 10-dma step 6 added a driver that waits out six DMA transfers the
+# device schedules a hundred milliseconds apart.  The suite takes about fifty
+# seconds on one processor now.  A hardcode also silently ignored the
+# `IRIS_QEMU_TIMEOUT_SECS=60` that CI passes on the command line, which is how
+# a lane can be tuned and never change.
 smoke-runtime-selftests: all
-	IRIS_QEMU_TIMEOUT_SECS=35 IRIS_QEMU_EXPECT_SELFTESTS=1 \
+	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-90}" IRIS_QEMU_EXPECT_SELFTESTS=1 \
 		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-selftests.log \
 		bash scripts/run_qemu_headless.sh
 
 smoke-full: all
-	IRIS_QEMU_TIMEOUT_SECS=90 \
+	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-90}" \
 		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-full.log \
 		bash scripts/run_qemu_headless.sh
 
 smoke-full-selftests: all
-	IRIS_QEMU_TIMEOUT_SECS=90 IRIS_QEMU_EXPECT_SELFTESTS=1 \
+	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-90}" IRIS_QEMU_EXPECT_SELFTESTS=1 \
 		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-full-selftests.log \
 		bash scripts/run_qemu_headless.sh
 

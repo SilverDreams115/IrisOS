@@ -72,7 +72,7 @@ against seL4 turned up, including one A9 defect it fixed.
 | 11-life — object lifetime (D-7) | ✅ SEMANTICS CLOSED — an object exists exactly while a capability names it, measured for every type (T322), over generated MDB shapes (T323) and through a CSpace cycle (T321).  The MECHANISM stays a refcount, registered as a permanent divergence; the one disagreement it produced (a donated scheduling context released twice) is fixed and T324 reads every pool slot each run to catch the next |
 | 13-form — the four FORM divergences (A-20's audit) | ✅ 3 of 4 CLOSED, the fourth decided.  **A-21** address-space identity is `ASIDControl`/`ASIDPool`; **A-22** a fault is an IPC message on an endpoint answered by a reply capability; **A-24** the kernel cannot block a thread on time — waiting is a ring-3 service — with **A-23** (`seL4_TCB_BindNotification`) as its enabler and **A-25** (`CancelBadgedSends`) closing the audit's last item.  The fourth, the ABI SHAPE, is a permanent deliberate divergence (charter §4) |
 | 9 — SMP | ✅ **All 5 steps done.**  §9.1 hierarchy and §9.2 catalog written and enforced (`make check-locks`); step 1 (the one-core kernel made SMP-correct), step 2 (TLB shootdown), step 3 (APs discovered and started), step 4 (they schedule — `online=4 dispatching=4`), step 5 (the adversarial phase — four tests aiming four cores at one object, which found four real defects: a rollback that freed another core's memory, a release-then-use, a teardown gate that was not atomic, and a dispatch that overwrote a Suspend).  Full suite green on `-smp 1` and `-smp 4`.  What remains is NOT mechanism: the model-based fuzzer is not yet aimed at N cores, and §9.4's limit stands — TCG interleaves, it does not reorder |
-| 10-dma — device authority must be containable | ✅ **All 6 steps done.**  The DMAR is parsed and the units probed; translation is ENABLED with every device blocked; `KIOSpace` and `KIOPageTable` are retyped objects and `IOSpaceControl` a BootInfo authority; a frame mapped into an IOSpace is what a device may reach, and unmapping or destroying the space takes it back — from the unit's translation cache as well as the table.  **T351** pins containment, **T352** the whole arc.  What it cannot prove is in §10.2 step 6: no device under IRIS's control issues DMA here, so nothing watches one be refused |
+| 10-dma — device authority must be containable | ✅ **All 6 steps done**, a device is watched being refused.  The DMAR is parsed and the units probed; translation is ENABLED with every device blocked; `KIOSpace` and `KIOPageTable` are retyped objects and `IOSpaceControl` a BootInfo authority; a frame mapped into an IOSpace is what a device may reach, and unmapping or destroying the space takes it back — from the unit's translation cache as well as the table.  **T351** pins containment, **T352** the whole arc, and **T353** is a ring-3 driver for a real bus master that is refused without a mapping, reaches exactly the frame it is granted, and is refused again when it is revoked — on a machine with no unit the same driver reaches memory nobody granted it.  The driver cost three pre-existing defects: an NX bit riding in every physical address `paging_virt_to_phys` returned, a port ABI with no width above a byte, and no way to map a BAR uncached |
 | 10 — General-purpose platform | pending |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
@@ -2624,19 +2624,87 @@ mapped twice refused, unmapped, unmapped twice refused — and then a frame
 mapped and the SPACE destroyed with the mapping live, where the baseline is
 what proves every object came back.
 
-**Step 6 — say what this cannot prove.**  ✅ **DONE**, and it is this
-paragraph.  There is no DMA engine under IRIS's control in the test
-environment, so nothing here watches a device be refused.  Every claim is about
-what the kernel ACCEPTED and REFUSED and about what the translation tables say
-— not about a bus transaction that failed.  The hardware's own fault status
-register is read and reported for exactly this reason: a non-zero value would
-be a device that DID try and was refused, which is the one piece of direct
-evidence this environment can produce, and it is reported rather than required
-because nothing here is in a position to make a device try.
+**Step 6 — watch a device be refused.**  ✅ **DONE.**
 
-What would close that gap is a driver for a DMA-capable device under IRIS's
-control — which is Stage 10's work, not this stage's, and is named here so the
-distinction survives.
+This step used to be a paragraph saying what the stage could not prove.  It
+said: there is no DMA engine under IRIS's control in the test environment, so
+nothing here watches a device be refused; every claim is about what the kernel
+ACCEPTED and REFUSED and about what the translation tables say, not about a bus
+transaction that failed.  That was honest and it was a hole, because every
+other check in the stage is consistent with a kernel that programmed the
+hardware perfectly and was ignored by it.
+
+There is a device now.  `-device edu` is on the QEMU command line of every
+headless run — a PCI function with one MMIO BAR, a four-kilobyte internal
+buffer and a DMA engine that copies between that buffer and whatever physical
+address a driver writes into its registers — and **T353** is a ring-3 driver
+for it.  The driver derives an I/O-port capability for 0xCF8/0xCFC, enumerates
+bus 0, finds 1234:11e8, reads the window its BAR decodes, retypes a frame over
+that window out of the PCI-hole device Untyped, maps it uncached, checks the
+device answers through it, and points the device's DMA engine at a frame it
+retyped from its own Untyped.
+
+The proof is one frame with two halves.  The processor writes a pattern into
+the first half; the device is told to copy that pattern into its buffer and
+copy it back out into the second half, which holds a sentinel.  Reading the
+second half afterwards needs no interpretation:
+
+| configuration | what the second half holds |
+| --- | --- |
+| a unit, no IOSpace mapping | the sentinel, untouched — and the unit's fault record names source-id 0x10 |
+| a unit, the frame mapped | the pattern — the device reached exactly what it was granted |
+| a unit, the mapping revoked | the sentinel again — and a second fault record |
+| **no unit at all** | the pattern — the device reached memory nobody granted it |
+
+The middle rows are what make the first one mean anything.  A sentinel left
+standing is also what a DMA that was never issued looks like, and a test that
+stopped there would pass just as happily against a device that was not present.
+The only thing that differs between the first row and the second is one
+`INV_IOSPACE_MAP_FRAME`.  The last row is not a fallback but the other half of
+the claim, and it is why the device is attached on runs with no IOMMU too: a
+suite that could only be run in the configuration that passes is evidence of
+nothing.  `scripts/run_qemu_headless.sh` requires the device line on every
+selftest run and each configuration's own markers.
+
+**What the driver cost, which is the part worth keeping.**  Three defects, all
+of them pre-existing and none of them findable by anything in steps 1–5:
+
+1. `paging_virt_to_phys` returned `entry & ~0xFFF`, which clears the low flags
+   of a page-table entry and keeps every HIGH one — so the "physical address"
+   of any non-executable page had **NX set at bit 63**.  Every caller in the
+   kernel had got away with it, because they compared the result against zero
+   or fed it back into another walk that masked it again.  The first caller to
+   hand such an address to HARDWARE was `iommu_context_set`, writing a VT-d
+   root entry whose bits 63:39 are reserved: the unit answered with fault
+   reason 10 and refused every device on the bus, in both arms of the test.
+   Fixed with `PAGE_PA_MASK` / `PAGE_PA_MASK_2M` in `paging.h`, applied to
+   every walk; the AP trampoline's CR3 was carrying the same passenger.
+2. The I/O-port ABI had **only byte-wide** `IN`/`OUT`.  PCI configuration space
+   is reached through a 32-bit index register at 0xCF8 that discards anything
+   narrower, so a byte-at-a-time driver writing the four bytes of a config
+   address writes four values that are each thrown away: the kernel could not
+   host a PCI driver at all.  `INV_IOPORT_IN16/OUT16/IN32/OUT32` are seL4's
+   `seL4_X86_IOPort_In8/16/32` family, and the range check had to become
+   `offset + width <= count` — a dword read at the last byte of a range reads
+   three bytes the capability does not cover.
+3. Every frame mapping was **write-back**.  A driver mapping a BAR needs the
+   opposite, so `SYS_FRAME_MAP` grew flag bit 2 for an uncached mapping
+   (`PAGE_PCD | PAGE_PWT`).  It is a property of the MAPPING, not of the frame.
+
+Plus one addition that is not a defect: `INV_IOSPACE_FAULT`, on the
+IOSPACE_CONTROL authority, reporting the unit's fault RECORD — source-id,
+address, reason, direction — rather than only the status bit `SYS_SCHED_INFO`
+already exposed.  "A fault happened" and "MY device was refused" are different
+claims, and only the second is worth anything to a driver: an idle SATA
+controller touching memory nobody mapped for it sets the same status bit.
+
+**And what it still does not prove.**  The device is emulated.  What T353
+establishes is that IRIS programs a VT-d unit correctly enough that a bus
+master behind it reaches exactly the frames somebody mapped and nothing else,
+as QEMU implements VT-d.  A real unit has errata, a real machine has devices
+behind bridges whose source-id is not their devfn, and neither is exercised
+here.  The bus scan is bus 0, function 0, because that is the machine: a
+general enumerator would be code no test covers.
 
 ### 10.3 — What is NOT in this stage
 

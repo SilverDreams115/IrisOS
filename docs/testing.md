@@ -8,10 +8,10 @@ Four gates, and a green tree means all four — on **one processor and on four**
 
 | Layer | Command | Green means |
 |---|---|---|
-| Host unit tests | `make test-unit` | 27414 assertions across 28 suites, 0 failed |
+| Host unit tests | `make test-unit` | 27418 assertions across 28 suites, 0 failed |
 | Purity gate | `make check-purity` | allowlist respected; the kernel-memory-reachable closure is 26 functions and only ever shrinks |
 | Lock-order gate | `make check-locks` | 18 ranked locks, no inversions — it holds SMP roadmap §9.1's hierarchy and follows calls three hops |
-| Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests` | `SUITE PASS 319/319` plus the P3/P41 markers |
+| Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests` | `SUITE PASS 320/320` plus the P3/P41 markers |
 
 ### The IOMMU dimension
 
@@ -28,6 +28,16 @@ Both directions are gated: with a unit attached the kernel must FIND it and
 must CONTAIN with it (`DMA is contained`), and without one it must still say
 so — a kernel that silently found nothing and a kernel that silently skipped
 looking read the same from outside.
+
+A DMA-capable device (`-device edu`) is attached on **every** run, with or
+without a unit, and T353 is a ring-3 driver for it.  That is what turns the
+containment claim from a report into evidence: every other check says what the
+KERNEL did, and all of it is consistent with hardware that ignored it.  Each
+configuration has its own required marker — `T353 refused sid` / `granted:` /
+`revoked:` with a unit, `T353 no unit: the device reached` without one — and
+the line naming the device is required on every selftest run, because a
+`-device edu` dropped from the command line would otherwise read as a green
+run with T353 passing trivially.
 
 **T351** and **T352** are the ring-3 half, and both run on either machine.  On
 one with no unit they assert the opposite claim: nothing translating, no
