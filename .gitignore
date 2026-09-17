@@ -45,3 +45,4 @@ AGENTS.md
 # Local agent state
 .codex
 .claude/
+build/iris-disk.img

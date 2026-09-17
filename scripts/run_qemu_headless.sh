@@ -51,6 +51,28 @@ EDU_ARGS=(-device edu,dma_mask=0xffffffffff)
 # netdev are contradictory, and QEMU obeys the last word.
 NET_ARGS=(-device e1000,netdev=n0 -netdev user,id=n0)
 
+# A disk IRIS OWNS, separate from the one it boots from.
+#
+# The boot drive is `fat:rw:` — a filesystem QEMU synthesises from a host
+# directory.  Reading it proves a driver works, and writing it proves nothing
+# useful: the image is generated, so what lands there is not a fact about
+# persistence.  A filesystem that PERSISTS needs a medium that is just bytes,
+# and it needs to be the same bytes on the next boot.
+#
+# So there is a second disk, a plain raw file this repository creates once and
+# then leaves alone.  It is the gate's evidence in both directions: IRIS writes
+# to it, and the HOST can read what IRIS wrote — which is a stronger claim than
+# IRIS reading back its own writes, because it does not depend on IRIS being
+# self-consistent about anything.
+IRIS_DISK="${IRIS_DISK_IMG:-$PROJECT_ROOT/build/iris-disk.img}"
+if [ ! -f "$IRIS_DISK" ]; then
+  # 8 MiB of zeroes.  The filesystem formats it on first boot; a zeroed image
+  # is how it tells "never formatted" from "formatted and empty".
+  dd if=/dev/zero of="$IRIS_DISK" bs=1M count=8 status=none
+fi
+DISK_ARGS=(-drive "file=$IRIS_DISK,format=raw,if=none,id=irisdisk"
+           -device ide-hd,drive=irisdisk,bus=ide.1)
+
 # A QEMU without it fails HERE, saying so.
 #
 # `-device edu` on a build that does not have the device makes QEMU exit before
@@ -131,11 +153,12 @@ rm -f "$LOG_FILE"
 # the marker is for whatever is still on its way into the file; the log is a
 # `-serial file:` and the marker is not the last line.
 set +e
-timeout "${TIMEOUT_SECS}s" qemu-system-x86_64 \
+qemu-system-x86_64 \
   -machine q35 \
   "${IOMMU_ARGS[@]}" \
   "${EDU_ARGS[@]}" \
   "${NET_ARGS[@]}" \
+  "${DISK_ARGS[@]}" \
   -cpu max \
   -smp "$SMP" \
   -m 512M \
@@ -147,18 +170,40 @@ timeout "${TIMEOUT_SECS}s" qemu-system-x86_64 \
   -monitor none \
   -no-reboot \
   -no-shutdown &
-qemu_wait_pid=$!
+qemu_pid=$!
 
-while kill -0 "$qemu_wait_pid" 2>/dev/null; do
+#
+# QEMU is run DIRECTLY, not under `timeout`, and that is not a simplification.
+#
+# `timeout` forwards a signal to its child and exits; `wait` then returns as
+# soon as the WRAPPER is gone, which is before qemu has exited.  Two things
+# went wrong because of that, and neither looked like a timing problem:
+#
+#   · the disk image was not flushed yet, so a host reading it straight after
+#     the run saw the state from the boot BEFORE the one that just finished;
+#   · qemu holds an exclusive lock on a raw image, so the NEXT boot could not
+#     open it and produced an empty log — a run that looked like a kernel that
+#     died before it reached the serial port.
+#
+# Waiting on qemu's own pid makes `wait` mean what it says.
+deadline=$(( SECONDS + TIMEOUT_SECS ))
+qemu_timed_out=0
+while kill -0 "$qemu_pid" 2>/dev/null; do
   if grep -Fq "[USER] init idle loop start" "$LOG_FILE" 2>/dev/null; then
     sleep 2
-    kill "$qemu_wait_pid" 2>/dev/null
+    kill "$qemu_pid" 2>/dev/null
+    break
+  fi
+  if [ "$SECONDS" -ge "$deadline" ]; then
+    qemu_timed_out=1
+    kill "$qemu_pid" 2>/dev/null
     break
   fi
   sleep 1
 done
-wait "$qemu_wait_pid"
+wait "$qemu_pid"
 qemu_rc=$?
+if [ "$qemu_timed_out" = "1" ]; then qemu_rc=124; fi
 set -e
 
 if ! grep -Fq "[IRIS][SCHED] running" "$LOG_FILE"; then
@@ -268,6 +313,19 @@ if [ "$EXPECT_SELFTESTS" = "1" ]; then
   # ...and the bytes that came off the disk are the bytes on it.  A command
   # that completed and a transfer that landed are different claims about a bus
   # master, and only the second is worth anything.
+  # ...and the system has NUMBERS.  Three of them, printed whether or not they
+  # pass, because the number is the point: a ceiling says nothing got
+  # catastrophically worse, and the log says what it actually costs.  These run
+  # under TCG on a machine nobody controls, so they are not hardware figures
+  # and are not presented as any.
+  if ! grep -Eq "^\[IRIS\]\[TEST\] T356 invoke [0-9]+ ns/op" "$LOG_FILE" ||
+     ! grep -Eq "^\[IRIS\]\[TEST\] T356 ipc [0-9]+ ns/op" "$LOG_FILE" ||
+     ! grep -Eq "^\[IRIS\]\[TEST\] T356 disk-read-512 [0-9]+ ns/op" "$LOG_FILE"; then
+    echo "[headless] the system was not measured"
+    grep -F "[IRIS][TEST] T356" "$LOG_FILE" | sed 's/^/           /'
+    cat "$LOG_FILE"
+    exit 1
+  fi
   if ! grep -Fq "[IRIS][TEST] T355 sector 0 read, boot signature ok" "$LOG_FILE"; then
     echo "[headless] the disk read did not produce the data that is on the disk"
     grep -F "[IRIS][TEST] T355" "$LOG_FILE" | sed 's/^/           /'
@@ -319,6 +377,23 @@ if ! grep -Eq "^\[IRIS\]\[ABI\] version [1-9][0-9]*\.[0-9]+ " "$LOG_FILE"; then
   exit 1
 fi
 
+# A filesystem, on a disk, written by a task that holds no hardware (Stage 10).
+#
+# `gen N` is how many times a boot has mounted this disk, read from the medium
+# and written back — so it is the number that makes persistence VISIBLE from
+# one run.  What one run cannot show is that it survived, which is what
+# `make smoke-persist` is for: it boots twice over one image and then reads the
+# image from the host.
+#
+# `file 1` is a round trip: init wrote a file through the filesystem, through
+# the block driver, through the controller, and read the same bytes back.
+if ! grep -Eq "^\[USER\]\[INIT\] fs: mounted gen [0-9]+ (formatted|existing) file 1$" "$LOG_FILE"; then
+  echo "[headless] no filesystem mounted, or a file did not round-trip:"
+  grep -F "fs:" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+
 # Networking: a ring-3 e1000 driver moved a frame in both directions (Stage 10).
 #
 # Two lines, and the second is the one that means something.  `link 1` says the
@@ -353,10 +428,12 @@ fi
 
 # Storage: a ring-3 AHCI driver brought a real disk up (Stage 10).
 #
-# Three claims in one line, and they fail apart.  `disk 1` means the driver
+# Three claims in one line, and they fail apart.  `disk N` is a COUNT of the
+# disks the driver brought up — this machine has two, the one it boots from and
+# the one the filesystem lives on — and a non-zero count means the driver
 # claimed its controller, built its command structures, brought a port up and
-# READ A SECTOR — it reports 0 if any of that failed, so a service that started
-# and could not drive anything does not read as success.  The source id is the
+# READ A SECTOR — a port that configured and could not read is not counted, so
+# a service that started and could not drive anything does not read as success.  The source id is the
 # controller's, which is what an IOSpace binds to.  And `dma contained` versus
 # `dma open` is the difference the IOMMU makes, seen from the one driver that
 # most needs it: AHCI takes physical addresses from its driver, so an
@@ -365,7 +442,7 @@ fi
 # The two arms are checked separately below, because "contained" on a machine
 # with no unit and "open" on a machine with one are both lies and neither would
 # be caught by looking for the line alone.
-if ! grep -Eq "^\[USER\]\[INIT\] blk: disk 1 sid 0x[0-9a-f]+ dma (contained|open)$" "$LOG_FILE"; then
+if ! grep -Eq "^\[USER\]\[INIT\] blk: disk [1-9] sid 0x[0-9a-f]+ dma (contained|open)$" "$LOG_FILE"; then
   echo "[headless] no ring-3 driver brought a disk up:"
   grep -F "blk:" "$LOG_FILE" | sed 's/^/           /'
   cat "$LOG_FILE"

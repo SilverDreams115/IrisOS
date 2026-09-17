@@ -416,6 +416,7 @@ void iris_test_main(iris_cptr_t rbx_unused) {
     test_t353();
     test_t354();
     test_t355();
+    test_t356();
     test_t324();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */

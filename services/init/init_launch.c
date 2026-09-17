@@ -26,6 +26,7 @@
 #include <iris/pci_ep_proto.h>
 #include <iris/blk_ep_proto.h>
 #include <iris/net_ep_proto.h>
+#include <iris/fs_ep_proto.h>
 #include "../common/iris_map.h"
 #include "../common/iris_timer.h"
 #include <iris/endpoint_proto.h>
@@ -250,6 +251,156 @@ int init_spawn_pci(void) {
         }
         init_log("[USER][INIT] pci: no answer\n");
         return 0;
+    }
+}
+
+/* ── fs spawn (Stage 10: a filesystem that survives the power going off) ─── */
+
+/*
+ * The persistent filesystem.
+ *
+ * It gets the LEAST of any service here: an endpoint to serve on, a reply
+ * object, an endpoint to the BLOCK service, and memory.  No disk, no
+ * controller, no device Untyped, no IOSpaceControl — it cannot find storage,
+ * only ask for it.  That is the shape the whole stack was built to make
+ * possible: the thing that owns your data holds no hardware at all.
+ *
+ * Returns 1 when a filesystem is mounted.
+ */
+int init_spawn_fs(void) {
+    iris_cptr_t fs_proc_h = IRIS_CPTR_NULL;
+    iris_cptr_t fs_boot_h = IRIS_CPTR_NULL;
+    long r;
+
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
+                         INIT_SLOT_FS_EP, 0) < 0) { init_log("[USER] fs: ep\n"); return 0; }
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_REPLY,
+                         INIT_SLOT_FS_REPLY, 0) < 0) { init_log("[USER] fs: reply\n"); return 0; }
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
+                         INIT_SLOT_FS_UT, 2 << 20) < 0) { init_log("[USER] fs: ut\n"); return 0; }
+
+    {
+        struct svc_mint fm[4] = { 0 };
+        uint32_t n = 0;
+        fm[n].slot = FS_SLOT_CTRL_EP;  fm[n].src_cptr = INIT_SLOT_FS_EP;
+        fm[n].rights = RIGHT_READ;     fm[n].badge = 0; n++;
+        fm[n].slot = FS_SLOT_REPLY;    fm[n].src_cptr = INIT_SLOT_FS_REPLY;
+        fm[n].rights = RIGHT_READ | RIGHT_WRITE; fm[n].badge = 0; n++;
+        fm[n].slot = FS_SLOT_BLK_EP;   fm[n].src_cptr = INIT_SLOT_BLK_EP;
+        fm[n].rights = RIGHT_WRITE;    fm[n].badge = 0; n++;
+        fm[n].slot = IRIS_CPTR_OWN_UNTYPED; fm[n].src_cptr = INIT_SLOT_FS_UT;
+        fm[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        fm[n].badge = 0; n++;
+
+        r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
+                               "fs", &fs_proc_h, &fs_boot_h, fm, n,
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
+                               2u << 20,
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED,
+                               /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
+        init_report_mints("fs", fm, n);
+    }
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_FS_REPLY);
+    init_close(&fs_proc_h);
+    init_close(&fs_boot_h);
+    if (r < 0) return 0;
+
+    /*
+     * Mount, then prove the mount MEANS something.
+     *
+     * `gen` is the number of times a boot has mounted this disk, read from the
+     * medium and written back.  A second boot over the same image reports a
+     * higher number than the first, which is the only way "persistent" can be
+     * demonstrated from inside the machine — everything else a filesystem can
+     * tell you about itself is equally true of one that forgets.
+     *
+     * Then a file: written with this boot's generation in it and read back.
+     * A round trip through the directory, the data sector, the block driver
+     * and the controller, and the NEXT boot reads what this one wrote.
+     */
+    {
+        struct iris_msg m;
+        { uint8_t *z = (uint8_t *)&m;
+          for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+        m.label = FS_OP_STAT;
+        if (iris_msg_call((long)INIT_SLOT_FS_EP, &m) != 0 ||
+            m.label != FS_REP_OK || m.words[0] == 0u) {
+            init_log("[USER][INIT] fs: not mounted\n");
+            return 0;
+        }
+        uint32_t gen = (uint32_t)m.words[1];
+        uint32_t formatted = (uint32_t)m.words[3];
+
+        /* A file whose contents are this boot's generation, so the next boot
+         * can tell whose bytes it is reading. */
+        int wrote = 0, read_back = 0;
+        { uint8_t *z = (uint8_t *)&m;
+          for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+        m.label = FS_OP_BUF;
+        m.recv_slot = (long)INIT_SLOT_FS_BUF;
+        (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_FS_BUF);
+        if (iris_msg_call((long)INIT_SLOT_FS_EP, &m) == 0 &&
+            m.label == FS_REP_OK && m.got_caps != 0u &&
+            iris_map_frame(INIT_SLOT_FS_BUF, IRIS_CPTR_OWN_VSPACE,
+                           g_init_untyped_c, INIT_SLOT_NET_PT,
+                           0x80B2000000ULL, 4096u, 1ull) == 0) {
+            volatile uint32_t *w = (volatile uint32_t *)(uintptr_t)0x80B2000000ULL;
+            w[0] = 0x53495249u;           /* "IRIS" */
+            w[1] = gen;
+            (void)iris_invoke2((long)INIT_SLOT_FS_BUF, INV_FRAME_UNMAP,
+                               (long)IRIS_CPTR_OWN_VSPACE, (long)0x80B2000000ULL);
+
+            { uint8_t *z = (uint8_t *)&m;
+              for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+            m.label = FS_OP_WRITE;
+            m.words[0] = 0x676F6C2E746F6F62ULL;   /* "boot.log", packed little-endian */
+            m.words[1] = 0;
+            m.words[2] = 8u;
+            m.word_count = 3u;
+            wrote = (iris_msg_call((long)INIT_SLOT_FS_EP, &m) == 0 &&
+                     m.label == FS_REP_OK);
+        }
+        if (wrote) {
+            { uint8_t *z = (uint8_t *)&m;
+              for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+            m.label = FS_OP_READ;
+            m.words[0] = 0x676F6C2E746F6F62ULL;   /* the same name, read back */
+            m.words[1] = 0;
+            m.word_count = 2u;
+            m.recv_slot = (long)INIT_SLOT_FS_BUF;
+            (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_FS_BUF);
+            if (iris_msg_call((long)INIT_SLOT_FS_EP, &m) == 0 &&
+                m.label == FS_REP_OK && m.got_caps != 0u &&
+                iris_map_frame(INIT_SLOT_FS_BUF, IRIS_CPTR_OWN_VSPACE,
+                               g_init_untyped_c, INIT_SLOT_NET_PT,
+                               0x80B3000000ULL, 4096u, 0ull) == 0) {
+                const volatile uint32_t *w =
+                    (const volatile uint32_t *)(uintptr_t)0x80B3000000ULL;
+                read_back = (w[0] == 0x53495249u && w[1] == gen);
+                (void)iris_invoke2((long)INIT_SLOT_FS_BUF, INV_FRAME_UNMAP,
+                                   (long)IRIS_CPTR_OWN_VSPACE, (long)0x80B3000000ULL);
+            }
+        }
+
+        {
+            char b[80] = "[USER][INIT] fs: mounted gen ";
+            uint32_t k = 0; while (b[k]) k++;
+            if (gen >= 100u) b[k++] = (char)('0' + (gen / 100u) % 10u);
+            if (gen >= 10u)  b[k++] = (char)('0' + (gen / 10u) % 10u);
+            b[k++] = (char)('0' + gen % 10u);
+            b[k++] = ' ';
+            if (formatted) { b[k++]='f'; b[k++]='o'; b[k++]='r'; b[k++]='m';
+                             b[k++]='a'; b[k++]='t'; b[k++]='t'; b[k++]='e';
+                             b[k++]='d'; }
+            else           { b[k++]='e'; b[k++]='x'; b[k++]='i'; b[k++]='s';
+                             b[k++]='t'; b[k++]='i'; b[k++]='n'; b[k++]='g'; }
+            b[k++] = ' '; b[k++] = 'f'; b[k++] = 'i'; b[k++] = 'l'; b[k++] = 'e';
+            b[k++] = ' ';
+            b[k++] = (char)('0' + (read_back ? 1u : 0u));
+            b[k++] = '\n'; b[k] = 0;
+            init_log(b);
+        }
+        return 1;
     }
 }
 
@@ -576,9 +727,15 @@ int init_spawn_blk(void) {
         m.label = BLK_OP_INFO;
         if (iris_msg_call((long)INIT_SLOT_BLK_EP, &m) == 0 &&
             m.label == BLK_REP_OK) {
-            char b[64] = "[USER][INIT] blk: disk ";
+            char b[96] = "[USER][INIT] blk: disk ";
             uint32_t k = 0; while (b[k]) k++;
-            b[k++] = (char)('0' + (uint32_t)(m.words[0] & 1u));
+            /* A COUNT, not a flag: the driver reports how many disks it
+             * brought up, because a machine with a boot disk and a data disk
+             * has two and the client has to know that.  This printed
+             * `words[0] & 1` while it was a flag and went on printing it after
+             * it became a count — so two disks read as "disk 0", which is the
+             * same thing as none. */
+            b[k++] = (char)('0' + (uint32_t)(m.words[0] % 10u));
             b[k++] = ' '; b[k++] = 's'; b[k++] = 'i'; b[k++] = 'd'; b[k++] = ' ';
             { uint32_t sid = (uint32_t)m.words[2];
               static const char hx[] = "0123456789abcdef";
@@ -594,7 +751,7 @@ int init_spawn_blk(void) {
             else            { b[k++]='o'; b[k++]='p'; b[k++]='e'; b[k++]='n'; }
             b[k++] = '\n'; b[k] = 0;
             init_log(b);
-            return (m.words[0] & 1u) ? 1 : 0;
+            return (m.words[0] != 0u) ? 1 : 0;
         }
         init_log("[USER][INIT] blk: no answer\n");
         return 0;

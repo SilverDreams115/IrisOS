@@ -244,6 +244,10 @@ void init_main(iris_cptr_t rbx_unused) {
     if (!init_spawn_net())
         init_log("[USER] net spawn FAILED\n");
 
+    /* Stage 10: the persistent filesystem, which needs the disk above it. */
+    if (!init_spawn_fs())
+        init_log("[USER] fs spawn FAILED\n");
+
     sm_h = init_spawn_svcmgr();
     if (sm_h == IRIS_CPTR_NULL) {
         init_log("[USER] svcmgr spawn FAILED\n");

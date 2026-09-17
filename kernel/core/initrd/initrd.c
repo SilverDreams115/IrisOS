@@ -77,6 +77,9 @@ extern const uint8_t _binary_services_blk_blk_elf_end[];
 
 extern const uint8_t _binary_services_net_net_elf_start[];
 extern const uint8_t _binary_services_net_net_elf_end[];
+
+extern const uint8_t _binary_services_fs_fs_elf_start[];
+extern const uint8_t _binary_services_fs_fs_elf_end[];
 extern const uint8_t _binary_services_pager_pager_elf_start[];
 extern const uint8_t _binary_services_pager_pager_elf_end[];
 
@@ -168,6 +171,11 @@ static const struct initrd_entry g_initrd[] = {
      * be policy inside a driver. */
     { _binary_services_net_net_elf_start,
       _binary_services_net_net_elf_end  },
+    /* [20] fs — the ring-3 PERSISTENT FILESYSTEM (Stage 10).  It holds no
+     * disk: it asks the block service, which is the only thing between it and
+     * the hardware. */
+    { _binary_services_fs_fs_elf_start,
+      _binary_services_fs_fs_elf_end  },
 };
 
 #define INITRD_ENTRY_COUNT \

@@ -67,7 +67,10 @@ void test_t355(void) {
     if (t355_blk(BLK_OP_INFO, 0, 0, 0, &info) != 0) {
         it_fail("T355", "the disk service did not answer"); return;
     }
-    if (!(info.words[0] & 1u)) {
+    /* A COUNT, not a flag (Stage 10): the driver reports how many disks it
+     * brought up, because this machine has two — the one it booted from and
+     * the one the filesystem lives on. */
+    if (info.words[0] == 0u) {
         /* Not a kernel failure — a machine with no disk, or a controller the
          * driver could not bring up.  Said out loud, because a run that
          * quietly stopped proving anything must not look like one that

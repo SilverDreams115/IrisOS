@@ -42,6 +42,7 @@ static void blk_msg_zero(struct iris_msg *m) {
 #define BLK_VA_ABAR  0x8090000000ULL   /* the controller's registers, uncached */
 #define BLK_VA_CMD   0x8091000000ULL   /* command list / FIS / command table   */
 #define BLK_VA_DATA  0x8092000000ULL   /* the data a read lands in             */
+#define BLK_VA_WR    0x8093000000ULL   /* ...and the data a write comes from   */
 
 /* ── AHCI, as much of it as a read needs ─────────────────────────────────── */
 #define AHCI_CAP      0x00u
@@ -74,10 +75,25 @@ static void blk_msg_zero(struct iris_msg *m) {
 #define SIG_ATA       0x00000101u
 #define DET_PRESENT   3u
 
-/* Layout inside the one command frame. */
-#define CMD_LIST_OFF  0x000u   /* 32 headers * 32 bytes = 1 KiB, 1 KiB aligned */
-#define CMD_FIS_OFF   0x400u   /* 256 bytes, 256-byte aligned                  */
-#define CMD_TBL_OFF   0x500u   /* CFIS + ACMD + reserved + one PRDT entry      */
+/*
+ * Layout inside the one command frame, for up to two ports.
+ *
+ * AHCI wants a 1 KiB-aligned command list and a 256-byte-aligned received-FIS
+ * area PER PORT.  The command TABLE is shared, because this driver issues one
+ * command at a time and waits for it — a second in flight would need a second
+ * table and a way to tell their completions apart, which is a queue and is not
+ * what this is.
+ *
+ *   0x000  port 0 command list (1 KiB)
+ *   0x400  port 0 received FIS (256 B)
+ *   0x500  the shared command table (256 B)
+ *   0x600  port 1 received FIS (256 B)
+ *   0x800  port 1 command list (1 KiB)
+ */
+#define BLK_MAX_PORTS 2u
+#define CMD_LIST_OFF(p) ((p) == 0u ? 0x000u : 0x800u)
+#define CMD_FIS_OFF(p)  ((p) == 0u ? 0x400u : 0x600u)
+#define CMD_TBL_OFF     0x500u
 
 static volatile uint32_t *abar_reg(uint32_t off) {
     return (volatile uint32_t *)(uintptr_t)(BLK_VA_ABAR + off);
@@ -86,11 +102,11 @@ static uint32_t ab_rd(uint32_t off)            { return *abar_reg(off); }
 static void     ab_wr(uint32_t off, uint32_t v){ *abar_reg(off) = v; }
 
 /* ── what the driver found and built ─────────────────────────────────────── */
-static uint32_t g_ready;          /* a disk is initialised and readable */
-static uint32_t g_port;
+static uint32_t g_ready;          /* how many ports have a working disk */
+static uint32_t g_port[BLK_MAX_PORTS];   /* the AHCI port number of each */
 static uint16_t g_source_id;
 static uint32_t g_contained;      /* the controller's DMA is behind a unit */
-static uint64_t g_cmd_phys, g_data_phys;
+static uint64_t g_cmd_phys, g_data_phys, g_wr_phys;
 static uint64_t g_generation;
 
 /* ── talking to the bus service ──────────────────────────────────────────── */
@@ -158,7 +174,7 @@ static long blk_frame(uint32_t slot, uint64_t bytes, uint64_t *out_phys) {
  * Returns 1 when the controller is contained, 0 when the machine has no unit
  * to contain it with.  The second is not an error — it is the machine.
  */
-static int blk_contain(uint64_t a, uint64_t b) {
+static int blk_contain(uint64_t a, uint64_t b, uint64_t c) {
     if (iris_invoke((long)IRIS_CPTR_OWN_UNTYPED, INV_UNTYPED_RETYPE,
                     (long)((uint64_t)IRIS_KOBJ_IOSPACE | (1ULL << 32)),
                     (long)((uint64_t)BLK_SLOT_IOSPACE << 32), 0) != 0) return 0;
@@ -168,8 +184,8 @@ static int blk_contain(uint64_t a, uint64_t b) {
     /* One walk per buffer.  They are two frames from one Untyped and will
      * usually share every level above the last, which the kernel reports by
      * refusing the install — so a refusal here is not a failure. */
-    const uint64_t at[2] = { a, b };
-    for (uint32_t w = 0; w < 2u; w++) {
+    const uint64_t at[3] = { a, b, c };
+    for (uint32_t w = 0; w < 3u; w++) {
         for (uint32_t i = 0; i < 3u; i++) {
             (void)iris_invoke1(0, INV_CNODE_DELETE, (long)BLK_SLOT_IOPT(i));
             if (iris_invoke((long)IRIS_CPTR_OWN_UNTYPED, INV_UNTYPED_RETYPE,
@@ -189,6 +205,9 @@ static int blk_contain(uint64_t a, uint64_t b) {
     if (iris_invoke((long)BLK_SLOT_IOSPACE, INV_IOSPACE_MAP_FRAME,
                     (long)BLK_SLOT_DATA, (long)b,
                     (long)(RIGHT_READ | RIGHT_WRITE)) != 0) return 0;
+    if (iris_invoke((long)BLK_SLOT_IOSPACE, INV_IOSPACE_MAP_FRAME,
+                    (long)BLK_SLOT_WR, (long)c,
+                    (long)(RIGHT_READ | RIGHT_WRITE)) != 0) return 0;
     return 1;
 }
 
@@ -202,13 +221,15 @@ static int port_stop(uint32_t p) {
     return 0;
 }
 
-static int blk_port_init(uint32_t p) {
+static int blk_port_init(uint32_t p, uint32_t idx) {
     if (!port_stop(p)) return 0;
 
-    ab_wr(AHCI_PORT(p) + PORT_CLB,  (uint32_t)((g_cmd_phys + CMD_LIST_OFF) & 0xFFFFFFFFu));
-    ab_wr(AHCI_PORT(p) + PORT_CLBU, (uint32_t)((g_cmd_phys + CMD_LIST_OFF) >> 32));
-    ab_wr(AHCI_PORT(p) + PORT_FB,   (uint32_t)((g_cmd_phys + CMD_FIS_OFF) & 0xFFFFFFFFu));
-    ab_wr(AHCI_PORT(p) + PORT_FBU,  (uint32_t)((g_cmd_phys + CMD_FIS_OFF) >> 32));
+    uint64_t cl = g_cmd_phys + CMD_LIST_OFF(idx);
+    uint64_t fb = g_cmd_phys + CMD_FIS_OFF(idx);
+    ab_wr(AHCI_PORT(p) + PORT_CLB,  (uint32_t)(cl & 0xFFFFFFFFu));
+    ab_wr(AHCI_PORT(p) + PORT_CLBU, (uint32_t)(cl >> 32));
+    ab_wr(AHCI_PORT(p) + PORT_FB,   (uint32_t)(fb & 0xFFFFFFFFu));
+    ab_wr(AHCI_PORT(p) + PORT_FBU,  (uint32_t)(fb >> 32));
 
     ab_wr(AHCI_PORT(p) + PORT_SERR, 0xFFFFFFFFu);   /* write-1-to-clear */
     ab_wr(AHCI_PORT(p) + PORT_IS,   0xFFFFFFFFu);
@@ -219,10 +240,22 @@ static int blk_port_init(uint32_t p) {
     return 1;
 }
 
-/* ── one READ DMA EXT ────────────────────────────────────────────────────── */
+/* ── one transfer, in either direction ───────────────────────────────────── */
 
-static int blk_read(uint64_t lba, uint32_t sectors) {
-    volatile uint32_t *list = (volatile uint32_t *)(uintptr_t)(BLK_VA_CMD + CMD_LIST_OFF);
+/*
+ * READ DMA EXT and WRITE DMA EXT are the same command with a different opcode
+ * and one bit in the command header — which is why they are one function.
+ * Writing the second as a copy of the first is how the two drift: the PRDT,
+ * the FIS, the wait and the error check are identical and must stay identical.
+ */
+#define ATA_READ_DMA_EXT   0x25u
+#define ATA_WRITE_DMA_EXT  0x35u
+#define ATA_FLUSH_CACHE_EXT 0xEAu
+
+static int blk_xfer(uint32_t idx, uint64_t lba, uint32_t sectors, int write) {
+    if (idx >= g_ready) return 0;
+    uint32_t port = g_port[idx];
+    volatile uint32_t *list = (volatile uint32_t *)(uintptr_t)(BLK_VA_CMD + CMD_LIST_OFF(idx));
     volatile uint8_t  *tbl  = (volatile uint8_t  *)(uintptr_t)(BLK_VA_CMD + CMD_TBL_OFF);
     uint64_t tbl_phys = g_cmd_phys + CMD_TBL_OFF;
 
@@ -230,17 +263,19 @@ static int blk_read(uint64_t lba, uint32_t sectors) {
 
     /* Command header 0: a five-dword command FIS, one PRDT entry, and where
      * the command table is.  The controller fetches all of this itself. */
-    list[0] = 5u | (1u << 16);
+    /* Bit 6 of the header's first dword is W: the transfer is host-to-device.
+     * Everything else about the two directions is the same. */
+    list[0] = 5u | (write ? (1u << 6) : 0u) | (1u << 16);
     list[1] = 0u;                                   /* PRD byte count, written back */
     list[2] = (uint32_t)(tbl_phys & 0xFFFFFFFFu);
     list[3] = (uint32_t)(tbl_phys >> 32);
     for (uint32_t i = 4; i < 8u; i++) list[i] = 0u;
 
-    /* The command itself: a host-to-device register FIS carrying READ DMA EXT
-     * with a 48-bit LBA.  `device` bit 6 selects LBA rather than CHS. */
+    /* The command itself: a host-to-device register FIS carrying the DMA
+     * command with a 48-bit LBA.  `device` bit 6 selects LBA rather than CHS. */
     tbl[0]  = 0x27u;                 /* FIS type: register H2D */
     tbl[1]  = 0x80u;                 /* this is a COMMAND, not a control update */
-    tbl[2]  = 0x25u;                 /* READ DMA EXT */
+    tbl[2]  = write ? ATA_WRITE_DMA_EXT : ATA_READ_DMA_EXT;
     tbl[4]  = (uint8_t)(lba      );
     tbl[5]  = (uint8_t)(lba >>  8);
     tbl[6]  = (uint8_t)(lba >> 16);
@@ -254,8 +289,9 @@ static int blk_read(uint64_t lba, uint32_t sectors) {
     /* PRDT entry 0 at offset 0x80: where the data goes, and how much. */
     {
         volatile uint32_t *prd = (volatile uint32_t *)(tbl + 0x80);
-        prd[0] = (uint32_t)(g_data_phys & 0xFFFFFFFFu);
-        prd[1] = (uint32_t)(g_data_phys >> 32);
+        uint64_t buf = write ? g_wr_phys : g_data_phys;
+        prd[0] = (uint32_t)(buf & 0xFFFFFFFFu);
+        prd[1] = (uint32_t)(buf >> 32);
         prd[2] = 0u;
         prd[3] = (uint32_t)(sectors * BLK_SECTOR_BYTES - 1u);   /* byte count - 1 */
     }
@@ -263,20 +299,71 @@ static int blk_read(uint64_t lba, uint32_t sectors) {
     /* Wait for the port to be idle, issue, and wait for it to finish.  Bounded
      * because a driver that spins forever on a device that never answers is a
      * service that stops answering. */
-    uint32_t tfd = AHCI_PORT(g_port) + PORT_TFD;
+    uint32_t tfd = AHCI_PORT(port) + PORT_TFD;
     for (uint32_t i = 0; ; i++) {
         if (!(ab_rd(tfd) & (TFD_BSY | TFD_DRQ))) break;
         if (i >= 1000000u) return 0;
     }
-    ab_wr(AHCI_PORT(g_port) + PORT_IS, 0xFFFFFFFFu);
-    ab_wr(AHCI_PORT(g_port) + PORT_CI, 1u);
+    ab_wr(AHCI_PORT(port) + PORT_IS, 0xFFFFFFFFu);
+    ab_wr(AHCI_PORT(port) + PORT_CI, 1u);
 
     for (uint32_t i = 0; ; i++) {
-        if (!(ab_rd(AHCI_PORT(g_port) + PORT_CI) & 1u)) break;
+        if (!(ab_rd(AHCI_PORT(port) + PORT_CI) & 1u)) break;
         if (i >= 2000000u) return 0;
     }
     if (ab_rd(tfd) & TFD_ERR) return 0;
     return 1;
+}
+
+/*
+ * FLUSH CACHE EXT, after every write.
+ *
+ * A write command completing means the CONTROLLER has the data, not that the
+ * medium does — the disk is free to hold it in a cache and report success, and
+ * an emulated disk does exactly that: the host file does not change until
+ * something asks for it.  So a filesystem that wrote and then lost power would
+ * find its writes gone, and this system's whole claim about persistence would
+ * be a claim about a cache.
+ *
+ * It is issued from HERE rather than exposed as an operation, because a client
+ * that has to remember to flush is a client that will forget, and the cost is
+ * one non-data command per write on a driver that already waits for each one.
+ * A driver that batched writes would want the choice back; this one does not
+ * batch.
+ *
+ * A non-data command: no PRDT, so `prdtl` is zero and there is nothing for the
+ * controller to fetch.
+ */
+static int blk_flush(uint32_t idx) {
+    uint32_t port = g_port[idx];
+    volatile uint32_t *list = (volatile uint32_t *)(uintptr_t)(BLK_VA_CMD + CMD_LIST_OFF(idx));
+    volatile uint8_t  *tbl  = (volatile uint8_t  *)(uintptr_t)(BLK_VA_CMD + CMD_TBL_OFF);
+    uint64_t tbl_phys = g_cmd_phys + CMD_TBL_OFF;
+
+    for (uint32_t i = 0; i < 128u; i++) tbl[i] = 0;
+    list[0] = 5u;                       /* five dwords of FIS, no PRDT entries */
+    list[1] = 0u;
+    list[2] = (uint32_t)(tbl_phys & 0xFFFFFFFFu);
+    list[3] = (uint32_t)(tbl_phys >> 32);
+    for (uint32_t i = 4; i < 8u; i++) list[i] = 0u;
+
+    tbl[0] = 0x27u;
+    tbl[1] = 0x80u;
+    tbl[2] = ATA_FLUSH_CACHE_EXT;
+    tbl[7] = 0x40u;
+
+    uint32_t tfd = AHCI_PORT(port) + PORT_TFD;
+    for (uint32_t i = 0; ; i++) {
+        if (!(ab_rd(tfd) & (TFD_BSY | TFD_DRQ))) break;
+        if (i >= 1000000u) return 0;
+    }
+    ab_wr(AHCI_PORT(port) + PORT_IS, 0xFFFFFFFFu);
+    ab_wr(AHCI_PORT(port) + PORT_CI, 1u);
+    for (uint32_t i = 0; ; i++) {
+        if (!(ab_rd(AHCI_PORT(port) + PORT_CI) & 1u)) break;
+        if (i >= 2000000u) return 0;
+    }
+    return (ab_rd(tfd) & TFD_ERR) ? 0 : 1;
 }
 
 /* ── startup ─────────────────────────────────────────────────────────────── */
@@ -302,9 +389,10 @@ static void blk_bring_up(void) {
 
     if (blk_frame(BLK_SLOT_CMD,  4096u, &g_cmd_phys)  != 0) return;
     if (blk_frame(BLK_SLOT_DATA, 4096u, &g_data_phys) != 0) return;
+    if (blk_frame(BLK_SLOT_WR,   4096u, &g_wr_phys)   != 0) return;
 
     /* Before the controller is told any address, decide what it may reach. */
-    g_contained = (uint32_t)blk_contain(g_cmd_phys, g_data_phys);
+    g_contained = (uint32_t)blk_contain(g_cmd_phys, g_data_phys, g_wr_phys);
 
     if (iris_map_frame(BLK_SLOT_CMD, IRIS_CPTR_OWN_VSPACE,
                        IRIS_CPTR_OWN_UNTYPED, BLK_SLOT_PT,
@@ -312,6 +400,9 @@ static void blk_bring_up(void) {
     if (iris_map_frame(BLK_SLOT_DATA, IRIS_CPTR_OWN_VSPACE,
                        IRIS_CPTR_OWN_UNTYPED, BLK_SLOT_PT,
                        BLK_VA_DATA, 4096u, 1ull) != 0) return;
+    if (iris_map_frame(BLK_SLOT_WR, IRIS_CPTR_OWN_VSPACE,
+                       IRIS_CPTR_OWN_UNTYPED, BLK_SLOT_PT,
+                       BLK_VA_WR, 4096u, 1ull) != 0) return;
     {
         volatile uint8_t *z = (volatile uint8_t *)(uintptr_t)BLK_VA_CMD;
         for (uint32_t i = 0; i < 4096u; i++) z[i] = 0;
@@ -319,23 +410,32 @@ static void blk_bring_up(void) {
 
     ab_wr(AHCI_GHC, ab_rd(AHCI_GHC) | AHCI_GHC_AE);
 
-    /* The first implemented port with an ATA disk on it.  A machine with more
-     * than one disk has more than one port, and serving them all is a table
-     * rather than a variable — which this driver does not have yet, and says
-     * so rather than pretending the first is the only. */
+    /*
+     * Every implemented port with an ATA disk on it, in port order, up to the
+     * number this driver has command structures for.
+     *
+     * In port order and not "the first one", because a machine with a boot
+     * disk and a data disk has two, and which is which is a fact about the
+     * MACHINE that the client knows and this driver does not.  It reports how
+     * many it found and numbers them; deciding that port 1 is where the
+     * filesystem lives is policy and belongs above.
+     */
     uint32_t pi = ab_rd(AHCI_PI);
-    for (uint32_t p = 0; p < 32u; p++) {
+    for (uint32_t p = 0; p < 32u && g_ready < BLK_MAX_PORTS; p++) {
         if (!(pi & (1u << p))) continue;
         if ((ab_rd(AHCI_PORT(p) + PORT_SSTS) & 0xFu) != DET_PRESENT) continue;
         if (ab_rd(AHCI_PORT(p) + PORT_SIG) != SIG_ATA) continue;
-        g_port = p;
-        if (!blk_port_init(p)) return;
+        uint32_t idx = g_ready;
+        g_port[idx] = p;
+        if (!blk_port_init(p, idx)) continue;
         /* Prove it before claiming it: a port that was configured and cannot
-         * read is not a disk this service should advertise. */
-        if (!blk_read(0, 1)) return;
-        g_ready = 1u;
+         * read is not a disk this service should advertise.  `g_ready` is
+         * raised first because `blk_xfer` checks it, and lowered again if the
+         * read fails — the alternative is a second "is this port usable" flag
+         * that means the same thing. */
+        g_ready = idx + 1u;
+        if (!blk_xfer(idx, 0, 1, 0)) { g_ready = idx; continue; }
         g_generation = 1u;
-        return;
     }
 }
 
@@ -359,11 +459,30 @@ void blk_main(iris_cptr_t bootstrap_ch_h) {
 
         if (m.label == BLK_OP_INFO) {
             rep.label      = BLK_REP_OK;
-            rep.words[0]   = g_ready;
+            rep.words[0]   = g_ready;          /* how many disks, not a flag */
             rep.words[1]   = BLK_SECTOR_BYTES;
             rep.words[2]   = g_source_id;
             rep.words[3]   = g_contained;
             rep.word_count = 4u;
+        } else if (m.label == BLK_OP_WRBUF && g_ready) {
+            rep.label      = BLK_REP_OK;
+            rep.words[0]   = 4096u;
+            rep.word_count = 1u;
+            /* Read-WRITE: the driver supplies the memory, the client supplies
+             * the bytes.  Revoked on handout like every other buffer here. */
+            (void)iris_invoke0((long)BLK_SLOT_WR, INV_CSPACE_REVOKE);
+            rep.cap        = (long)BLK_SLOT_WR;
+            rep.cap_rights = RIGHT_READ | RIGHT_WRITE;
+        } else if (m.label == BLK_OP_WRITE && g_ready) {
+            uint32_t sectors = (uint32_t)m.words[1];
+            uint32_t wport = (uint32_t)m.words[2];
+            if (sectors >= 1u && sectors <= BLK_MAX_SECTORS &&
+                blk_xfer(wport, m.words[0], sectors, 1) &&
+                blk_flush(wport)) {
+                rep.label      = BLK_REP_OK;
+                rep.words[0]   = sectors * BLK_SECTOR_BYTES;
+                rep.word_count = 1u;
+            }
         } else if (m.label == BLK_OP_READ && g_ready) {
             uint32_t sectors = (uint32_t)m.words[1];
             if (sectors >= 1u && sectors <= BLK_MAX_SECTORS) {
@@ -375,7 +494,7 @@ void blk_main(iris_cptr_t bootstrap_ch_h) {
                  * it is why this can be one frame instead of one per request.
                  */
                 (void)iris_invoke0((long)BLK_SLOT_DATA, INV_CSPACE_REVOKE);
-                if (blk_read(m.words[0], sectors)) {
+                if (blk_xfer((uint32_t)m.words[2], m.words[0], sectors, 0)) {
                     g_generation++;
                     rep.label      = BLK_REP_OK;
                     rep.words[0]   = sectors * BLK_SECTOR_BYTES;

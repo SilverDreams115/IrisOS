@@ -59,6 +59,7 @@
 #define BLK_SLOT_ABAR       32u  /* the frame over the controller's registers */
 #define BLK_SLOT_CMD        33u  /* command list + received FIS + command table */
 #define BLK_SLOT_DATA       34u  /* the data buffer a read lands in           */
+#define BLK_SLOT_WR         42u  /* ...and the one a write comes from         */
 #define BLK_SLOT_IOSPACE    35u  /* the controller's DMA address space        */
 #define BLK_SLOT_IOPT(i)    (36u + (i))   /* three levels of its translation  */
 #define BLK_SLOT_PT         40u  /* scratch for paging levels it installs     */
@@ -84,6 +85,30 @@
  * a legitimate way to ask whether a sector reads at all.
  */
 #define BLK_OP_READ   0x7102u
+
+/*
+ * The WRITE buffer, as a READ-WRITE frame capability.  words[0] = its size.
+ *
+ * A separate buffer from the one a read lands in, and separate on purpose: a
+ * client that wrote into the read buffer would be writing the service's DMA
+ * target while a read might be in flight, and a service that reused one frame
+ * for both would have to say which of the two the capability it just handed
+ * out was for.  Two frames, two rules, no ambiguity.
+ */
+#define BLK_OP_WRBUF  0x7103u
+
+/*
+ * Write sectors FROM that buffer.  words[0] = LBA, words[1] = sector count.
+ * Reply: words[0] = bytes written.
+ *
+ * A reply means the data is on the MEDIUM, not merely accepted: the driver
+ * issues FLUSH CACHE EXT after every write.  That is not belt and braces — an
+ * emulated disk holds writes in a cache and reports success, so without the
+ * flush the host image does not change and "persistent" would be a claim about
+ * a cache.  It costs one non-data command per write on a driver that already
+ * waits for each one; a driver that batched writes would want the choice back.
+ */
+#define BLK_OP_WRITE  0x7104u
 
 #define BLK_REP_OK    0x7180u
 #define BLK_REP_ERR   0x7181u
