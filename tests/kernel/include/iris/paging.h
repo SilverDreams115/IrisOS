@@ -41,6 +41,8 @@
 /* Test-only: the stub paging implementation's controls (tests/kernel/stubs.c). */
 void paging_stub_reset(void);
 void paging_stub_strict_levels(int on);
+/* The PTE flags a mapping was installed with, or 0 if there is no mapping. */
+uint64_t paging_stub_flags_at(uint64_t cr3, uint64_t virt);
 void kslab_fail_after(int n);
 void kslab_clear_fail(void);
 void paging_force_fail_next(void);

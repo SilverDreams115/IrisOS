@@ -223,7 +223,7 @@ uint32_t smp_start_aps(const struct iris_boot_info *bi) {
     *(uint32_t *)(page + off_pmp) = (uint32_t)(page_phys + off_pm);
     *(uint32_t *)(page + off_lmp) = (uint32_t)(page_phys + off_lm);
 
-    *(uint64_t *)(page + off_cr3) = pml4_get_current() & ~0xFFFull;
+    *(uint64_t *)(page + off_cr3) = pml4_get_current() & PAGE_PA_MASK;
     *(uint64_t *)(page + off_ent) = (uint64_t)(uintptr_t)&ap_main;
 
     /*

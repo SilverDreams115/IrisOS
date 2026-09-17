@@ -192,3 +192,45 @@ uint64_t sys_iospace_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     release(&io->base);
     return err == IRIS_OK ? syscall_ok_u64(0) : syscall_err(err);
 }
+
+/*
+ * IOSpace_Fault(iospace_control, unit, uptr, flags)
+ *
+ * Who the unit refused, and why.  The whole reason this exists is that "a
+ * fault happened" and "MY device was refused" are different claims, and only
+ * the second one is worth anything to a driver: a machine where the SATA
+ * controller is quietly touching memory nobody mapped for it would set the
+ * same status bit as a driver testing its own containment.
+ *
+ * On the AUTHORITY rather than on an IOSpace, because the record names
+ * whatever source-id the unit last refused, which need not be the device the
+ * caller's own space is bound to.  Reading about somebody else's hardware is
+ * exactly what IOSPACE_CONTROL is the right to do.
+ */
+uint64_t sys_iospace_fault(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                           uint64_t arg3) {
+    struct task *t = task_current();
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    if (!syscall_has_bootcap(t, arg0, IRIS_BOOTCAP_IOSPACE_CONTROL))
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    if (arg3 & ~(uint64_t)IRIS_IOMMU_FAULT_CLEAR)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct iris_iommu_fault rec;
+    int got = iommu_fault_record((uint32_t)arg1, &rec,
+                                 (int)(arg3 & IRIS_IOMMU_FAULT_CLEAR));
+
+    struct iris_iommu_fault_info info;
+    info.version     = IRIS_IOMMU_FAULT_INFO_VERSION;
+    info.struct_size = (uint32_t)sizeof(info);
+    info.address     = rec.address;
+    info.status      = rec.status;
+    info.source_id   = rec.source_id;
+    info.reason      = rec.reason;
+    info.is_read     = rec.is_read;
+
+    if (!copy_to_user_checked(arg2, &info, sizeof(info)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    return syscall_ok_u64((uint64_t)(got ? 1 : 0));
+}

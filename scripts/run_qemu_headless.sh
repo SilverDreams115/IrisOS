@@ -17,6 +17,39 @@ if [ "${IRIS_QEMU_IOMMU:-0}" != "0" ]; then
   IOMMU_ARGS=(-device intel-iommu)
 fi
 
+# A DMA-capable device, always.
+#
+# `edu` is QEMU's teaching device: a PCI function with one MMIO BAR, an
+# internal 4 KiB buffer and a DMA engine that will copy between that buffer and
+# any physical address a driver writes into its registers.  It is here because
+# Stage 10-dma could not otherwise prove its central claim.  Everything up to
+# §10.2 step 5 shows the kernel programming a remapping unit and refusing to
+# hand out a space for a device no unit covers; none of it shows a DEVICE being
+# stopped, because there was no device under IRIS's control that could try.
+#
+# On EVERY run, not only the IOMMU ones, because the two arms are the claim:
+# with a unit the device reaches exactly the frame somebody mapped for it, and
+# without one it reaches whatever address its driver writes down.  A test that
+# could only be run in the configuration that passes proves nothing.
+#
+# `dma_mask` is widened from its 28-bit default so the driver may name a frame
+# anywhere in RAM.  The default would confine the test to the low 256 MiB and
+# make a failure above it look like a containment success.
+EDU_ARGS=(-device edu,dma_mask=0xffffffffff)
+
+# A QEMU without it fails HERE, saying so.
+#
+# `-device edu` on a build that does not have the device makes QEMU exit before
+# it executes an instruction, with an empty serial log — which arrives at the
+# bottom of this script as "missing scheduler running marker", the same message
+# a kernel that triple-faulted produces.  One probe turns that into a sentence
+# about the host.
+if ! qemu-system-x86_64 -device edu,help >/dev/null 2>&1; then
+  echo "[headless] this qemu has no 'edu' device; the DMA containment gate"
+  echo "           (Stage 10-dma §10.2 step 6) cannot run without it"
+  exit 1
+fi
+
 # More processors, more wall clock — and it is QEMU that needs it, not IRIS.
 # TCG emulates every vCPU on one host thread apiece and multiplexes them, so a
 # four-processor guest runs the same work at roughly a third of the speed while
@@ -68,10 +101,26 @@ mkdir -p "$PROJECT_ROOT/build"
 cp -f "$OVMF_VARS_TEMPLATE" "$PROJECT_ROOT/build/OVMF_VARS.headless.fd"
 rm -f "$LOG_FILE"
 
+#
+# The deadline is a CEILING, not the runtime.
+#
+# `-no-shutdown` is deliberate — it keeps the machine up so nothing truncates
+# the serial log — and IRIS never asks to shut down anyway: init's last act is
+# to block on a notification nobody holds, so the guest is quiet and alive
+# forever.  `timeout` therefore killed EVERY run at its deadline, which made
+# the deadline the runtime: raising it to cover a slower suite cost that much
+# wall clock on every green run, and the four-processor lane pays it four times
+# over because the script scales it.
+#
+# So the run ends when init says it has finished starting everything, with the
+# deadline left to catch the case where it never does.  The grace period after
+# the marker is for whatever is still on its way into the file; the log is a
+# `-serial file:` and the marker is not the last line.
 set +e
 timeout "${TIMEOUT_SECS}s" qemu-system-x86_64 \
   -machine q35 \
   "${IOMMU_ARGS[@]}" \
+  "${EDU_ARGS[@]}" \
   -cpu max \
   -smp "$SMP" \
   -m 512M \
@@ -83,7 +132,18 @@ timeout "${TIMEOUT_SECS}s" qemu-system-x86_64 \
   -monitor none \
   -net none \
   -no-reboot \
-  -no-shutdown
+  -no-shutdown &
+qemu_wait_pid=$!
+
+while kill -0 "$qemu_wait_pid" 2>/dev/null; do
+  if grep -Fq "[USER] init idle loop start" "$LOG_FILE" 2>/dev/null; then
+    sleep 2
+    kill "$qemu_wait_pid" 2>/dev/null
+    break
+  fi
+  sleep 1
+done
+wait "$qemu_wait_pid"
 qemu_rc=$?
 set -e
 
@@ -165,6 +225,52 @@ else
     echo "[headless] the kernel said nothing about DMA remapping"
     cat "$LOG_FILE"
     exit 1
+  fi
+fi
+
+# ...and a DEVICE was actually stopped (Stage 10-dma §10.2 step 6).
+#
+# Every check above is about what the KERNEL did — it found the units, it
+# switched them on, it says DMA is contained.  All of that is consistent with
+# hardware that ignored every word of it.  T353 drives a real bus master at a
+# real frame, so these lines are the only ones in this script that are evidence
+# rather than report, and they are gated separately for that reason.
+#
+# The selftest gate below would already fail on a FAILING T353.  What it cannot
+# catch is a T353 that stopped exercising the thing: the test passes trivially
+# on a machine with no DMA-capable device, and a `-device edu` quietly dropped
+# from the command line would read exactly like a green run.  So the device
+# line is required unconditionally, and then each configuration's own claim.
+if [ "$EXPECT_SELFTESTS" = "1" ]; then
+  if ! grep -Fq "[IRIS][TEST] T353 device 1234:11e8" "$LOG_FILE"; then
+    echo "[headless] the DMA-capable device was never found; T353 proved nothing"
+    grep -F "[IRIS][TEST] T353" "$LOG_FILE" | sed 's/^/           /'
+    cat "$LOG_FILE"
+    exit 1
+  fi
+  if [ "${IRIS_QEMU_IOMMU:-0}" != "0" ]; then
+    for marker in \
+      "[IRIS][TEST] T353 refused sid" \
+      "[IRIS][TEST] T353 granted:" \
+      "[IRIS][TEST] T353 revoked:"; do
+      if ! grep -Fq "$marker" "$LOG_FILE"; then
+        echo "[headless] a device was not contained end to end; missing: $marker"
+        grep -F "[IRIS][TEST] T353" "$LOG_FILE" | sed 's/^/           /'
+        cat "$LOG_FILE"
+        exit 1
+      fi
+    done
+  else
+    # The other half of the claim: with no unit the device reaches an address
+    # nobody granted it.  Required, because a run where the device silently did
+    # nothing would otherwise be indistinguishable from containment that is not
+    # there.
+    if ! grep -Fq "[IRIS][TEST] T353 no unit: the device reached" "$LOG_FILE"; then
+      echo "[headless] no remapping unit, and no evidence the device transferred at all"
+      grep -F "[IRIS][TEST] T353" "$LOG_FILE" | sed 's/^/           /'
+      cat "$LOG_FILE"
+      exit 1
+    fi
   fi
 fi
 
@@ -331,7 +437,12 @@ if [ "$EXPECT_SELFTESTS" = "1" ]; then
   # retired; svcmgr diagnostics are served over IRIS_SVCMGR_EP_DIAG (T067).
 fi
 
-if [ "$qemu_rc" -ne 0 ] && [ "$qemu_rc" -ne 124 ]; then
+# 0 is a clean exit, 124 is the deadline, and 143/137 are this script ending a
+# run that had already said everything it was going to say.  Anything else is
+# qemu itself falling over, which is not a kernel result and must not read as
+# one.
+if [ "$qemu_rc" -ne 0 ] && [ "$qemu_rc" -ne 124 ] &&
+   [ "$qemu_rc" -ne 143 ] && [ "$qemu_rc" -ne 137 ]; then
   echo "[headless] qemu exited unexpectedly with code $qemu_rc"
   cat "$LOG_FILE"
   exit "$qemu_rc"

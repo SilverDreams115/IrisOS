@@ -496,6 +496,51 @@ uint32_t iommu_fault_status(uint32_t index) {
     return vtd_read32(units[index].reg_base, VTD_REG_FSTS);
 }
 
+/*
+ * The fault RECORDING registers, which are where the detail lives.
+ *
+ * Each record is 128 bits at CAP.FRO + n*16.  The high half carries the
+ * source-id in its low 16 bits, the reason code at 39:32, the request type at
+ * bit 62 (1 = read) and the valid bit at 63; the low half carries the address
+ * the device asked for, in its top 52 bits.  Bit 63 is write-1-to-clear, and
+ * so is FSTS.PFO — the unit stops recording once the ring is full of records
+ * nobody drained, so a reader that wants the NEXT fault has to clear this one.
+ *
+ * The ring is scanned from the bottom rather than indexed by FSTS.FRI: FRI is
+ * only meaningful while PPF is set, and a caller polling for a fault that has
+ * not happened yet would read whatever index was left over from the last one.
+ * Scanning costs a handful of uncached reads and cannot be wrong.
+ */
+int iommu_fault_record(uint32_t index, struct iris_iommu_fault *out, int clear) {
+    if (!out) return 0;
+    out->address = 0; out->source_id = 0; out->reason = 0; out->is_read = 0;
+    out->status = 0;
+    if (index >= unit_n || !units[index].translating) return 0;
+
+    struct iris_iommu_unit *u = &units[index];
+    out->status = vtd_read32(u->reg_base, VTD_REG_FSTS);
+
+    for (uint32_t n = 0; n < u->fault_regs; n++) {
+        uint32_t off  = (uint32_t)u->fault_offset + n * 16u;
+        uint64_t high = vtd_read64(u->reg_base, off + 8u);
+        if (!(high & (1ull << 63))) continue;          /* no record here */
+
+        out->address   = vtd_read64(u->reg_base, off) & ~0xFFFull;
+        out->source_id = (uint16_t)(high & 0xFFFFu);
+        out->reason    = (uint8_t)((high >> 32) & 0xFFu);
+        out->is_read   = (uint8_t)((high >> 62) & 1u);
+
+        if (clear) {
+            /* The record first, then the summary bit it raised.  The other
+             * way round re-raises PPF the moment the record is still set. */
+            vtd_write64(u->reg_base, off + 8u, 1ull << 63);
+            vtd_write32(u->reg_base, VTD_REG_FSTS, out->status & 0x3u);
+        }
+        return 1;
+    }
+    return 0;
+}
+
 uint32_t iommu_enable_blocking(void) {
     enabled_n = 0;
 
@@ -726,7 +771,7 @@ int iommu_context_set(uint32_t unit, uint16_t source_id, uint16_t domain,
     if (root_pt_phys) {
         uint32_t aw = levels - 2u;        /* AW 1 = 39-bit/3-level, 2 = 48/4 */
         ctx[devfn * 2u + 1u] = ((uint64_t)domain << 8) | (uint64_t)aw;
-        ctx[devfn * 2u]      = (root_pt_phys & ~0xFFFull) | 1ull;  /* Present */
+        ctx[devfn * 2u]      = (root_pt_phys & PAGE_PA_MASK) | 1ull;  /* Present */
     } else {
         ctx[devfn * 2u]      = 0;         /* not present: the device is blocked */
         ctx[devfn * 2u + 1u] = 0;
@@ -740,7 +785,7 @@ int iommu_context_set(uint32_t unit, uint16_t source_id, uint16_t domain,
     uint64_t *root = root_tables[unit];
     if (!(root[bus * 2u] & 1ull)) {
         root[bus * 2u + 1u] = 0;
-        root[bus * 2u]      = (ctx_phys & ~0xFFFull) | 1ull;
+        root[bus * 2u]      = (ctx_phys & PAGE_PA_MASK) | 1ull;
         iommu_flush_for_device(&units[unit], &root[bus * 2u], 16u);
     }
 

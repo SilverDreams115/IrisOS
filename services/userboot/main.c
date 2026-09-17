@@ -6,6 +6,7 @@
 #include <iris/svcmgr_proto.h>
 #include <iris/endpoint_proto.h>
 #include <iris/boot_info.h>
+#include <iris/fb_info.h>
 #include <iris/root_bootinfo.h>
 #include "../../services/common/svc_loader.h"
 
@@ -292,7 +293,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * so retype (WRITE) and onward mint (DUPLICATE) both work.  Non-fatal:
          * if the grant is absent the mint fails, the slot stays empty and the
          * authority tests FAIL loudly rather than silently skipping. */
-        struct svc_mint init_mints[14] = { 0 };
+        struct svc_mint init_mints[15] = { 0 };
         init_mints[0].slot     = IRIS_CPTR_PROC_CONTROL;
         init_mints[0].src_cptr = proc_control_c;
         init_mints[0].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
@@ -395,24 +396,59 @@ void iris_userboot_main(uint64_t bootinfo_va) {
             init_mint_count = 13u;
         }
         /*
-         * Ledger D-9: the DEVICE untyped, when the kernel published one.
+         * Ledger D-9: the DEVICE untypeds, of which there are now two.
          *
-         * Found by its flag rather than by position, because how many RAM
+         * Found by their flag rather than by position, because how many RAM
          * blocks the drain produced is a property of the machine and this is
          * not a fixed index into it.  init is where every other boot authority
-         * goes; whoever ends up driving the framebuffer gets it from there.
+         * goes; whoever ends up driving hardware gets these from there.
+         *
+         * Which is which is decided by PADDR, not by order.  The framebuffer's
+         * region is the one that CONTAINS the framebuffer's physical base —
+         * that is the only thing that makes it the framebuffer's — and every
+         * other device region is the PCI hole, where a driver that enumerated
+         * the bus will find the window its device was assigned.  Taking "the
+         * first one with is_device set" worked while there was one and would
+         * have handed `fb` an arbitrary two gigabytes of MMIO the moment there
+         * were two, which is a bug that paints a black screen and says nothing.
+         *
+         * A machine with no framebuffer leaves slot 64 empty and every device
+         * region goes to the MMIO slot; a machine with neither leaves both
+         * empty.  Neither is an error here: what is missing is a fact about
+         * the machine, and the services that need these say so themselves.
          */
-        for (uint32_t i = 0; i < bi->untyped_count &&
-                             init_mint_count < 14u; i++) {
-            if (!bi->untyped[i].is_device) continue;
-            init_mints[init_mint_count].slot     = IRIS_CPTR_DEVICE_UNTYPED;
-            init_mints[init_mint_count].src_cptr = bi->untyped[i].cptr;
-            init_mints[init_mint_count].rights   = RIGHT_READ | RIGHT_WRITE |
-                                                   RIGHT_DUPLICATE |
-                                                   RIGHT_TRANSFER;
-            init_mints[init_mint_count].badge    = 0;
-            init_mint_count++;
-            break;
+        {
+            struct iris_fb_params fbp;
+            uint8_t *raw = (uint8_t *)&fbp;
+            for (uint32_t i = 0; i < (uint32_t)sizeof(fbp); i++) raw[i] = 0;
+            (void)iris_invoke2((long)fb_control_c, INV_BOOT_FRAMEBUFFER_INFO,
+                               (long)(uintptr_t)&fbp, 0);
+
+            int have_fb = 0, have_mmio = 0;
+            for (uint32_t i = 0; i < bi->untyped_count &&
+                                 init_mint_count < 15u; i++) {
+                if (!bi->untyped[i].is_device) continue;
+                uint64_t base = bi->untyped[i].paddr;
+                uint64_t end  = base + bi->untyped[i].size_bytes;
+                int is_fb = (fbp.size != 0u && fbp.phys >= base &&
+                             fbp.phys <  end);
+                if (is_fb) {
+                    if (have_fb) continue;
+                    have_fb = 1;
+                } else {
+                    if (have_mmio) continue;
+                    have_mmio = 1;
+                }
+                init_mints[init_mint_count].slot     = is_fb
+                                                       ? IRIS_CPTR_DEVICE_UNTYPED
+                                                       : IRIS_CPTR_MMIO_UNTYPED;
+                init_mints[init_mint_count].src_cptr = bi->untyped[i].cptr;
+                init_mints[init_mint_count].rights   = RIGHT_READ | RIGHT_WRITE |
+                                                       RIGHT_DUPLICATE |
+                                                       RIGHT_TRANSFER;
+                init_mints[init_mint_count].badge    = 0;
+                init_mint_count++;
+            }
         }
 
         long lr = svc_load_minted_ws(proc_control_c, initrd_control_c, "init",

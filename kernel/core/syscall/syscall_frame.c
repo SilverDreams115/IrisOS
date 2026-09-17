@@ -48,8 +48,10 @@ uint64_t sys_frame_map(uint64_t arg0, uint64_t arg1,
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    /* Fast-fail: validate flags and VA before cap resolution. */
-    if (map_flags & ~3ULL) return syscall_err(IRIS_ERR_INVALID_ARG);
+    /* Fast-fail: validate flags and VA before cap resolution.  Bit 2 asks for
+     * an UNCACHED mapping, which is what a frame naming an MMIO window needs
+     * and what nothing naming RAM should ask for; see PAGE_PCD in paging.h. */
+    if (map_flags & ~7ULL) return syscall_err(IRIS_ERR_INVALID_ARG);
     if ((map_flags & 1u) && (map_flags & 2u)) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (!kframe_va_valid(user_va)) return syscall_err(IRIS_ERR_INVALID_ARG);
 

@@ -562,6 +562,100 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                         }
                     }
                 }
+                /*
+                 * ...and the rest of the MMIO space, as a DEVICE Untyped.
+                 *
+                 * The framebuffer above was the first, and it was the only one
+                 * the kernel knew the bounds of.  Without a second, a driver
+                 * for any OTHER device cannot reach its registers at all — a
+                 * PCI device is programmed through its BARs, and a BAR is an
+                 * MMIO address.  So "user-space drivers" stopped at the one
+                 * device whose region was hard-coded, and Stage 10-dma's claim
+                 * that a device's DMA is contained could never be DEMONSTRATED,
+                 * because nothing under IRIS's control could issue any.
+                 *
+                 * seL4 publishes device Untypeds for everything that is not
+                 * usable RAM, from the same memory map.  UEFI's map does not
+                 * describe the PCI hole at all — it is unmapped address space,
+                 * not memory — so the bounds are computed from what IS known:
+                 *
+                 *   start: above every byte of RAM and above the framebuffer
+                 *          region already published, so no two Untypeds ever
+                 *          name the same physical page;
+                 *   end:   below the lowest address the KERNEL's own devices
+                 *          occupy.  This is the part that matters.  Handing
+                 *          ring 3 a region containing the IOMMU's registers
+                 *          would let a driver switch off the very thing that
+                 *          contains it, and the LAPIC and IOAPIC are no better.
+                 *          Every one of them sits at or above 0xFEC00000 on
+                 *          x86, and the units' own bases are checked as well
+                 *          rather than assumed.
+                 *
+                 * A machine where that leaves nothing publishes nothing.
+                 *
+                 * What this region does NOT promise is that every page in it
+                 * is unclaimed.  It is bounded by RAM and by the kernel's own
+                 * devices, and the kernel enumerates no PCI — so a window the
+                 * firmware assigned to some device's BAR is inside it, which
+                 * is the whole point: that is how a ring-3 driver gets a frame
+                 * over its own registers (Stage 10-dma §10.2 step 6).  It also
+                 * means the holder is the one that has to know what is there.
+                 * The VGA aperture is the live example: its BAR decodes 16 MiB
+                 * from the framebuffer's base, while the framebuffer Untyped
+                 * covers only the visible part, so the first few megabytes of
+                 * this region are video memory nobody is using.  seL4's device
+                 * Untypeds carry exactly the same caveat — a device Untyped is
+                 * a physical range, not a claim that the range is free — and
+                 * the answer is the same: a driver retypes the window it found
+                 * by reading a BAR, not the first frame the region offers.
+                 */
+                if (bi_kva && ut->cspace_root && ut_count < bi_capacity) {
+                    uint64_t ram_top = 0;
+                    for (uint64_t i = 0; i < saved_boot_info.mmap_entry_count; i++) {
+                        const struct iris_mmap_entry *e = &saved_boot_info.mmap[i];
+                        uint64_t end = e->base + e->length;
+                        if (e->type == IRIS_MEM_USABLE && end > ram_top) ram_top = end;
+                    }
+                    uint64_t fb_end = g_iris_fb_params.phys + g_iris_fb_params.size;
+                    uint64_t start  = ram_top > fb_end ? ram_top : fb_end;
+                    start = (start + 0x1FFFFFull) & ~0x1FFFFFull;   /* 2 MiB up */
+
+                    uint64_t end = 0xFEC00000ull;    /* IOAPIC, and everything above */
+                    uint64_t lapic = acpi_lapic_base();
+                    if (lapic && lapic < end) end = lapic;
+                    for (uint32_t u = 0; u < iommu_unit_count(); u++) {
+                        const struct iris_iommu_unit *iu = iommu_unit(u);
+                        if (iu && iu->reg_base && iu->reg_base < end) end = iu->reg_base;
+                    }
+                    end &= ~0x1FFFFFull;                            /* 2 MiB down */
+
+                    uint32_t mm_slot = BOOT_CPTR_UNTYPED_START + ut_count;
+                    if (start < end && mm_slot < KCNODE_DEFAULT_SLOTS) {
+                        struct KUntyped *mm_ut =
+                            kuntyped_create(start, end - start, /*is_device*/1);
+                        if (mm_ut) {
+                            iris_error_t me = kcnode_mint(
+                                ut->cspace_root, mm_slot, &mm_ut->base,
+                                RIGHT_READ | RIGHT_WRITE |
+                                RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                            kobject_release(&mm_ut->base);
+                            if (me == IRIS_OK) {
+                                (void)root_bootinfo_add_untyped(
+                                    bi_kva, IRIS_ROOT_BOOTINFO_BYTES,
+                                    (uint64_t)mm_slot, start, end - start,
+                                    /*is_device*/1);
+                                ut_cspace_count++;
+                                ut_count++;
+                                klog_write("[IRIS][USER] MMIO 0x");
+                                klog_write_hex(start);
+                                klog_write("..0x");
+                                klog_write_hex(end);
+                                klog_write(" published as a device untyped\n");
+                            }
+                        }
+                    }
+                }
+
                 klog_write("[IRIS][USER] boot untyped blocks handed to init: ");
                 klog_write_dec(ut_count);
                 klog_write("\n");

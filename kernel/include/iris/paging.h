@@ -6,8 +6,46 @@
 #define PAGE_PRESENT  (1ULL << 0)
 #define PAGE_WRITABLE (1ULL << 1)
 #define PAGE_USER     (1ULL << 2)
+/*
+ * The two cache-control bits, which together name a PAT entry.  With the
+ * default PAT, PWT|PCD is entry 3 — uncacheable.  They exist here for one
+ * reason: a frame that names an MMIO window is not memory, and a write-back
+ * mapping of it lets the processor answer a register read out of a cache line
+ * and coalesce register writes into a burst.  A driver mapping a BAR asks for
+ * this; nothing else should.
+ */
+#define PAGE_PWT      (1ULL << 3)
+#define PAGE_PCD      (1ULL << 4)
 #define PAGE_HUGE     (1ULL << 7)
 #define PAGE_NX       (1ULL << 63)
+
+/*
+ * The physical address inside a page-table entry, and nothing else.
+ *
+ * An x86-64 paging entry is an address in bits 51:12 with FLAGS above and
+ * below it — the accessed/dirty/global bits under the address and, above it,
+ * the four available bits and NX at 63.  `entry & ~0xFFF` clears the low
+ * flags and keeps every high one, so the "physical address" it produces has
+ * NX set for any page mapped non-executable.
+ *
+ * That was true of every walk in this kernel and cost nothing for years,
+ * because the callers either compared the result against zero or handed it
+ * back to another walk that masked it again on the way in.  It cost something
+ * the first time a physical address computed this way was handed to HARDWARE:
+ * a VT-d root entry pointing at a context table, where bits 63:39 are reserved
+ * and a remapping unit answers a non-zero one with fault reason 10 and refuses
+ * every device on the bus.  Stage 10-dma's driver test found it (§10.2 step 6)
+ * and it is the reason the constant exists rather than the mask being written
+ * out at each site.
+ *
+ * The kernel had already been bitten by the other half of this.  The 2 MiB
+ * split inside `paging_set_low_exec` carries a comment saying "NX is bit 63,
+ * so the low twelve bits are NOT the flags", written after masking to 0xFFF
+ * made two megabytes executable to open one page.  The same sentence was true
+ * of every address the walks produced, and nobody went looking.
+ */
+#define PAGE_PA_MASK    0x000FFFFFFFFFF000ULL   /* 4 KiB entries  */
+#define PAGE_PA_MASK_2M 0x000FFFFFFFE00000ULL   /* 2 MiB entries  */
 
 /* ── Virtual address space layout ─────────────────────────────────
  *

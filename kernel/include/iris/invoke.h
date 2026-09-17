@@ -183,10 +183,31 @@
 #define INV_IOSPACE_MAP_TABLE              69u  /* install a translation level */
 #define INV_IOSPACE_MAP_FRAME              70u  /* the device may reach a frame */
 #define INV_IOSPACE_UNMAP                  71u  /* ...and no longer may */
+#define INV_IOSPACE_FAULT                  72u  /* who was refused, and why */
+
+/*
+ * ── KOBJ_IOPORT, the other two widths (Stage 10-dma §10.2 step 6) ─────────
+ *
+ * seL4 has seL4_X86_IOPort_In8/In16/In32 and the three Out methods, and this
+ * is the same family for the same reason: a port is not a byte.  PCI
+ * configuration space is reached through a 32-bit index register at 0xCF8 that
+ * IGNORES anything narrower — a byte-at-a-time driver writing the four bytes
+ * of a config address writes four values that are each discarded — so a
+ * kernel offering only IN/OUT8 cannot host a PCI driver at all.  That is how
+ * this hole was found: by a driver that could not enumerate the bus.
+ *
+ * The range check is per WIDTH, not per byte.  A 4-byte read at the last byte
+ * of a range reads three bytes past the end of the authority, and the check
+ * that catches it is `offset + width <= count`.
+ */
+#define INV_IOPORT_IN16                    73u
+#define INV_IOPORT_OUT16                   74u
+#define INV_IOPORT_IN32                    75u
+#define INV_IOPORT_OUT32                   76u
 
 /* First unassigned.  A label is never reused, for the same reason a syscall
  * number never was: a stale caller must get a refusal, not somebody else's
  * method. */
-#define INV_LABEL_COUNT                    72u
+#define INV_LABEL_COUNT                    77u
 
 #endif /* IRIS_INVOKE_H */

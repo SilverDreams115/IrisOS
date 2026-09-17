@@ -162,7 +162,7 @@ void paging_clear_force_fail(void) { g_paging_force_fail = 0; }
 
 #define STUB_PMAP_MAX 256
 void paging_stub_reset_tables(void);   /* defined with the table stubs below */
-typedef struct { uint64_t cr3; uint64_t virt; uint64_t phys; } stub_pmap_t;
+typedef struct { uint64_t cr3; uint64_t virt; uint64_t phys; uint64_t flags; } stub_pmap_t;
 static stub_pmap_t stub_pmap[STUB_PMAP_MAX];
 static int stub_pmap_n = 0;
 
@@ -174,7 +174,6 @@ void paging_stub_reset(void) {
 }
 
 int paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags) {
-    (void)flags;
     if (!cr3) return -1;
     /* Failure injection: simulate page-table allocation failure. */
     if (g_paging_force_fail) { g_paging_force_fail = 0; return -1; }
@@ -186,7 +185,25 @@ int paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t f
     stub_pmap[stub_pmap_n].cr3  = cr3;
     stub_pmap[stub_pmap_n].virt = virt;
     stub_pmap[stub_pmap_n].phys = phys;
+    stub_pmap[stub_pmap_n].flags = flags;
     stub_pmap_n++;
+    return 0;
+}
+
+/*
+ * The PTE flags the mapping was installed with, or 0 when there is no mapping.
+ *
+ * The stub used to drop them on the floor, which was fine while every flag was
+ * derivable from the map_flags the caller passed.  It stopped being fine when
+ * SYS_FRAME_MAP grew an UNCACHED bit: whether a mapping ends up write-back or
+ * uncached is exactly the kind of thing that can be silently wrong — the
+ * mapping works either way, the driver reads stale registers, and nothing
+ * fails until it is a real machine.  So the flags are recorded and asserted.
+ */
+uint64_t paging_stub_flags_at(uint64_t cr3, uint64_t virt) {
+    for (int i = 0; i < stub_pmap_n; i++)
+        if (stub_pmap[i].cr3 == cr3 && stub_pmap[i].virt == virt)
+            return stub_pmap[i].flags;
     return 0;
 }
 
@@ -460,6 +477,7 @@ void     smp_tick_others(void)               { }
 void     smp_reschedule_others(void)         { }
 void     smp_send_reschedule(uint32_t c)      { (void)c; }
 
+#include <iris/iommu.h>
 /*
  * DMA remapping (Stage 10-dma).  A host test has no ACPI tables and no VT-d
  * unit, so the machine it runs on has none — and answering "no unit, nothing
@@ -472,6 +490,14 @@ uint32_t iommu_unit_count(void)              { return 0u; }
 uint32_t iommu_usable_count(void)            { return 0u; }
 uint32_t iommu_enabled_count(void)           { return 0u; }
 uint32_t iommu_fault_status(uint32_t i)      { (void)i; return 0u; }
+/* No unit, so no record: the same answer the real one gives on a machine that
+ * has no remapping hardware, which is what the host build is. */
+int      iommu_fault_record(uint32_t i, struct iris_iommu_fault *o, int c) {
+    (void)i; (void)c;
+    if (o) { o->address = 0; o->source_id = 0; o->reason = 0; o->is_read = 0;
+             o->status = 0; }
+    return 0;
+}
 int      iommu_dma_is_contained(void)        { return 0; }
 uint32_t iommu_unit_for_source(uint16_t s)   { (void)s; return 0xFFFFFFFFu; }
 uint32_t iommu_levels(uint32_t u)            { (void)u; return 0u; }

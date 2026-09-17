@@ -221,6 +221,79 @@ uint64_t sys_ioport_out(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
+/*
+ * The other two widths.
+ *
+ * Shared body, because the three things that differ — the instruction, the
+ * width and the return type — are exactly what a parameter can carry, and
+ * three copies of the resolve-check-bounds preamble is three places for the
+ * bounds check to be wrong in.
+ *
+ * `offset + width <= count` rather than `offset < count`: a 4-byte read at the
+ * last byte of a two-byte authority reads two bytes that belong to somebody
+ * else, and a check written per-byte would allow it.
+ */
+static uint64_t ioport_access(uint64_t cptr, uint64_t arg1, uint64_t arg2,
+                              uint32_t width, int is_write) {
+    struct task *t = task_current();
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject  *obj;
+    iris_rights_t    rights;
+    iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)cptr,
+                                 RIGHT_NONE, KOBJ_IOPORT, &obj, &rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (!rights_check(rights, is_write ? RIGHT_WRITE : RIGHT_READ)) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KIoPort *port = (struct KIoPort *)obj;
+    uint32_t offset = (uint32_t)(arg1 & 0xFFFFu);
+    if (offset + width > (uint32_t)port->count) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    uint16_t io_port = (uint16_t)(port->base_port + (uint16_t)offset);
+    uint64_t out = 0;
+    if (is_write) {
+        if (width == 2u) {
+            uint16_t v = (uint16_t)(arg2 & 0xFFFFu);
+            __asm__ volatile ("outw %0, %1" : : "a"(v), "Nd"(io_port));
+        } else {
+            uint32_t v = (uint32_t)(arg2 & 0xFFFFFFFFu);
+            __asm__ volatile ("outl %0, %1" : : "a"(v), "Nd"(io_port));
+        }
+    } else {
+        if (width == 2u) {
+            uint16_t v;
+            __asm__ volatile ("inw %1, %0" : "=a"(v) : "Nd"(io_port));
+            out = (uint64_t)v;
+        } else {
+            uint32_t v;
+            __asm__ volatile ("inl %1, %0" : "=a"(v) : "Nd"(io_port));
+            out = (uint64_t)v;
+        }
+    }
+    kobject_release(obj);
+    return syscall_ok_u64(out);
+}
+
+uint64_t sys_ioport_in16(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2; return ioport_access(arg0, arg1, 0, 2u, 0);
+}
+uint64_t sys_ioport_out16(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    return ioport_access(arg0, arg1, arg2, 2u, 1);
+}
+uint64_t sys_ioport_in32(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2; return ioport_access(arg0, arg1, 0, 4u, 0);
+}
+uint64_t sys_ioport_out32(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    return ioport_access(arg0, arg1, arg2, 4u, 1);
+}
+
+
 /* ── B5: exception handler registration ───────────────────────────── */
 
 /* ── B6: exception resume ──────────────────────────────────────────── */

@@ -186,6 +186,32 @@ uint32_t iommu_enabled_count(void);
 uint32_t iommu_fault_status(uint32_t index);
 
 /*
+ * WHICH device was refused, and for what.
+ *
+ * `iommu_fault_status` says a fault happened somewhere on the unit.  That is
+ * enough to prove the unit is enforcing and not enough to prove it enforced
+ * against the device a test is holding — a SATA controller touching memory
+ * nobody mapped for it would set the same bit.  The unit records the whole
+ * transaction: the source-id that issued it, the address it asked for, the
+ * reason the walk stopped and whether it was a read or a write.
+ *
+ * Reading CLEARS the record when `clear` is set, because the records are a
+ * small ring and one left set makes the next fault land in the next slot until
+ * the ring overflows and the unit stops recording.  A caller that wants to
+ * watch a sequence of refusals has to drain as it goes.
+ *
+ * Returns 1 when a record was present and filled in, 0 when there was none.
+ */
+struct iris_iommu_fault {
+    uint64_t address;     /* the DMA address the device asked for */
+    uint16_t source_id;   /* who asked */
+    uint8_t  reason;      /* VT-d fault reason code */
+    uint8_t  is_read;     /* 1 = read request, 0 = write request */
+    uint32_t status;      /* the unit's fault status register as read */
+};
+int iommu_fault_record(uint32_t index, struct iris_iommu_fault *out, int clear);
+
+/*
  * ── What the object layer asks of the hardware layer (§10.2 step 4) ────────
  *
  * The IOSpace and its page tables are capability objects and live in

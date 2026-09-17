@@ -456,6 +456,12 @@ uint64_t sys_iospace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_iospace_map_frame(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                uint64_t arg3);
 uint64_t sys_iospace_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_iospace_fault(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                           uint64_t arg3);
+uint64_t sys_ioport_in16(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_ioport_out16(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_ioport_in32(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_ioport_out32(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                           uint64_t arg3);
 uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2);

@@ -1001,6 +1001,34 @@ static inline long iris_syscall0(long nr) {
  */
 #define IRIS_KOBJ_IOSPACE       18u
 #define IRIS_KOBJ_IO_PAGE_TABLE 19u
+
+/*
+ * INV_IOSPACE_FAULT(iospace_control, unit, uptr, flags) → 1 if a record was
+ * read, 0 if there was none.
+ *
+ * Invoked on the IOSPACE_CONTROL authority, not on an IOSpace: a fault record
+ * names whichever device the unit refused, which is not necessarily the device
+ * any one IOSpace was bound to, and a holder that could read it through its
+ * own space would be reading about somebody else's hardware.
+ *
+ * `flags` bit 0 clears the record it reports.  The recording registers are a
+ * short ring and the unit stops recording once every slot is occupied by a
+ * record nobody drained, so a caller watching a SEQUENCE of refusals must
+ * clear as it goes; one taking a single sample need not.
+ */
+#ifndef __ASSEMBLER__
+struct iris_iommu_fault_info {
+    uint32_t version;      /* 1 */
+    uint32_t struct_size;
+    uint64_t address;      /* the DMA address the device asked for */
+    uint32_t status;       /* the unit's fault status register as read */
+    uint16_t source_id;    /* the bus:device:function that issued it */
+    uint8_t  reason;       /* VT-d fault reason code */
+    uint8_t  is_read;      /* 1 = read request, 0 = write request */
+};
+#endif /* !__ASSEMBLER__ */
+#define IRIS_IOMMU_FAULT_INFO_VERSION 1u
+#define IRIS_IOMMU_FAULT_CLEAR        1u
 /* How many identifiers one pool issues.  Part of the ABI because a holder has
  * to be able to size its own address-space budget without asking the kernel
  * how big its objects are. */

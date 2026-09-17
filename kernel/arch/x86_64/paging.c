@@ -40,7 +40,7 @@ static uint64_t *phys_to_ptr(uint64_t phys) {
 static uint64_t read_cr3_phys(void) {
     uint64_t cr3;
     __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
-    return cr3 & ~0xFFFULL;
+    return cr3 & PAGE_PA_MASK;
 }
 
 static int paging_query_access_root(uint64_t cr3, uint64_t virt, uint64_t *out_flags) {
@@ -50,12 +50,12 @@ static int paging_query_access_root(uint64_t cr3, uint64_t virt, uint64_t *out_f
     if (!(entry & PAGE_PRESENT)) return -1;
     effective &= (entry & (PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER));
 
-    uint64_t *pdpt = phys_to_ptr(entry & ~0xFFFULL);
+    uint64_t *pdpt = phys_to_ptr(entry & PAGE_PA_MASK);
     entry = pdpt[PDPT_IDX(virt)];
     if (!(entry & PAGE_PRESENT)) return -1;
     effective &= (entry & (PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER));
 
-    uint64_t *pd = phys_to_ptr(entry & ~0xFFFULL);
+    uint64_t *pd = phys_to_ptr(entry & PAGE_PA_MASK);
     entry = pd[PD_IDX(virt)];
     if (!(entry & PAGE_PRESENT)) return -1;
     effective &= (entry & (PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER));
@@ -64,7 +64,7 @@ static int paging_query_access_root(uint64_t cr3, uint64_t virt, uint64_t *out_f
         return 0;
     }
 
-    uint64_t *pt = phys_to_ptr(entry & ~0xFFFULL);
+    uint64_t *pt = phys_to_ptr(entry & PAGE_PA_MASK);
     entry = pt[PT_IDX(virt)];
     if (!(entry & PAGE_PRESENT)) return -1;
     effective &= (entry & (PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER));
@@ -77,15 +77,15 @@ static uint64_t *walk_pt(uint64_t cr3, uint64_t virt) {
     uint64_t entry = pml4[PML4_IDX(virt)];
     if (!(entry & PAGE_PRESENT) || (entry & PAGE_HUGE)) return 0;
 
-    uint64_t *pdpt = phys_to_ptr(entry & ~0xFFFULL);
+    uint64_t *pdpt = phys_to_ptr(entry & PAGE_PA_MASK);
     entry = pdpt[PDPT_IDX(virt)];
     if (!(entry & PAGE_PRESENT) || (entry & PAGE_HUGE)) return 0;
 
-    uint64_t *pd = phys_to_ptr(entry & ~0xFFFULL);
+    uint64_t *pd = phys_to_ptr(entry & PAGE_PA_MASK);
     entry = pd[PD_IDX(virt)];
     if (!(entry & PAGE_PRESENT) || (entry & PAGE_HUGE)) return 0;
 
-    return phys_to_ptr(entry & ~0xFFFULL);
+    return phys_to_ptr(entry & PAGE_PA_MASK);
 }
 
 static void destroy_pt_level(uint64_t table_phys, int level) {
@@ -100,7 +100,7 @@ static void destroy_pt_level(uint64_t table_phys, int level) {
         uint64_t entry = table[i];
         if (!(entry & PAGE_PRESENT)) continue;
         if (entry & PAGE_HUGE) continue;
-        destroy_pt_level(entry & ~0xFFFULL, level - 1);
+        destroy_pt_level(entry & PAGE_PA_MASK, level - 1);
         table[i] = 0;
     }
 
@@ -140,7 +140,7 @@ static uint64_t *get_or_create(uint64_t *table, uint64_t index, uint64_t flags) 
         table[index] |= (flags & (PAGE_USER | PAGE_WRITABLE));
     }
     if (table[index] & PAGE_HUGE) return 0;
-    return phys_to_ptr(table[index] & ~0xFFFULL);
+    return phys_to_ptr(table[index] & PAGE_PA_MASK);
 }
 
 /*
@@ -159,11 +159,11 @@ int paging_missing_level_in(uint64_t cr3, uint64_t virt) {
     uint64_t *pml4 = phys_to_ptr(cr3);
     uint64_t e = pml4[PML4_IDX(virt)];
     if (!(e & PAGE_PRESENT)) return 3;              /* needs a PDPT */
-    uint64_t *pdpt = phys_to_ptr(e & ~0xFFFULL);
+    uint64_t *pdpt = phys_to_ptr(e & PAGE_PA_MASK);
     e = pdpt[PDPT_IDX(virt)];
     if (!(e & PAGE_PRESENT)) return 2;              /* needs a PD */
     if (e & PAGE_HUGE)       return -1;             /* 1 GiB leaf: no table fits */
-    uint64_t *pd = phys_to_ptr(e & ~0xFFFULL);
+    uint64_t *pd = phys_to_ptr(e & PAGE_PA_MASK);
     e = pd[PD_IDX(virt)];
     if (!(e & PAGE_PRESENT)) return 1;              /* needs a PT */
     if (e & PAGE_HUGE)       return -1;             /* 2 MiB leaf: no table fits */
@@ -184,14 +184,14 @@ int paging_install_table_in(uint64_t cr3, uint64_t virt, uint64_t table_phys,
         if (level == 3) { tbl = phys_to_ptr(cr3); idx = PML4_IDX(virt); }
         else {
             uint64_t *pml4 = phys_to_ptr(cr3);
-            uint64_t *pdpt = phys_to_ptr(pml4[PML4_IDX(virt)] & ~0xFFFULL);
+            uint64_t *pdpt = phys_to_ptr(pml4[PML4_IDX(virt)] & PAGE_PA_MASK);
             if (level == 2) { tbl = pdpt; idx = PDPT_IDX(virt); }
             else {
-                uint64_t *pd = phys_to_ptr(pdpt[PDPT_IDX(virt)] & ~0xFFFULL);
+                uint64_t *pd = phys_to_ptr(pdpt[PDPT_IDX(virt)] & PAGE_PA_MASK);
                 tbl = pd; idx = PD_IDX(virt);
             }
         }
-        tbl[idx] = (table_phys & ~0xFFFULL) | flags | PAGE_PRESENT;
+        tbl[idx] = (table_phys & PAGE_PA_MASK) | flags | PAGE_PRESENT;
     }
 
     __asm__ volatile ("pushq %0; popfq" : : "r"(rflags) : "memory");
@@ -225,12 +225,12 @@ int paging_detach_table_in(uint64_t cr3, uint64_t virt, int level,
     for (int cur = 3; cur > level; cur--) {
         uint64_t e = tbl[idx];
         if (!(e & PAGE_PRESENT) || (e & PAGE_HUGE)) goto out;
-        tbl = phys_to_ptr(e & ~0xFFFULL);
+        tbl = phys_to_ptr(e & PAGE_PA_MASK);
         idx = (cur == 3) ? PDPT_IDX(virt) : PD_IDX(virt);
     }
     if ((tbl[idx] & PAGE_PRESENT) &&
         !(tbl[idx] & PAGE_HUGE) &&
-        (tbl[idx] & ~0xFFFULL) == (table_phys & ~0xFFFULL)) {
+        (tbl[idx] & PAGE_PA_MASK) == (table_phys & PAGE_PA_MASK)) {
         tbl[idx] = 0;
         rc = 0;
     }
@@ -266,7 +266,7 @@ int paging_map_strict_in(uint64_t cr3, uint64_t virt, uint64_t phys,
     int level = paging_missing_level_in(cr3, virt);
     if (level == 0) {
         uint64_t *pt = walk_pt(cr3, virt);
-        if (pt) pt[PT_IDX(virt)] = (phys & ~0xFFFULL) | flags | PAGE_PRESENT;
+        if (pt) pt[PT_IDX(virt)] = (phys & PAGE_PA_MASK) | flags | PAGE_PRESENT;
         else    level = -1;
     }
     __asm__ volatile ("pushq %0; popfq" : : "r"(rflags) : "memory");
@@ -285,7 +285,7 @@ static int paging_map_root(uint64_t root_phys, uint64_t virt, uint64_t phys,
     if (!pd) return -1;
     uint64_t *pt   = get_or_create(pd,   PD_IDX(virt),   tbl_flags);
     if (!pt) return -1;
-    pt[PT_IDX(virt)] = (phys & ~0xFFFULL) | flags | PAGE_PRESENT;
+    pt[PT_IDX(virt)] = (phys & PAGE_PA_MASK) | flags | PAGE_PRESENT;
     return 0;
 }
 
@@ -302,7 +302,7 @@ static void paging_map_huge(uint64_t virt, uint64_t phys, uint64_t flags) {
     if (!pdpt) return;
     uint64_t *pd   = get_or_create(pdpt, PDPT_IDX(virt), tbl_flags);
     if (!pd) return;
-    pd[PD_IDX(virt)] = (phys & ~0x1FFFFFULL) | flags | PAGE_PRESENT | PAGE_HUGE;
+    pd[PD_IDX(virt)] = (phys & PAGE_PA_MASK_2M) | flags | PAGE_PRESENT | PAGE_HUGE;
 }
 
 uint64_t paging_virt_to_phys(uint64_t virt) {
@@ -311,21 +311,21 @@ uint64_t paging_virt_to_phys(uint64_t virt) {
 
     entry = pml4[PML4_IDX(virt)];
     if (!(entry & PAGE_PRESENT)) return 0;
-    uint64_t *pdpt = phys_to_ptr(entry & ~0xFFFULL);
+    uint64_t *pdpt = phys_to_ptr(entry & PAGE_PA_MASK);
 
     entry = pdpt[PDPT_IDX(virt)];
     if (!(entry & PAGE_PRESENT)) return 0;
-    uint64_t *pd = phys_to_ptr(entry & ~0xFFFULL);
+    uint64_t *pd = phys_to_ptr(entry & PAGE_PA_MASK);
 
     entry = pd[PD_IDX(virt)];
     if (!(entry & PAGE_PRESENT)) return 0;
     if (entry & PAGE_HUGE)
-        return (entry & ~0x1FFFFFULL) | (virt & 0x1FFFFFULL);
+        return (entry & PAGE_PA_MASK_2M) | (virt & 0x1FFFFFULL);
 
-    uint64_t *pt = phys_to_ptr(entry & ~0xFFFULL);
+    uint64_t *pt = phys_to_ptr(entry & PAGE_PA_MASK);
     entry = pt[PT_IDX(virt)];
     if (!(entry & PAGE_PRESENT)) return 0;
-    return (entry & ~0xFFFULL) | (virt & 0xFFFULL);
+    return (entry & PAGE_PA_MASK) | (virt & 0xFFFULL);
 }
 
 int paging_query_access(uint64_t virt, uint64_t *out_flags) {
@@ -478,20 +478,20 @@ uint64_t paging_virt_to_phys_in(uint64_t cr3, uint64_t virt) {
     uint64_t entry = pml4[PML4_IDX(virt)];
     if (!(entry & PAGE_PRESENT)) return 0;
 
-    uint64_t *pdpt = phys_to_ptr(entry & ~0xFFFULL);
+    uint64_t *pdpt = phys_to_ptr(entry & PAGE_PA_MASK);
     entry = pdpt[PDPT_IDX(virt)];
     if (!(entry & PAGE_PRESENT)) return 0;
 
-    uint64_t *pd = phys_to_ptr(entry & ~0xFFFULL);
+    uint64_t *pd = phys_to_ptr(entry & PAGE_PA_MASK);
     entry = pd[PD_IDX(virt)];
     if (!(entry & PAGE_PRESENT)) return 0;
     if (entry & PAGE_HUGE)
-        return (entry & ~0x1FFFFFULL) | (virt & 0x1FFFFFULL);
+        return (entry & PAGE_PA_MASK_2M) | (virt & 0x1FFFFFULL);
 
-    uint64_t *pt = phys_to_ptr(entry & ~0xFFFULL);
+    uint64_t *pt = phys_to_ptr(entry & PAGE_PA_MASK);
     entry = pt[PT_IDX(virt)];
     if (!(entry & PAGE_PRESENT)) return 0;
-    return (entry & ~0xFFFULL) | (virt & 0xFFFULL);
+    return (entry & PAGE_PA_MASK) | (virt & 0xFFFULL);
 }
 
 int paging_query_access_in(uint64_t cr3, uint64_t virt, uint64_t *out_flags) {
@@ -572,7 +572,7 @@ int paging_set_low_exec(uint64_t phys_page, int executable) {
             if (e & PAGE_HUGE) {
                 /* Split the 2 MiB mapping into a page table that says exactly
                  * what it said before, one entry at a time. */
-                uint64_t base = e & ~(HUGE_SIZE - 1) & ~0xFFFULL;
+                uint64_t base = e & PAGE_PA_MASK_2M;
                 /* NX is bit 63, so the low twelve bits are NOT the flags.
                  * Masking to 0xFFF dropped it from all 512 entries and made
                  * the whole two megabytes executable to open one page — the
@@ -588,7 +588,7 @@ int paging_set_low_exec(uint64_t phys_page, int executable) {
                 }
             }
             if (!(e & PAGE_HUGE) && (e & PAGE_PRESENT)) {
-                uint64_t *pt = phys_to_ptr(e & ~0xFFFULL);
+                uint64_t *pt = phys_to_ptr(e & PAGE_PA_MASK);
                 uint64_t k = PT_IDX(phys_page);
                 if (executable) pt[k] &= ~PAGE_NX;
                 else            pt[k] |=  PAGE_NX;
@@ -624,7 +624,7 @@ void paging_destroy_user_space_from(uint64_t cr3, int pml4_pooled) {
     uint64_t *pml4 = phys_to_ptr(cr3);
     uint64_t root = pml4[USER_PRIVATE_PML4_INDEX];
     if (root & PAGE_PRESENT) {
-        destroy_pt_level(root & ~0xFFFULL, 3);
+        destroy_pt_level(root & PAGE_PA_MASK, 3);
         pml4[USER_PRIVATE_PML4_INDEX] = 0;
     }
 

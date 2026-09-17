@@ -42,6 +42,25 @@ void it_log_num(uint32_t n) {
     it_serial_write(buf + i);
 }
 
+/* The same, in hex, because an address printed in decimal is an address
+ * nobody can compare against a boot log or a QEMU monitor dump. */
+void it_log_hex(uint64_t v) {
+    char buf[19];
+    uint32_t i = 18;
+    buf[i] = '\0';
+    if (v == 0) {
+        buf[--i] = '0';
+    } else {
+        while (v > 0) {
+            uint32_t d = (uint32_t)(v & 0xFu);
+            buf[--i] = (char)(d < 10u ? ('0' + (int)d) : ('a' + (int)(d - 10u)));
+            v >>= 4;
+        }
+    }
+    it_serial_write("0x");
+    it_serial_write(buf + i);
+}
+
 /* ── Test framework ─────────────────────────────────────────────────────── */
 
 uint32_t g_pass  = 0;
@@ -638,6 +657,7 @@ static int it_root_slot_is_load_bearing(uint32_t s) {
     if (s == (uint32_t)IRIS_CPTR_TEST_UNTYPED) return 1;          /* 55 */
     if (s == 56u || s == 58u || s == 59u) return 1;               /* vspace, vfs */
     if (s == (uint32_t)IRIS_CPTR_DEVICE_UNTYPED) return 1;        /* 64 */
+    if (s == (uint32_t)IRIS_CPTR_MMIO_UNTYPED_TEST) return 1;     /* 62 */
     if (s == 66u) return 1;   /* IT_IPCBUF_CNODE_SLOT, asserted below */
     if (s == IT_OBJ_CNODE_SLOT) return 1;                         /* 80 */
     if (s == (uint32_t)IRIS_CPTR_FB_CONTROL) return 1;            /* 99 */

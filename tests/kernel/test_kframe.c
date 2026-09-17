@@ -1233,8 +1233,13 @@ void test_kframe(void) {
         paging_stub_reset();
     }
 
-    /* FR-61: kframe_map_page with flags > 3 (bits beyond W|X) returns
-     * IRIS_ERR_INVALID_ARG; no PTE installed, no mapping node created. */
+    /* FR-61: kframe_map_page with flags beyond W|X|UNCACHED returns
+     * IRIS_ERR_INVALID_ARG; no PTE installed, no mapping node created.
+     *
+     * Bit 2 used to be in that set and is now the UNCACHED bit (Stage 10-dma
+     * §10.2 step 6), so the boundary moved to bit 3 — and the bit that moved
+     * is asserted below rather than merely removed from here, because a flag
+     * that is accepted and then ignored is the failure this test exists for. */
     {
         paging_stub_reset();
         struct KVSpace *vs = kvspace_alloc(0xCC8000ULL);
@@ -1242,13 +1247,53 @@ void test_kframe(void) {
         struct KFrame *f = kframe_alloc(0x61000000ULL, 4096, NULL);
         ASSERT_NOT_NULL(f);
 
-        /* flag bit 2 set — invalid */
-        iris_error_t ie = kframe_map_page(f, vs, USER_PRIVATE_BASE, 4u);
+        /* flag bit 3 set — invalid */
+        iris_error_t ie = kframe_map_page(f, vs, USER_PRIVATE_BASE, 8u);
         ASSERT_EQ((int)ie, (int)IRIS_ERR_INVALID_ARG);
         ASSERT_EQ((int)vs->mapping_count, 0);
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
         ASSERT_EQ(paging_virt_to_phys_in(0xCC8000ULL, USER_PRIVATE_BASE), (uint64_t)0);
 
+        kobject_release(&f->base);
+        kvspace_free(vs);
+        paging_stub_reset();
+    }
+
+    /* FR-61b: the UNCACHED bit is accepted and REACHES THE PTE.
+     *
+     * A driver mapping a device register window asks for this, and a kernel
+     * that took the flag and installed a write-back mapping anyway would pass
+     * every other test here: the mapping exists, the frame is charged, the
+     * address translates.  What would be wrong is invisible until a register
+     * read is answered out of a cache line. */
+    {
+        paging_stub_reset();
+        struct KVSpace *vs = kvspace_alloc(0xCC9000ULL);
+        ASSERT_NOT_NULL(vs);
+        struct KFrame *f = kframe_alloc(0x62000000ULL, 4096, NULL);
+        ASSERT_NOT_NULL(f);
+
+        ASSERT_EQ((int)kframe_map_page(f, vs, USER_PRIVATE_BASE, 1u | 4u),
+                  (int)IRIS_OK);
+        uint64_t fl = paging_stub_flags_at(0xCC9000ULL, USER_PRIVATE_BASE);
+        ASSERT_EQ((int)((fl & PAGE_PCD) != 0), 1);
+        ASSERT_EQ((int)((fl & PAGE_PWT) != 0), 1);
+        ASSERT_EQ((int)((fl & PAGE_WRITABLE) != 0), 1);
+
+        /* ...and a plain mapping does NOT get them, so the assertion above is
+         * about the flag rather than about the kernel setting them always. */
+        paging_stub_reset();
+        struct KVSpace *vs2 = kvspace_alloc(0xCCA000ULL);
+        ASSERT_NOT_NULL(vs2);
+        struct KFrame *f2 = kframe_alloc(0x63000000ULL, 4096, NULL);
+        ASSERT_NOT_NULL(f2);
+        ASSERT_EQ((int)kframe_map_page(f2, vs2, USER_PRIVATE_BASE, 1u),
+                  (int)IRIS_OK);
+        uint64_t fl2 = paging_stub_flags_at(0xCCA000ULL, USER_PRIVATE_BASE);
+        ASSERT_EQ((int)((fl2 & (PAGE_PCD | PAGE_PWT)) != 0), 0);
+
+        kobject_release(&f2->base);
+        kvspace_free(vs2);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();

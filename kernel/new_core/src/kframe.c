@@ -146,7 +146,7 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
 
     if (!f || !vs) return IRIS_ERR_INVALID_ARG;
     if (!kframe_va_valid(user_va)) return IRIS_ERR_INVALID_ARG;
-    if (map_flags & ~3ULL) return IRIS_ERR_INVALID_ARG;
+    if (map_flags & ~7ULL) return IRIS_ERR_INVALID_ARG;
 
     writable   = (int)(map_flags & 1u);
     executable = (int)((map_flags >> 1) & 1u);
@@ -191,6 +191,16 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
     page_flags = PAGE_PRESENT | PAGE_USER;
     if (!executable) page_flags |= PAGE_NX;
     if (writable)    page_flags |= PAGE_WRITABLE;
+    /*
+     * Uncached, when asked.  A device register read satisfied from a cache
+     * line is a read of what the register said some time ago, and a write
+     * that sits in a write-combining buffer reaches the device in an order
+     * nobody chose — so a driver mapping a BAR sets this and everything else
+     * leaves it alone.  It is a property of the MAPPING, not of the frame:
+     * the same physical page mapped twice may be cached in one space and not
+     * in the other, and that is the caller's business, not the kernel's.
+     */
+    if (map_flags & 4u)  page_flags |= PAGE_PCD | PAGE_PWT;
 
     /*
      * Stage 6-pure Step 2: the kernel does not create paging levels — and

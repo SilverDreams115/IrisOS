@@ -531,6 +531,49 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  */
 #define IRIS_CPTR_DEVICE_UNTYPED ((uint64_t)64)
 /*
+ * The OTHER device Untyped: the 32-bit PCI hole, MMIO that no kernel driver
+ * claims (Stage 10-dma §10.2 step 6).
+ *
+ * The framebuffer got its own slot because exactly one consumer wanted it and
+ * that consumer is `fb`.  Everything else with a BAR — an NVMe controller, a
+ * NIC, the DMA engine this stage's driver test drives — lives in the hole
+ * between the top of RAM and the local APIC, and a ring-3 driver that has
+ * enumerated PCI and found its device needs a capability for the window the
+ * firmware assigned it.  That window is somewhere in here.
+ *
+ * Two device Untypeds means userboot can no longer take "the first one with
+ * is_device set".  It picks by PADDR — the framebuffer one is the region that
+ * CONTAINS the framebuffer's physical base — which is how seL4 userspace picks
+ * a device Untyped too, and does not care what order the kernel published them
+ * in.
+ *
+ * Like every device Untyped it carves no headers of its own: pair it with a
+ * RAM Untyped (INV_UNTYPED_SET_DEVICE_BUDGET) before the first retype.
+ *
+ * The slot numbers were chosen the hard way, twice.
+ *
+ * The first pick was 53, which looked free in both consumers because the
+ * search for "53" in `services/init` was a regular expression that only
+ * matched constants at the end of a line — and INIT_SLOT_LOADER_WS is 53 with
+ * a comment after it.  A mint into an occupied slot DELETES the occupant, so
+ * this quietly destroyed init's loader workspace and every service load after
+ * it failed with nothing anywhere naming the slot.
+ *
+ * The second was 241, which is above everything init names and above the
+ * suite's monotonic pool — and is S1_SLOT_A, the first of the suite's OTHER
+ * scratch window at 241..250, which the same kind of search missed because
+ * those constants are spelled S1_SLOT_x rather than IT_SOMETHING.  That one
+ * announced itself properly: the suite's load-bearing-slot guard refused the
+ * delete and T319 failed by name.
+ */
+#define IRIS_CPTR_MMIO_UNTYPED      ((uint64_t)78)
+/* ...and the slot iris_test receives it in, for the reason
+ * IRIS_CPTR_IOSPACE_CONTROL_TEST exists: 78 is inside the suite's S1 scratch
+ * window (64..87) and 62 is inside init's (INIT_SLOT_TEST_TCB).  Two crowded
+ * CSpaces with no slot free in both is not a problem to solve by picking
+ * harder; it is what a second constant is for. */
+#define IRIS_CPTR_MMIO_UNTYPED_TEST ((uint64_t)62)
+/*
  * Stage 6-pure Step 2 gave this slot a second, guaranteed occupant.
  *
  * The kernel no longer creates paging levels, so a task that maps anything

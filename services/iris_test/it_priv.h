@@ -300,6 +300,11 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  *
  * Slots 29, 43, 63 and 254 are the scratch pool (IT_SCRATCH_0..3) and 255 is
  * the serial KIoPort; those ARE named here and are not free for anything else.
+ * Slot 62 is IRIS_CPTR_MMIO_UNTYPED_TEST (Stage 10-dma §10.2 step 6): 60..62
+ * appear in this file only as destination slots in a SPAWNED CHILD's CSpace,
+ * so they were free in this one, and finding that out took two collisions —
+ * the story is on the constant in endpoint_proto.h and it is worth reading
+ * before picking a third.
  */
 
 /*
@@ -2532,6 +2537,7 @@ struct t322_case { uint32_t type; long arg; const char *name; };
 extern handle_id_t g_serial_h;
 void it_serial_write(const char *s);
 void it_log_num(uint32_t n);
+void it_log_hex(uint64_t v);
 extern uint32_t g_pass;
 extern uint32_t g_total;
 void it_child_keep_vspace(void);
@@ -3077,6 +3083,7 @@ void test_t349(void);
 void test_t350(void);
 void test_t351(void);
 void test_t352(void);
+void test_t353(void);
 void test_t324(void);
 void test_t319(void);
 void test_t296(void);
