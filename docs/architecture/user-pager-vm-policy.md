@@ -75,12 +75,17 @@ kernel             validates every capability on every step, preserves fault
 
 ## Authority surface
 
-### SYS_PROCESS_VSPACE (107) — the map-into-target capability (NEW, additive)
+### ~~SYS_PROCESS_VSPACE (107)~~ — RETIRED
 
-`SYS_PROCESS_VSPACE(proc_h) → vspace_handle`.  Requires `RIGHT_MANAGE` on a
-process capability (dual resolver, no fallback; `HANDLE_INVALID` = self,
-where it degenerates to `SYS_VSPACE_SELF`).  Returns the target's `KVSpace`
-cap with `READ|WRITE|DUPLICATE` (no TRANSFER — same shape as VSPACE_SELF).
+It read: `SYS_PROCESS_VSPACE(proc_h) → vspace_handle`, requiring `RIGHT_MANAGE`
+on a process capability, with `HANDLE_INVALID` meaning self.
+
+It is retired, and the reason is worth keeping because it is the shape the
+whole convergence took: a spawner does not need to ASK for its child's address
+space, because it RETYPED that address space and already holds the capability.
+Reaching an object by naming a process was the pattern Stage 7 removed
+everywhere, and `SYS_VSPACE_SELF` went with it (A-18, no ambient authority).
+The number stays permanently reserved.
 
 This grants nothing MANAGE did not already imply — `SYS_VMO_MAP_INTO` has
 always let a MANAGE holder install pages into a child — but it converts that

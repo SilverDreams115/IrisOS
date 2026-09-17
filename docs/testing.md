@@ -8,10 +8,10 @@ Four gates, and a green tree means all four — on **one processor and on four**
 
 | Layer | Command | Green means |
 |---|---|---|
-| Host unit tests | `make test-unit` | 27418 assertions across 28 suites, 0 failed |
+| Host unit tests | `make test-unit` | 27429 assertions across 29 suites, 0 failed |
 | Purity gate | `make check-purity` | allowlist respected; the kernel-memory-reachable closure is 26 functions and only ever shrinks |
 | Lock-order gate | `make check-locks` | 18 ranked locks, no inversions — it holds SMP roadmap §9.1's hierarchy and follows calls three hops |
-| Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests` | `SUITE PASS 320/320` plus the P3/P41 markers |
+| Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests` | `SUITE PASS 322/322` plus the P3/P41 markers |
 
 ### The IOMMU dimension
 
@@ -28,6 +28,23 @@ Both directions are gated: with a unit attached the kernel must FIND it and
 must CONTAIN with it (`DMA is contained`), and without one it must still say
 so — a kernel that silently found nothing and a kernel that silently skipped
 looking read the same from outside.
+
+### The platform, as of Stage 10
+
+Three services the gate now requires, and each is checked by what it DID rather
+than by having started:
+
+| line | what it means |
+|---|---|
+| `[IRIS][ABI] version 1.0 - 4 syscall numbers, 77 invocation labels` | the kernel says which ABI it implements; the root task halts the boot on a major it was not built against |
+| `[USERBOOT] ACPI: root pointer reachable from ring 3` | the firmware's tables are named by a capability ring 3 holds |
+| `[USER][INIT] pci: functions N windows M carve 0` | the bus service scanned, and carved a frame over **every** window in the region it owns.  `carve 0` is required: a service that found devices and carved nothing refuses every driver's claim, which from outside is indistinguishable from an empty machine |
+| `[USER][INIT] blk: disk 1 sid 0x.. dma contained\|open` | a ring-3 AHCI driver claimed a controller, brought a port up and **read a sector**.  `contained` is required with an IOMMU and `open` without one — either word on the wrong machine is a lie the gate catches |
+
+And three suite tests carry the end-to-end claims: **T353** a device refused
+and then granted, **T354** the ACPI root pointer read and checksummed out of
+firmware memory, **T355** sector zero off a real disk with the FAT boot
+signature intact.
 
 A DMA-capable device (`-device edu`) is attached on **every** run, with or
 without a unit, and T353 is a ring-3 driver for it.  That is what turns the
@@ -183,7 +200,10 @@ names itself rather than showing up as a boot hang:
 
 | Test | Pins |
 |---|---|
-| T351, T352 | Stage 10-dma.  T351: the remapping units found, usable and ENFORCING — `translating == units`, or, on a machine with none, nothing translating AND no containment claimed.  T352: the whole capability arc — retyping an IOSpace (anyone with an Untyped may), binding it to a device (only with IOSpaceControl), installing the three translation levels one at a time out of the holder's own memory, mapping a frame, refusing a second mapping at one address, unmapping, and then destroying the space with a mapping still live so the baseline proves every object came back.  Neither watches a device be refused — there is no DMA engine under IRIS's control here, which is §10.2 step 6 |
+| T351, T352 | Stage 10-dma.  T351: the remapping units found, usable and ENFORCING — `translating == units`, or, on a machine with none, nothing translating AND no containment claimed.  T352: the whole capability arc — retyping an IOSpace (anyone with an Untyped may), binding it to a device (only with IOSpaceControl), installing the three translation levels one at a time out of the holder's own memory, mapping a frame, refusing a second mapping at one address, unmapping, and then destroying the space with a mapping still live so the baseline proves every object came back |
+| T353 | Stage 10-dma §10.2 step 6, and the thing T351/T352 cannot do: a DEVICE is watched being refused.  A ring-3 driver finds QEMU's `edu` DMA engine through the `pci` service, takes its BAR as a frame capability, maps it uncached and programs a transfer.  With a unit and no IOSpace mapping the target frame is untouched and the unit's fault record names the device's source-id; with the frame mapped the data arrives; revoked, it is refused again.  On a machine with no unit the same driver reaches memory nobody granted it, which is the other half of the claim and why the device is attached to those runs too |
+| T354 | Stage 10.  Ring 3 reads the firmware's own description: the ACPI region is device memory, one frame covers it, and the root pointer inside it is found by searching for the signature — the way every firmware reader does — and validated by its checksum |
+| T355 | Stage 10.  Storage, end to end: the ring-3 AHCI driver's read of sector zero carries the FAT boot signature, the controller's DMA is contained exactly when the machine has a unit to contain it with, the buffer arrives READ-ONLY, and a capability from the previous read no longer works — the service revokes before it reuses the frame |
 | T347–T350 | SMP roadmap §9.3 step 5, the adversarial phase — four tests that AIM four processors at ONE object rather than merely running on several.  T347: four callers on four cores calling one server, each requiring its own answer, which is how a reply delivered to the wrong caller becomes visible at all.  T348: four cores minting and deleting from one capability while a fifth revokes it.  T349: four cores retyping into the SAME slot, where exactly one may win and the losers must lose cleanly — and the sub-untyped's budget must come all the way back after a RESET, which is the assertion about the ROLLBACK.  T350: four cores killing the same four threads, so one kill always races the thread's own core.  Between them they found four defects — a retype rollback that freed another core's memory, a reference released on the line above the call that used it, a teardown gate that was a plain byte tested unlocked, and a dispatch that overwrote a `Suspend` on a thread already dequeued (that one surfaced in T333, which suspends a thread and then reads its registers).  Each reports how many distinct cores its workers landed on, so a run that was taking turns rather than contending says so |
 | T346 | SMP roadmap §9.3 step 4: the other processors SCHEDULE.  On one processor, exactly one has ever dispatched and no tick was broadcast — that zero is not a formality, since the timer ISR calls the broadcast on every tick and a version that did not check would be firing IPIs into an empty destination mask a hundred times a second.  On more than one: every processor that is ONLINE has dispatched a thread (not "at least two" — a machine that brought four up and schedules on three has a quarter of its cores idle for ever and looks healthy from everywhere else), and the tick broadcast is still ADVANCING across real elapsed time, because a processor that stops being told the time never charges its thread's budget and never runs its slice down |
 | T345 | SMP roadmap §9.3 step 2, and it asks the machine how many processors it has rather than assuming: always, an unmap still issues its LOCAL `invlpg`; on one processor, zero shootdowns, which is the evidence the target scan skips the CALLING CPU — without that skip the first unmap would IPI itself and spin, with interrupts off, for an acknowledgement it cannot deliver; on several, shootdowns have HAPPENED, and reaching the assertion at all is the ack handshake working, since a core that did not answer would have hung the machine rather than failed a comparison |

@@ -46,7 +46,7 @@ after the file-by-file audit named them — a message that is a MessageInfo word
 and message registers with no pointer anywhere on the path, and no pointer the
 KERNEL reads either, since the audit found the user-copy read side had lost its
 last caller; 11 retypeable object types all of them seL4's, scheduling domains
-partitioning time above priority, 310 runtime tests, 27 host suites, 27414 host
+partitioning time above priority, 322 runtime tests, 29 host suites, 27429 host
 assertions, 37 of 37 charter invariants MET, and a purity gate that now follows
 BOTH kernel allocators over the transitive closure with zero exemptions.  See [the audit](sel4-purity-audit.md) for what reading every file
 against seL4 turned up, including one A9 defect it fixed.
@@ -73,7 +73,8 @@ against seL4 turned up, including one A9 defect it fixed.
 | 13-form — the four FORM divergences (A-20's audit) | ✅ 3 of 4 CLOSED, the fourth decided.  **A-21** address-space identity is `ASIDControl`/`ASIDPool`; **A-22** a fault is an IPC message on an endpoint answered by a reply capability; **A-24** the kernel cannot block a thread on time — waiting is a ring-3 service — with **A-23** (`seL4_TCB_BindNotification`) as its enabler and **A-25** (`CancelBadgedSends`) closing the audit's last item.  The fourth, the ABI SHAPE, is a permanent deliberate divergence (charter §4) |
 | 9 — SMP | ✅ **All 5 steps done.**  §9.1 hierarchy and §9.2 catalog written and enforced (`make check-locks`); step 1 (the one-core kernel made SMP-correct), step 2 (TLB shootdown), step 3 (APs discovered and started), step 4 (they schedule — `online=4 dispatching=4`), step 5 (the adversarial phase — four tests aiming four cores at one object, which found four real defects: a rollback that freed another core's memory, a release-then-use, a teardown gate that was not atomic, and a dispatch that overwrote a Suspend).  Full suite green on `-smp 1` and `-smp 4`.  What remains is NOT mechanism: the model-based fuzzer is not yet aimed at N cores, and §9.4's limit stands — TCG interleaves, it does not reorder |
 | 10-dma — device authority must be containable | ✅ **All 6 steps done**, a device is watched being refused.  The DMAR is parsed and the units probed; translation is ENABLED with every device blocked; `KIOSpace` and `KIOPageTable` are retyped objects and `IOSpaceControl` a BootInfo authority; a frame mapped into an IOSpace is what a device may reach, and unmapping or destroying the space takes it back — from the unit's translation cache as well as the table.  **T351** pins containment, **T352** the whole arc, and **T353** is a ring-3 driver for a real bus master that is refused without a mapping, reaches exactly the frame it is granted, and is refused again when it is revoked — on a machine with no unit the same driver reaches memory nobody granted it.  The driver cost three pre-existing defects: an NX bit riding in every physical address `paging_virt_to_phys` returned, a port ABI with no width above a byte, and no way to map a BAR uncached |
-| 10 — General-purpose platform | pending |
+| 10-abi — freeze the ABI | ✅ **CLOSED.**  The surface is four syscall numbers and 77 contiguous invocation labels, declared in `iris/abi.h` and ASSERTED by `tests/kernel/test_abi.c` over every number the dispatcher can see — a description nothing checks is a description that goes stale, which is the lesson the stage was taught by its own opening paragraph.  BootInfo names the ABI and the root task refuses a major it was not built for.  The naming residue of the retired handle namespace is gone, and removing it found a capability argument being truncated to 32 bits |
+| 10 — General-purpose platform | ◐ **3 of 8 items delivered**: `pci` (the bus is a service and the only task that reaches configuration space), ACPI reachable from ring 3 as capabilities, and `blk` (an AHCI driver in ring 3 whose controller's DMA is contained).  Persistent FS, networking, POSIX and performance are not started; **real hardware cannot be done in this environment** — every gate runs under QEMU |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
 A9, A10** (authority); **O2–O6** (objects); **I1–I7** (IPC); **S1–S5**
@@ -2717,28 +2718,120 @@ Interrupt remapping is not here.  It is a separate VT-d facility, it protects
 against a different attack (a device forging an interrupt vector), and mixing
 it in would mean two claims failing as one.
 
-## Stage 10-abi — freeze the ABI  ← NOT STARTED
+## Stage 10-abi — freeze the ABI  ✅ CLOSED
 
-A product that other people build on has a versioned, stable ABI.  IRIS today
-has **96 live syscalls** and a long list of retired-but-reserved numbers, which is the
-correct state for a system in convergence and the wrong state to ship.
+A product that other people build on has a versioned, stable ABI.  The
+paragraph that used to open this stage said IRIS had "96 live syscalls", which
+was true when it was written and had been wrong since ledger A-32 retired the
+numbered door — a sentence in a document that nothing checks is a sentence that
+will be wrong, and that is the whole lesson of the stage.
 
-- A declared 1.0 syscall surface, with the reserved numbers either reclaimed
-  or documented as permanently dead.
-- A compatibility policy: what may change in a minor version, what may not,
-  and how a caller detects the difference.  `SYS_UNTYPED_QUERY`'s versioned
-  struct is the pattern that already exists; it should be the rule.
-- The `handle_id_t` typedef and the `HANDLE_INVALID` spelling survive in
-  userland as naming residue from a namespace that no longer exists.  A 1.0
-  ABI should say `iris_cptr_t` everywhere or explain why not.
+**The surface is declared in one file and asserted by a test.**
+`kernel/include/iris/abi.h` is the contract; `tests/kernel/test_abi.c` is what
+makes it one.
 
-## Stage 10 — General-purpose platform
+| | |
+|---|---|
+| syscall numbers | **four**: `SYS_INVOKE`, plus `SYS_EXIT`/`SYS_YIELD`/`SYS_CLOCK_GET`, which are here for the reason seL4 keeps `seL4_Yield` — they name no capability |
+| invocation labels | **77**, numbered 0..76, with no holes.  Label 0 names nothing and is refused exactly as an unassigned number is |
+| reserved numbers | **136**, permanently.  A number is never reused, so a caller built against an older kernel gets a refusal rather than somebody else's method |
 
-Precondition: consolidated microkernel (0–9 as applicable), 10-dma, 10-abi.
+The test does not check a list — a list would have to be maintained alongside
+the thing it describes, which is the failure being fixed.  It walks every
+number the dispatcher can see and every label in the declared range, and tells
+an ASSIGNED label from an unassigned one by the answer: a real method refuses
+with `INVALID_ARG` on its first line, an unassigned label falls through to
+`NOT_SUPPORTED`.  Adding a label without extending the declaration fails.
 
-- User-space drivers; PCI/ACPI; storage; persistent FS; networking;
-  optional POSIX personality via servers/libraries; performance; real
-  hardware. None of this lands earlier: charter §5.
+**Versioning rides in BootInfo** (`abi_major` / `abi_minor`, v9), not behind an
+invocation.  The version is a fact about the KERNEL, so there is no capability
+to invoke it on, and a syscall for it would have been a fifth numbered door in
+all but name.  The root task halts the boot on a major it was not built
+against — otherwise a caller discovers the mismatch one `NOT_SUPPORTED` at a
+time, from a method that used to exist, with no author.
+
+**Three rules make growth safe**, each promoting a precedent that already
+existed to a rule: a versioned struct is a PREFIX and fields are only appended;
+an unknown flag bit is REFUSED rather than ignored, which is exactly what lets
+a later minor version define one; an error code is part of the contract, so
+changing which of `WRONG_TYPE` / `ACCESS_DENIED` / `NOT_SUPPORTED` a case
+produces is a MAJOR change even though the call still fails.
+
+**The naming residue is gone, and it was not only naming.**  `handle_id_t` and
+`HANDLE_INVALID` survived in 1341 places from a namespace Stage 4 deleted; the
+type is `iris_cptr_t` everywhere now, `nc/handle.h` is `nc/cptr.h`, and
+`CPTR_NULL` and `IRIS_CPTR_NULL` are one name instead of two.  One of those
+places was a defect: `sys_sc_configure` truncated a 64-bit capability argument
+to 32 bits and widened it again, folding values ABOVE the CPtr boundary back
+inside the valid range — the one thing that boundary exists to prevent.
+
+**The §5.1 walk the stage required** found six ledger rows naming a retirement
+stage that had closed without anyone returning to them, which is the exact
+failure §5.1 was written to stop.  All six are answered in ledger A-35.
+
+## Stage 10 — General-purpose platform  ← PARTLY DELIVERED
+
+Precondition: consolidated microkernel (0–9 as applicable), 10-dma, 10-abi —
+all met.
+
+This stage is a LIST rather than a claim, and the honest way to report it is
+item by item.  Three of the eight are delivered and gated; three are not
+started and are each their own body of work; one is optional; and one cannot be
+done in this environment at all.
+
+| item | state |
+|---|---|
+| user-space drivers | ✅ **two of them**, and the second is useful rather than illustrative |
+| PCI | ✅ `services/pci` — the bus is a service, and the only task that can reach configuration space |
+| ACPI | ✅ reachable from ring 3 as capabilities; **T354** reads the root pointer out of firmware memory |
+| storage | ✅ `services/blk` — an AHCI driver in ring 3; **T355** reads sector zero and checks the boot signature |
+| persistent FS | ❌ not started.  `vfs` serves the initrd read-only; a persistent one needs a WRITE path through `blk` and a filesystem implementation on top |
+| networking | ❌ not started.  Needs a NIC on the machine, a driver, and at least ARP/IP/UDP — a subsystem the size of everything above put together |
+| POSIX personality | ❌ not started, and the roadmap already calls it optional |
+| performance | ❌ not measured.  There is no benchmark in the tree and no number to regress against |
+| real hardware | ⛔ **cannot be done from this environment.**  Every gate in this repository runs under QEMU.  What is established is that IRIS is correct against QEMU's implementation of x86-64, VT-d and AHCI; real errata, real timing and real firmware are not exercised, and nothing here should be read as if they were |
+
+### What the three delivered items are
+
+**`pci`, the bus as a service.**  Configuration space is one pair of I/O ports
+through which any device on the machine can be reprogrammed, so a capability
+for it is a capability over the bus.  Handing that to every driver would have
+undone Stage 10-dma one port range at a time — contain a device's DMA, then
+hand out the config space that programs the DMA.  So one task holds those
+ports: init derives them once, gives them to `pci`, and **deletes its own
+copy**.  `pci` also owns the PCI-hole device Untyped, which is what makes the
+restriction enforceable rather than conventional: a driver holds no device
+Untyped, so there is no window it could retype a frame over.
+
+A driver asks for its device by identity or by class and gets back a frame over
+that device's register window and the source-id the device puts on the bus —
+the two things a driver needs and the only two.
+
+**ACPI, reachable.**  The tables live in memory the firmware marked
+RECLAIMABLE or NVS, which is neither usable RAM nor unmapped address space, so
+no capability in the system named those bytes.  The kernel's refusal to
+interpret ACPI was therefore not a delegation but a gap: anything ring 3 wanted
+to know about the machine, it could learn only if the kernel had already
+decided to tell it.  Those regions are device Untypeds now and BootInfo carries
+the RSDP, because a region is not a starting point.
+
+**`blk`, an AHCI driver in ring 3.**  It asks `pci` for a SATA controller by
+CLASS code — a driver that matched vendor:device would drive one machine —
+maps BAR5 uncached, builds command structures in memory it owns, and issues
+`READ DMA EXT`.  It is the driver that most needs Stage 10-dma, because AHCI
+takes physical addresses FROM ITS DRIVER: on a machine with a remapping unit it
+binds an IOSpace to its controller and maps only its own two buffers, and on a
+machine without one the controller reaches all of memory.  It reports which,
+and the gate requires the right answer for the machine it is on.
+
+### What is NOT claimed
+
+The device-driver stack is two drivers deep and neither has an interrupt: both
+poll.  `pci` walks bus 0 only — no PCI-to-PCI bridges, because this machine has
+none and a bridge walk would be code no test covers.  `blk` drives the first
+port of the first controller and reads only; there is no write path, no
+queueing, and no second disk.  Each of those is named here rather than left for
+a reader to discover, because a platform's gaps are part of its description.
 
 ---
 
@@ -2748,17 +2841,30 @@ A roadmap that ends without stating its ceiling invites the reading that
 finishing it produces seL4.  It does not, and two of the three reasons are
 deliberate.
 
-**1. The ABI shape.**  seL4 has roughly a dozen syscalls and expresses every
-other operation as an INVOCATION on a capability carrying a method label.  IRIS
-has numbered syscalls, each resolving its own arguments and checking its own
-rights.  The charter registers this as permanent and deliberate, and that is
-defensible — but the consequence should be stated plainly: in an invocation
-model, a new operation is capability-gated BY CONSTRUCTION, while here it is
-gated by a check the author has to write correctly every time.  That is a
-structural guarantee traded for a per-syscall discipline, and the discipline
-has failed before (Stage 7 alone found a rights check on the wrong object, a
-dual-namespace argument, and two writers of one field under two different
-locks).  The mitigation is the review gates, not the type system.
+**1. ~~The ABI shape.~~  This item is RETIRED, and it is worth recording what
+it used to say and why it was wrong.**
+
+It said: seL4 has roughly a dozen syscalls and expresses every other operation
+as an INVOCATION on a capability carrying a method label, IRIS has numbered
+syscalls each resolving its own arguments and checking its own rights, the
+charter registers that as permanent, and the consequence is that a new
+operation is capability-gated BY CONSTRUCTION in seL4 and by a check the author
+has to write correctly every time in IRIS.
+
+Every sentence of that was true and stopped being true in ledger A-32, which
+converted the whole surface to `SYS_INVOKE(cptr, label, …)`.  Three numbers
+survive, each because it invokes nothing.  The paragraph then sat here
+unchanged for several stages, describing a kernel that no longer existed — in
+the very section that exists to keep this document honest about its limits,
+which is the most expensive place for a stale sentence to be.  Stage 10-abi
+found it, and `tests/kernel/test_abi.c` is why the replacement cannot go stale
+the same way: the surface is now asserted rather than described.
+
+What is left of the item is much smaller and is still real: IRIS's ABI is its
+OWN.  Binary compatibility with seL4 was never sought and is not offered — this
+is about form, not about linking — so seL4 code does not build against IRIS and
+never will.  That is a deliberate divergence, registered in the charter, and it
+is a different statement from the one this paragraph used to make.
 
 **2. Formal verification.**  Out of scope, per the charter.  Worth stating
 without euphemism: *the proof is seL4's identity*.  A system that converges on
@@ -2773,9 +2879,10 @@ model, seL4's object model, seL4's execution model and its own ABI — which is
 an honest and defensible thing to be, and is what this project claims.
 
 The sentence above used to be in the future tense.  Moving it is the whole
-result of Stages 9-evt through 13-form, and it is worth noticing that the two
-items that stayed in the ceiling are the two that were always going to: the ABI
-shape, which is a decision, and the proof, which is seL4's identity.
+result of Stages 9-evt through 13-form.  What remains in the ceiling is now
+ONE item rather than two: the proof, which is seL4's identity.  The other —
+the ABI shape — closed in A-32 and this document went on listing it, which is
+recorded above rather than quietly deleted.
 
 **What A-26 listed as still open is now closed.**  Transfer is a COPY (A-29);
 `SYS_GETPID` and `SYS_THREAD_EXIT` are retired and `SYS_CLOCK_GET` was
@@ -2783,8 +2890,9 @@ answered rather than retired, because `rdtsc` is unprivileged on x86 and
 removing the syscall would have bought nothing (A-27); the four missing seL4
 invocations exist (`TCB_ReadRegisters`, `SchedContext_YieldTo`,
 `IRQHandler_Clear`, cross-CNode `CNode_Move` — A-28).  What remains in the
-ceiling is what was always going to remain: the ABI shape, which is a decision,
-and the proof, which is seL4's identity.
+ceiling is what was always going to remain: the proof, which is seL4's
+identity.  The ABI shape was listed beside it until Stage 10-abi noticed that
+A-32 had closed it.
 
 ---
 

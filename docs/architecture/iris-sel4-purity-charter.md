@@ -182,7 +182,7 @@ proven:
       `SYS_GETPID`) are diagnostics that confer nothing.
 - [x] Adversarial lifecycle and revocation suite (creation, cross death,
       chained revocation, storage reuse, stale caps) as a permanent gate —
-      310 runtime tests including model-based syscall fuzzing, 27414 host
+      322 runtime tests including model-based syscall fuzzing, 27429 host
       assertions, and `check_purity` as a hard gate on every build.
 
 ## 5. Governing priority
@@ -230,6 +230,18 @@ row or ledger entry names it as a revisit trigger.**  Closing a stage includes
 walking those rows and writing the answer — kept, retired, or rescheduled with
 a new trigger.  An unanswered trigger is the same class of dishonesty as an
 unrecorded divergence.
+
+**The rule has now been exercised, and it paid.**  Closing Stage 10-abi
+required the walk, and the walk found SIX ledger rows still marked
+ACTIVE_LEGACY whose retirement stage had closed without anybody returning to
+them: `SYS_VMO_CREATE_FOR` (retired with KVMO in Stage 10-mem), both
+`tasks[TASK_MAX]` rows (the array became an intrusive list in A-19), the
+kernel-stack/PML4 row (D-1 closed in Stage 9-evt), and `SYS_BOOTCAP_RESTRICT`
+(removed in Stage 5).  A seventh, the MDB legacy-root row, had a target — "must
+→ 0" — that was simply wrong, because seL4's own BootInfo capabilities are
+unparented too; it is a CEILING, and the row now says so.  Each was verified
+against the CODE rather than against the prose that described it, which is the
+only way a walk of this kind means anything.  Ledger A-35 records the answers.
 
 ## 6. Registered deliberate divergences
 

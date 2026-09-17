@@ -215,6 +215,54 @@ IRQ 5 (unused) as the dummy line.
   What remains open is that the device is EMULATED: real VT-d errata, and
   devices behind bridges whose source-id is not their devfn, are not exercised.
 
+## Stage 10: two real drivers, and what they are allowed to hold
+
+The sections above describe the boot services.  Stage 10 added two drivers that
+were written under the same rules and are worth reading as worked examples,
+because between them they cover both halves of the problem — reaching a device,
+and bounding what the device reaches back.
+
+**`pci` — the bus.**  Holds an I/O-port capability for 0xCF8..0xCFF and the
+PCI-hole device Untyped.  Holds nothing else: no IRQ, no spawn capability, no
+VFS, no debug authority.  init derives the port capability once, gives it to
+this service and **deletes its own copy**, so after boot exactly one task in
+the system can reach configuration space.
+
+That matters more than it looks.  Configuration space is one pair of ports
+through which any device on the machine can be reprogrammed — a driver holding
+it could move any BAR and enable any device's bus mastering.  Handing it to
+each driver would have undone Stage 10-dma one range at a time: contain a
+device's DMA, then hand out the config space that programs the DMA.
+
+Owning the device Untyped is what makes the restriction ENFORCEABLE rather
+than conventional.  A driver holds no device Untyped, so there is no window it
+could retype a frame over; it can only be given one.
+
+**`blk` — an AHCI disk.**  Holds its endpoint, a reply object, an endpoint to
+`pci`, `IOSpaceControl`, and memory.  No ports, no interrupt — it cannot even
+find its own controller without asking somebody else, and what comes back is
+one device's register window.
+
+`IOSpaceControl` is the interesting grant.  AHCI is a bus master: the driver
+writes physical addresses into a command table and the controller reads and
+writes them itself, which is exactly the reach Stage 10-dma made containable.
+Giving the driver authority to contain ITSELF is what lets it bind an IOSpace
+to its controller and map only its own two buffers.  A compromised disk driver
+on a machine with a remapping unit can make the controller write to its own
+buffers and to nothing else.
+
+**If `blk` is fully compromised** it can: read any sector of the disk it drives,
+program its controller, and answer its endpoint.  It CANNOT: reach any I/O
+port, reach any other device's registers (it has no device Untyped and no
+config-space capability), take an interrupt, spawn anything, read a file, or —
+on a machine with a remapping unit — make its controller touch a byte outside
+the two frames it mapped for it.
+
+**What is not claimed**: neither driver takes an interrupt; both poll.  `pci`
+walks bus 0 only.  `blk` reads and does not write.  Those are gaps in the
+drivers, not in the isolation model, and they are named here so the model is
+not credited with more than it has been asked to do.
+
 ## Adding a new driver without widening authority
 
 1. Give it the SMALLEST device caps it needs: an ioport cap over exactly its

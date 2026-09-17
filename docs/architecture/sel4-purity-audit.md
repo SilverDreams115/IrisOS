@@ -8,8 +8,8 @@ and it found things the layer view could not.
 the measurements the tree takes of itself. Where the answer is a number, the
 number is the tree's, not an estimate.
 
-**Gates**: 319/319 runtime tests — on one processor and on four, with and
-without an IOMMU — 27408 host
+**Gates**: 322/322 runtime tests — on one processor and on four, with and
+without an IOMMU — 27429 host
 assertions, `check_purity` OK with the kernel-memory-reachable closure at 26
 functions and **zero ring-3 exemptions**, and `check_locks` OK over 18 ranked
 locks.
@@ -328,8 +328,8 @@ Plus the two IPC differences in Part 3, which are additions rather than gaps.
 ### 5.4 — Not comparable (1)
 
 **seL4 is formally verified. IRIS is not, and does not claim to be.** Its
-invariants are proven by construction plus adversarial gates: 310 runtime
-tests including model-based syscall fuzzing, 27414 host assertions, and
+invariants are proven by construction plus adversarial gates: 322 runtime
+tests including model-based syscall fuzzing, 27429 host assertions, and
 `check_purity` on every build. That is a different kind of assurance, and the
 charter says so in its first section rather than at the end.
 

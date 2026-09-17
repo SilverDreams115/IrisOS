@@ -495,6 +495,18 @@ working:
   frame — which is refused with no mapping, arrives with one, and is refused
   again once the mapping is revoked.  On a machine with no remapping unit the
   same driver reaches memory nobody granted it.
+- **The platform is services**: `pci` holds the PCI configuration ports and the
+  PCI-hole device Untyped and is the only task that can reach either — a driver
+  asks it for its device and gets a frame over that device's register window
+  and nothing else.  `blk` is an AHCI disk driver in ring 3 that finds its
+  controller through `pci` by class code, contains the controller's DMA behind
+  a remapping unit when the machine has one, and reads sectors.  ACPI's tables
+  are device Untypeds, so ring 3 can read the firmware's description of the
+  machine; the kernel reads three tables and will never read a fourth.
+- **A frozen ABI**: four syscall numbers and 77 contiguous invocation labels,
+  declared in one header and asserted by a test over every number the
+  dispatcher can see.  BootInfo names the version and the root task refuses to
+  boot on a major it was not built for.
 - **IRQ delivery**: seL4-style deferred ACK — kernel masks + EOIs, signals a
   `KNotification`, the ring-3 handler reads hardware and calls `SYS_IRQ_ACK`.
 - **Hardening**: `-fstack-protector-strong` with RDTSC-seeded per-service
@@ -565,7 +577,7 @@ make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
 make test-unit                                             # host unit suites (27418)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (320/320)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (322/322)
 make run                                                   # interactive QEMU
 ```
 

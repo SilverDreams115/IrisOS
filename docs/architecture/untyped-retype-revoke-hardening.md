@@ -53,7 +53,7 @@ retypeable from untyped (they are created by process/thread lifecycle); an
 unsupported type returns `IRIS_ERR_NOT_SUPPORTED`.
 
 The new object is installed as a **fresh handle-table entry** (a derivation
-*root* — `derivation_parent = HANDLE_INVALID`).  The untyped→child relationship
+*root* — no derivation parent; the field was `HANDLE_INVALID` when handles existed).  The untyped→child relationship
 is tracked only by `child_count`, not by the handle-derivation tree.
 
 ### Retype failure atomicity

@@ -104,11 +104,11 @@ mapping retain remaining.
 
 | Item | Risk | Phase |
 |------|------|-------|
-| SMP TLB shootdown | Concurrent unmap on multi-core could leave stale TLB entries | Phase SMP |
-| KChannel migration to KEndpoint | IPC still uses KChannel (handle_id_t path) | Phase 7 |
-| `handle_id_t` removal | Dual-path cap resolution | Phase 7+ |
+| ~~SMP TLB shootdown~~ | **DONE** (SMP roadmap §9.3 step 2) | — |
+| ~~KChannel migration to KEndpoint~~ | **DONE** (Phase 13/Track I): `KChannel` is removed; IPC is endpoints | — |
+| ~~`handle_id_t` removal~~ | **DONE** (Stage 4 deleted the table; Stage 10-abi deleted the NAME).  What survives is the value-range BOUNDARY, `IRIS_CPTR_LIMIT` in `nc/cptr.h`, because values a caller written against the old ABI would send must be REFUSED rather than resolved | — |
 | Userland pager | Kernel-side demand paging is gone; no userland fault handler yet | Post-Phase 7 |
-| Device frames (IOMMU) | No IOMMU protection for DMA | Post-Phase 7 |
+| ~~Device frames (IOMMU)~~ | **DONE** (Stage 10-dma): translation is on with every device blocked; a device reaches the frames somebody mapped into its `IOSpace` and nothing else.  T353 watches a device be refused, granted and refused again | — |
 | Large frames (2 MiB, 1 GiB) | Only 4 KiB pages supported | Post-Phase 7 |
 | Formal verification | Invariants documented but not machine-verified | Long-term |
 | External fuzzing | No AFL/libFuzzer harness for syscall_vm paths | Long-term |

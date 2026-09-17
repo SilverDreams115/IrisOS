@@ -24,7 +24,7 @@ reserved, no functionality) · `REMOVED` (deleted).
 | kslab for runtime KEndpoint/KNotification/KReply/CNode | same | — | RETYPE2 | S1 | — | REMOVED |
 | notification owner quota (`KPROCESS_NOTIFICATION_QUOTA`) | numeric quota as creation source | — | Untyped is the budget | S1 | — | REMOVED |
 | per-process VMO/page quotas (Phase 29) | resource domain parallel to explicit memory | none | Untyped | Stage 7 (done) | n/a | **BOTH GONE.**  The VMO-COUNT quota is **DELETED (Stage 7-mem)** with the owner relation it counted against — a VMO's accounting is the Untyped it was carved from, which `SYS_UNTYPED_QUERY` reports to whoever holds that budget.  Previously, on the page quota: **RETIRED (Stage 7)** — since Stage 6-pure a VMO's pages come from an Untyped the caller NAMED, so `phys_pages_limit` was a second ceiling the kernel invented, contradicting the model rather than reinforcing it: a holder with a large delegated budget still stopped at 8 MB nobody granted.  It reports 0 ("no kernel ceiling"), the way the notification quota did in Phase S1; the counters stay as instrumentation.  The VMO-COUNT quota is still ACTIVE_LEGACY and retires with the KVMO object (memory server) |
-| payer selection (`SYS_VMO_CREATE_FOR`) | per-payer accounting | svc_loader | Untyped delegation | with KVMO | yes | ACTIVE_LEGACY |
+| payer selection (`SYS_VMO_CREATE_FOR`) | per-payer accounting | svc_loader | Untyped delegation | with KVMO | yes | **RETIRED (Stage 10-abi walk).**  KVMO is gone (D-5) and so is the payer argument; nothing in the kernel names either.  The row said "with KVMO" as its retirement stage and KVMO retired without anybody coming back to it — which is the failure charter §5.1 exists to stop, found by the §5.1 walk itself |
 | `SYS_RESOURCE_INFO` | per-process resource domain in the ABI | none | `SYS_UNTYPED_INFO` (one budget) and `SYS_UNTYPED_QUERY` kind GLOBAL (the three fields that were never per-process: kslab occupancy, failed charges, rollbacks) | Stage 7-mem (done) | n/a | **REMOVED (Stage 7-mem)** — the syscall answers `NOT_SUPPORTED`, number reserved.  Its per-process half went with the domain; its global half moved where the rest of the global instrumentation already lived, so the drift tests that end most of the suite lost nothing |
 | handle table / dual resolution | second authority namespace | — | CSpace | Stage 4 | n/a | **REMOVED (Stage 4)** — `HandleTable`, `KProcess.handle_table`, `handle_table.c/.h` and `test_handle_table.c` are DELETED, and `cspace_or_handle_resolve_*` is renamed `cspace_resolve_only_*`.  Twelve syscalls retired to `NOT_SUPPORTED` with their numbers reserved (15, 22, 43, 46, 52, 53, 59, 81, 87, 89, 90, 95).  Permanent gate: T095 pins handle-live, handle-delivery and TOCTOU at structural zero |
 | `SYS_VMO_SHARE` (46) | placed a VMO capability in ANOTHER process's HANDLE TABLE: a cross-process handle producer.  The receiver could not name the grant in its CSpace, and it had no MDB edge to the sender's cap, so the grantor could not revoke it | — (tests only, since Phase 8) | `SYS_PROC_CSPACE_MINT` / `SYS_CSPACE_MINT_INTO` — installs into the target's root CNode as an MDB child of the caller's source slot | Stage 4 | — | **RETIRED (Stage 4)** |
@@ -38,12 +38,12 @@ reserved, no functionality) · `REMOVED` (deleted).
 | `SYS_UNTYPED_RETYPE` (87) handle-publishing | publishes authority as a handle | — | RETYPE2 | Stage 4 | — | **RETIRED (Stage 4)** — Phase S1 already refused the migrated family; Stage 4 refuses KUntyped / KFrame / KSchedContext too, since RETYPE2 accepts all three into a CSpace slot.  There is exactly ONE way to create an object from an Untyped, and it publishes into CSpace |
 | `SYS_SC_CREATE` (83) | global SC create | none | RETYPE2 + SC_CONFIGURE + SC_BIND | S2 | — | RETIRED (Phase S2) |
 | `kschedctx_alloc` (kslab SC) | SC payload in the global heap | none | RETYPE2 (`kschedctx_alloc_at`) | S2 | yes | REMOVED (Phase S2) |
-| `struct task tasks[TASK_MAX]` (static pool) | backing for kstack + arch-context + scheduler linkage | scheduler, thread create | TCB payload from Untyped; array → pointer/generation registry | S2 (run-queue index→pointer + productive-path Untyped source) | yes — no new consumers outside the scheduler | ACTIVE_LEGACY (bounded static pool, NOT kslab; runtime TCB storage — REMOVE pending) |
+| `struct task tasks[TASK_MAX]` (static pool) | backing for kstack + arch-context + scheduler linkage | scheduler, thread create | TCB payload from Untyped; array → pointer/generation registry | S2 (run-queue index→pointer + productive-path Untyped source) | yes — no new consumers outside the scheduler | **RETIRED (Stage 10-abi walk).**  There is no `TASK_MAX` and no `tasks[]`: ledger A-19 replaced the array with an intrusive list, and the static pool is two entries — the idle thread and the root task — which is the same bootstrap exception seL4's root task is |
 | `task_rsp[TASK_MAX]` (index-keyed RSP array) | per-slot kernel RSP, parallel to the array | scheduler context switch | `struct task.saved_krsp` | S2 inc.2 | — | REMOVED (Phase S2 inc.2 — the scheduler's first indirection) |
 | run-queue `next[TASK_MAX]`/`queued[TASK_MAX]` + `(t - tasks)`/`&tasks[idx]` | run-queue identity by array index | rq_enqueue/remove/dequeue | intrusive pointer lists (`t->rq_next`/`rq_queued`) | S2 inc.2B | — | REMOVED (Phase S2 inc.2B Block A — run queue 100% pointer-based) |
 | `tasks[j]` timeout scans (tick/idle) + slot allocation | iteration over the backing array | scheduler_tick / sched_handle_idle / task alloc | iteration over `ktcb_registry[]` (pointers+generation) | S2 inc.2 Stage C | — | REMOVED as identity (Phase S2 Stage C — everything goes through `ktcb_registry[i].tcb`) |
 | `KTcbRegistrySlot ktcb_registry[TASK_MAX]` | reference registry (tcb*/generation/occupied/bootstrap), NOT payload | scheduler/alloc/lookup | same registry; transitional capacity | — | transitional TASK_MAX limit | TRANSITIONAL_IMPLEMENTATION_CAPACITY (Stage C) |
-| `struct task tasks[TASK_MAX]` (static payload) | real TCB backing (registers/kstack ptr/scheduler state) pointed to by `registry[i].tcb` | registry (scaffolding) | canonical KTCB in Untyped (Stage D) | S2 inc.2 Stage D | yes — scaffolding, no new consumers | ACTIVE_LEGACY (scaffolding; REMOVE in Stage D, except the idle bootstrap) |
+| `struct task tasks[TASK_MAX]` (static payload) | real TCB backing (registers/kstack ptr/scheduler state) pointed to by `registry[i].tcb` | registry (scaffolding) | canonical KTCB in Untyped (Stage D) | S2 inc.2 Stage D | yes — scaffolding, no new consumers | **RETIRED (Stage 10-abi walk).**  Same as the row above: the payload array is gone with the pool |
 | `SYS_THREAD_SET_SC` (85) | SC self-bind | existing scheduler code | `SYS_SC_BIND(sc,tcb)` by CPtr | — | yes — frozen | FROZEN (Phase S2 inc.1) |
 | `struct KTcb` wrapper (kslab) | cap-visible TCB object in the heap, separate from the task | — | `struct task` IS the KTCB (KObject at offset 0) | S2 inc.2 | — | REMOVED (Phase S2 inc.2 — one structure, one identity) |
 | executable thread-create via pool (`SYS_THREAD_CREATE`) | a thread was carved from the kernel's static task pool and identified by a global id: no capability authorised it and no Untyped paid for its storage | — | `RETYPE2(KOBJ_TCB)` + `SYS_TCB_CONFIGURE` (CSpace/VSpace caps) + `SYS_TCB_WRITE_REGS` + `SYS_TCB_RESUME` | Stage 5 | n/a | **RETIRED (Stage 5 Step 4)** — number 48 reserved, `NOT_SUPPORTED`, zero in-tree callers.  Every thread in the suite and init's exception test is retyped from an Untyped and configured with capabilities; creation returns a CAPABILITY, not an index into a kernel array (charter §3.4/§3.5).  T297 pins the gate, T148 the number |
@@ -51,7 +51,7 @@ reserved, no functionality) · `REMOVED` (deleted).
 | idle task (static backing, registry slot 0) | bootstrap TCB outside Untyped, with no cap-visible object | scheduler | root-task TCB from BootInfo (Stage 5) | Stage 5 | yes — isolated bootstrap exception, never retyped or reused | BOOTSTRAP_EXCEPTION |
 | native CDT/MDB in CNode slots | — (it is the correct seL4 mechanism) | `SYS_CSPACE_MINT`/`MINT_INTO`/`REVOKE`, retype2, teardown, receive-slot | — | — | n/a | IMPLEMENTED (Phase S3 — recursive cross-process revoke; validator + fuzzing) |
 | handle-tree derivation (all types) | parallel derivation tree hidden in the handle table | — | per-slot derivation via the native CDT | Stage 3 | n/a | **REMOVED (Phase S4)** — `SYS_CAP_DERIVE`(78)/`SYS_CAP_REVOKE`(79) retired to `NOT_SUPPORTED` (numbers reserved); the table's derived-insert, revoke-children and parent-array machinery deleted.  `legacy_handle_derivation_migrated` has ZERO callers and is a structural 0 — the retirement witness |
-| MDB LEGACY roots (`MDB_FLAG_LEGACY_ROOT`) | caps with no provable CSpace ancestor (handle/bootstrap/IPC-delivery origin) | bootstrap (kernel_main), legacy `kcnode_mint*`, IPC receive-slot delivery | a real CSpace origin (retype/derive by CPtr) | Stages 2/4/5 | yes — closed allowlist, observable `mdb_legacy_roots` counter | ACTIVE_LEGACY (counted debt; must → 0) |
+| MDB LEGACY roots (`MDB_FLAG_LEGACY_ROOT`) | caps with no provable CSpace ancestor (handle/bootstrap/IPC-delivery origin) | bootstrap (kernel_main), legacy `kcnode_mint*`, IPC receive-slot delivery | a real CSpace origin (retype/derive by CPtr) | Stages 2/4/5 | yes — closed allowlist, observable `mdb_legacy_roots` counter | ACTIVE_LEGACY, and CLOSED TO THE BOOT PATH.  "must → 0" was the wrong target and is corrected here: seL4's BootInfo capabilities are unparented too, because they exist before there is anything to be a child of.  What is enforced is a CEILING (T305), which is 32 on this machine — the boot authorities, the boot Untypeds, and the five firmware regions Stage 10 publishes so ring 3 can read ACPI.  A root appearing anywhere else is a defect and the ceiling is what makes it visible |
 | IPC cap-transfer with a handle source | a transfer's source was resolved by handle, not by CPtr | — | CPtr source + CSpace receive slot | Stage 2 | n/a | **REMOVED (Phase S4)** — `syscall_ipc_stage_cap_peek_badged` resolves the source through `cspace_resolve_slot`; a handle value is `INVALID_ARG`. Delivery installs the cap as an MDB CHILD of the source slot, so `cdt_ipc_transfer` deliveries are no longer LEGACY_ROOTs |
 | root CNode from the slab | runtime CNode outside Untyped | the ROOT TASK only | the spawner retypes the CNode and names it in `SYS_TCB_CONFIGURE` | permanent for the boot path | yes | **CLOSED except for the root task (Stage 6-pure Step 5).**  Every child's root CNode is retyped by its spawner out of a budget the spawner holds, and named at configure time.  What remains on the slab is the ROOT TASK's, built before any Untyped exists — the same permanent boot-path exception seL4 has, and the reason this row cannot reach zero |
 | root CNode reachable only via `cspace_root_h` (handle) | the CSpace ROOT is located through the handle table | — | `KProcess.cspace_root`: a structural back-reference holding one lifecycle + one active ref, released in `kprocess_teardown` | Stage 4 | n/a | **REMOVED (Phase S4, Step 4)** — resolving a CPtr no longer touches a handle table, and the cross-process paths (`SYS_CSPACE_MINT_INTO`, `SYS_PROC_CSPACE_MINT`, retype2, IPC receive-slot delivery) no longer read ANOTHER process's handle table to find its root.  Allowlist: `handle_table_get_object` 52 → 40 (14 files → 11), `handle_table_insert` 42 → 41 |
@@ -59,11 +59,11 @@ reserved, no functionality) · `REMOVED` (deleted).
 | KFrame header sidecar (kslab) | metadata outside the region | VMO page frames and a spawning process's bootstrap frames (`kframe_alloc`) | header carved from the Untyped | Stage 6 (Etapas 3/5, with the paths that create those frames) | n/a | **CLOSED for everything ring 3 can reach (Stage 9-evt).**  Every frame a syscall can cause — retyped, VMO-paged, or mapped through a VMO — carves its header from a budget somebody named.  `kframe_alloc`'s slab form is the BOOT PATH's alone: bootstrap mappings made before any Untyped capability exists.  The three VMO mapping loops in `syscall_vm.c` were the last holdouts and were the worst of them, being one allocation per mapped page under a ring-3 caller's control.  The purity gate's reachability check now runs with NO exemptions: no `kslab_alloc` is named by any syscall handler |
 | process-level fault record (one per process) | belongs on the TCB | none | the record lives on the thread that takes the fault; the handler is armed on that thread (`SYS_TCB_SET_FAULT_HANDLER`) and read off it (`SYS_TCB_FAULT_INFO`) | Stage 7 Steps 6/8/12 (done) | n/a | **REMOVED** |
 | `SYS_PROCESS_VSPACE` (107) | process authority → VSpace by handle | none | the spawner RETYPED the child's address space, so it already holds the capability and mints it where it is needed | Stage 7 Step 15 (done) | n/a | **RETIRED** — 107 answers `NOT_SUPPORTED`, number reserved |
-| `SYS_BOOTCAP_RESTRICT` (dual-namespace split brain) | `arg0` is resolved with `cspace_or_handle_resolve_obj` (CPtr **or** handle), but the restricted clone is published with `handle_table_replace(ht, (handle_id_t)arg0, …)` — the two halves disagree about which namespace `arg0` is in | init (fb spawn cap), svcmgr (post-bootstrap strip) — **both pass handles**, so no live defect | publish the clone into a CSpace destination slot as an MDB child of the source slot, the way retype2/mint already do | Step 4 | yes | ACTIVE_LEGACY — **blocks the spawn-cap CPtr migration**.  A CPtr has generation 0 and every live handle slot has generation ≥ 1, so `handle_table_replace` rejects it with `BAD_HANDLE`: no corruption, but the syscall silently cannot succeed by CPtr.  Migrating `spawn_cap_h` to a CPtr before fixing this turns a working restriction into a no-op error path — i.e. a capability that was supposed to be narrowed stays wide |
+| `SYS_BOOTCAP_RESTRICT` (dual-namespace split brain) | `arg0` is resolved with `cspace_or_handle_resolve_obj` (CPtr **or** handle), but the restricted clone is published with `handle_table_replace(ht, (handle_id_t)arg0, …)` — the two halves disagree about which namespace `arg0` is in | init (fb spawn cap), svcmgr (post-bootstrap strip) — **both pass handles**, so no live defect | publish the clone into a CSpace destination slot as an MDB child of the source slot, the way retype2/mint already do | Step 4 | yes | **RETIRED (Stage 10-abi walk).**  `SYS_BOOTCAP_RESTRICT` and `kbootcap_clone_restricted` were both removed in Stage 5, which split the monolith into one capability per authority and made narrowing-by-cloning unnecessary.  The row's warning about blocking the spawn-cap CPtr migration outlived the thing it warned about |
 | CSpace cycles below the root CNode | a CNode reachable from itself keeps its own references alive, so nothing frees it | any task minting a second-level CNode into itself | seL4-style recursive delete with zombie capabilities | unscheduled — the self-cycle is closed and nothing in tree builds the general case | n/a | **SELF-CYCLE CLOSED (Stage 7-proc); the general case remains.**  A slot naming its OWN CNode no longer takes an ACTIVE reference: an object reachable only from itself is reachable by nobody, and the count now says so.  The lifecycle reference stays, so close fires when the last EXTERNAL holder goes, empties the slots, and that release lets destroy run — which is what removed KProcess's reason to empty a root CSpace pre-emptively at a moment it knew because it counted threads.  BC-13 was the negative control for the old behaviour and is now the positive case.  A cycle THROUGH another CNode (A names B, B names A) is still uncollectable and still wants seL4's recursive delete with zombie capabilities.  Previously:   It was recorded as known and unexercised; it is now the last thing standing between IRIS and a kernel with no process object.  `kprocess_teardown` breaks the root-CSpace cycle pre-emptively, at a moment it knows because it counts threads, and deleting `KProcess` without recursive delete would leak the root task's CSpace.  Stage 5 Step 3 fixes the case it INTRODUCES (the root task's capability to its own root CNode) by emptying the root's slots at `kprocess_teardown` before dropping its refs; a cycle deeper in the tree is still uncollectable.  No in-tree code builds one; BC-11..BC-13 pin the fixed case |
 | `KBootstrapCap` (monolith) | one object carried spawn, hardware, debug and framebuffer authority at once | — | one capability per authority + structured BootInfo | Stage 5 | n/a | **REMOVED (Stage 5 Step 2)** — the object type survives as the carrier of a SINGLE authority (`kind`), and `kbootcap_alloc` refuses a zero or multi-bit kind, so a monolithic boot capability cannot be constructed.  Six capabilities (process, initrd, IRQ, ioport, debug, framebuffer) are published one per slot and described in BootInfo v4.  `SYS_BOOTCAP_RESTRICT` (45) is RETIRED with its number reserved; `kbootcap_allows` and `kbootcap_clone_restricted` are deleted; `BOOT_CPTR_BOOTSTRAP_CAP` (slot 1) is permanently empty.  Least-authority result: vfs, a file server, no longer holds the authority to create processes.  T296 pins the split; T291 died with the mechanism.  History: Step 1-2b — Step 2a/2b SPLIT device and debug authority out: `IRIS_BOOTCAP_HW_ACCESS` (one bit for both IRQ and ioport creation) is replaced by two capabilities matched EXACTLY by the kernel, published one per slot and recorded in BootInfo v2.  svcmgr renounces hardware authority by DELETING those slots instead of cloning a narrowed monolith.  Step 2b did the same for `IRIS_BOOTCAP_KDEBUG` (kernel log, scheduler statistics, poweroff), published at `BOOT_CPTR_DEBUG_CONTROL` and delivered to children in the retired `IRIS_CPTR_SVC_REPLY` slot.  Step 2c split the rest; T296 pins the split, T291 keeps `SYS_BOOTCAP_RESTRICT` honest until it retires.  Step 1 — the structured BootInfo EXISTS (`struct iris_root_bootinfo`): the root task is told its initial caps by CPtr, the shape of its root CNode and every boot Untyped with its physical region, instead of agreeing with the kernel on constants and probing slots until one answered `NOT_FOUND`.  The object itself is unchanged and still carries the four-bit permission mask; splitting it into fine-grained caps and retiring `SYS_BOOTCAP_RESTRICT` is Step 2 |
-| `KInitrdEntry` + `SYS_INITRD_*` | filesystem-aware kernel state | loader | user-space VFS/loader | Stage 10 (platform) — it no longer has a process server to retire with | yes | ACTIVE_LEGACY |
-| kernel stacks / PML4 from the PMM reserve | allocation outside Untyped | task create; the ROOT TASK's PML4 only (a spawned process's PML4 is a page child of its budget since Stage 6 Step 3) | TCB/VSpace from Untyped | process/frame phases | yes | ACTIVE_LEGACY — this row is about WHERE the memory comes from, which is staged.  That every thread HAS a kernel stack to block on is a separate, unstaged divergence: ledger D-1 |
+| `KInitrdEntry` + `SYS_INITRD_*` | filesystem-aware kernel state | loader | user-space VFS/loader | Stage 10 (platform) — it no longer has a process server to retire with | yes | ACTIVE_LEGACY, with the target CORRECTED.  The row said "filesystem-aware kernel state", and that has not been true since the catalog lost its names: the kernel exposes images BY INDEX and knows nothing about files or formats.  What remains is a kernel that holds the boot images at all, where seL4 puts them inside the root task.  Stage 10 did not close it, and says so rather than quietly redefining it: retiring it means the kernel loading ONE image and the rest living in a ring-3 archive, which changes the image source of every service and is a boot-path change that deserves its own stage rather than being done in the margin of another |
+| kernel stacks / PML4 from the PMM reserve | allocation outside Untyped | task create; the ROOT TASK's PML4 only (a spawned process's PML4 is a page child of its budget since Stage 6 Step 3) | TCB/VSpace from Untyped | process/frame phases | yes | **RETIRED (Stage 10-abi walk).**  D-1 closed in Stage 9-evt: there is one kernel stack per CORE, `kstack_alloc` is deleted, and a thread no longer blocks in the kernel.  The PML4 question closed with it — a spawned process's address space has been a retyped object since Stage 6-pure |
 | `KChannel` | — | — | endpoints | Phase 13 | — | REMOVED |
 | hardcoded ioport whitelist (`kioport_whitelist`, syscall_priv.h) | device policy in the kernel | kbd/console/fb/userboot via svcmgr | fine-grained ioport caps issued by the root task (BootInfo) | Stage 5 | n/a — the table is gone | **REMOVED (Stage 5).**  The range a holder may claim travels ON the `IOPORT_CONTROL` capability: boot issues the root task one over the whole port space, `SYS_IOPORT_CONTROL_NARROW` derives a sub-range for a delegate (an MDB child of the authorising slot, so revoking the parent reaches it), and `SYS_CAP_CREATE_IOPORT` checks a request against the authority the caller actually holds.  The table was wrong twice over: the kernel had no basis for the list — which ports exist is a fact about a machine and who may claim them is a fact about who is trusted, and neither is the kernel's to know — and it applied to every holder equally, so it could not express the only useful restriction, that init may claim a serial port and svcmgr may not.  The order of the checks changed with it: authority FIRST, so a caller learns it has no authority rather than learning something about the port map.  `RIGHT_DUPLICATE` gates the narrowing, because it creates a second capability carrying the same authority — a delegate handed one without it may use its range and may not subdivide it.  The narrowed object is carved from an Untyped the caller NAMES: the first version of this took it from the kernel slab, which is correct for the boot path and would have been a charter M3 hole anywhere else — a syscall that let ring 3 spend the kernel's memory, opened by the very change that closed a policy one.  Caught before it shipped by asking what the new syscall made reachable from ring 3, not by a gate: the purity allowlist counts occurrences, not reachability, and it stayed green throughout.  T164 narrows the suite's own control capability and then discovers it is narrowed (in-range allowed, CMOS denied, a spill denied, and a widening refused); T171 fuzzes against a narrowed authority.  seL4's `IOPortControl` is unranged and confines by who holds it at all; this is that, plus the ability to hand out a piece |
 | `SYS_CAP_CREATE_IRQCAP`/`_IOPORT` as handle producers | device authority existed ONLY as a handle, leaving the legacy handle tree as its sole derive/revoke mechanism | — | slot publication (arg3) parented to the authorising bootstrap-cap slot | Stage 3 prep | n/a | **REMOVED (Phase S4)** — both publish into CSpace as MDB children of the bootstrap cap; device caps now derive/revoke through the native CDT |
@@ -2420,6 +2420,111 @@ reaches exactly the frames somebody mapped, as QEMU implements VT-d.  Real
 errata, and devices behind bridges whose source-id is not their devfn, are not
 exercised.  The bus scan is bus 0 function 0 because that is the machine.
 
+## A-35 — the ABI is frozen at 1.0 (Stage 10-abi)
+
+**Change**: what IRIS offers ring 3 is now a contract in one file
+(`iris/abi.h`) and a test that checks it, where it was a description spread
+across three headers and a hundred and forty comments.
+
+Four syscall numbers — `SYS_INVOKE`, and `SYS_EXIT`/`SYS_YIELD`/`SYS_CLOCK_GET`
+because they name no capability.  Seventy-seven invocation labels, 0 through
+76, CONTIGUOUS.  One hundred and thirty-six reserved numbers that answer
+`NOT_SUPPORTED` for ever.  `tests/kernel/test_abi.c` asserts all of it over
+every number the dispatcher can see and every label in the declared range,
+because a surface nothing checks is a surface that will be wrong.
+
+**Versioning** rides in BootInfo (`abi_major`/`abi_minor`, v9) rather than
+behind an invocation, because it is a fact about the KERNEL and there is no
+capability to invoke it on — a syscall for it would have been a fifth numbered
+door in all but name.  The root task refuses to boot on a major it was not
+built against, which is the only way a caller can find out that a method it
+depends on is gone other than one `NOT_SUPPORTED` at a time.
+
+**Three rules make growth safe**, and each already had a precedent that this
+promotes to a rule: a versioned struct is a PREFIX and fields are only
+appended; an unknown flag bit is REFUSED rather than ignored, which is what
+lets a later minor version define one; and an error code is part of the
+contract, so changing which of WRONG_TYPE / ACCESS_DENIED / NOT_SUPPORTED a
+case produces is a major change even though the call still fails.
+
+**What the freeze found.**  `handle_id_t` and `HANDLE_INVALID` survived in 831
+and 510 places as naming residue from a namespace Stage 4 deleted, and one of
+those places was not cosmetic: `sys_sc_configure` read
+`handle_id_t sc_h = (handle_id_t)arg0`, truncating a 64-bit capability argument
+to 32 bits and widening it again at the resolver.  A value ABOVE the
+CPtr/handle boundary — exactly the bit pattern that boundary exists to refuse —
+was folded back INSIDE the valid range instead of being rejected.  The type is
+`iris_cptr_t` everywhere now, `nc/handle.h` is `nc/cptr.h`, and `CPTR_NULL` and
+`IRIS_CPTR_NULL` are one name instead of two.
+
+**Scope**: no invariant changes state.  Six ledger rows move to RETIRED in the
+charter §5.1 walk the stage required — `SYS_VMO_CREATE_FOR`, both
+`tasks[TASK_MAX]` rows, `SYS_BOOTCAP_RESTRICT`, and the kernel-stack/PML4 row —
+each of which named a retirement stage that closed without anyone returning to
+it, which is the exact failure §5.1 was written to stop.
+
+## A-36 — the platform is services, not kernel (Stage 10)
+
+**Change**: three things a general-purpose system needs — a bus, the firmware's
+description of the machine, and a disk — became reachable from ring 3 without
+the kernel learning anything new about any of them.
+
+**`pci` — the bus as a service.**  PCI configuration space is one pair of I/O
+ports through which any device on the machine can be reprogrammed, so a
+capability for it is a capability over the bus.  Giving that to each driver
+would have undone Stage 10-dma one port range at a time: contain a device's
+DMA, then hand out the config space that programs the DMA.  One task holds
+those ports; init derives them once, hands them over, and deletes its own copy.
+It also owns the PCI-hole device Untyped, which is what makes the restriction
+enforceable rather than conventional — a driver holds no device Untyped, so
+there is no window it could retype a frame over.
+
+It carves its frames at STARTUP and in ADDRESS ORDER, which is a property of an
+Untyped rather than a choice: the region is a watermark and does not go
+backwards, so carving on demand would satisfy the first driver to ask and then
+be unable to satisfy one whose device sits below it — a failure that depends on
+the order clients happen to start in.
+
+**ACPI, reachable.**  The tables live in memory the firmware marked
+RECLAIMABLE or NVS: not usable RAM, so in no RAM Untyped; not unmapped address
+space, so not in the PCI hole.  No capability named those bytes, so the
+kernel's refusal to interpret them was not a delegation but a gap — anything
+ring 3 wanted to know about the machine it could only learn by the kernel
+having already decided to tell it.  Those regions are device Untypeds now, and
+BootInfo carries the RSDP because a region is not a starting point.  **T354**
+finds the root pointer the way every firmware reader does, by searching for the
+signature, and validates the checksum.
+
+**`blk` — an AHCI driver in ring 3.**  It asks `pci` for a controller by CLASS
+code, gets a frame over BAR5, builds command structures in memory it owns, and
+issues `READ DMA EXT`.  It is the first driver in IRIS that is useful rather
+than illustrative, and it is the one that most needs Stage 10-dma: AHCI takes
+physical addresses FROM ITS DRIVER, so a driver that lied would have the
+controller write wherever it liked.  On a machine with a remapping unit it
+binds an IOSpace to its controller's source-id and maps only its own two
+buffers; on a machine without one the controller reaches all of memory, and it
+reports which of the two it is rather than pretending.  **T355** checks the
+last link — that the bytes are the bytes on the medium — with the FAT boot
+signature, because "the command completed" and "the data arrived" are very
+different claims about a bus master.
+
+**The buffer's ownership** is the part worth copying.  A read replies with a
+READ-ONLY frame capability over the data, and the service revokes what it
+handed out before each read: a client still holding the previous capability
+loses it rather than watching its data change underneath.  Revoke-before-reuse
+is why the buffer can be one frame instead of one per request, and T355 asserts
+it by trying to use the stale one.
+
+**A defect class made impossible.**  Three slot collisions were found by
+running the system during this stage, one of which minted an endpoint over
+init's loader workspace and made every subsequent service load fail with
+nothing naming the slot.  `services/init/init.h` now static-asserts every init
+slot against every service-wide `IRIS_CPTR_*`, so a fourth is a compile error
+that names the line.
+
+**Scope**: no invariant changes state.  T305's legacy-root ceiling moves 27 →
+32 for the five firmware regions, with the reason recorded on the constant.
+
 ## Non-regression guard
 
 - T251 pins the closed manifest of RETYPE2-creatable types, and the boundary
@@ -2469,6 +2574,17 @@ exercised.  The bus scan is bus 0 function 0 because that is the machine.
   no remapping unit shows what that costs.  The headless gate requires the
   device to have been FOUND on every selftest run, because a `-device edu`
   dropped from the command line would otherwise read as a green run.
+- `test_abi.c` pins the 1.0 surface (A-35): exactly four syscall numbers over
+  every value the dispatcher can see, a label space with no holes that ends
+  where it says, and a BootInfo that names the ABI it was built for.  Adding a
+  label without declaring it fails the build's test rather than shipping.
+- T354 pins that ring 3 can read the firmware's own description: the region is
+  device memory, one frame covers it, and the root pointer inside it
+  checksums.
+- T355 pins the storage subsystem end to end (A-36): a ring-3 AHCI driver
+  reads sector zero and the FAT boot signature is there, the controller's DMA
+  is contained exactly when the machine has a unit to contain it with, and a
+  buffer capability from the previous read no longer works.
 - T260 pins the retirement of the create syscalls and their no-effect.
 - T125/T126 pin the rejection of the migrated family on the legacy retype.
 - The `IRIS_KOBJ_* == KOBJ_*` asserts pin the type ABI.

@@ -49,10 +49,17 @@ number cannot fall through to a live handler.
 Most cap-taking syscalls accept EITHER a handle-table id OR a CSpace CPtr,
 resolved by `cspace_or_handle_resolve_*`.  This is load-bearing for fuzzing:
 
-- A `handle_id_t` encodes `slot` in bits[9:0] and `generation` in bits[31:10];
-  generation 0 is forbidden and `HANDLE_TABLE_MAX` is 256, so any value with
-  slot ≥ 256 (e.g. `0x7FFFFFFF`) is invalid as a handle.
-- A CPtr is valid in 0..1023 (`IRIS_CPTR_LIMIT` = 1024); CPtrs 1..11 name real
+- The handle namespace is GONE (Stage 4 deleted the table, Stage 10-abi
+  deleted the name).  What survives is the BOUNDARY: a handle used to be
+  `slot | gen << 10` with the tag bit set, so every value at or above
+  `IRIS_CPTR_LIMIT` (1 << 31) is a bit pattern a caller written against the old
+  ABI would send, and the kernel must REFUSE it rather than resolve it.
+  `iris_cptr_beyond_limit()` in `nc/cptr.h` constructs one on purpose, which is
+  how a test crosses a boundary without open-coding the retired packing.
+- A CPtr owns the whole low 31 bits (`IRIS_CPTR_LIMIT` = 1 << 31).  The old
+  note here said 0..1023, which was true only while the two namespaces were
+  told apart at 1024 — a two-level CPtr such as `(leaf << 8) | 80` is routinely
+  above it.  CPtrs 1..11 name real
   boot capabilities (svcmgr/vfs/console/kbd/spawn/…).
 
 Therefore a *small* integer is NOT a "bad handle" — as a CPtr it may name a
