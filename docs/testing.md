@@ -13,6 +13,21 @@ Four gates, and a green tree means all four — on **one processor and on four**
 | Lock-order gate | `make check-locks` | 18 ranked locks, no inversions — it holds SMP roadmap §9.1's hierarchy and follows calls three hops |
 | Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests` | `SUITE PASS 317/317` plus the P3/P41 markers |
 
+### The IOMMU dimension
+
+`IRIS_QEMU_IOMMU=1` attaches an Intel VT-d unit to the machine (Stage 10-dma).
+Off by default for the same reason `-smp` defaults to 1: the interesting run is
+the one that differs from the ordinary one, and a gate that can only be run one
+way proves nothing about the other.
+
+```bash
+IRIS_QEMU_IOMMU=1 make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests
+```
+
+Both directions are gated: with a unit attached the kernel must FIND it, and
+without one it must still say so — a kernel that silently found nothing and a
+kernel that silently skipped looking read the same from outside.
+
 ### The core-count dimension
 
 `IRIS_QEMU_SMP=N` runs the same image on N processors, and the runtime suite

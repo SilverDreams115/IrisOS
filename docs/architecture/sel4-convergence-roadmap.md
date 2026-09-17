@@ -72,6 +72,7 @@ against seL4 turned up, including one A9 defect it fixed.
 | 11-life — object lifetime (D-7) | ✅ SEMANTICS CLOSED — an object exists exactly while a capability names it, measured for every type (T322), over generated MDB shapes (T323) and through a CSpace cycle (T321).  The MECHANISM stays a refcount, registered as a permanent divergence; the one disagreement it produced (a donated scheduling context released twice) is fixed and T324 reads every pool slot each run to catch the next |
 | 13-form — the four FORM divergences (A-20's audit) | ✅ 3 of 4 CLOSED, the fourth decided.  **A-21** address-space identity is `ASIDControl`/`ASIDPool`; **A-22** a fault is an IPC message on an endpoint answered by a reply capability; **A-24** the kernel cannot block a thread on time — waiting is a ring-3 service — with **A-23** (`seL4_TCB_BindNotification`) as its enabler and **A-25** (`CancelBadgedSends`) closing the audit's last item.  The fourth, the ABI SHAPE, is a permanent deliberate divergence (charter §4) |
 | 9 — SMP | ✅ **All 5 steps done.**  §9.1 hierarchy and §9.2 catalog written and enforced (`make check-locks`); step 1 (the one-core kernel made SMP-correct), step 2 (TLB shootdown), step 3 (APs discovered and started), step 4 (they schedule — `online=4 dispatching=4`), step 5 (the adversarial phase — four tests aiming four cores at one object, which found four real defects: a rollback that freed another core's memory, a release-then-use, a teardown gate that was not atomic, and a dispatch that overwrote a Suspend).  Full suite green on `-smp 1` and `-smp 4`.  What remains is NOT mechanism: the model-based fuzzer is not yet aimed at N cores, and §9.4's limit stands — TCG interleaves, it does not reorder |
+| 10-dma — device authority must be containable | 🔶 **2 of 6 steps done.**  §10.0–§10.3 written; the kernel needs no PCI enumeration (the source-id travels on the capability, as it does in seL4).  Step 1 ✅ the DMAR is parsed and the units found; step 2 ✅ their capability registers are read and decoded, and a unit that is not what the later steps assume is refused by name.  Measured: 3-level tables only, and the page walk is NOT cache-coherent.  Nothing is mapped or enabled yet, so DMA is still unrestricted |
 | 10 — General-purpose platform | pending |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
@@ -2432,31 +2433,148 @@ up as one.  Saying so now is cheaper than discovering it in a ledger row later.
 **The deadlock direction is untestable until step 3.**  A lock-order inversion
 cannot happen on one core, so §9.1 is enforced by review until there are two.
 
-## Stage 10-dma — device authority must be containable  ← NOT STARTED
+## Stage 10-dma — device authority must be containable  ← IN PROGRESS
 
 This is a SECURITY hole in the capability model, not a platform feature, which
 is why it is pulled out of Stage 10's list and given a stage of its own.
 
-There is no IOMMU support in the tree (measured: zero references to IOMMU,
-VT-d or DMAR anywhere in `kernel/`).  A driver holding an I/O port or IRQ
-capability can program a DMA-capable device to read or write ANY physical
-address — including the kernel's own memory and every other task's.  Every
-guarantee the rest of this roadmap builds is void against such a driver.
+A driver holding an I/O port or IRQ capability can program a DMA-capable device
+to read or write ANY physical address — including the kernel's own memory and
+every other task's.  Every guarantee the rest of this roadmap builds is void
+against such a driver.  The capability model makes this worse rather than
+better in one specific way: the whole point of user-space drivers is that a
+compromised driver is contained by the capabilities it holds, and without an
+IOMMU that containment is fiction.
 
-The capability model makes this worse rather than better in one specific way:
-the whole point of user-space drivers is that a compromised driver is
-contained by the capabilities it holds.  Without an IOMMU that containment is
-fiction, and IRIS's driver-isolation document says so only implicitly.
+### 10.0 — What exists, and one thing that turns out not to be needed
 
-- DMAR/VT-d table parsing; per-device domains.
-- A device's DMA reach becomes a CAPABILITY: the frames it may target, named
-  by whoever grants them, revocable.  This is seL4's shape (`seL4_X86_IOSpace`)
-  and it is the only thing that makes an ioport or IRQ capability safe to
-  delegate.
-- The I/O port whitelist is already gone (Stage 5): the range a holder may
-  claim travels on the `IOPORT_CONTROL` capability and is narrowed by
-  derivation.  What per-device domains would add is the same bound for DMA,
-  which is the one reach a port or IRQ capability still cannot express.
+`kernel/core/acpi/acpi.c` walks RSDP → XSDT/RSDT → MADT and stops, on purpose
+(see the note at the top of `iris/acpi.h`).  Finding a second table is an
+extension of the walk, not a new parser.  There is no IOMMU code and no PCI
+code.
+
+**The kernel does not need PCI enumeration, and that is worth stating before
+the steps because the old version of this section said it did.**  To install a
+translation for a device you need its source-id — the PCI bus:device:function
+that appears on the bus with every DMA request.  You do NOT need to have
+DISCOVERED it: the source-id is a PARAMETER of the authority, travelling on the
+capability, exactly as an I/O port range travels on an `IOPORT_CONTROL`
+derivation (Stage 5).  seL4 is built the same way — its kernel enumerates no
+PCI either; a root task that scans the bus asks for an IOSpace for a device it
+found.
+
+So enumeration is something ring 3 needs in order to make this USEFUL.  It is
+not something the kernel needs in order to make it SAFE, and a kernel that
+grew a PCI scanner would be bending charter P1/P2 for no gain.
+
+### 10.1 — The model
+
+Three things, and they are seL4's three:
+
+| Object | Is | Comes from |
+|---|---|---|
+| `IOSpaceControl` | the authority to name a device at all | BootInfo, once, like SchedControl and ASIDControl |
+| `KIOSpace` | ONE device's DMA address space, identified by (remapping unit, source-id) | minted from `IOSpaceControl` with the source-id as the parameter |
+| `KIOPageTable` | one level of that address space's translation tables | retyped from an Untyped, like every other object |
+
+And the operation that matters: a FRAME is mapped into an IOSpace at a DMA
+address with rights.  A device's reach is then exactly the set of frames
+somebody mapped for it — nameable, delegatable, and revocable by the ordinary
+CDT, because the mapping is a derivation of the frame capability like any
+other.
+
+The property to hold onto, stated so a later step can be checked against it:
+**a device whose source-id no capability names must reach nothing.**  Not "the
+default is identity" and not "the default is unconfigured" — blocked.
+
+### 10.2 — The steps
+
+**Step 1 — find the remapping units.**  ✅ **DONE.**  The DMAR is parsed: each
+DRHD's register base, PCI segment, INCLUDE_PCI_ALL flag and device-scope count,
+plus the table's host address width.  Nothing is mapped and nothing is enabled;
+a machine with no DMAR says so and runs exactly as it did before.  Same shape
+as SMP step 3, and for the same reason: "the hardware is there and I found it"
+is a claim that can fail entirely on its own.
+
+`acpi.c`'s MADT-only walk became a walk that takes a signature, because the
+second table needs the same four RSDP checks and duplicating them is how the
+two would eventually disagree about which RSDP is valid.  The DMAR's LAYOUT is
+read in `kernel/core/iommu/iommu.c`, not in `acpi.c` — that file finds bytes
+and checksums them, and keeping interpretation out of it is what stops it
+becoming the place tables accumulate.
+
+**Measured, and it changes step 3**: QEMU's `-device intel-iommu` emits one
+64-byte DRHD with INCLUDE_PCI_ALL **clear** and six explicit device scopes.  So
+a source-id no scope names is a source-id no unit claims, and the honest answer
+to a request for that device's IOSpace is a refusal — not a translation
+installed on the assumption that one unit covers everything.
+
+**Gated** both ways by the smoke script: with `IRIS_QEMU_IOMMU=1` the kernel
+must FIND a unit, and without it the kernel must still SAY something — a kernel
+that silently found nothing and a kernel that silently skipped looking read the
+same from outside.
+
+**Step 2 — read what they can do.**  ✅ **DONE.**  Each unit's VER, CAP and
+ECAP are read and decoded: guest address width, the page-table depths it
+supports, how many domain ids it has, caching mode, whether the write buffer
+must be flushed, whether its page walk is coherent, whether it offers queued
+invalidation.  A unit that does not answer — an unmapped register reads as all
+ones, and a decoded `~0` claims support for everything — is reported and left
+alone rather than believed.
+
+The registers need no new mapping: `paging_init` maps the low 4 GiB and the
+unit sits at 0xFED90000, reached through the same physmap window the LAPIC is.
+
+`usable` is decided against what the later steps actually require, and the
+refusal names WHICH assumption broke — "the IOMMU is not usable" helps nobody.
+Queued invalidation is deliberately NOT required: the register interface is
+always present and is what step 5 will use.
+
+**Two measured facts that shape step 3**, both read off QEMU's unit
+(`cap 0xd2008c22260206 ecap 0xf00f4a`, decoded and checked by hand against the
+specification):
+
+| Fact | Consequence |
+|---|---|
+| SAGAW offers **3 levels only** (39-bit) | the IO page table is three levels on this hardware, not four.  A walker written for four and run on this would build a table the unit reads as garbage |
+| **ECAP.C is 0 — the page walk is NOT coherent** | every root, context and page-table line IRIS writes has to be flushed out of the CPU cache before the unit reads it.  A kernel that skipped that would install translations the hardware never sees, and the symptom is a device that still reaches everything — protection that is not there, reported as present |
+
+**Step 3 — the objects, and an empty default.**  `KIOSpace` and `KIOPageTable`
+as retypable objects; `IOSpaceControl` in BootInfo; the root and context tables
+built; translation ENABLED with every context entry blocked.  The step's claim
+is the §10.1 property: at the end of it a device can reach nothing, and the
+machine still boots.
+
+*The hazard to respect here*: the firmware's own devices DMA.  IRIS does no
+disk I/O after ExitBootServices — services are linked into the kernel image —
+so there should be nothing left that needs its DMA to work.  "Should" is why
+this is its own step with its own gate.
+
+**Step 4 — mapping.**  `IOPageTable_Map` to install a level, and mapping a
+frame into an IOSpace with rights.  The frame side reuses `KFrame` exactly;
+what is new is the second address space it can appear in.
+
+**Step 5 — revocation, and the IOTLB.**  Deleting the frame capability, or
+revoking the IOSpace, removes the device's reach — and the hardware's cache has
+to be told, which is the DMA-side twin of the TLB shootdown in §9.3 step 2.  A
+revoke that leaves a stale IOTLB entry is a revoke that did not happen.
+
+**Step 6 — say what this cannot prove.**  There is no device in the test
+environment that actually issues DMA at a revoked address, so "the device
+cannot reach it" is checked by reading the translation tables rather than by
+watching a device fail.  That is a real limit and belongs in the same sentence
+as the claim, the way §9.4 sits beside §9.3.
+
+### 10.3 — What is NOT in this stage
+
+The I/O port whitelist is already gone (Stage 5): the range a holder may claim
+travels on the `IOPORT_CONTROL` capability and is narrowed by derivation.  What
+this stage adds is the same bound for DMA, which is the one reach a port or IRQ
+capability still cannot express.
+
+Interrupt remapping is not here.  It is a separate VT-d facility, it protects
+against a different attack (a device forging an interrupt vector), and mixing
+it in would mean two claims failing as one.
 
 ## Stage 10-abi — freeze the ABI  ← NOT STARTED
 
