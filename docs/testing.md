@@ -44,12 +44,21 @@ than by having started:
 | `[USER][INIT] net: link 1 mac .. dma contained\|open` | a ring-3 e1000 driver brought a network card up |
 | `[USER][INIT] fs: mounted gen N ... file 1` | a filesystem on a disk IRIS owns; `gen` is how many boots have mounted it, read from the medium and written back, and `file 1` is a file written and read back through the filesystem, the block driver and the controller |
 | `[USER][INIT] net: gateway answered, mac ..` | and a frame went out and one came back.  This is the line that means something: a transmit-only check proves nothing, because the card reports a descriptor done whether or not anything was listening.  An ARP round trip exercises the transmit path, the receive ring, the card's filter and a peer that is not this driver |
+| `[USER][INIT] ip: udp round trip ok, tftp data N bytes` | a stack above that driver completed a **TFTP read** against a server that is not this machine.  A peer only answers if it accepted an ARP reply, an IPv4 header whose checksum it recomputed, and a UDP header whose checksum covers a pseudo-header — one of the three wrong and the datagram is dropped in silence.  The byte count is checked because receiving A frame is not receiving THE answer: a TFTP server replies from an ephemeral port of its own, so the reply has to be matched to the port the request went out FROM |
 
 The network card is attached with `-netdev user`, QEMU's own userspace stack,
-which answers ARP for the gateway it advertises at 10.0.2.2.  That address and
-the sender's 10.0.2.15 are part of the test setup: a request from outside that
-subnet gets no reply, which would look exactly like a driver that does not
-work.
+which answers ARP for the gateway it advertises at 10.0.2.2 and carries a TFTP
+server there.  That address and the sender's 10.0.2.15 are part of the test
+setup: a request from outside that subnet gets no reply, which would look
+exactly like a driver that does not work.
+
+The TFTP server is used because it needs nothing from outside the machine — no
+host network, no listener to start, no port to pick — and the file it serves is
+written by the runner into `build/tftp/` before QEMU starts, so what comes back
+is bytes this repository put there.  A wait of two seconds is not generosity:
+slirp runs in QEMU's main loop, so a reply is not scheduled against guest time
+at all, and a bound in poll counts was wrong in both directions before it
+became a bound in real time.
 
 ### Persistence takes two boots
 

@@ -74,7 +74,7 @@ against seL4 turned up, including one A9 defect it fixed.
 | 9 — SMP | ✅ **All 5 steps done.**  §9.1 hierarchy and §9.2 catalog written and enforced (`make check-locks`); step 1 (the one-core kernel made SMP-correct), step 2 (TLB shootdown), step 3 (APs discovered and started), step 4 (they schedule — `online=4 dispatching=4`), step 5 (the adversarial phase — four tests aiming four cores at one object, which found four real defects: a rollback that freed another core's memory, a release-then-use, a teardown gate that was not atomic, and a dispatch that overwrote a Suspend).  Full suite green on `-smp 1` and `-smp 4`.  What remains is NOT mechanism: the model-based fuzzer is not yet aimed at N cores, and §9.4's limit stands — TCG interleaves, it does not reorder |
 | 10-dma — device authority must be containable | ✅ **All 6 steps done**, a device is watched being refused.  The DMAR is parsed and the units probed; translation is ENABLED with every device blocked; `KIOSpace` and `KIOPageTable` are retyped objects and `IOSpaceControl` a BootInfo authority; a frame mapped into an IOSpace is what a device may reach, and unmapping or destroying the space takes it back — from the unit's translation cache as well as the table.  **T351** pins containment, **T352** the whole arc, and **T353** is a ring-3 driver for a real bus master that is refused without a mapping, reaches exactly the frame it is granted, and is refused again when it is revoked — on a machine with no unit the same driver reaches memory nobody granted it.  The driver cost three pre-existing defects: an NX bit riding in every physical address `paging_virt_to_phys` returned, a port ABI with no width above a byte, and no way to map a BAR uncached |
 | 10-abi — freeze the ABI | ✅ **CLOSED.**  The surface is four syscall numbers and 77 contiguous invocation labels, declared in `iris/abi.h` and ASSERTED by `tests/kernel/test_abi.c` over every number the dispatcher can see — a description nothing checks is a description that goes stale, which is the lesson the stage was taught by its own opening paragraph.  BootInfo names the ABI and the root task refuses a major it was not built for.  The naming residue of the retired handle namespace is gone, and removing it found a capability argument being truncated to 32 bits |
-| 10 — General-purpose platform | ◐ **7 of 8 settled.**  Delivered and gated: `pci` (the bus is a service and the only task that reaches configuration space), ACPI reachable from ring 3, `blk` (an AHCI driver whose controller's DMA is contained, with a write path and FLUSH CACHE), `fs` (a filesystem on a disk IRIS owns, proven by booting twice and reading the image from the host), `net` (an e1000 driver — frames, not a stack), and **T356**, which measures the system and fails on order-of-magnitude regressions.  POSIX is DECLINED on the record (charter §6).  **Real hardware cannot be done in this environment** — every gate runs under QEMU, and that is the one item no amount of work here closes |
+| 10 — General-purpose platform | ◐ **7 of 8 settled.**  Delivered and gated: `pci` (the bus is a service and the only task that reaches configuration space), ACPI reachable from ring 3, `blk` (an AHCI driver whose controller's DMA is contained, with a write path and FLUSH CACHE), `fs` (a filesystem on a disk IRIS owns, proven by booting twice and reading the image from the host), `net` + `ip` (an e1000 driver and, above it, ARP/IPv4/UDP — gated by a TFTP read against a server that is not this machine), and **T356**, which measures the system and fails on order-of-magnitude regressions.  POSIX is DECLINED on the record (charter §6).  **Real hardware cannot be done in this environment** — every gate runs under QEMU, and that is the one item no amount of work here closes |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
 A9, A10** (authority); **O2–O6** (objects); **I1–I7** (IPC); **S1–S5**
@@ -2776,9 +2776,8 @@ all met.
 
 This stage is a LIST rather than a claim, and the honest way to report it is
 item by item.  **Seven of the eight are settled**: six delivered and gated, one
-declined on the record.  Networking is delivered as a DRIVER and not a stack,
-which is marked rather than rounded.  The eighth cannot be done in this
-environment at all, and no amount of work here changes that.
+declined on the record.  The eighth cannot be done in this environment at all,
+and no amount of work here changes that.
 
 | item | state |
 |---|---|
@@ -2788,12 +2787,12 @@ environment at all, and no amount of work here changes that.
 | storage | ✅ `services/blk` — an AHCI driver in ring 3; **T355** reads sector zero and checks the boot signature |
 | | |
 | persistent FS | ✅ `services/fs` on a disk IRIS owns.  `make smoke-persist` boots twice over one image: the first formats and reports generation 1, the second finds it and reports 2, and then the HOST reads the bytes off the image |
-| networking | ◐ **a driver, not a stack.**  `services/net` is an e1000 driver in ring 3 that moves Ethernet frames and parses nothing; init sends an ARP request and QEMU's gateway answers it, which is the gate.  There is no IP, no UDP, no TCP and no sockets — a stack is its own body of work and belongs above this endpoint, not inside it |
+| networking | ✅ **a driver and a stack, as two services.**  `services/net` is an e1000 driver in ring 3 that moves Ethernet frames and parses nothing; `services/ip` is ARP, IPv4 and UDP ABOVE it, holding an endpoint to the driver and no hardware authority of its own.  The gate is a TFTP read completed against QEMU's gateway — a peer that is not this machine accepted the ARP, the IPv4 checksum and the UDP pseudo-header checksum, and answered.  There is no TCP, no fragment reassembly and no sockets, which is stated below rather than rounded |
 | POSIX personality | ⊘ **declined, and recorded as a deliberate divergence** in charter §6.  It needs no kernel change — that is the point of the capability model — and all of it is policy.  The sharper objection: POSIX's ambient authority is the thing thirteen stages removed |
 | performance | ✅ **T356** measures an invocation, an IPC round trip and a disk read, prints the numbers, and fails on order-of-magnitude regressions.  They are TCG figures and are not presented as hardware ones |
 | real hardware | ⛔ **cannot be done from this environment.**  Every gate in this repository runs under QEMU.  What is established is that IRIS is correct against QEMU's implementation of x86-64, VT-d and AHCI; real errata, real timing and real firmware are not exercised, and nothing here should be read as if they were |
 
-### What the three delivered items are
+### What the delivered items are
 
 **`pci`, the bus as a service.**  Configuration space is one pair of I/O ports
 through which any device on the machine can be reprogrammed, so a capability
@@ -2841,8 +2840,33 @@ with DMA" is one shape and this system has a name for each part of it.  It is
 also the clearest case in the tree for `IOSpaceControl` — a disk controller
 reads a command table when told to, but a NIC reads a RING of physical
 addresses continuously and nothing tells it to stop.  It moves frames and
-parses nothing; init builds the ARP request, because a driver that understood
-ARP would be policy inside a driver.
+parses nothing; the stack above it builds the ARP request, because a driver
+that understood ARP would be policy inside a driver.
+
+**`ip`, a stack above that driver and nothing else.**  It holds one capability
+that reaches hardware at all — an endpoint to `net` — and no ports, no device
+Untyped and no DMA authority, which is the whole reason the driver parses
+nothing: ARP, IPv4 and UDP can be replaced without reimplementing an e1000.
+
+Its gate is a TFTP read against the server QEMU's userspace network carries at
+the gateway, and every part of that is something only a real peer can confirm.
+A server that answers has accepted an ARP reply this stack built, an IPv4
+header whose checksum it recomputed, and a UDP header whose checksum covers a
+pseudo-header — get any of the three wrong and the datagram is dropped in
+silence, which is what makes a transmit-only check worthless.  The reply is
+matched to the EPHEMERAL port the request went out from, because a TFTP server
+answers from a port of its own, and a stack that ignored ports would read back
+whatever happened to arrive first.
+
+Two things fell out of writing it.  The driver's receive buffers were 256
+bytes, which is smaller than a datagram — a real reply arrived split across
+four descriptors and no amount of correctness above that could reassemble it,
+so the buffers are 1024 bytes now.  And the poll loop had to become a
+DISPATCHER rather than a filter: an ARP request for our address that arrives
+while the stack is waiting for a datagram must be answered, or the peer never
+learns where we are and the datagram never comes.  Which also means the thing
+being waited for needs a KIND and not just a port, so that a stray ARP reply
+does not end a wait for a datagram.
 
 **`blk`, an AHCI driver in ring 3.**  It asks `pci` for a SATA controller by
 CLASS code — a driver that matched vendor:device would drive one machine —
@@ -2857,11 +2881,15 @@ and the gate requires the right answer for the machine it is on.
 
 The device-driver stack is three drivers deep and none has an interrupt: they
 all poll.  `pci` walks bus 0 only — no PCI-to-PCI bridges, because this machine has
-none and a bridge walk would be code no test covers.  `blk` drives the first
-port of the first controller and reads only; there is no write path, no
-queueing, and no second disk.  `net` sends one frame at a time and waits for
-it, its receive ring is eight 256-byte buffers, and there is no protocol above
-Ethernet at all.  `fs` has no journal, no allocator and no directories — a
+none and a bridge walk would be code no test covers.  `blk` reads and writes,
+and flushes after every write, but has no queueing — one command in flight per
+port.  `net` sends one frame at a time and waits for it, and its receive ring
+is eight 1024-byte buffers, so a burst longer than eight frames loses the
+oldest and a frame larger than 1024 bytes is dropped whole rather than handed
+up in pieces.  `ip` speaks ARP, IPv4 and UDP and nothing else: no TCP, no fragment
+reassembly, no sockets, no DHCP — the address is a constant — and because it
+has no thread of its own it polls only while a request is outstanding, so a
+frame that arrives when nobody is asking waits in the card's ring.  `fs` has no journal, no allocator and no directories — a
 crash between writing a file's contents and naming it loses the space, which is
 the better of the two orders and is not a transaction.  The benchmark's
 ceilings are order-of-magnitude guards, not performance targets.  Each of those is named here rather than left for

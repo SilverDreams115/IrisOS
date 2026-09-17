@@ -49,7 +49,18 @@ EDU_ARGS=(-device edu,dma_mask=0xffffffffff)
 #
 # `-net none` is therefore dropped from the command line below: it and a
 # netdev are contradictory, and QEMU obeys the last word.
-NET_ARGS=(-device e1000,netdev=n0 -netdev user,id=n0)
+#
+# ...and a TFTP server on the other end of it.
+#
+# `-netdev user` carries one, built in, at the gateway address.  It is here
+# because the IP stack needs a peer that speaks UDP and answers, and this one
+# needs nothing from outside the machine: no host network, no listener to
+# start, no port to pick.  A read of a file this repository wrote is a complete
+# UDP request and response against a real implementation.
+TFTP_DIR="$PROJECT_ROOT/build/tftp"
+mkdir -p "$TFTP_DIR"
+printf 'IRIS-TFTP-OK\n' > "$TFTP_DIR/hello.txt"
+NET_ARGS=(-device e1000,netdev=n0 -netdev "user,id=n0,tftp=$TFTP_DIR")
 
 # A disk IRIS OWNS, separate from the one it boots from.
 #
@@ -424,6 +435,27 @@ fi
 if [ "${IRIS_QEMU_IOMMU:-0}" != "0" ]; then
   grep -Fq "net: link 1 mac" "$LOG_FILE" && ! grep -Eq "net: link 1 .* dma contained" "$LOG_FILE" && {
     echo "[headless] the NIC is loose on a machine that can contain it"; cat "$LOG_FILE"; exit 1; }
+fi
+
+# Protocol: ARP, IPv4 and UDP above that driver, as a separate service (Stage 10).
+#
+# The line is a completed TFTP read against the server QEMU's userspace network
+# carries at the gateway, and it is here rather than a self-test because every
+# part of it is something only a real peer can confirm.
+#
+# A peer that answers has accepted an ARP reply built by this stack, an IPv4
+# header whose checksum it recomputed, and a UDP header whose checksum covers a
+# pseudo-header this stack assembled — get any of the three wrong and the
+# server drops the datagram silently, which is exactly what makes a
+# transmit-only check worthless.  The byte count is checked because a stack can
+# receive A frame without receiving THE answer: the reply has to be matched to
+# the ephemeral port the request went out from, not the well-known port it went
+# to, and a stack that ignores ports reads back whatever arrived first.
+if ! grep -Eq "^\[USER\]\[INIT\] ip: udp round trip ok, tftp data [0-9]+ bytes$" "$LOG_FILE"; then
+  echo "[headless] no UDP round trip against a real server:"
+  grep -F "ip:" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
 fi
 
 # Storage: a ring-3 AHCI driver brought a real disk up (Stage 10).

@@ -80,6 +80,9 @@ extern const uint8_t _binary_services_net_net_elf_end[];
 
 extern const uint8_t _binary_services_fs_fs_elf_start[];
 extern const uint8_t _binary_services_fs_fs_elf_end[];
+
+extern const uint8_t _binary_services_ip_ip_elf_start[];
+extern const uint8_t _binary_services_ip_ip_elf_end[];
 extern const uint8_t _binary_services_pager_pager_elf_start[];
 extern const uint8_t _binary_services_pager_pager_elf_end[];
 
@@ -176,6 +179,10 @@ static const struct initrd_entry g_initrd[] = {
      * the hardware. */
     { _binary_services_fs_fs_elf_start,
       _binary_services_fs_fs_elf_end  },
+    /* [21] ip — ARP, IPv4 and UDP (Stage 10).  Above the network driver, which
+     * parses nothing: everything here is policy about what bytes mean. */
+    { _binary_services_ip_ip_elf_start,
+      _binary_services_ip_ip_elf_end  },
 };
 
 #define INITRD_ENTRY_COUNT \

@@ -2527,11 +2527,11 @@ CONTINUOUSLY and nothing tells it to stop, so a driver that got those addresses
 wrong would have the card scribbling asynchronously with no call to attribute
 it to.  The driver binds its IOSpace before it writes a single ring address.
 
-It parses nothing — no ARP, no IP, no checksums.  init builds the ARP request
-and reads the reply, because a driver that understood ARP would be policy
-inside a driver.  The round trip is the gate: a transmit-only check proves
-nothing, since the card reports a descriptor done whether or not anything was
-listening.
+It parses nothing — no ARP, no IP, no checksums.  The stack above it builds the
+ARP request and reads the reply, because a driver that understood ARP would be
+policy inside a driver.  The round trip is the gate: a transmit-only check
+proves nothing, since the card reports a descriptor done whether or not
+anything was listening.
 
 **The ARP wait was bounded wrongly twice, and the second way is worth keeping.**
 First by a poll count of twenty thousand, which was generous on the success
@@ -2547,6 +2547,48 @@ raised to 32 with a caveat that it is a fact about the MACHINE as well as the
 kernel; attaching a network card made it 33, because the firmware describes one
 more device and therefore publishes one more table region.  Nothing about the
 kernel changed.  T305 caught it, which is why it refuses rather than reports.
+
+**`ip` — ARP, IPv4 and UDP, as a service and not as part of the driver.**  It
+holds one capability that reaches hardware at all: an endpoint to `net`.  No
+ports, no device Untyped, no `IOSpaceControl`, no DMA authority.  That is the
+payoff for a driver that parses nothing — the protocols can be replaced without
+reimplementing an e1000, and a bug in a checksum cannot reach a bus master.
+
+Its gate is a TFTP read against the server QEMU's userspace network carries at
+the gateway.  It was chosen because every part of it is something only a real
+peer can confirm: a server answers only a stack that got the ARP reply, the
+IPv4 header checksum and the UDP checksum over its pseudo-header all right, and
+gets any one of them wrong in silence otherwise.  The reply is matched to the
+EPHEMERAL port the request went out from, because a TFTP server answers from a
+port of its own — a stack that ignored ports would read back whatever arrived
+first and call it the answer.
+
+**Three things this cost, and each was a wrong assumption rather than a typo.**
+
+The driver's receive buffers were 256 bytes, which is smaller than a datagram.
+The first real reply arrived split across four descriptors, and nothing
+correct above that layer could have reassembled it — the buffers are 1024 bytes
+now, and the ring spans two frames because 8 × 1024 no longer fits in one.
+
+Raising the size did not close the case, and the leftover is the more
+interesting half.  A frame can still exceed 1024 bytes, the card still splits
+it, and dropping the pieces that cannot be placed is NOT enough: the last
+piece carries the card's end-of-packet bit and a plausible length, so it was
+handed up as a frame — a tail with no Ethernet header, which the layer above
+cannot recognise as a fragment because nothing in it says so.  A split frame is
+now dropped whole.  Losing a frame is a fact a caller can act on; being given
+part of one as though it were all of it is not.
+
+The poll loop had to become a DISPATCHER rather than a filter.  A loop that
+dropped every frame except the one it was waiting for makes the host
+unreachable: an ARP request for our address arriving mid-wait has to be
+ANSWERED, or the peer never learns where we are and the datagram never comes.
+
+And what is being waited for needs a KIND, not just a port.  With only a port
+number, "waiting for an ARP reply" was encoded as port zero, so a stray ARP
+reply for some other host ended a wait for a datagram and the caller read back
+a length of zero as if the request had timed out.  The two are different
+questions and the dispatcher now asks which one is open.
 
 **`fs` — a filesystem that survives the power going off.**  It holds the least
 of any service here: an endpoint, a reply object, an endpoint to the block

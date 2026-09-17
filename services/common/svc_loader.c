@@ -195,6 +195,7 @@ static long sl_name_to_index(const char *name) {
     if (sl_streq(name, "blk"))      return 18;
     if (sl_streq(name, "net"))      return 19;
     if (sl_streq(name, "fs"))       return 20;
+    if (sl_streq(name, "ip"))       return 21;
     return -1;
 }
 

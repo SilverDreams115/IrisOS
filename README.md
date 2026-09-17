@@ -35,7 +35,19 @@ UEFI → BOOTX64.EFI → KERNEL.ELF
           → kbd         (PS/2 keyboard driver; endpoint + IRQ notification)
           → vfs         (boot-namespace filesystem + file grants; endpoint-only)
           → sh          (interactive shell; pure CPtr-first client)
+        → pci           (the bus: configuration ports + the PCI-hole Untyped,
+                         and the only task that can reach either)
+          → blk         (AHCI disk driver; asks pci by class code)
+            → fs        (a filesystem on a disk IRIS owns — holds no hardware)
+          → net         (e1000 driver; moves frames and parses nothing)
+            → ip        (ARP, IPv4, UDP — holds one endpoint to net, and
+                         no ports, no device Untyped, no DMA authority)
 ```
+
+The indentation under `pci` is the authority, not the call graph: `blk` and
+`net` can reach configuration space only by asking `pci`, and `fs` and `ip`
+cannot reach hardware at all — they hold an endpoint to the layer below and
+nothing else.
 
 Every service from `init` onward is a ring-3 ELF loaded by `svc_loader` using
 only kernel primitives. Since Stage 7 there is no "create a process" step —
@@ -500,10 +512,14 @@ working:
   asks it for its device and gets a frame over that device's register window
   and nothing else.  `blk` is an AHCI disk driver in ring 3 that finds its
   controller through `pci` by class code, contains the controller's DMA behind
-  a remapping unit when the machine has one, and reads sectors.  `net` is an
-  e1000 driver that moves Ethernet frames and parses nothing — init sends an
-  ARP request and the gateway answers, which is what proves the card really
-  talks.  Three drivers, and none holds anything the others do.  `fs` is a
+  a remapping unit when the machine has one, and reads and writes sectors.
+  `net` is an e1000 driver that moves Ethernet frames and parses nothing, and
+  `ip` is ARP, IPv4 and UDP above it — a separate service holding one endpoint
+  to the driver and no hardware authority at all, which is what makes a stack
+  replaceable without reimplementing a card.  It completes a TFTP read against
+  a server that is not this machine, and a peer only answers a stack that got
+  the ARP, the IPv4 checksum and the UDP pseudo-header checksum right.  Three
+  drivers, and none holds anything the others do.  `fs` is a
   filesystem on a disk IRIS owns and holds no hardware at all — not a
   controller, not a device Untyped — and `make smoke-persist` proves what it
   writes survives the machine being off by booting twice and then reading the
@@ -676,10 +692,11 @@ and nothing PENDING.
 
 IRIS is not a general-purpose OS yet — by sequencing, not by ambition: the
 platform work is Stage 10 of the roadmap and lands only on a consolidated
-microkernel (charter §5).  The current tree does not provide a persistent
-disk filesystem, a mutable filesystem or writeback, networking, a global page cache,
-copy-on-write, full ELF demand paging (the pager has the groundwork), a dynamic
-linker, a POSIX layer, or hardware support beyond QEMU x86-64.
+microkernel (charter §5).  The current tree does not provide a
+global page cache, copy-on-write, full ELF demand paging (the pager has the
+groundwork), a dynamic linker, a POSIX layer (declined on the record, charter
+§6), TCP or sockets above the UDP stack, or hardware support beyond QEMU
+x86-64.
 
 ## Positioning
 

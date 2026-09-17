@@ -27,6 +27,7 @@
 #include <iris/blk_ep_proto.h>
 #include <iris/net_ep_proto.h>
 #include <iris/fs_ep_proto.h>
+#include <iris/ip_ep_proto.h>
 #include "../common/iris_map.h"
 #include "../common/iris_timer.h"
 #include <iris/endpoint_proto.h>
@@ -252,6 +253,165 @@ int init_spawn_pci(void) {
         init_log("[USER][INIT] pci: no answer\n");
         return 0;
     }
+}
+
+/* ── ip spawn (Stage 10: a protocol stack is a service, not part of a driver) */
+
+/*
+ * ARP, IPv4 and UDP.
+ *
+ * It gets an endpoint to the NETWORK driver and nothing else that touches
+ * hardware — no ports, no device Untyped, no DMA authority.  That is the split
+ * `net` was written for: the driver moves frames and parses nothing, and
+ * everything about what the bytes MEAN lives here, where it can be replaced
+ * without reimplementing a device.
+ *
+ * Returns 1 when a peer answered a real request.
+ */
+int init_spawn_ip(void) {
+    iris_cptr_t ip_proc_h = IRIS_CPTR_NULL;
+    iris_cptr_t ip_boot_h = IRIS_CPTR_NULL;
+    long r;
+
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
+                         INIT_SLOT_IP_EP, 0) < 0) { init_log("[USER] ip: ep\n"); return 0; }
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_REPLY,
+                         INIT_SLOT_IP_REPLY, 0) < 0) { init_log("[USER] ip: reply\n"); return 0; }
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
+                         INIT_SLOT_IP_UT, 2 << 20) < 0) { init_log("[USER] ip: ut\n"); return 0; }
+
+    {
+        struct svc_mint im[4] = { 0 };
+        uint32_t n = 0;
+        im[n].slot = IP_SLOT_CTRL_EP;  im[n].src_cptr = INIT_SLOT_IP_EP;
+        im[n].rights = RIGHT_READ;     im[n].badge = 0; n++;
+        im[n].slot = IP_SLOT_REPLY;    im[n].src_cptr = INIT_SLOT_IP_REPLY;
+        im[n].rights = RIGHT_READ | RIGHT_WRITE; im[n].badge = 0; n++;
+        im[n].slot = IP_SLOT_NET_EP;   im[n].src_cptr = INIT_SLOT_NET_EP;
+        im[n].rights = RIGHT_WRITE;    im[n].badge = 0; n++;
+        im[n].slot = IRIS_CPTR_OWN_UNTYPED; im[n].src_cptr = INIT_SLOT_IP_UT;
+        im[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        im[n].badge = 0; n++;
+
+        r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
+                               "ip", &ip_proc_h, &ip_boot_h, im, n,
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
+                               2u << 20,
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED,
+                               /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
+        init_report_mints("ip", im, n);
+    }
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_IP_REPLY);
+    init_close(&ip_proc_h);
+    init_close(&ip_boot_h);
+    if (r < 0) return 0;
+
+    struct iris_msg m;
+    { uint8_t *z = (uint8_t *)&m;
+      for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+    m.label = IP_OP_INFO;
+    if (iris_msg_call((long)INIT_SLOT_IP_EP, &m) != 0 ||
+        m.label != IP_REP_OK || m.words[0] == 0u) {
+        init_log("[USER][INIT] ip: no interface\n");
+        return 0;
+    }
+
+    /*
+     * A real request to a real server: TFTP, which QEMU's userspace network
+     * carries built in at the gateway.
+     *
+     * It is the smallest complete exchange that exercises the whole stack —
+     * ARP to learn where the gateway is, an IPv4 header with a checksum, a UDP
+     * header with a checksum over a pseudo-header, and a reply that has to be
+     * matched to the port it was sent FROM rather than the one it was sent to,
+     * because a TFTP server answers from an ephemeral port of its own.
+     *
+     * A read request is two counted strings: the file, then the mode.
+     */
+    {
+        static const char fname[] = "hello.txt";
+        static const char fmode[] = "octet";
+        uint32_t rrq = 0;
+        { uint8_t *z = (uint8_t *)&m;
+          for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+        m.label = IP_OP_BUF;
+        m.recv_slot = (long)INIT_SLOT_IP_BUF;
+        (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_IP_BUF);
+        if (iris_msg_call((long)INIT_SLOT_IP_EP, &m) != 0 ||
+            m.label != IP_REP_OK || m.got_caps == 0u ||
+            iris_map_frame(INIT_SLOT_IP_BUF, IRIS_CPTR_OWN_VSPACE,
+                           g_init_untyped_c, INIT_SLOT_NET_PT,
+                           0x80B4000000ULL, 4096u, 1ull) != 0) {
+            init_log("[USER][INIT] ip: no datagram buffer\n");
+            return 0;
+        }
+        {
+            volatile uint8_t *p = (volatile uint8_t *)(uintptr_t)0x80B4000000ULL;
+            p[rrq++] = 0; p[rrq++] = 1;                      /* read request */
+            for (uint32_t i = 0; i < sizeof(fname); i++) p[rrq++] = (uint8_t)fname[i];
+            for (uint32_t i = 0; i < sizeof(fmode); i++) p[rrq++] = (uint8_t)fmode[i];
+        }
+        (void)iris_invoke2((long)INIT_SLOT_IP_BUF, INV_FRAME_UNMAP,
+                           (long)IRIS_CPTR_OWN_VSPACE, (long)0x80B4000000ULL);
+
+        { uint8_t *z = (uint8_t *)&m;
+          for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+        m.label = IP_OP_UDP_SEND;
+        m.words[0] = IP_DEFAULT_GATEWAY;
+        m.words[1] = 69u | ((uint64_t)30069u << 16);
+        m.words[2] = rrq;
+        m.word_count = 3u;
+        if (iris_msg_call((long)INIT_SLOT_IP_EP, &m) != 0 || m.label != IP_REP_OK) {
+            init_log("[USER][INIT] ip: the request did not go out\n");
+            return 0;
+        }
+    }
+
+    {
+        { uint8_t *z = (uint8_t *)&m;
+          for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+        m.label = IP_OP_UDP_RECV;
+        m.words[0] = 30069u;
+        m.words[1] = 2000u;              /* milliseconds; see `net`'s ARP note */
+        m.word_count = 2u;
+        m.recv_slot = (long)INIT_SLOT_IP_BUF;
+        (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_IP_BUF);
+        if (iris_msg_call((long)INIT_SLOT_IP_EP, &m) != 0 ||
+            m.label != IP_REP_OK || m.words[0] == 0u || m.got_caps == 0u ||
+            iris_map_frame(INIT_SLOT_IP_BUF, IRIS_CPTR_OWN_VSPACE,
+                           g_init_untyped_c, INIT_SLOT_NET_PT,
+                           0x80B5000000ULL, 4096u, 0ull) != 0) {
+            init_log("[USER][INIT] ip: nothing came back\n");
+            return 0;
+        }
+
+        const volatile uint8_t *p = (const volatile uint8_t *)(uintptr_t)0x80B5000000ULL;
+        uint32_t len = (uint32_t)m.words[0];
+        /* DATA, block one, and the bytes this repository put in the file. */
+        int ok = (len >= 4u + 12u && p[0] == 0 && p[1] == 3 &&
+                  p[2] == 0 && p[3] == 1 &&
+                  p[4] == 'I' && p[5] == 'R' && p[6] == 'I' && p[7] == 'S');
+        (void)iris_invoke2((long)INIT_SLOT_IP_BUF, INV_FRAME_UNMAP,
+                           (long)IRIS_CPTR_OWN_VSPACE, (long)0x80B5000000ULL);
+        if (!ok) {
+            init_log("[USER][INIT] ip: the answer was not the file\n");
+            return 0;
+        }
+
+        {
+            char b[80] = "[USER][INIT] ip: udp round trip ok, tftp data ";
+            uint32_t k = 0; while (b[k]) k++;
+            uint32_t n2 = len - 4u;
+            if (n2 >= 100u) b[k++] = (char)('0' + (n2 / 100u) % 10u);
+            if (n2 >= 10u)  b[k++] = (char)('0' + (n2 / 10u) % 10u);
+            b[k++] = (char)('0' + n2 % 10u);
+            b[k++] = ' '; b[k++] = 'b'; b[k++] = 'y'; b[k++] = 't';
+            b[k++] = 'e'; b[k++] = 's';
+            b[k++] = '\n'; b[k] = 0;
+            init_log(b);
+        }
+    }
+    return 1;
 }
 
 /* ── fs spawn (Stage 10: a filesystem that survives the power going off) ─── */

@@ -145,6 +145,11 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
 #define INIT_SLOT_FS_REPLY    104u
 #define INIT_SLOT_FS_UT       105u
 #define INIT_SLOT_FS_BUF      106u
+/* ...and the IP stack's. */
+#define INIT_SLOT_IP_EP       107u
+#define INIT_SLOT_IP_REPLY    108u
+#define INIT_SLOT_IP_UT       109u
+#define INIT_SLOT_IP_BUF      110u
 #define INIT_SLOT_S8_TCB       59u
 /* Stage 7 Step 7: where a fault delivers the faulting thread's capability.
  * init arms the handler for ITSELF, so its own root CNode is the mailbox and
@@ -180,6 +185,7 @@ int init_spawn_pci(void);
 int init_spawn_blk(void);
 int init_spawn_net(void);
 int init_spawn_fs(void);
+int init_spawn_ip(void);
 
 /* Tiny process utilities (main.c). */
 void init_exit(long code);
@@ -263,6 +269,10 @@ INIT_SLOT_CHECK(INIT_SLOT_FS_EP);
 INIT_SLOT_CHECK(INIT_SLOT_FS_REPLY);
 INIT_SLOT_CHECK(INIT_SLOT_FS_UT);
 INIT_SLOT_CHECK(INIT_SLOT_FS_BUF);
+INIT_SLOT_CHECK(INIT_SLOT_IP_EP);
+INIT_SLOT_CHECK(INIT_SLOT_IP_REPLY);
+INIT_SLOT_CHECK(INIT_SLOT_IP_UT);
+INIT_SLOT_CHECK(INIT_SLOT_IP_BUF);
 INIT_SLOT_CHECK(INIT_SLOT_TIMER_EP);
 INIT_SLOT_CHECK(INIT_SLOT_TIMER_IRQCAP);
 INIT_SLOT_CHECK(INIT_SLOT_TIMER_NOTIF);

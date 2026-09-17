@@ -75,7 +75,7 @@ static void net_msg_zero(struct iris_msg *m) {
 #define RCTL_EN       (1u << 1)
 #define RCTL_BAM      (1u << 15)   /* accept broadcast */
 #define RCTL_SECRC    (1u << 26)   /* strip the ethernet CRC */
-#define RCTL_BSIZE256 (3u << 16)   /* with BSEX clear: 256-byte buffers */
+#define RCTL_BSIZE1024 (1u << 16)  /* with BSEX clear: 1024-byte buffers */
 
 #define TCTL_EN       (1u << 1)
 #define TCTL_PSP      (1u << 3)    /* pad short packets */
@@ -107,7 +107,7 @@ static uint32_t g_ready;
 static uint16_t g_source_id;
 static uint32_t g_contained;
 static uint64_t g_mac;
-static uint64_t g_ring_phys, g_rx_phys, g_tx_phys;
+static uint64_t g_ring_phys, g_rx_phys[NET_RX_FRAMES], g_tx_phys;
 static uint32_t g_rx_next;        /* the descriptor we will look at next */
 static uint64_t g_rx_count;
 
@@ -167,9 +167,14 @@ static int net_contain(void) {
     if (iris_invoke2((long)NET_SLOT_IOSPACE, INV_IOSPACE_BIND,
                      (long)NET_SLOT_IOSPACE_C, (long)g_source_id) != 0) return 0;
 
-    const uint64_t at[3]   = { g_ring_phys, g_rx_phys, g_tx_phys };
-    const uint32_t slot[3] = { NET_SLOT_RING, NET_SLOT_RXBUF, NET_SLOT_TXBUF };
-    for (uint32_t w = 0; w < 3u; w++) {
+    uint64_t at[2u + NET_RX_FRAMES];
+    uint32_t slot[2u + NET_RX_FRAMES];
+    at[0] = g_ring_phys; slot[0] = NET_SLOT_RING;
+    at[1] = g_tx_phys;   slot[1] = NET_SLOT_TXBUF;
+    for (uint32_t i = 0; i < NET_RX_FRAMES; i++) {
+        at[2u + i] = g_rx_phys[i]; slot[2u + i] = NET_SLOT_RXBUF(i);
+    }
+    for (uint32_t w = 0; w < 2u + NET_RX_FRAMES; w++) {
         for (uint32_t i = 0; i < 3u; i++) {
             (void)iris_invoke1(0, INV_CNODE_DELETE, (long)NET_SLOT_IOPT(i));
             if (iris_invoke((long)IRIS_CPTR_OWN_UNTYPED, INV_UNTYPED_RETYPE,
@@ -205,7 +210,8 @@ static void net_bring_up(void) {
                        NET_VA_BAR, r.words[1], 1ull | 4ull) != 0) return;
 
     if (net_frame(NET_SLOT_RING,  &g_ring_phys) != 0) return;
-    if (net_frame(NET_SLOT_RXBUF, &g_rx_phys)   != 0) return;
+    for (uint32_t i = 0; i < NET_RX_FRAMES; i++)
+        if (net_frame(NET_SLOT_RXBUF(i), &g_rx_phys[i]) != 0) return;
     if (net_frame(NET_SLOT_TXBUF, &g_tx_phys)   != 0) return;
 
     /* Decide what the card may reach BEFORE telling it any address. */
@@ -214,9 +220,10 @@ static void net_bring_up(void) {
     if (iris_map_frame(NET_SLOT_RING, IRIS_CPTR_OWN_VSPACE,
                        IRIS_CPTR_OWN_UNTYPED, NET_SLOT_PT,
                        NET_VA_RING, 4096u, 1ull) != 0) return;
-    if (iris_map_frame(NET_SLOT_RXBUF, IRIS_CPTR_OWN_VSPACE,
-                       IRIS_CPTR_OWN_UNTYPED, NET_SLOT_PT,
-                       NET_VA_RX, 4096u, 1ull) != 0) return;
+    for (uint32_t i = 0; i < NET_RX_FRAMES; i++)
+        if (iris_map_frame(NET_SLOT_RXBUF(i), IRIS_CPTR_OWN_VSPACE,
+                           IRIS_CPTR_OWN_UNTYPED, NET_SLOT_PT,
+                           NET_VA_RX + (uint64_t)i * 4096u, 4096u, 1ull) != 0) return;
     if (iris_map_frame(NET_SLOT_TXBUF, IRIS_CPTR_OWN_VSPACE,
                        IRIS_CPTR_OWN_UNTYPED, NET_SLOT_PT,
                        NET_VA_TX, 4096u, 1ull) != 0) return;
@@ -251,7 +258,10 @@ static void net_bring_up(void) {
     {
         volatile uint64_t *rxd = (volatile uint64_t *)(uintptr_t)(NET_VA_RING + RX_RING_OFF);
         for (uint32_t i = 0; i < NET_RING_LEN; i++) {
-            rxd[i * 2u]      = g_rx_phys + (uint64_t)i * NET_FRAME_BYTES;
+            /* Descriptor i takes the i'th buffer, which lives in frame
+             * i/4 at offset (i%4)*1024 — the ring is longer than one page. */
+            rxd[i * 2u]      = g_rx_phys[i / NET_RX_PER_FRAME] +
+                               (uint64_t)(i % NET_RX_PER_FRAME) * NET_FRAME_BYTES;
             rxd[i * 2u + 1u] = 0u;
         }
         wr(E1000_RDBAL, (uint32_t)(g_ring_phys + RX_RING_OFF));
@@ -262,7 +272,7 @@ static void net_bring_up(void) {
          * trails the head by one — a tail equal to the head means the ring is
          * full and nothing is received. */
         wr(E1000_RDT, NET_RING_LEN - 1u);
-        wr(E1000_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC | RCTL_BSIZE256);
+        wr(E1000_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC | RCTL_BSIZE1024);
     }
 
     /* Transmit ring: same size, one buffer, because this driver sends one
@@ -311,15 +321,40 @@ static uint32_t net_send(uint32_t len) {
  * where the card will write NEXT and says nothing about which descriptors the
  * driver has already consumed.
  */
+static uint32_t g_rx_skipping;    /* mid-way through a frame too big to hold */
+
 static uint32_t net_recv(uint32_t *out_off) {
     volatile uint32_t *rxd = (volatile uint32_t *)(uintptr_t)(NET_VA_RING + RX_RING_OFF);
     uint32_t i = g_rx_next;
     uint32_t status = (rxd[i * 4u + 3u] >> 0) & 0xFFu;
     uint32_t len    = rxd[i * 4u + 2u] & 0xFFFFu;
     if (!(status & RXD_STAT_DD)) return 0;
-    if (!(status & RXD_STAT_EOP) || len == 0u || len > NET_FRAME_BYTES) len = 0;
 
-    *out_off = i * NET_FRAME_BYTES;
+    /*
+     * A frame longer than one buffer is SPLIT across descriptors by the card,
+     * and only the last of them carries EOP.  Dropping the pieces without EOP
+     * is not enough: the last piece has EOP and a plausible length, so it
+     * would be handed up as if it were a frame — a tail with no Ethernet
+     * header, which is a worse failure than losing the frame, because it is
+     * one the layer above has no way to recognise.
+     *
+     * So a split frame is dropped WHOLE: once a piece arrives without EOP,
+     * every piece up to and including the next EOP is discarded.
+     */
+    if (g_rx_skipping) {
+        if (status & RXD_STAT_EOP) g_rx_skipping = 0u;
+        len = 0;
+    } else if (!(status & RXD_STAT_EOP)) {
+        g_rx_skipping = 1u;
+        len = 0;
+    } else if (len == 0u || len > NET_FRAME_BYTES) {
+        len = 0;
+    }
+
+    /* Where the caller finds it: the frame index and the offset inside it,
+     * because the ring no longer fits in one page. */
+    *out_off = (i / NET_RX_PER_FRAME) * 4096u +
+               (i % NET_RX_PER_FRAME) * NET_FRAME_BYTES;
 
     /* Hand the descriptor back: clear its status, then move the tail to it so
      * the card may write into it again.  In that order — a tail moved first
@@ -383,8 +418,10 @@ void net_main(iris_cptr_t bootstrap_ch_h) {
             rep.words[2]   = off;
             rep.word_count = 3u;
             if (len) {
-                (void)iris_invoke0((long)NET_SLOT_RXBUF, INV_CSPACE_REVOKE);
-                rep.cap        = (long)NET_SLOT_RXBUF;
+                uint32_t fr = (uint32_t)(off / 4096u);
+                (void)iris_invoke0((long)NET_SLOT_RXBUF(fr), INV_CSPACE_REVOKE);
+                rep.words[2]   = off % 4096u;   /* offset WITHIN that frame */
+                rep.cap        = (long)NET_SLOT_RXBUF(fr);
                 rep.cap_rights = RIGHT_READ;
             }
         }

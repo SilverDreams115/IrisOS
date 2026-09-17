@@ -48,8 +48,11 @@
 /* Its own CSpace. */
 #define NET_SLOT_BAR        32u
 #define NET_SLOT_RING       33u   /* the RX and TX descriptor rings       */
-#define NET_SLOT_RXBUF      34u   /* eight receive buffers                */
 #define NET_SLOT_TXBUF      35u   /* the one the client writes into       */
+/* The receive ring no longer fits in one page (see NET_FRAME_BYTES), so it is
+ * two frames of four buffers.  42 and up, clear of everything above. */
+#define NET_SLOT_RXBUF(i)  (42u + (i))
+#define NET_RX_FRAMES       2u
 #define NET_SLOT_IOSPACE    36u
 #define NET_SLOT_IOPT(i)    (37u + (i))
 #define NET_SLOT_PT         41u
@@ -79,6 +82,8 @@
  * The oldest unread received frame, as a READ-ONLY frame capability.
  *   words[0] = length in bytes, or 0 if nothing has arrived
  *   words[1] = how many frames this interface has received in total
+ *   words[2] = the frame's offset WITHIN the capability returned — the
+ *              receive ring spans two frames, so a caller needs both
  * Length 0 comes with no capability, which is how a caller polls.
  */
 #define NET_OP_RECV   0x7204u
@@ -86,9 +91,28 @@
 #define NET_REP_OK    0x7280u
 #define NET_REP_ERR   0x7281u
 
-/* One frame per buffer, and the buffer is 256 bytes because that is an e1000
- * receive-size the hardware offers and it fits eight of them in one page.
- * Stated here because a caller has to size its expectations. */
-#define NET_FRAME_BYTES 256u
+/*
+ * One Ethernet frame per buffer, and the buffer is 1024 bytes.
+ *
+ * It was 256 — the smallest receive size the e1000 offers, and it fitted the
+ * whole ring in one page.  It was also wrong the moment anything real
+ * arrived: a UDP datagram carrying a 512-byte payload is 558 bytes on the
+ * wire, so a 256-byte buffer splits it across descriptors and this driver,
+ * which reads one descriptor per frame, would hand back a fragment and call
+ * it a frame.
+ *
+ * 1024 is the next size the hardware offers, holds every datagram this system
+ * sends or expects, and costs two pages of receive ring instead of one.
+ *
+ * It is still under Ethernet's 1514-byte maximum, so a frame CAN exceed it.
+ * The card splits such a frame across descriptors, and the driver drops it
+ * whole — not just the pieces it cannot place, but the trailing piece too,
+ * which carries the card's end-of-packet bit and a plausible length and would
+ * otherwise be handed up as a frame with no Ethernet header.  A caller
+ * therefore sees a frame this size or smaller, or sees nothing; it never sees
+ * part of one.
+ */
+#define NET_FRAME_BYTES  1024u
+#define NET_RX_PER_FRAME 4u      /* 4 * 1024 = one page */
 
 #endif /* IRIS_NET_EP_PROTO_H */
