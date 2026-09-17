@@ -503,7 +503,11 @@ working:
   a remapping unit when the machine has one, and reads sectors.  `net` is an
   e1000 driver that moves Ethernet frames and parses nothing — init sends an
   ARP request and the gateway answers, which is what proves the card really
-  talks.  Three drivers, and none holds anything the others do.  ACPI's tables
+  talks.  Three drivers, and none holds anything the others do.  `fs` is a
+  filesystem on a disk IRIS owns and holds no hardware at all — not a
+  controller, not a device Untyped — and `make smoke-persist` proves what it
+  writes survives the machine being off by booting twice and then reading the
+  image from the host.  ACPI's tables
   are device Untypeds, so ring 3 can read the firmware's description of the
   machine; the kernel reads three tables and will never read a fourth.
 - **A frozen ABI**: four syscall numbers and 77 contiguous invocation labels,
@@ -580,7 +584,7 @@ make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
 make test-unit                                             # host unit suites (27418)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (322/322)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (323/323)
 make run                                                   # interactive QEMU
 ```
 

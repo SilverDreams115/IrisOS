@@ -11,7 +11,8 @@ Four gates, and a green tree means all four — on **one processor and on four**
 | Host unit tests | `make test-unit` | 27429 assertions across 29 suites, 0 failed |
 | Purity gate | `make check-purity` | allowlist respected; the kernel-memory-reachable closure is 26 functions and only ever shrinks |
 | Lock-order gate | `make check-locks` | 18 ranked locks, no inversions — it holds SMP roadmap §9.1's hierarchy and follows calls three hops |
-| Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests` | `SUITE PASS 322/322` plus the P3/P41 markers |
+| Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests` | `SUITE PASS 323/323` plus the P3/P41 markers |
+| Persistence | `make smoke-persist` | two boots over one image, then the host reads what IRIS wrote |
 
 ### The IOMMU dimension
 
@@ -41,6 +42,7 @@ than by having started:
 | `[USER][INIT] pci: functions N windows M carve 0` | the bus service scanned, and carved a frame over **every** window in the region it owns.  `carve 0` is required: a service that found devices and carved nothing refuses every driver's claim, which from outside is indistinguishable from an empty machine |
 | `[USER][INIT] blk: disk 1 sid 0x.. dma contained\|open` | a ring-3 AHCI driver claimed a controller, brought a port up and **read a sector**.  `contained` is required with an IOMMU and `open` without one — either word on the wrong machine is a lie the gate catches |
 | `[USER][INIT] net: link 1 mac .. dma contained\|open` | a ring-3 e1000 driver brought a network card up |
+| `[USER][INIT] fs: mounted gen N ... file 1` | a filesystem on a disk IRIS owns; `gen` is how many boots have mounted it, read from the medium and written back, and `file 1` is a file written and read back through the filesystem, the block driver and the controller |
 | `[USER][INIT] net: gateway answered, mac ..` | and a frame went out and one came back.  This is the line that means something: a transmit-only check proves nothing, because the card reports a descriptor done whether or not anything was listening.  An ARP round trip exercises the transmit path, the receive ring, the card's filter and a peer that is not this driver |
 
 The network card is attached with `-netdev user`, QEMU's own userspace stack,
@@ -48,6 +50,24 @@ which answers ARP for the gateway it advertises at 10.0.2.2.  That address and
 the sender's 10.0.2.15 are part of the test setup: a request from outside that
 subnet gets no reply, which would look exactly like a driver that does not
 work.
+
+### Persistence takes two boots
+
+`make smoke-persist` is the only check here that cannot be done in one run,
+because "persistent" is a statement about what happens BETWEEN runs.  It throws
+the image away, boots (the filesystem formats and reports generation 1), boots
+again (it must find the filesystem and report 2), and then reads the image from
+the HOST.  That last step is the one that matters: the first two are IRIS
+reading back its own writes, which a filesystem that merely remembered things
+in RAM would also pass.
+
+### Numbers
+
+**T356** measures an invocation, an IPC round trip to a real server, and a disk
+read, and prints all three whether or not they pass — a ceiling says nothing
+got catastrophically worse, and the log says what it actually costs.  The
+ceilings are order-of-magnitude guards: this runs under TCG on a machine nobody
+controls, so these are not hardware figures and are not presented as any.
 
 And three suite tests carry the end-to-end claims: **T353** a device refused
 and then granted, **T354** the ACPI root pointer read and checksummed out of

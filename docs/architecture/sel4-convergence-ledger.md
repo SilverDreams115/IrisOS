@@ -2548,6 +2548,45 @@ kernel; attaching a network card made it 33, because the firmware describes one
 more device and therefore publishes one more table region.  Nothing about the
 kernel changed.  T305 caught it, which is why it refuses rather than reports.
 
+**`fs` — a filesystem that survives the power going off.**  It holds the least
+of any service here: an endpoint, a reply object, an endpoint to the block
+service, and memory.  No disk, no controller, no device Untyped, no DMA
+authority.  The thing that owns your data holds no hardware, which is the
+arrangement the whole stack was built to make possible.
+
+Its format is a superblock, a fixed directory and one sector per file.  That is
+not the filesystem a system should ship and it is the smallest thing that makes
+"persistent" a TESTABLE claim rather than a plan: `scripts/check_persistence.sh`
+boots twice over one image, requires the first to format and report generation
+1 and the second to find it and report 2, and then reads the image from the
+HOST — which does not depend on IRIS being self-consistent about anything.
+
+**And it found the defect underneath, which is the one worth recording.**  The
+disk driver reported writes complete that were still in a CACHE.  An emulated
+disk accepts a write and reports success without the host file changing, so the
+first version of this passed every check IRIS could make about itself and left
+nothing on the medium.  `blk` now issues `FLUSH CACHE EXT` after every write —
+from the driver rather than as an operation clients must remember, because a
+client that has to remember to flush is a client that will forget.
+
+**Two harness defects surfaced with it, and both were mis-reporting rather than
+breaking.**  The runner ran qemu under `timeout` and waited on the WRAPPER, so
+`wait` returned before qemu had exited: the disk image was not flushed yet, and
+qemu's exclusive lock on it made the NEXT boot produce an empty log — which
+arrived at the bottom of the script as "missing scheduler running marker", a
+kernel that booted and said nothing.  It waits on qemu's own pid now, and the
+exit-code check moved ABOVE the marker checks so a qemu that never started says
+so instead of being reported as a silent kernel.
+
+**T356 — the system has numbers.**  An invocation that resolves a capability
+and refuses, an IPC round trip to a real server, and a disk read: the floor of
+every operation, what a service call costs, and a whole subsystem.  The
+ceilings are order-of-magnitude guards and deliberately generous, because this
+runs under TCG on a machine nobody controls; what a generous bound still
+catches is an operation that became ten times more expensive because somebody
+added a lock, a copy or a walk.  The NUMBERS are printed whether or not they
+pass, because the number is the point.
+
 **A defect class made impossible.**  Three slot collisions were found by
 running the system during this stage, one of which minted an endpoint over
 init's loader workspace and made every subsequent service load fail with
