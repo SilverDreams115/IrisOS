@@ -17,7 +17,7 @@
 #include "../common/iris_msg.h"
 #include <iris/syscall.h>
 #include <iris/invoke.h>
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
 #include <iris/console_ep_proto.h>
@@ -27,7 +27,7 @@
 
 /* Poll the UART Line Status Register (offset 5) until bit 5 (THRE) is set,
  * then write one byte to the Transmit Holding Register (offset 0). */
-static void con_uart_write_byte(handle_id_t ioport_h, uint8_t byte) {
+static void con_uart_write_byte(iris_cptr_t ioport_h, uint8_t byte) {
     long v;
     /* Wait for THRE (bit 5 of LSR at offset 5). */
     do {
@@ -84,9 +84,9 @@ static void con_ep_reply_err(struct iris_msg *reply, int32_t err) {
 }
 
 /* Serve one endpoint request; exactly one reply per request. */
-static void con_serve_ep_msg(handle_id_t ioport_h, struct iris_msg *req) {
+static void con_serve_ep_msg(iris_cptr_t ioport_h, struct iris_msg *req) {
     struct iris_msg reply;
-    handle_id_t reply_h = (handle_id_t)req->got_cap;
+    iris_cptr_t reply_h = (iris_cptr_t)req->got_cap;
 
     switch (req->label) {
     case CONSOLE_EP_OP_WRITE: {
@@ -124,18 +124,18 @@ static void con_serve_ep_msg(handle_id_t ioport_h, struct iris_msg *req) {
 
     /* Phase S1: reply_h is the console's OWN reply-object CPtr (echoed by the
      * kernel from the recv arg2).  The object is reusable — nothing to close. */
-    if (reply_h != HANDLE_INVALID)
+    if (reply_h != IRIS_CPTR_NULL)
         (void)iris_msg_reply((long)reply_h, &reply);
 }
 
-void console_main_c(handle_id_t rbx_unused) {
+void console_main_c(iris_cptr_t rbx_unused) {
     /* Phase 13 (Track I): console is endpoint-only and fully CPtr-provisioned —
      * the endpoint recv side is the IRIS_CPTR_OWN_EP mint (slot 5) and the
-     * KIoPort for 0x3F8..0x3FF the IRIS_CPTR_IOPORT mint (slot 10), resolved by
-     * CPtr through the device-cap dual resolver (SYS_IOPORT_IN/OUT).  No
-     * bootstrap KChannel recv, no legacy service channel. */
-    handle_id_t ioport_h = (handle_id_t)IRIS_CPTR_IOPORT;
-    handle_id_t ep_h     = (handle_id_t)IRIS_CPTR_OWN_EP;
+     * KIoPort for 0x3F8..0x3FF the IRIS_CPTR_IOPORT mint (slot 10), named by
+     * CPtr like everything else (INV_IOPORT_IN/OUT).  No bootstrap KChannel
+     * recv, no legacy service channel. */
+    iris_cptr_t ioport_h = (iris_cptr_t)IRIS_CPTR_IOPORT;
+    iris_cptr_t ep_h     = (iris_cptr_t)IRIS_CPTR_OWN_EP;
 
     (void)rbx_unused;   /* RBX = 0 since the KChannel bootstrap retired */
 

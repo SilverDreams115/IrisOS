@@ -10,7 +10,7 @@
  * The root CNode is created by the root task's construction with KCNODE_DEFAULT_SLOTS=256
  * slots (indices 0..255).
  *
- *   Slot 0                       — CPTR_NULL; never populated (kernel invariant).
+ *   Slot 0                       — IRIS_CPTR_NULL; never populated (kernel invariant).
  *   Slots 1..BOOT_CPTR_RES_END   — reserved for future well-known boot caps
  *                                  (e.g. KBootstrapCap CSpace slot, root CNode
  *                                  self-reference, future VSpace cap, etc.).

@@ -20,7 +20,7 @@ iris_error_t cspace_resolve_cap_badged(struct KCNode     *root,
                                         uint64_t          *badge_out)
 {
     if (!obj_out || !rights_out) return IRIS_ERR_INVALID_ARG;
-    if (cptr == CPTR_NULL) return IRIS_ERR_INVALID_ARG;
+    if (cptr == IRIS_CPTR_NULL) return IRIS_ERR_INVALID_ARG;
     if (!root) return IRIS_ERR_NOT_FOUND;
 
     /* Stage 4: structural root — no handle-table lookup to start the walk.
@@ -172,7 +172,7 @@ iris_error_t cspace_resolve_slot(struct KCNode   *root, iris_cptr_t cptr,
                                  struct KCNode **cn_out, uint32_t *idx_out)
 {
     if (!cn_out || !idx_out) return IRIS_ERR_INVALID_ARG;
-    if (cptr == CPTR_NULL) return IRIS_ERR_INVALID_ARG;
+    if (cptr == IRIS_CPTR_NULL) return IRIS_ERR_INVALID_ARG;
     if (!root) return IRIS_ERR_NOT_FOUND;
 
     /* Stage 4: the root is a structural back-reference — resolving a CPtr no
@@ -236,7 +236,7 @@ iris_error_t cspace_resolve_dest_slot(struct KCNode   *root, iris_cptr_t cptr,
                                       struct KCNode **cn_out, uint32_t *idx_out)
 {
     if (!cn_out || !idx_out) return IRIS_ERR_INVALID_ARG;
-    if (cptr == CPTR_NULL) return IRIS_ERR_INVALID_ARG;
+    if (cptr == IRIS_CPTR_NULL) return IRIS_ERR_INVALID_ARG;
     if (!root) return IRIS_ERR_NOT_FOUND;
 
     struct KObject *root_obj = &root->base;
@@ -315,7 +315,7 @@ TYPED_RESOLVE(cspace_resolve_frame,       struct KFrame,       KOBJ_FRAME)
 /*
  * Phase 8: CPtr/handle namespace split for the DUAL resolvers.
  *
- * handle_ids are slot | generation<<HANDLE_GEN_SHIFT with generation >= 1,
+ * handle_ids are slot | generation<<10 with generation >= 1,
  * so every live handle is >= 1024 and every direct CPtr argument is < 1024.
  * Before this split the dual resolvers fed handle values straight into
  * cspace_resolve_cap, whose radix walk MASKS the index (cptr & slot_count-1)
@@ -354,7 +354,7 @@ TYPED_RESOLVE(cspace_resolve_frame,       struct KFrame,       KOBJ_FRAME)
  * the namespace split has one definition, so the retirement is one edit. */
 
 iris_error_t cspace_resolve_only_cnode(struct KCNode   *root,
-                                             iris_cptr_t      cptr_or_handle,
+                                             iris_cptr_t      cptr,
                                              iris_rights_t    required,
                                              struct KCNode  **out,
                                              iris_rights_t   *rights_out)
@@ -367,7 +367,7 @@ iris_error_t cspace_resolve_only_cnode(struct KCNode   *root,
     if (!root) return IRIS_ERR_NOT_FOUND;
 
     /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
-    if (cspace_value_is_cptr(cptr_or_handle)) {
+    if (cspace_value_is_cptr(cptr)) {
         /* TYPE before RIGHTS, which is the order seL4 checks them in and the
          * order that answers the caller's actual question.  A resolve that
          * checked rights first reported ACCESS_DENIED for a NOTIFICATION passed
@@ -375,7 +375,7 @@ iris_error_t cspace_resolve_only_cnode(struct KCNode   *root,
          * that is not a frame — and the resolver knew.  Rights are a property
          * OF a type; asking about them before knowing the type is asking the
          * wrong question first. */
-        err = cspace_resolve_cap(root, cptr_or_handle, RIGHT_NONE, &obj, &r);
+        err = cspace_resolve_cap(root, cptr, RIGHT_NONE, &obj, &r);
         if (err != IRIS_OK) return err;
         if (obj->type != KOBJ_CNODE) {
             kobject_active_release(obj);
@@ -409,7 +409,7 @@ iris_error_t cspace_resolve_only_cnode(struct KCNode   *root,
  * Caller releases with: kobject_release(&(*out)->base)
  */
 #define DUAL_RESOLVE_IPC(fn, member_type, kobj_tag)                               \
-iris_error_t fn(struct KCNode   *root, iris_cptr_t cptr_or_handle,                \
+iris_error_t fn(struct KCNode   *root, iris_cptr_t cptr,                \
                  iris_rights_t required,                                           \
                  member_type **out, iris_rights_t *rights_out)                     \
 {                                                                                  \
@@ -417,9 +417,9 @@ iris_error_t fn(struct KCNode   *root, iris_cptr_t cptr_or_handle,              
     if (!out || !rights_out) return IRIS_ERR_INVALID_ARG;                \
     if (!root) return IRIS_ERR_NOT_FOUND;                \
     /* CPtr namespace (< 1024): CSpace only, no handle-table fallback. */         \
-    if (cspace_value_is_cptr(cptr_or_handle)) {                                   \
+    if (cspace_value_is_cptr(cptr)) {                                   \
         /* TYPE before RIGHTS — see cspace_resolve_only_cnode. */                 \
-        err = cspace_resolve_cap(root, cptr_or_handle, RIGHT_NONE, &obj, &r);     \
+        err = cspace_resolve_cap(root, cptr, RIGHT_NONE, &obj, &r);     \
         if (err != IRIS_OK) return err;                                            \
         if (obj->type != (kobj_tag)) {                                            \
             kobject_active_release(obj); kobject_release(obj);                    \
@@ -453,7 +453,7 @@ DUAL_RESOLVE_IPC(cspace_resolve_only_notification,struct KNotification,KOBJ_NOTI
  *   kobject_release(&(*out)->base);
  */
 iris_error_t cspace_resolve_only_untyped(struct KCNode    *root,
-                                               iris_cptr_t       cptr_or_handle,
+                                               iris_cptr_t       cptr,
                                                iris_rights_t     required,
                                                struct KUntyped **out,
                                                iris_rights_t    *rights_out)
@@ -466,7 +466,7 @@ iris_error_t cspace_resolve_only_untyped(struct KCNode    *root,
     if (!root) return IRIS_ERR_NOT_FOUND;
 
     /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
-    if (cspace_value_is_cptr(cptr_or_handle)) {
+    if (cspace_value_is_cptr(cptr)) {
         /* TYPE before RIGHTS, which is the order seL4 checks them in and the
          * order that answers the caller's actual question.  A resolve that
          * checked rights first reported ACCESS_DENIED for a NOTIFICATION passed
@@ -474,7 +474,7 @@ iris_error_t cspace_resolve_only_untyped(struct KCNode    *root,
          * that is not a frame — and the resolver knew.  Rights are a property
          * OF a type; asking about them before knowing the type is asking the
          * wrong question first. */
-        err = cspace_resolve_cap(root, cptr_or_handle, RIGHT_NONE, &obj, &r);
+        err = cspace_resolve_cap(root, cptr, RIGHT_NONE, &obj, &r);
         if (err != IRIS_OK) return err;
         if (obj->type != KOBJ_UNTYPED) {
             kobject_active_release(obj);
@@ -504,7 +504,7 @@ iris_error_t cspace_resolve_only_untyped(struct KCNode    *root,
  * kobject_active_retain to match the cspace_resolve_cap return contract.
  */
 iris_error_t cspace_resolve_only_frame(struct KCNode   *root,
-                                             iris_cptr_t      cptr_or_handle,
+                                             iris_cptr_t      cptr,
                                              iris_rights_t    required,
                                              struct KFrame  **out,
                                              iris_rights_t   *rights_out)
@@ -517,7 +517,7 @@ iris_error_t cspace_resolve_only_frame(struct KCNode   *root,
     if (!root) return IRIS_ERR_NOT_FOUND;
 
     /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
-    if (cspace_value_is_cptr(cptr_or_handle)) {
+    if (cspace_value_is_cptr(cptr)) {
         /* TYPE before RIGHTS, which is the order seL4 checks them in and the
          * order that answers the caller's actual question.  A resolve that
          * checked rights first reported ACCESS_DENIED for a NOTIFICATION passed
@@ -525,7 +525,7 @@ iris_error_t cspace_resolve_only_frame(struct KCNode   *root,
          * that is not a frame — and the resolver knew.  Rights are a property
          * OF a type; asking about them before knowing the type is asking the
          * wrong question first. */
-        err = cspace_resolve_cap(root, cptr_or_handle, RIGHT_NONE, &obj, &r);
+        err = cspace_resolve_cap(root, cptr, RIGHT_NONE, &obj, &r);
         if (err != IRIS_OK) return err;
         if (obj->type != KOBJ_FRAME) {
             kobject_active_release(obj);
@@ -559,7 +559,7 @@ iris_error_t cspace_resolve_only_frame(struct KCNode   *root,
  * directly (no permanent CSpace slot pin).
  */
 iris_error_t cspace_resolve_only_vspace(struct KCNode   *root,
-                                              iris_cptr_t      cptr_or_handle,
+                                              iris_cptr_t      cptr,
                                               iris_rights_t    required,
                                               struct KVSpace **out,
                                               iris_rights_t   *rights_out)
@@ -572,7 +572,7 @@ iris_error_t cspace_resolve_only_vspace(struct KCNode   *root,
     if (!root) return IRIS_ERR_NOT_FOUND;
 
     /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
-    if (cspace_value_is_cptr(cptr_or_handle)) {
+    if (cspace_value_is_cptr(cptr)) {
         /* TYPE before RIGHTS, which is the order seL4 checks them in and the
          * order that answers the caller's actual question.  A resolve that
          * checked rights first reported ACCESS_DENIED for a NOTIFICATION passed
@@ -580,7 +580,7 @@ iris_error_t cspace_resolve_only_vspace(struct KCNode   *root,
          * that is not a frame — and the resolver knew.  Rights are a property
          * OF a type; asking about them before knowing the type is asking the
          * wrong question first. */
-        err = cspace_resolve_cap(root, cptr_or_handle, RIGHT_NONE, &obj, &r);
+        err = cspace_resolve_cap(root, cptr, RIGHT_NONE, &obj, &r);
         if (err != IRIS_OK) return err;
         if (obj->type != KOBJ_VSPACE) {
             kobject_active_release(obj);
@@ -615,7 +615,7 @@ iris_error_t cspace_resolve_only_vspace(struct KCNode   *root,
  * device syscall's existing rights logic).
  */
 iris_error_t cspace_resolve_only_obj(struct KCNode    *root,
-                                          iris_cptr_t       cptr_or_handle,
+                                          iris_cptr_t       cptr,
                                           iris_rights_t     required,
                                           uint32_t          expected_type,
                                           struct KObject  **out,
@@ -628,9 +628,9 @@ iris_error_t cspace_resolve_only_obj(struct KCNode    *root,
     if (!out || !rights_out) return IRIS_ERR_INVALID_ARG;
     if (!root) return IRIS_ERR_NOT_FOUND;
 
-    if (cspace_value_is_cptr(cptr_or_handle)) {
+    if (cspace_value_is_cptr(cptr)) {
         /* TYPE before RIGHTS — see cspace_resolve_only_cnode. */
-        err = cspace_resolve_cap(root, cptr_or_handle, RIGHT_NONE, &obj, &r);
+        err = cspace_resolve_cap(root, cptr, RIGHT_NONE, &obj, &r);
         if (err != IRIS_OK) return err;
         if (obj->type != expected_type) {
             kobject_active_release(obj);
@@ -662,7 +662,7 @@ iris_error_t cspace_resolve_only_obj(struct KCNode    *root,
  * badge on the handle path; 0 = unbadged).
  */
 iris_error_t cspace_resolve_only_endpoint_badged(struct KCNode    *root,
-                                                       iris_cptr_t       cptr_or_handle,
+                                                       iris_cptr_t       cptr,
                                                        iris_rights_t     required,
                                                        struct KEndpoint **out,
                                                        iris_rights_t    *rights_out,
@@ -675,9 +675,9 @@ iris_error_t cspace_resolve_only_endpoint_badged(struct KCNode    *root,
     if (!root) return IRIS_ERR_NOT_FOUND;
 
     /* CPtr namespace (< 1024): CSpace only, no handle-table fallback. */
-    if (cspace_value_is_cptr(cptr_or_handle)) {
+    if (cspace_value_is_cptr(cptr)) {
         /* TYPE before RIGHTS — see cspace_resolve_only_cnode. */
-        err = cspace_resolve_cap_badged(root, cptr_or_handle, RIGHT_NONE,
+        err = cspace_resolve_cap_badged(root, cptr, RIGHT_NONE,
                                         &obj, &r, &badge);
         if (err != IRIS_OK) return err;
         if (obj->type != KOBJ_ENDPOINT) {

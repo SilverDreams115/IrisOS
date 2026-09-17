@@ -24,7 +24,7 @@
  * The classifier below survives because the boundary it tests is still real:
  * a value with the handle TAG BIT set is not a CPtr.  It used to be tested as
  * the literal 1024, which was correct only while handles were encoded as
- * `slot | gen << 10`; handles carry bit 31 now (see nc/handle.h) and CPtrs own
+ * `slot | gen << 10`; handles carry bit 31 now (see nc/cptr.h) and CPtrs own
  * the whole low 31 bits, so a two-level CPtr such as (leaf << 8) | 80 is
  * routinely above 1024 and is NOT a handle.  Keeping the old test would have
  * classified every multi-level delivery as a handle.
@@ -39,23 +39,24 @@
 
 #include <stdint.h>
 #include <iris/ipc_msg.h>
-#include <iris/nc/handle.h>   /* HANDLE_TAG — the one namespace boundary */
+#include <iris/nc/cptr.h>   /* IRIS_CPTR_LIMIT — the one namespace boundary */
 
-/* Namespace boundary: a value with the handle tag bit set is a handle id
- * (handle-table-resolved); anything else non-zero is a CPtr (CSpace-resolved).
- * IRIS_CPTR_LIMIT is the first value that is NOT a CPtr, i.e. the tag bit
- * itself — it keeps its name so existing `v < IRIS_CPTR_LIMIT` call sites stay
- * correct, and it agrees with CSPACE_DIRECT_CPTR_LIMIT in nc/cspace.h, which
- * is the kernel-side definition of the same boundary. */
-#define IRIS_CPTR_LIMIT ((uint32_t)HANDLE_TAG)
-
-/* Is this a delivered capability?  A receive reports `IRIS_MSG_NO_CAP` when
- * nothing came, and a CPtr when something did. */
+/*
+ * The boundary, as the message path sees it.
+ *
+ * `IRIS_CPTR_LIMIT` comes from nc/cptr.h, which owns it: this header used to
+ * redefine it in terms of itself, which happened to compile and meant that the
+ * two definitions could drift without anything noticing.  There is one.
+ *
+ * Is this a delivered capability?  A receive reports `IRIS_MSG_NO_CAP` when
+ * nothing came and a CPtr when something did; anything at or above the limit
+ * is a value shaped like the retired namespace and is not a capability.
+ */
 static inline int iris_msg_cap_is_cptr(uint32_t v) {
-    return v != (uint32_t)IRIS_MSG_NO_CAP && v < IRIS_CPTR_LIMIT;
+    return v != (uint32_t)IRIS_MSG_NO_CAP && v < (uint32_t)IRIS_CPTR_LIMIT;
 }
-static inline int iris_msg_cap_is_handle(uint32_t v) {
-    return v >= IRIS_CPTR_LIMIT;
+static inline int iris_msg_cap_beyond_limit(uint32_t v) {
+    return v >= (uint32_t)IRIS_CPTR_LIMIT;
 }
 
 #endif /* IRIS_IPC_RECV_SLOT_H */

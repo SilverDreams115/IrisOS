@@ -7,7 +7,7 @@
  * The struct definitions and API here are KERNEL-INTERNAL.
  * Userland code (services) may include this header for forward declarations
  * only; the actual struct layout and functions are guarded by __KERNEL__.
- * Userland only needs handle_id_t (handle.h) and KChanMsg (kchannel.h).
+ * Userland only needs iris_cptr_t (handle.h) and KChanMsg (kchannel.h).
  */
 
 #ifdef __KERNEL__
@@ -116,7 +116,7 @@ void kobject_active_release(struct KObject *obj);
 
 /*
  * Opaque forward declaration for userland.  Userland never dereferences
- * struct KObject; it only holds handle_id_t tokens from the kernel.
+ * struct KObject; it only holds iris_cptr_t tokens from the kernel.
  */
 struct KObject;
 

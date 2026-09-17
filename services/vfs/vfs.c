@@ -18,7 +18,7 @@
 #include <iris/syscall.h>
 #include <iris/invoke.h>
 #include <iris/nc/error.h>
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <iris/nc/rights.h>
 #include <iris/ipc_msg.h>
 #include <iris/endpoint_proto.h>
@@ -30,9 +30,9 @@
 #define VFS_SERVICE_EXPORTS 20u
 
 struct vfs_state {
-    handle_id_t console_h;
-    handle_id_t initrd_c;
-    handle_id_t ep_h;          /* recv side of our KEndpoint (Phase 7.1) */
+    iris_cptr_t console_h;
+    iris_cptr_t initrd_c;
+    iris_cptr_t ep_h;          /* recv side of our KEndpoint (Phase 7.1) */
     struct vfs_export      exports[VFS_SERVICE_EXPORTS];
     struct vfs_grant_table grants;   /* Phase 28.1: VFS-enforced file grants */
     struct vfs_ep_state    ep_state;
@@ -117,7 +117,7 @@ static long vfs_self_vs(void) {
 /* Console endpoint (Phase 8): the well-known slot IRIS_CPTR_CONSOLE_EP,
  * verified with a PING after bootstrap; pre-verification boot lines are
  * dropped (vfs no longer receives a legacy console cap). */
-static handle_id_t g_vfs_console_ep_h = HANDLE_INVALID;
+static iris_cptr_t g_vfs_console_ep_h = IRIS_CPTR_NULL;
 /* D-4: the console client marshals into the buffer it is given, and a thread
  * with a registered IPC buffer must marshal into THAT — the kernel refuses a
  * send that names any other address.  So the log path shares the service's one
@@ -133,7 +133,7 @@ static void vfs_log(const char *msg) {
     /* Phase 13/Track G: vfs logs over console.ep only — the legacy console
      * KChannel writer is retired (vfs is endpoint_only; g_vfs_console_h was
      * always invalid). */
-    if (g_vfs_console_ep_h != HANDLE_INVALID)
+    if (g_vfs_console_ep_h != IRIS_CPTR_NULL)
         (void)console_ep_write(g_vfs_console_ep_h, g_vfs_reply, msg);
 }
 
@@ -199,7 +199,7 @@ static void vfs_seed_initrd_exports(struct vfs_state *state) {
     uint32_t count;
     uint32_t i;
 
-    if (!state || state->initrd_c == HANDLE_INVALID) return;
+    if (!state || state->initrd_c == IRIS_CPTR_NULL) return;
 
     count_rc = vfs_invoke0((uint64_t)state->initrd_c, INV_BOOT_INITRD_COUNT);
     if (count_rc <= 0) return;
@@ -257,7 +257,7 @@ static int vfs_seed_one_fixture(struct vfs_state *state, uint32_t index,
     int64_t  sz_rc, map_rc;
     uint64_t virt;
 
-    if (!state || state->initrd_c == HANDLE_INVALID) return 0;
+    if (!state || state->initrd_c == IRIS_CPTR_NULL) return 0;
     for (slot = 0; slot < (uint32_t)(sizeof(state->exports)/sizeof(state->exports[0])); slot++)
         if (!state->exports[slot].ready) break;
     if (slot == (uint32_t)(sizeof(state->exports)/sizeof(state->exports[0]))) return 0;
@@ -334,7 +334,7 @@ static uint32_t g_vfs_registered = 0u;
  */
 static void vfs_ep_serve(struct vfs_state *state, struct iris_msg *req) {
     struct iris_msg reply;
-    handle_id_t reply_h = (handle_id_t)req->got_cap;
+    iris_cptr_t reply_h = (iris_cptr_t)req->got_cap;
     /* Take the request out of the IPC buffer before the reply is composed
      * there.  With no registered buffer the kernel already delivered into
      * g_vfs_ep_req_buf and this is a no-op. */
@@ -350,11 +350,11 @@ static void vfs_ep_serve(struct vfs_state *state, struct iris_msg *req) {
 
     /* Phase S1: reply_h is the vfs's OWN reply-object CPtr (echoed by the
      * kernel from the recv arg2).  The object is reusable — never closed. */
-    if (reply_h == HANDLE_INVALID) return;
+    if (reply_h == IRIS_CPTR_NULL) return;
     (void)iris_msg_reply((long)reply_h, &reply);
 }
 
-void vfs_server_main_c(handle_id_t rbx_unused) {
+void vfs_server_main_c(iris_cptr_t rbx_unused) {
     struct vfs_state state;
 
     /* svc_loader passes RBX = 0: there is no bootstrap handle to keep. */
@@ -375,9 +375,9 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
         }
     }
     for (uint32_t i = 0; i < (uint32_t)sizeof(state); i++) ((uint8_t *)&state)[i] = 0;
-    state.console_h = HANDLE_INVALID;
-    state.initrd_c = HANDLE_INVALID;
-    state.ep_h = HANDLE_INVALID;
+    state.console_h = IRIS_CPTR_NULL;
+    state.initrd_c = IRIS_CPTR_NULL;
+    state.ep_h = IRIS_CPTR_NULL;
 
     vfs_log(vfs_str_started);
 
@@ -386,8 +386,8 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
      * slot 6 the initrd-access spawn KBootstrapCap.  The spawn cap resolves
      * through the device-cap dual resolver, so SYS_INITRD_* accept it by CPtr;
      * no bootstrap KChannel one-shot is needed. */
-    state.ep_h = (handle_id_t)IRIS_CPTR_OWN_EP;
-    state.initrd_c = (handle_id_t)IRIS_CPTR_INITRD_CONTROL;
+    state.ep_h = (iris_cptr_t)IRIS_CPTR_OWN_EP;
+    state.initrd_c = (iris_cptr_t)IRIS_CPTR_INITRD_CONTROL;
 
     /* Phase 8: console output goes through the minted console-endpoint
      * slot; a PING proves the slot is live before the gated marker. */
@@ -398,9 +398,9 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
         pmsg.label = IRIS_EP_OP_PING;
         if (iris_msg_call((long)IRIS_CPTR_CONSOLE_EP, &pmsg) == IRIS_OK &&
             pmsg.label == IRIS_EP_REPLY_OK)
-            g_vfs_console_ep_h = (handle_id_t)IRIS_CPTR_CONSOLE_EP;
+            g_vfs_console_ep_h = (iris_cptr_t)IRIS_CPTR_CONSOLE_EP;
     }
-    if (g_vfs_console_ep_h != HANDLE_INVALID)
+    if (g_vfs_console_ep_h != IRIS_CPTR_NULL)
         vfs_log("[VFS] console cptr OK\n");
     else
         vfs_log("[VFS] console cptr FAILED\n");

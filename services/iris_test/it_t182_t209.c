@@ -29,8 +29,8 @@ void test_t182(void) {
     struct t25_tgt g;
     if (!t25_tgt_spawn(&g, &why)) { it_fail("T182", why); return; }
     long fr = it_frame_create_slot(IT_UT, 4096);
-    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
-    handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
+    iris_cptr_t fr_h = (fr >= 0) ? (iris_cptr_t)fr : IRIS_CPTR_NULL;
+    iris_cptr_t pcmd = IRIS_CPTR_NULL, pproc = IRIS_CPTR_NULL;
     if (fr < 0) { ok = 0; why = "frame retype"; }
     if (ok && t25_pager_spawn(&g, fr_h, RIGHT_READ, 0, 0u, &pcmd, &pproc) != 0) {
         ok = 0; why = "pager spawn";
@@ -83,7 +83,7 @@ void test_t183(void) {
     const char *why = "map into target";
 
     long fr = it_frame_create_slot(IT_UT, 4096);
-    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    iris_cptr_t fr_h = (fr >= 0) ? (iris_cptr_t)fr : IRIS_CPTR_NULL;
     if (fr < 0) { it_fail("T183", "frame retype"); return; }
     word = T25_PATTERN;
     if (!t25_frame_word(fr_h, &word, 1)) { it_close(&fr_h); it_fail("T183", "frame fill"); return; }
@@ -91,7 +91,7 @@ void test_t183(void) {
     /* (A) read fault, read-only frame cap — the pager cannot and need not map
      * writable; the target reads the supervisor's pattern. */
     struct t25_tgt g;
-    handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
+    iris_cptr_t pcmd = IRIS_CPTR_NULL, pproc = IRIS_CPTR_NULL;
     if (ok && !t25_tgt_spawn(&g, &why)) { it_close(&fr_h); it_fail("T183", why); return; }
     if (ok && t25_pager_spawn(&g, fr_h, RIGHT_READ, 0, 0u, &pcmd, &pproc) != 0) {
         ok = 0; why = "pager spawn A";
@@ -119,7 +119,7 @@ void test_t183(void) {
         if (!t25_frame_word(fr_h, &word, 1)) { ok = 0; why = "frame zero"; }
     }
     struct t25_tgt g2;
-    handle_id_t p2cmd = HANDLE_INVALID, p2proc = HANDLE_INVALID;
+    iris_cptr_t p2cmd = IRIS_CPTR_NULL, p2proc = IRIS_CPTR_NULL;
     if (ok && !t25_tgt_spawn(&g2, &why)) { it_close(&fr_h); it_fail("T183", why); return; }
     if (ok) {
         if (t25_pager_spawn(&g2, fr_h, RIGHT_READ | RIGHT_WRITE, 0, 0u,
@@ -168,17 +168,17 @@ void test_t184(void) {
         t25_tgt_reap(&va); it_fail("T184", why); return;
     }
     long fr = it_frame_create_slot(IT_UT, 4096);
-    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    iris_cptr_t fr_h = (fr >= 0) ? (iris_cptr_t)fr : IRIS_CPTR_NULL;
     if (fr < 0) { ok = 0; why = "frame retype"; }
 
     /* Under-privileged victim caps (DUPLICATE only so they can be minted). */
     long apro = ok ? it_cs_reduce((long)va.proc, RIGHT_READ | RIGHT_DUPLICATE) : -1;
     long avso = ok ? it_cs_reduce((long)va.vs,   RIGHT_READ | RIGHT_DUPLICATE) : -1;
-    handle_id_t apro_h = (apro >= 0) ? (handle_id_t)apro : HANDLE_INVALID;
-    handle_id_t avso_h = (avso >= 0) ? (handle_id_t)avso : HANDLE_INVALID;
+    iris_cptr_t apro_h = (apro >= 0) ? (iris_cptr_t)apro : IRIS_CPTR_NULL;
+    iris_cptr_t avso_h = (avso >= 0) ? (iris_cptr_t)avso : IRIS_CPTR_NULL;
     if (ok && (apro < 0 || avso < 0)) { ok = 0; why = "victim dups"; }
 
-    handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
+    iris_cptr_t pcmd = IRIS_CPTR_NULL, pproc = IRIS_CPTR_NULL;
     if (ok) {
         struct svc_mint x[2] = { 0 };
         x[0].slot = LP_PGR_SLOT_XPROC; IT_MINT_SRC(x[0], apro_h); x[0].rights = RIGHT_READ; x[0].badge = 0;
@@ -284,7 +284,7 @@ void test_t185(void) {
     struct t25_tgt g;
     if (!t25_tgt_spawn(&g, &why)) { it_fail("T185", why); return; }
     long fr = it_frame_create_slot(IT_UT, 4096);
-    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    iris_cptr_t fr_h = (fr >= 0) ? (iris_cptr_t)fr : IRIS_CPTR_NULL;
     long tvs_c = (long)g.vs;   /* dual resolver: the VSpace HANDLE works */
     if (ok && fr < 0)    { ok = 0; why = "frame retype"; }
     if (ok) { word = 0; if (!t25_frame_word(fr_h, &word, 1)) { ok = 0; why = "frame zero"; } }
@@ -379,12 +379,12 @@ void test_t186(void) {
     struct t25_tgt g;
     if (!t25_tgt_spawn(&g, &why)) { it_fail("T186", why); return; }
     long fr = it_frame_create_slot(IT_UT, 4096);
-    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    iris_cptr_t fr_h = (fr >= 0) ? (iris_cptr_t)fr : IRIS_CPTR_NULL;
     if (fr < 0) { ok = 0; why = "frame retype"; }
     if (ok) { word = T25_PATTERN; if (!t25_frame_word(fr_h, &word, 1)) { ok = 0; why = "frame fill"; } }
 
     /* Gen 1: spawned in charge, never commanded — dies blocked. */
-    handle_id_t p1cmd = HANDLE_INVALID, p1proc = HANDLE_INVALID;
+    iris_cptr_t p1cmd = IRIS_CPTR_NULL, p1proc = IRIS_CPTR_NULL;
     if (ok && t25_pager_spawn(&g, fr_h, RIGHT_READ, 0, 0u, &p1cmd, &p1proc) != 0) {
         ok = 0; why = "pager1 spawn";
     }
@@ -416,7 +416,7 @@ void test_t186(void) {
 
     /* Gen 2: same declared manifest, nothing more — and it finishes the job
      * (the delivery signal was never lost). */
-    handle_id_t p2cmd = HANDLE_INVALID, p2proc = HANDLE_INVALID;
+    iris_cptr_t p2cmd = IRIS_CPTR_NULL, p2proc = IRIS_CPTR_NULL;
     if (ok && t25_pager_spawn(&g, fr_h, RIGHT_READ, 0, 0u, &p2cmd, &p2proc) != 0) {
         ok = 0; why = "pager2 spawn";
     }
@@ -461,7 +461,7 @@ void test_t187(void) {
     struct t25_tgt g;
     if (!t25_tgt_spawn(&g, &why)) { it_fail("T187", why); return; }
     long fr = it_frame_create_slot(IT_UT, 4096);
-    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    iris_cptr_t fr_h = (fr >= 0) ? (iris_cptr_t)fr : IRIS_CPTR_NULL;
     long tvs_c = (long)g.vs;   /* dual resolver: the VSpace HANDLE works */
     if (ok && fr < 0)    { ok = 0; why = "frame retype"; }
 
@@ -528,12 +528,12 @@ void test_t188(void) {
     struct t25_tgt g;
     if (!t25_tgt_spawn(&g, &why)) { it_fail("T188", why); return; }
     long fr = it_frame_create_slot(IT_UT, 4096);
-    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    iris_cptr_t fr_h = (fr >= 0) ? (iris_cptr_t)fr : IRIS_CPTR_NULL;
     long fro = (fr >= 0) ? it_cs_reduce(fr, RIGHT_READ) : -1;
-    handle_id_t fro_h = (fro >= 0) ? (handle_id_t)fro : HANDLE_INVALID;
+    iris_cptr_t fro_h = (fro >= 0) ? (iris_cptr_t)fro : IRIS_CPTR_NULL;
     long tvs_c  = (long)g.vs;  /* dual resolver: the VSpace HANDLE works */
     long tvs_ro = it_cs_reduce((long)g.vs, RIGHT_READ);
-    handle_id_t tvs_ro_h = (tvs_ro >= 0) ? (handle_id_t)tvs_ro : HANDLE_INVALID;
+    iris_cptr_t tvs_ro_h = (tvs_ro >= 0) ? (iris_cptr_t)tvs_ro : IRIS_CPTR_NULL;
     if (ok && (fr < 0 || fro < 0)) { ok = 0; why = "frame caps"; }
     if (ok && tvs_ro < 0)          { ok = 0; why = "tvs ro dup"; }
 
@@ -614,7 +614,7 @@ void test_t189(void) {
     struct t25_tgt g;
     if (!t25_tgt_spawn(&g, &why)) { it_fail("T189", why); return; }
     long fr = it_frame_create_slot(IT_UT, 4096);
-    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    iris_cptr_t fr_h = (fr >= 0) ? (iris_cptr_t)fr : IRIS_CPTR_NULL;
     if (fr < 0) { ok = 0; why = "frame retype"; }
     if (ok) { word = T25_PATTERN; if (!t25_frame_word(fr_h, &word, 1)) { ok = 0; why = "frame fill"; } }
 
@@ -629,7 +629,7 @@ void test_t189(void) {
     uint32_t restart_count = 0u, generation = 0u;
     int degraded = 0;
     while (ok && !degraded) {
-        handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
+        iris_cptr_t pcmd = IRIS_CPTR_NULL, pproc = IRIS_CPTR_NULL;
         if (t25_pager_spawn(&g, fr_h, RIGHT_READ, 0, 0u, &pcmd, &pproc) != 0) {
             ok = 0; why = "gen spawn"; break;
         }
@@ -673,7 +673,7 @@ void test_t189(void) {
     }
 
     /* The serving generation finishes the original resolution. */
-    handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
+    iris_cptr_t pcmd = IRIS_CPTR_NULL, pproc = IRIS_CPTR_NULL;
     if (ok && t25_pager_spawn(&g, fr_h, RIGHT_READ, 0, 0u, &pcmd, &pproc) != 0) {
         ok = 0; why = "server spawn";
     }
@@ -705,7 +705,7 @@ void test_t190(void) {
     uint32_t round = 0u, op = 0u;
 
     long fr = it_frame_create_slot(IT_UT, 4096);
-    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    iris_cptr_t fr_h = (fr >= 0) ? (iris_cptr_t)fr : IRIS_CPTR_NULL;
     if (fr < 0) { it_fail("T190", "frame retype"); return; }
 
     /* The frame is held for the whole test, so the PER-ROUND balance is
@@ -746,7 +746,7 @@ void test_t190(void) {
         switch (ok ? (int)op : -1) {
         case 0: {
             /* External pager resolves g1 by map+resume; supervisor seq-kills g2. */
-            handle_id_t pc = HANDLE_INVALID, pp = HANDLE_INVALID;
+            iris_cptr_t pc = IRIS_CPTR_NULL, pp = IRIS_CPTR_NULL;
             if (t25_pager_spawn(&g1, fr_h, RIGHT_READ, 0, 0u, &pc, &pp) != 0) { ok = 0; why = "op0 pager"; break; }
             if (t25_serve(pc, 1u, 1u, 0, 0, T25_VA_A) != 0) { ok = 0; why = "op0 serve"; }
             if (ok && it_lp_wait_exit(g1.proc) !=
@@ -760,7 +760,7 @@ void test_t190(void) {
         case 1: {
             /* External pager seq-kills g1; stale-generation replay on g2 must
              * fail before the proper kill lands. */
-            handle_id_t pc = HANDLE_INVALID, pp = HANDLE_INVALID;
+            iris_cptr_t pc = IRIS_CPTR_NULL, pp = IRIS_CPTR_NULL;
             if (t25_pager_spawn(&g1, fr_h, RIGHT_READ, 0, 0u, &pc, &pp) != 0) { ok = 0; why = "op1 pager"; break; }
             if (t25_serve(pc, 3u, 1u, 0, 0, T25_VA_A) != 0) { ok = 0; why = "op1 serve"; }
             if (ok && it_lp_wait_exit(g1.proc) != 0) { ok = 0; why = "op1 g1"; }
@@ -776,7 +776,7 @@ void test_t190(void) {
         case 2: {
             /* Pager dies before serving; the supervisor takes over: seq-kill
              * g1, map+seq-resume g2 (its store retires into the frame). */
-            handle_id_t pc = HANDLE_INVALID, pp = HANDLE_INVALID;
+            iris_cptr_t pc = IRIS_CPTR_NULL, pp = IRIS_CPTR_NULL;
             if (t25_pager_spawn(&g1, fr_h, RIGHT_READ, 0, 0u, &pc, &pp) != 0) { ok = 0; why = "op2 pager"; break; }
             if (it_kill((long)pp) != 0 ||
                 it_lp_wait_exit(pp) != 0) { ok = 0; why = "op2 pager death"; }
@@ -812,9 +812,9 @@ void test_t190(void) {
              * resolve; READ-only vspace mint cannot install.  Then proper
              * seq-kills. */
             long rp = it_cs_reduce((long)g1.proc, RIGHT_READ);
-            handle_id_t rp_h = (rp >= 0) ? (handle_id_t)rp : HANDLE_INVALID;
+            iris_cptr_t rp_h = (rp >= 0) ? (iris_cptr_t)rp : IRIS_CPTR_NULL;
             long rvs = it_cs_reduce((long)g1.vs, RIGHT_READ);
-            handle_id_t rvs_h = (rvs >= 0) ? (handle_id_t)rvs : HANDLE_INVALID;
+            iris_cptr_t rvs_h = (rvs >= 0) ? (iris_cptr_t)rvs : IRIS_CPTR_NULL;
             if (rp < 0 || rvs < 0) { ok = 0; why = "op4 caps"; }
             /* A-22: a READ-only copy of the very reply that would resume g1
              * answers nothing — the rights on the ANSWER are what gate it. */
@@ -911,21 +911,21 @@ static long t26_grant_create(void) {
 }
 
 /* A grant is closed page by page — the run is the object. */
-void t26_grant_close(handle_id_t *g) {
-    if (!g || *g == HANDLE_INVALID) return;
+void t26_grant_close(iris_cptr_t *g) {
+    if (!g || *g == IRIS_CPTR_NULL) return;
     for (uint32_t i = 0; i < T26_GRANT_PAGES; i++)
         it_slot_delete((uint32_t)T26_PAGE(*g, i));
-    *g = HANDLE_INVALID;
+    *g = IRIS_CPTR_NULL;
 }
 
-handle_id_t t26_grant(void) {
+iris_cptr_t t26_grant(void) {
     long v = t26_grant_create();
-    return (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
+    return (v >= 0) ? (iris_cptr_t)v : IRIS_CPTR_NULL;
 }
 
 /* Read/write word 0 of one granted page, through the suite's OWN address space
  * (IT_VS).  Lets the supervisor prep and inspect what a pager will hand over. */
-int t26_page_word(handle_id_t page, uint32_t *val, int write) {
+int t26_page_word(iris_cptr_t page, uint32_t *val, int write) {
     if (!it_setup_self_vspace()) return -1;
     long r = it_invoke((long)page, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, write ? 1L : 0L);
     if (r != 0) return (int)r;
@@ -955,8 +955,8 @@ void test_t191(void) {
     int ok = b.ok && flive0 >= 0;
     const char *why = "granted-page authority";
 
-    handle_id_t g = t26_grant();
-    if (g == HANDLE_INVALID) { it_fail("T191", "grant"); return; }
+    iris_cptr_t g = t26_grant();
+    if (g == IRIS_CPTR_NULL) { it_fail("T191", "grant"); return; }
     /* A grant costs exactly one frame per page — no hidden region object. */
     if (ok && it_frame_live() != flive0 + (long)T26_GRANT_PAGES) {
         ok = 0; why = "grant is not its pages"; }
@@ -969,7 +969,7 @@ void test_t191(void) {
 
     /* A READ-only derivation cannot map writable (rights monotonicity). */
     long ro = it_cs_reduce((long)g, RIGHT_READ | RIGHT_DUPLICATE);
-    handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
+    iris_cptr_t ro_h = (ro >= 0) ? (iris_cptr_t)ro : IRIS_CPTR_NULL;
     if (ok && ro < 0) { ok = 0; why = "ro dup"; }
     if (ok && it_setup_self_vspace()) {
         if (it_invoke(ro, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 1L)
@@ -983,7 +983,7 @@ void test_t191(void) {
 
     /* Wrong-type in the frame slot (a notification) and the VSpace slot. */
     long n = it_notify_create();
-    handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+    iris_cptr_t n_h = (n >= 0) ? (iris_cptr_t)n : IRIS_CPTR_NULL;
     if (ok && n < 0) { ok = 0; why = "notif"; }
     if (ok && it_invoke(n, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 0L)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "frame wrong-type"; }
@@ -1022,8 +1022,8 @@ void test_t192(void) {
     int ok = b.ok && it_setup_self_vspace();
     const char *why = "map validation";
 
-    handle_id_t g = t26_grant();
-    if (g == HANDLE_INVALID) { it_fail("T192", "grant"); return; }
+    iris_cptr_t g = t26_grant();
+    if (g == IRIS_CPTR_NULL) { it_fail("T192", "grant"); return; }
 
     /* Kernel VA. */
     if (ok && it_invoke((long)g, INV_FRAME_MAP, IT_VS, (long)0xFFFF800000000000ULL, 0L)
@@ -1066,14 +1066,14 @@ void test_t193(void) {
     int ok = b.ok && vlive0 >= 0 && it_sched_ext5(f0);
     const char *why = "vmo-backed pager";
 
-    handle_id_t vmo = t26_grant();
-    if (vmo == HANDLE_INVALID) { it_fail("T193", "vmo create"); return; }
+    iris_cptr_t vmo = t26_grant();
+    if (vmo == IRIS_CPTR_NULL) { it_fail("T193", "vmo create"); return; }
     word = T26_PAT0;
     if (ok && t26_page_word(T26_AT(vmo, 0x2000ULL), &word, 1) != 0) { ok = 0; why = "vmo fill"; }
 
     /* (A) read fault, read-only VMO cap → target reads the supervisor pattern. */
     struct t25_tgt g;
-    handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
+    iris_cptr_t pcmd = IRIS_CPTR_NULL, pproc = IRIS_CPTR_NULL;
     if (ok && !t25_tgt_spawn(&g, &why)) { t26_grant_close(&vmo); it_fail("T193", why); return; }
     if (ok && t25_pager_spawn(&g, T26_AT(vmo, 0x2000ULL), RIGHT_READ, 0, 0u, &pcmd, &pproc) != 0) {
         ok = 0; why = "pager spawn A"; }
@@ -1094,7 +1094,7 @@ void test_t193(void) {
     /* (B) write fault, writable VMO cap → target store lands in the VMO page. */
     if (ok) { word = 0; if (t26_page_word(T26_AT(vmo, 0x3000ULL), &word, 1) != 0) { ok = 0; why = "vmo zero"; } }
     struct t25_tgt g2;
-    handle_id_t p2cmd = HANDLE_INVALID, p2proc = HANDLE_INVALID;
+    iris_cptr_t p2cmd = IRIS_CPTR_NULL, p2proc = IRIS_CPTR_NULL;
     if (ok && !t25_tgt_spawn(&g2, &why)) { t26_grant_close(&vmo); it_fail("T193", why); return; }
     if (ok) {
         if (t25_pager_spawn(&g2, T26_AT(vmo, 0x3000ULL), RIGHT_READ | RIGHT_WRITE, 0, 0u, &p2cmd, &p2proc) != 0) {
@@ -1135,22 +1135,22 @@ void test_t194(void) {
     int ok = b.ok && vlive0 >= 0 && it_setup_self_vspace();
     const char *why = "unauthorized vmo pager";
 
-    handle_id_t vmo = t26_grant();
-    if (vmo == HANDLE_INVALID) { it_fail("T194", "vmo create"); return; }
+    iris_cptr_t vmo = t26_grant();
+    if (vmo == IRIS_CPTR_NULL) { it_fail("T194", "vmo create"); return; }
 
     struct t25_tgt g;
     if (ok && !t25_tgt_spawn(&g, &why)) { t26_grant_close(&vmo); it_fail("T194", why); return; }
 
     /* A READ-only VMO cap cannot install a writable PTE into g's VSpace. */
     long vro = it_cs_reduce((long)vmo, RIGHT_READ | RIGHT_DUPLICATE);
-    handle_id_t vro_h = (vro >= 0) ? (handle_id_t)vro : HANDLE_INVALID;
+    iris_cptr_t vro_h = (vro >= 0) ? (iris_cptr_t)vro : IRIS_CPTR_NULL;
     if (ok && vro < 0) { ok = 0; why = "vro dup"; }
     if (ok && it_invoke((long)T26_AT(vro, 0), INV_FRAME_MAP, (long)g.vs, (long)T26_TVA_A, (long)(1u))
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro vmo writable into target"; }
 
     /* A READ-only VSpace derivation cannot install ANY PTE. */
     long vsro = it_cs_reduce((long)g.vs, RIGHT_READ | RIGHT_DUPLICATE);
-    handle_id_t vsro_h = (vsro >= 0) ? (handle_id_t)vsro : HANDLE_INVALID;
+    iris_cptr_t vsro_h = (vsro >= 0) ? (iris_cptr_t)vsro : IRIS_CPTR_NULL;
     if (ok && vsro < 0) { ok = 0; why = "vsro dup"; }
     if (ok && it_invoke((long)T26_AT(vmo, 0), INV_FRAME_MAP, vsro, (long)T26_TVA_A, (long)(0))
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro vspace installed"; }
@@ -1186,14 +1186,14 @@ void test_t195(void) {
     int ok = b.ok && vlive0 >= 0;
     const char *why = "vmo shared mappings";
 
-    handle_id_t vmo = t26_grant();
-    if (vmo == HANDLE_INVALID) { it_fail("T195", "vmo create"); return; }
+    iris_cptr_t vmo = t26_grant();
+    if (vmo == IRIS_CPTR_NULL) { it_fail("T195", "vmo create"); return; }
     word = 0;
     if (ok && t26_page_word(T26_AT(vmo, 0x1000ULL), &word, 1) != 0) { ok = 0; why = "vmo zero"; }
 
     /* Target A writes the shared VMO page (offset 0x1000). */
     struct t25_tgt ga;
-    handle_id_t pacmd = HANDLE_INVALID, paproc = HANDLE_INVALID;
+    iris_cptr_t pacmd = IRIS_CPTR_NULL, paproc = IRIS_CPTR_NULL;
     if (ok && !t25_tgt_spawn(&ga, &why)) { t26_grant_close(&vmo); it_fail("T195", why); return; }
     if (ok) {
         if (t25_pager_spawn(&ga, T26_AT(vmo, 0x1000ULL), RIGHT_READ | RIGHT_WRITE, 0, 0u, &pacmd, &paproc) != 0) {
@@ -1213,7 +1213,7 @@ void test_t195(void) {
 
     /* Target B reads the SAME VMO page and observes A's write (RO map). */
     struct t25_tgt gb;
-    handle_id_t pbcmd = HANDLE_INVALID, pbproc = HANDLE_INVALID;
+    iris_cptr_t pbcmd = IRIS_CPTR_NULL, pbproc = IRIS_CPTR_NULL;
     if (ok && !t25_tgt_spawn(&gb, &why)) { t26_grant_close(&vmo); it_fail("T195", why); return; }
     if (ok) {
         if (t25_pager_spawn(&gb, T26_AT(vmo, 0x1000ULL), RIGHT_READ, 0, 0u, &pbcmd, &pbproc) != 0) {
@@ -1256,8 +1256,8 @@ void test_t196(void) {
     int ok = b.ok && flive0 >= 0;
     const char *why = "mapping keeps its frame";
 
-    handle_id_t g = t26_grant();
-    if (g == HANDLE_INVALID) { it_fail("T196", "grant"); return; }
+    iris_cptr_t g = t26_grant();
+    if (g == IRIS_CPTR_NULL) { it_fail("T196", "grant"); return; }
     word = T26_PAT1;
     if (ok && t26_page_word(T26_AT(g, 0), &word, 1) != 0) { ok = 0; why = "fill"; }
     if (ok && it_frame_live() != flive0 + (long)T26_GRANT_PAGES) {
@@ -1265,7 +1265,7 @@ void test_t196(void) {
 
     /* A pager installs page 0 in a target, and the target reads it. */
     struct t25_tgt t;
-    handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
+    iris_cptr_t pcmd = IRIS_CPTR_NULL, pproc = IRIS_CPTR_NULL;
     if (ok && !t25_tgt_spawn(&t, &why)) { t26_grant_close(&g); it_fail("T196", why); return; }
     if (ok) {
         if (t25_pager_spawn(&t, T26_AT(g, 0), RIGHT_READ, 0, 0u, &pcmd, &pproc) != 0) { ok = 0; why = "pager"; }
@@ -1292,7 +1292,7 @@ void test_t196(void) {
      * holding its address space.  An absolute number here would be measuring
      * them too, and would have been wrong in a way that looked like the
      * property failing. */
-    handle_id_t vcopy = T26_AT(g, 0);
+    iris_cptr_t vcopy = T26_AT(g, 0);
     long n0 = it_frame_live();
     t26_grant_close(&g);
     it_quiesce_reaper();
@@ -1334,8 +1334,8 @@ void test_t197(void) {
     int ok = b.ok && vlive0 >= 0;
     const char *why = "vmo pager death/restart";
 
-    handle_id_t vmo = t26_grant();
-    if (vmo == HANDLE_INVALID) { it_fail("T197", "vmo create"); return; }
+    iris_cptr_t vmo = t26_grant();
+    if (vmo == IRIS_CPTR_NULL) { it_fail("T197", "vmo create"); return; }
     word = T26_PAT0;
     if (ok && t26_page_word(T26_AT(vmo, 0x2000ULL), &word, 1) != 0) { ok = 0; why = "vmo fill"; }
 
@@ -1346,7 +1346,7 @@ void test_t197(void) {
     if (ok && !t25_wait_delivered(d0)) { ok = 0; why = "fault pending"; }
 
     /* Gen 1: spawned in charge, killed before serving. */
-    handle_id_t p1cmd = HANDLE_INVALID, p1proc = HANDLE_INVALID;
+    iris_cptr_t p1cmd = IRIS_CPTR_NULL, p1proc = IRIS_CPTR_NULL;
     if (ok && t25_pager_spawn(&g, T26_AT(vmo, 0x2000ULL), RIGHT_READ, 0, 0u, &p1cmd, &p1proc) != 0) { ok = 0; why = "pager1"; }
     if (ok && it_kill((long)p1proc) != 0) { ok = 0; why = "kill pager1"; }
     if (ok && it_lp_wait_exit(p1proc) != 0) { ok = 0; why = "pager1 exit"; }
@@ -1385,7 +1385,7 @@ void test_t197(void) {
     }
 
     /* Gen 2 (the server) completes the resolution from the VMO. */
-    handle_id_t p2cmd = HANDLE_INVALID, p2proc = HANDLE_INVALID;
+    iris_cptr_t p2cmd = IRIS_CPTR_NULL, p2proc = IRIS_CPTR_NULL;
     if (ok && t25_pager_spawn(&g, T26_AT(vmo, 0x2000ULL), RIGHT_READ, 0, 0u, &p2cmd, &p2proc) != 0) { ok = 0; why = "pager2"; }
     if (ok && t25_serve(p2cmd, 1u, 1u, 0, 0, T26_TVA_A) != 0) { ok = 0; why = "serve"; }
     if (ok && it_lp_wait_exit(g.proc) !=
@@ -1420,12 +1420,12 @@ void test_t198(void) {
     int ok = b.ok && flive0 >= 0 && it_setup_self_vspace();
     const char *why = "partial failure";
 
-    handle_id_t g = t26_grant();
-    if (g == HANDLE_INVALID) { it_fail("T198", "grant"); return; }
+    iris_cptr_t g = t26_grant();
+    if (g == IRIS_CPTR_NULL) { it_fail("T198", "grant"); return; }
     long vro = it_cs_reduce((long)T26_PAGE(g, 1), RIGHT_READ | RIGHT_DUPLICATE);
-    handle_id_t vro_h = (vro >= 0) ? (handle_id_t)vro : HANDLE_INVALID;
+    iris_cptr_t vro_h = (vro >= 0) ? (iris_cptr_t)vro : IRIS_CPTR_NULL;
     long vstale = it_cs_reduce((long)T26_PAGE(g, 1), RIGHT_READ | RIGHT_DUPLICATE);
-    handle_id_t vstale_h = (vstale >= 0) ? (handle_id_t)vstale : HANDLE_INVALID;
+    iris_cptr_t vstale_h = (vstale >= 0) ? (iris_cptr_t)vstale : IRIS_CPTR_NULL;
     if (ok && (vro < 0 || vstale < 0)) { ok = 0; why = "dups"; }
     it_close(&vstale_h);   /* now stale */
 
@@ -1481,8 +1481,8 @@ void test_t199(void) {
     int ok = b.ok && vlive0 >= 0;
     const char *why = "vmo rights/PTE";
 
-    handle_id_t vmo = t26_grant();
-    if (vmo == HANDLE_INVALID) { it_fail("T199", "vmo create"); return; }
+    iris_cptr_t vmo = t26_grant();
+    if (vmo == IRIS_CPTR_NULL) { it_fail("T199", "vmo create"); return; }
 
     /* Map RO into a target through a fully-WRITABLE VMO cap; the target's store
      * must still fault write-protection (the PTE is RO, cap ceiling irrelevant). */
@@ -1529,8 +1529,8 @@ void test_t200(void) {
         op = t200_rnd(&rng) % 5u;
         uint64_t ofs = ((uint64_t)(t200_rnd(&rng) % 4u)) << 12;   /* one of 4 pages */
 
-        handle_id_t vmo = t26_grant();
-        if (vmo == HANDLE_INVALID) { ok = 0; why = "vmo create"; break; }
+        iris_cptr_t vmo = t26_grant();
+        if (vmo == IRIS_CPTR_NULL) { ok = 0; why = "vmo create"; break; }
         word = T26_PAT0 ^ round;
         if (t26_page_word(T26_AT(vmo, ofs), &word, 1) != 0) { ok = 0; why = "vmo fill"; t26_grant_close(&vmo); break; }
 
@@ -1541,7 +1541,7 @@ void test_t200(void) {
         switch (op) {
         case 0: {
             /* VMO-backed read resolve. */
-            handle_id_t pc = HANDLE_INVALID, pp = HANDLE_INVALID;
+            iris_cptr_t pc = IRIS_CPTR_NULL, pp = IRIS_CPTR_NULL;
             if (t25_pager_spawn(&g, T26_AT(vmo, ofs), RIGHT_READ, 0, 0u, &pc, &pp) != 0) { ok = 0; why = "op0 pager"; break; }
             if (t25_serve(pc, 1u, 1u, 0, 0, 0) != 0) { ok = 0; why = "op0 serve"; }
             if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T26_TVA_A) != 0) { ok = 0; why = "op0 fault"; }
@@ -1553,7 +1553,7 @@ void test_t200(void) {
         }
         case 1: {
             /* VMO-backed writable resolve; store lands in the VMO. */
-            handle_id_t pc = HANDLE_INVALID, pp = HANDLE_INVALID;
+            iris_cptr_t pc = IRIS_CPTR_NULL, pp = IRIS_CPTR_NULL;
             word = 0; if (t26_page_word(T26_AT(vmo, ofs), &word, 1) != 0) { ok = 0; why = "op1 zero"; break; }
             if (t25_pager_spawn(&g, T26_AT(vmo, ofs), RIGHT_READ | RIGHT_WRITE, 0, 0u, &pc, &pp) != 0) { ok = 0; why = "op1 pager"; break; }
             if (t25_serve(pc, 1u, 1u, 1u, 0, T26_TVA_A) != 0) { ok = 0; why = "op1 serve"; }
@@ -1566,7 +1566,7 @@ void test_t200(void) {
         }
         case 2: {
             /* Pager dies before serving; supervisor takes over from the VMO. */
-            handle_id_t pc = HANDLE_INVALID, pp = HANDLE_INVALID;
+            iris_cptr_t pc = IRIS_CPTR_NULL, pp = IRIS_CPTR_NULL;
             if (it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T26_TVA_A) != 0) { ok = 0; why = "op2 fault"; break; }
             if (!t25_wait_fault(&g, &f)) { ok = 0; why = "op2 pending"; break; }
             if (t25_pager_spawn(&g, T26_AT(vmo, ofs), RIGHT_READ, 0, 0u, &pc, &pp) != 0) { ok = 0; why = "op2 pager"; break; }
@@ -1595,7 +1595,7 @@ void test_t200(void) {
              * maps install nothing, so T26_TVA_A stays unmapped and the target
              * still faults; only then does the supervisor map + resume. */
             long vro = it_cs_reduce((long)T26_AT(vmo, ofs), RIGHT_READ | RIGHT_DUPLICATE);
-            handle_id_t vro_h = (vro >= 0) ? (handle_id_t)vro : HANDLE_INVALID;
+            iris_cptr_t vro_h = (vro >= 0) ? (iris_cptr_t)vro : IRIS_CPTR_NULL;
             if (vro < 0) { ok = 0; why = "op4 dup"; break; }
             /* RO cap cannot install a writable PTE; a page past the end of
              * the grant is a slot nobody holds — neither leaves anything at
@@ -1647,12 +1647,12 @@ void test_t200(void) {
  * success. */
 int t27_pager_spawn(struct t27_pager *p,
                            struct t25_tgt *targets, uint32_t nt,
-                           handle_id_t *vmos, uint32_t nv, uint32_t vmo_w_mask,
+                           iris_cptr_t *vmos, uint32_t nv, uint32_t vmo_w_mask,
                            int do_register, const char **why) {
-    p->ctrl_ep = p->proc = HANDLE_INVALID; p->reg_id = -1; p->generation = 0;
+    p->ctrl_ep = p->proc = IRIS_CPTR_NULL; p->reg_id = -1; p->generation = 0;
     long ep = it_ep_create();
     if (ep < 0) { *why = "ctrl ep"; return 0; }
-    handle_id_t ctrl = (handle_id_t)ep;
+    iris_cptr_t ctrl = (iris_cptr_t)ep;
 
     /*
      * Ledger A-22: point every granted target's faults at the ONE shared
@@ -1713,11 +1713,11 @@ int t27_pager_spawn(struct t27_pager *p,
     /* Phase S1: the pager serves EP_CALLs on its ctrl endpoint — retype a
      * fresh reply object and mint it at PGR_SLOT_REPLY (13); drop our handle
      * right after so pager death still wakes blocked callers. */
-    handle_id_t pgr_reply_h = HANDLE_INVALID;
+    iris_cptr_t pgr_reply_h = IRIS_CPTR_NULL;
     {
         long rr = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
         if (rr >= 0) {
-            pgr_reply_h = (handle_id_t)rr;
+            pgr_reply_h = (iris_cptr_t)rr;
             m[n].slot = 13u; IT_MINT_SRC(m[n], pgr_reply_h);
             m[n].rights = RIGHT_READ | RIGHT_WRITE; m[n].badge = 0; n++;
         }
@@ -1725,7 +1725,7 @@ int t27_pager_spawn(struct t27_pager *p,
 
     /* Phase 28: the pager is its own supervised binary (initrd "pager"); it
      * enters its serve loop immediately on start — no mode-entry message. */
-    handle_id_t boot = HANDLE_INVALID;
+    iris_cptr_t boot = IRIS_CPTR_NULL;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager",
                              &p->proc, &boot, m, n,
                              IT_LOADER_WS, 0,
@@ -1736,7 +1736,7 @@ int t27_pager_spawn(struct t27_pager *p,
     it_child_bind(p->proc);
     it_close(&pgr_reply_h);
     it_close(&boot);
-    if (r < 0 || p->proc == HANDLE_INVALID) {
+    if (r < 0 || p->proc == IRIS_CPTR_NULL) {
         it_close(&ctrl); it_close(&p->proc); *why = "pager spawn"; return 0;
     }
     p->ctrl_ep = ctrl;
@@ -1747,7 +1747,7 @@ int t27_pager_spawn(struct t27_pager *p,
 
 /* EP_CALL the pager; returns its result word (0 = OK, negative error/marker,
  * or a positive REPORT bitmask), or a negative transport error. */
-long t27_pager_call(handle_id_t ctrl_ep, uint32_t op, uint32_t tidx,
+long t27_pager_call(iris_cptr_t ctrl_ep, uint32_t op, uint32_t tidx,
                            uint32_t vidx, uint32_t flags,
                            uint64_t offset, uint64_t expect) {
     struct iris_msg m;
@@ -1764,7 +1764,7 @@ long t27_pager_call(handle_id_t ctrl_ep, uint32_t op, uint32_t tidx,
 
 void t27_pager_reap(struct t27_pager *p) {
     if (p->reg_id >= 0) { (void)it_unregister((uint32_t)p->reg_id); p->reg_id = -1; }
-    if (p->proc != HANDLE_INVALID) {
+    if (p->proc != IRIS_CPTR_NULL) {
         (void)it_kill((long)p->proc);
         (void)it_lp_wait_exit(p->proc);
     }
@@ -1802,11 +1802,11 @@ void test_t201(void) {
 
     struct t25_tgt g;
     if (!t25_tgt_spawn(&g, &why)) { it_fail("T201", why); return; }
-    handle_id_t vmo = t26_grant();
-    if (vmo == HANDLE_INVALID) { t25_tgt_reap(&g); it_fail("T201", "vmo create"); return; }
+    iris_cptr_t vmo = t26_grant();
+    if (vmo == IRIS_CPTR_NULL) { t25_tgt_reap(&g); it_fail("T201", "vmo create"); return; }
 
     struct t27_pager p;
-    handle_id_t vmos[1] = { vmo };
+    iris_cptr_t vmos[1] = { vmo };
     uint32_t pg0 = it_ipc_buffer_gauge();
     if (ok && !t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 1 /*register*/, &why)) { ok = 0; }
 
@@ -1879,7 +1879,7 @@ void test_t201(void) {
             lm.label != IRIS_EP_REPLY_OK ||
             lm.got_cap != (uint32_t)IT_LOOKUP_TMP) { ok = 0; why = "lookup"; }
         else {
-            if (t27_pager_call((handle_id_t)IT_LOOKUP_TMP, PGR_OP_PING, 0, 0, 0, 0, 0) != 0) {
+            if (t27_pager_call((iris_cptr_t)IT_LOOKUP_TMP, PGR_OP_PING, 0, 0, 0, 0, 0) != 0) {
                 ok = 0; why = "lookup ping";
             }
             it_slot_delete((uint32_t)IT_LOOKUP_TMP);
@@ -1911,15 +1911,15 @@ void test_t202(void) {
     int ok = b.ok && vlive0 >= 0 && it_sched_ext5(f0);
     const char *why = "pager resolve";
 
-    handle_id_t vmo = t26_grant();
-    if (vmo == HANDLE_INVALID) { it_fail("T202", "vmo create"); return; }
+    iris_cptr_t vmo = t26_grant();
+    if (vmo == IRIS_CPTR_NULL) { it_fail("T202", "vmo create"); return; }
     word = T27_PAT;
     if (ok && t26_page_word(T26_AT(vmo, 0x1000ULL), &word, 1) != 0) { ok = 0; why = "vmo fill"; }
 
     struct t25_tgt g;
     if (ok && !t25_tgt_spawn(&g, &why)) { t26_grant_close(&vmo); it_fail("T202", why); return; }
     struct t27_pager p;
-    handle_id_t vmos[1] = { vmo };
+    iris_cptr_t vmos[1] = { vmo };
     if (ok && !t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; }
 
     if (ok && !t27_resolve_read(&p, &g, 0u, 0u, 0x1000ULL, T27_VA_A, T27_PAT, &why)) ok = 0;
@@ -1954,15 +1954,15 @@ void test_t203(void) {
     int ok = b.ok;
     const char *why = "unauthorized target";
 
-    handle_id_t vmo = t26_grant();
-    if (vmo == HANDLE_INVALID) { it_fail("T203", "vmo create"); return; }
+    iris_cptr_t vmo = t26_grant();
+    if (vmo == IRIS_CPTR_NULL) { it_fail("T203", "vmo create"); return; }
 
     struct t25_tgt ga, gb;      /* A = pager's grant; B = unrelated */
     if (ok && !t25_tgt_spawn(&ga, &why)) { t26_grant_close(&vmo); it_fail("T203", why); return; }
     if (ok && !t25_tgt_spawn(&gb, &why)) { t25_tgt_reap(&ga); t26_grant_close(&vmo); it_fail("T203", why); return; }
 
     struct t27_pager p;
-    handle_id_t vmos[1] = { vmo };
+    iris_cptr_t vmos[1] = { vmo };
     if (ok && !t27_pager_spawn(&p, &ga, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; }
 
     /* B faults. */
@@ -2014,15 +2014,15 @@ void test_t204(void) {
     int ok = b.ok && vlive0 >= 0;
     const char *why = "unauthorized vmo";
 
-    handle_id_t vmo = t26_grant();
-    if (vmo == HANDLE_INVALID) { it_fail("T204", "vmo create"); return; }
+    iris_cptr_t vmo = t26_grant();
+    if (vmo == IRIS_CPTR_NULL) { it_fail("T204", "vmo create"); return; }
     word = T27_PAT;
     if (ok && t26_page_word(T26_AT(vmo, 0x2000ULL), &word, 1) != 0) { ok = 0; why = "vmo fill"; }
 
     struct t25_tgt g;
     if (ok && !t25_tgt_spawn(&g, &why)) { t26_grant_close(&vmo); it_fail("T204", why); return; }
     struct t27_pager p;
-    handle_id_t vmos[1] = { vmo };
+    iris_cptr_t vmos[1] = { vmo };
     /* RO VMO grant (vmo_w_mask = 0). */
     if (ok && !t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; }
 
@@ -2036,7 +2036,7 @@ void test_t204(void) {
      * Emulate the pager's exact call via its VSpace cap (the pager would get
      * the same ACCESS_DENIED). */
     long vro = it_cs_reduce((long)T26_AT(vmo, 0x2000ULL), RIGHT_READ | RIGHT_DUPLICATE);
-    handle_id_t vro_h = (vro >= 0) ? (handle_id_t)vro : HANDLE_INVALID;
+    iris_cptr_t vro_h = (vro >= 0) ? (iris_cptr_t)vro : IRIS_CPTR_NULL;
     if (ok && vro < 0) { ok = 0; why = "ro dup"; }
     if (ok && it_invoke(vro, INV_FRAME_MAP, (long)g.vs, (long)T27_VA_A, 1L)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable not denied"; }
@@ -2080,8 +2080,8 @@ void test_t205(void) {
     int ok = b.ok;
     const char *why = "pager restart";
 
-    handle_id_t vmo = t26_grant();
-    if (vmo == HANDLE_INVALID) { it_fail("T205", "vmo create"); return; }
+    iris_cptr_t vmo = t26_grant();
+    if (vmo == IRIS_CPTR_NULL) { it_fail("T205", "vmo create"); return; }
     word = T27_PAT;
     if (ok && t26_page_word(T26_AT(vmo, 0x1000ULL), &word, 1) != 0) { ok = 0; why = "vmo fill"; }
 
@@ -2091,7 +2091,7 @@ void test_t205(void) {
     struct t25_tgt g1, g2;
     if (ok && !t25_tgt_spawn(&g1, &why)) { t26_grant_close(&vmo); it_fail("T205", why); return; }
     if (ok && !t25_tgt_spawn(&g2, &why)) { t25_tgt_reap(&g1); t26_grant_close(&vmo); it_fail("T205", why); return; }
-    handle_id_t vmos1[1] = { vmo };
+    iris_cptr_t vmos1[1] = { vmo };
 
     /* Gen 1: register + resolve g1 once. */
     struct t27_pager p1;
@@ -2167,14 +2167,14 @@ void test_t206(void) {
     int ok = b.ok;
     const char *why = "pager crash-loop";
 
-    handle_id_t vmo = t26_grant();
-    if (vmo == HANDLE_INVALID) { it_fail("T206", "vmo create"); return; }
+    iris_cptr_t vmo = t26_grant();
+    if (vmo == IRIS_CPTR_NULL) { it_fail("T206", "vmo create"); return; }
     word = T27_PAT;
     if (ok && t26_page_word(T26_AT(vmo, 0x1000ULL), &word, 1) != 0) { ok = 0; why = "vmo fill"; }
 
     struct t25_tgt g;
     if (ok && !t25_tgt_spawn(&g, &why)) { t26_grant_close(&vmo); it_fail("T206", why); return; }
-    handle_id_t vmos[1] = { vmo };
+    iris_cptr_t vmos[1] = { vmo };
 
     /* Target faults; it will stay pending across the whole crash-loop. */
     struct it_fault f;
@@ -2227,8 +2227,8 @@ void test_t207(void) {
     int ok = b.ok;
     const char *why = "multi-target";
 
-    handle_id_t vmo = t26_grant();
-    if (vmo == HANDLE_INVALID) { it_fail("T207", "vmo create"); return; }
+    iris_cptr_t vmo = t26_grant();
+    if (vmo == IRIS_CPTR_NULL) { it_fail("T207", "vmo create"); return; }
     word = T27_PAT;
     if (ok && t26_page_word(T26_AT(vmo, 0x1000ULL), &word, 1) != 0) { ok = 0; why = "vmo fill"; }
 
@@ -2238,7 +2238,7 @@ void test_t207(void) {
     struct t25_tgt tg[2] = { ga, gb };
 
     struct t27_pager p;
-    handle_id_t vmos[1] = { vmo };
+    iris_cptr_t vmos[1] = { vmo };
     if (ok && !t27_pager_spawn(&p, tg, 2u, vmos, 1u, 0u, 0, &why)) { ok = 0; }
 
     /* Resolve A via grant 0, B via grant 1 — both read the same VMO page. */
@@ -2268,9 +2268,9 @@ void test_t208(void) {
     int ok = b.ok && vlive0 >= 0;
     const char *why = "multi-vmo";
 
-    handle_id_t vmo0 = t26_grant();
-    handle_id_t vmo1 = t26_grant();
-    if (vmo0 == HANDLE_INVALID || vmo1 == HANDLE_INVALID) {
+    iris_cptr_t vmo0 = t26_grant();
+    iris_cptr_t vmo1 = t26_grant();
+    if (vmo0 == IRIS_CPTR_NULL || vmo1 == IRIS_CPTR_NULL) {
         t26_grant_close(&vmo0); t26_grant_close(&vmo1); it_fail("T208", "vmo create"); return;
     }
     word = T27_PAT;  if (ok && t26_page_word(T26_AT(vmo0, 0x1000ULL), &word, 1) != 0) { ok = 0; why = "vmo0 fill"; }
@@ -2283,7 +2283,7 @@ void test_t208(void) {
     if (ok && !t25_tgt_spawn(&gb, &why)) { t25_tgt_reap(&ga); t26_grant_close(&vmo0); t26_grant_close(&vmo1); it_fail("T208", why); return; }
     struct t25_tgt tg[2] = { ga, gb };
     struct t27_pager p;
-    handle_id_t vmos[2] = { vmo0, vmo1 };
+    iris_cptr_t vmos[2] = { vmo0, vmo1 };
     if (ok && !t27_pager_spawn(&p, tg, 2u, vmos, 2u, (1u << 1), 0, &why)) { ok = 0; }
 
     /* A: read VMO0 grant into target A → reads the pattern. */
@@ -2323,14 +2323,14 @@ void test_t209(void) {
     int ok = b.ok;
     const char *why = "pager death pending";
 
-    handle_id_t vmo = t26_grant();
-    if (vmo == HANDLE_INVALID) { it_fail("T209", "vmo create"); return; }
+    iris_cptr_t vmo = t26_grant();
+    if (vmo == IRIS_CPTR_NULL) { it_fail("T209", "vmo create"); return; }
     word = T27_PAT;
     if (ok && t26_page_word(T26_AT(vmo, 0x1000ULL), &word, 1) != 0) { ok = 0; why = "vmo fill"; }
 
     struct t25_tgt g;
     if (ok && !t25_tgt_spawn(&g, &why)) { t26_grant_close(&vmo); it_fail("T209", why); return; }
-    handle_id_t vmos[1] = { vmo };
+    iris_cptr_t vmos[1] = { vmo };
 
     /* Target faults; pager spawned in charge but killed before it serves. */
     uint32_t d0 = t25_delivered_now();
@@ -2339,7 +2339,7 @@ void test_t209(void) {
 
     struct t27_pager p1;
     if (ok && !t27_pager_spawn(&p1, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; }
-    handle_id_t p1ctrl = ok ? p1.ctrl_ep : HANDLE_INVALID;
+    iris_cptr_t p1ctrl = ok ? p1.ctrl_ep : IRIS_CPTR_NULL;
     if (ok && it_kill((long)p1.proc) != 0) { ok = 0; why = "kill pager"; }
     if (ok && it_lp_wait_exit(p1.proc) != 0) { ok = 0; why = "pager exit"; }
     it_close(&p1.proc);

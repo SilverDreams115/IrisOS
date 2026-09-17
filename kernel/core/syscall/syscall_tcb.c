@@ -884,7 +884,7 @@ uint64_t sys_tcb_get_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *
  * Authority: WRITE on the TCB (this changes how a thread receives messages)
  * and READ|WRITE on the frame (the kernel both reads and writes it).  A
- * registration REPLACES any previous one; passing CPTR_NULL as the frame
+ * registration REPLACES any previous one; passing IRIS_CPTR_NULL as the frame
  * unregisters, which is how a thread gives the page back before deleting it.
  *
  * The frame must be at least one page.  `uvaddr` must be page-aligned and a
@@ -924,7 +924,7 @@ uint64_t sys_tcb_set_ipc_buffer(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (err != IRIS_OK) return syscall_err(err);
 
     struct KFrame *fr = 0;
-    if (arg1 != CPTR_NULL) {
+    if (arg1 != IRIS_CPTR_NULL) {
         struct KObject *f_obj; iris_rights_t f_rights;
         err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg1,
                                       RIGHT_NONE, KOBJ_FRAME,

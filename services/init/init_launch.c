@@ -23,6 +23,8 @@
 
 #include "init.h"
 #include "../timer/timer_proto.h"
+#include <iris/pci_ep_proto.h>
+#include <iris/blk_ep_proto.h>
 #include "../common/iris_timer.h"
 #include <iris/endpoint_proto.h>
 #include "../common/svc_loader.h"
@@ -84,8 +86,8 @@ static const char init_fb_load_fail[] = "[INIT] fb load FAILED\r\n";
  * the framebuffer control capability from init's own slot. */
 
 void init_spawn_fb(void) {
-    handle_id_t fb_proc_h  = HANDLE_INVALID;
-    handle_id_t fb_boot_h  = HANDLE_INVALID;
+    iris_cptr_t fb_proc_h  = IRIS_CPTR_NULL;
+    iris_cptr_t fb_boot_h  = IRIS_CPTR_NULL;
     long r;
 
     /* Stage 5 Step 2: fb receives the FRAMEBUFFER CONTROL capability — the
@@ -129,6 +131,228 @@ void init_spawn_fb(void) {
 }
 
 
+/* ── pci spawn (Stage 10: the bus is a service) ─────────────────────────── */
+
+/*
+ * The one task that may reach PCI configuration space.
+ *
+ * 0xCF8/0xCFC is a single pair of ports through which any device on the
+ * machine can be reprogrammed, so a capability for it is a capability over the
+ * whole bus.  Handing that to each driver would undo, one port range at a
+ * time, the thing Stage 10-dma just established: that a driver reaches only
+ * what its capabilities name.  So init claims those eight ports ONCE, gives
+ * them to this service, and gives them to nothing else ever again.
+ *
+ * It also gets the PCI hole (`IRIS_CPTR_MMIO_UNTYPED`), which is what makes
+ * the restriction hold rather than merely being observed: a driver holds no
+ * device Untyped, so there is no frame it could retype over a window it was
+ * not handed.
+ *
+ * What init keeps is the endpoint, which is what it hands on to whoever needs
+ * to find a device.
+ *
+ * Returns 1 on success, 0 on failure.
+ */
+int init_spawn_pci(void) {
+    iris_cptr_t pc_proc_h = IRIS_CPTR_NULL;
+    iris_cptr_t pc_boot_h = IRIS_CPTR_NULL;
+    long r;
+
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
+                         INIT_SLOT_PCI_EP, 0) < 0) { init_log("[USER] pci: ep\n"); return 0; }
+
+    /* The configuration ports, as a capability, out of the port AUTHORITY.
+     * Eight ports: 0xCF8..0xCFF is the address register, the data register and
+     * the two aliases between them, and nothing else is in the range. */
+    if (iris_invoke((long)IRIS_CPTR_IOPORT_CONTROL, INV_BOOT_CREATE_IOPORT,
+                    (long)(0xCF8u | (8u << 16)), (long)IRIS_CPTR_INIT_UNTYPED,
+                    (long)((uint64_t)INIT_SLOT_PCI_IOPORT << 32)) != 0) {
+        init_log("[USER] pci: ioport\n"); return 0;
+    }
+
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_REPLY,
+                         INIT_SLOT_PCI_REPLY, 0) < 0) { init_log("[USER] pci: reply\n"); return 0; }
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
+                         INIT_SLOT_PCI_UT, 1 << 20) < 0) { init_log("[USER] pci: ut\n"); return 0; }
+
+    {
+        struct svc_mint pc[5] = { 0 };
+        uint32_t n = 0;
+        pc[n].slot = PCI_SLOT_CTRL_EP;  pc[n].src_cptr = INIT_SLOT_PCI_EP;
+        pc[n].rights = RIGHT_READ;      pc[n].badge = 0; n++;
+        pc[n].slot = PCI_SLOT_IOPORT;   pc[n].src_cptr = INIT_SLOT_PCI_IOPORT;
+        pc[n].rights = RIGHT_READ | RIGHT_WRITE; pc[n].badge = 0; n++;
+        pc[n].slot = PCI_SLOT_REPLY;    pc[n].src_cptr = INIT_SLOT_PCI_REPLY;
+        pc[n].rights = RIGHT_READ | RIGHT_WRITE; pc[n].badge = 0; n++;
+        pc[n].slot = PCI_SLOT_MMIO_UT;  pc[n].src_cptr = IRIS_CPTR_MMIO_UNTYPED;
+        pc[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        pc[n].badge = 0; n++;
+        pc[n].slot = IRIS_CPTR_OWN_UNTYPED; pc[n].src_cptr = INIT_SLOT_PCI_UT;
+        pc[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        pc[n].badge = 0; n++;
+
+        r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
+                               "pci", &pc_proc_h, &pc_boot_h, pc, n,
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
+                               2u << 20,
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED,
+                               /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
+        init_report_mints("pci", pc, n);
+    }
+    /* The service holds the mints now.  init keeps the ENDPOINT and drops its
+     * own copy of everything else — including the port capability, which is
+     * the whole point: after this returns, exactly one task in the system can
+     * reach configuration space. */
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PCI_REPLY);
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PCI_IOPORT);
+    init_close(&pc_proc_h);
+    init_close(&pc_boot_h);
+    if (r < 0) return 0;
+
+    /*
+     * Ask it what it found, which is both the readiness check and the only
+     * boot-time evidence that the scan happened at all.
+     *
+     * A CALL blocks until the service receives, and the service does not
+     * receive until it has walked the bus and carved its windows — so this
+     * returning is the signal that the machine has been described.  A bus
+     * driver that started and then silently found nothing would otherwise be
+     * indistinguishable from one that started.
+     */
+    {
+        struct iris_msg m;
+        { uint8_t *z = (uint8_t *)&m;
+          for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+        m.label = PCI_OP_COUNT;
+        if (iris_msg_call((long)INIT_SLOT_PCI_EP, &m) == 0 &&
+            m.label == PCI_REP_OK) {
+            char b[64] = "[USER][INIT] pci: functions ";
+            uint32_t k = 0; while (b[k]) k++;
+            uint32_t n2 = (uint32_t)m.words[0];
+            if (n2 >= 10u) b[k++] = (char)('0' + (n2 / 10u) % 10u);
+            b[k++] = (char)('0' + n2 % 10u);
+            b[k++] = ' '; b[k++] = 'w'; b[k++] = 'i'; b[k++] = 'n';
+            b[k++] = 'd'; b[k++] = 'o'; b[k++] = 'w'; b[k++] = 's'; b[k++] = ' ';
+            uint32_t w = (uint32_t)m.words[2];
+            if (w >= 10u) b[k++] = (char)('0' + (w / 10u) % 10u);
+            b[k++] = (char)('0' + w % 10u);
+            b[k++] = ' '; b[k++] = 'c'; b[k++] = 'a'; b[k++] = 'r';
+            b[k++] = 'v'; b[k++] = 'e'; b[k++] = ' ';
+            b[k++] = (char)('0' + (uint32_t)(m.words[3] % 10u));
+            b[k++] = '\n'; b[k] = 0;
+            init_log(b);
+            /* carve 0 is "every window in range has a frame"; anything else
+             * means some device on this machine cannot be handed to a driver,
+             * and the reason is one of PCI_CARVE_* in the service. */
+            return 1;
+        }
+        init_log("[USER][INIT] pci: no answer\n");
+        return 0;
+    }
+}
+
+/* ── blk spawn (Stage 10: storage is a driver, and the driver is in ring 3) ── */
+
+/*
+ * The AHCI disk service.
+ *
+ * What it gets is worth reading as a list, because the list IS the claim: an
+ * endpoint to serve on, a reply object, an endpoint to the BUS service, the
+ * authority to contain its own controller's DMA, and memory.  It gets no I/O
+ * ports, no interrupt, no spawn capability and no filesystem — it cannot even
+ * find its own controller without asking somebody else, and the somebody else
+ * hands back one device's registers and nothing more.
+ *
+ * IOSPACE_CONTROL is the interesting one.  AHCI is a bus master: the driver
+ * writes physical addresses into a command table and the controller reads and
+ * writes them itself, which is exactly the reach Stage 10-dma made
+ * containable.  Giving the driver the authority to contain ITSELF is what lets
+ * it bind an IOSpace to its controller and map only its own buffers — a
+ * driver that is trusted to say what its hardware may touch, and able to say
+ * "only this".
+ *
+ * Returns 1 on success, 0 on failure.
+ */
+int init_spawn_blk(void) {
+    iris_cptr_t bk_proc_h = IRIS_CPTR_NULL;
+    iris_cptr_t bk_boot_h = IRIS_CPTR_NULL;
+    long r;
+
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
+                         INIT_SLOT_BLK_EP, 0) < 0) { init_log("[USER] blk: ep\n"); return 0; }
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_REPLY,
+                         INIT_SLOT_BLK_REPLY, 0) < 0) { init_log("[USER] blk: reply\n"); return 0; }
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
+                         INIT_SLOT_BLK_UT, 2 << 20) < 0) { init_log("[USER] blk: ut\n"); return 0; }
+
+    {
+        struct svc_mint bk[5] = { 0 };
+        uint32_t n = 0;
+        bk[n].slot = BLK_SLOT_CTRL_EP;   bk[n].src_cptr = INIT_SLOT_BLK_EP;
+        bk[n].rights = RIGHT_READ;       bk[n].badge = 0; n++;
+        bk[n].slot = BLK_SLOT_REPLY;     bk[n].src_cptr = INIT_SLOT_BLK_REPLY;
+        bk[n].rights = RIGHT_READ | RIGHT_WRITE; bk[n].badge = 0; n++;
+        bk[n].slot = BLK_SLOT_PCI_EP;    bk[n].src_cptr = INIT_SLOT_PCI_EP;
+        bk[n].rights = RIGHT_WRITE;      bk[n].badge = 0; n++;
+        bk[n].slot = BLK_SLOT_IOSPACE_C; bk[n].src_cptr = IRIS_CPTR_IOSPACE_CONTROL;
+        bk[n].rights = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        bk[n].badge = 0; n++;
+        bk[n].slot = IRIS_CPTR_OWN_UNTYPED; bk[n].src_cptr = INIT_SLOT_BLK_UT;
+        bk[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        bk[n].badge = 0; n++;
+
+        r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
+                               "blk", &bk_proc_h, &bk_boot_h, bk, n,
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
+                               2u << 20,
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED,
+                               /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
+        init_report_mints("blk", bk, n);
+    }
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_BLK_REPLY);
+    init_close(&bk_proc_h);
+    init_close(&bk_boot_h);
+    if (r < 0) return 0;
+
+    /*
+     * Ask it what it found.  The CALL blocks until the service receives, and
+     * the service does not receive until it has claimed its controller, built
+     * its command structures, contained its DMA if it can, and READ A SECTOR —
+     * so this returning is the signal that there is a working disk behind the
+     * endpoint, not merely a service that started.
+     */
+    {
+        struct iris_msg m;
+        { uint8_t *z = (uint8_t *)&m;
+          for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+        m.label = BLK_OP_INFO;
+        if (iris_msg_call((long)INIT_SLOT_BLK_EP, &m) == 0 &&
+            m.label == BLK_REP_OK) {
+            char b[64] = "[USER][INIT] blk: disk ";
+            uint32_t k = 0; while (b[k]) k++;
+            b[k++] = (char)('0' + (uint32_t)(m.words[0] & 1u));
+            b[k++] = ' '; b[k++] = 's'; b[k++] = 'i'; b[k++] = 'd'; b[k++] = ' ';
+            { uint32_t sid = (uint32_t)m.words[2];
+              static const char hx[] = "0123456789abcdef";
+              b[k++] = '0'; b[k++] = 'x';
+              b[k++] = hx[(sid >> 12) & 0xFu]; b[k++] = hx[(sid >> 8) & 0xFu];
+              b[k++] = hx[(sid >> 4) & 0xFu];  b[k++] = hx[sid & 0xFu]; }
+            b[k++] = ' '; b[k++] = 'd'; b[k++] = 'm'; b[k++] = 'a'; b[k++] = ' ';
+            /* "contained" or "open": the difference is the whole of
+             * Stage 10-dma, seen from the one driver that most needs it. */
+            if (m.words[3]) { b[k++]='c'; b[k++]='o'; b[k++]='n'; b[k++]='t';
+                              b[k++]='a'; b[k++]='i'; b[k++]='n'; b[k++]='e';
+                              b[k++]='d'; }
+            else            { b[k++]='o'; b[k++]='p'; b[k++]='e'; b[k++]='n'; }
+            b[k++] = '\n'; b[k] = 0;
+            init_log(b);
+            return (m.words[0] & 1u) ? 1 : 0;
+        }
+        init_log("[USER][INIT] blk: no answer\n");
+        return 0;
+    }
+}
+
 /* ── timer spawn (ledger A-24: waiting is a service, not a syscall) ──────── */
 
 /*
@@ -146,13 +370,13 @@ void init_spawn_fb(void) {
  * Returns 1 on success, 0 on failure.
  */
 int init_spawn_timer(void) {
-    handle_id_t tm_proc_h = HANDLE_INVALID;
-    handle_id_t tm_boot_h = HANDLE_INVALID;
+    iris_cptr_t tm_proc_h = IRIS_CPTR_NULL;
+    iris_cptr_t tm_boot_h = IRIS_CPTR_NULL;
     long r;
 
     if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
                          INIT_SLOT_TIMER_EP, 0) < 0) { init_log("[USER] timer: ep\n"); return 0; }
-    g_init_timer_ep_h = (handle_id_t)INIT_SLOT_TIMER_EP;
+    g_init_timer_ep_h = (iris_cptr_t)INIT_SLOT_TIMER_EP;
 
     /* The timer INTERRUPT, claimed as a capability out of the IRQ control one
      * — the same path svcmgr uses for every other line.  Line 0 is the tick
@@ -221,8 +445,8 @@ int init_spawn_timer(void) {
  * (IRIS_CPTR_IOPORT) are pre-start mints; no legacy console KChannel pair, no
  * bootstrap sends.  Returns 1 on success, 0 on failure. */
 int init_spawn_console(void) {
-    handle_id_t con_proc_h  = HANDLE_INVALID;
-    handle_id_t con_boot_h  = HANDLE_INVALID;
+    iris_cptr_t con_proc_h  = IRIS_CPTR_NULL;
+    iris_cptr_t con_boot_h  = IRIS_CPTR_NULL;
 #define INIT_CONSOLE_IOPORT_SLOT 41u
     uint32_t    ioport_c    = 0u;   /* Phase S4: CPtr slot, not a handle */
     long r;
@@ -235,7 +459,7 @@ int init_spawn_console(void) {
         init_early_serial_write(init_console_chan_fail);
         goto fail;
     }
-    g_init_console_ep_h = (handle_id_t)INIT_SLOT_CONSOLE_EP;
+    g_init_console_ep_h = (iris_cptr_t)INIT_SLOT_CONSOLE_EP;
 
     /* KIoPort for the 8 UART registers at 0x3F8..0x3FF (IN poll LSR + OUT THR).
      * Phase S4: published into a CSpace slot as an MDB child of the authorising
@@ -252,11 +476,11 @@ int init_spawn_console(void) {
      * Retype it from init's pool, mint it at IRIS_CPTR_OWN_REPLY, then DROP
      * init's handle — a retained reply cap would suppress the
      * close-wakes-caller path if console dies. */
-    handle_id_t con_reply_h = HANDLE_INVALID;
+    iris_cptr_t con_reply_h = IRIS_CPTR_NULL;
     {
         long rr = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_REPLY,
                                    INIT_SLOT_CONSOLE_RPLY, 0);
-        if (rr >= 0) con_reply_h = (handle_id_t)INIT_SLOT_CONSOLE_RPLY;
+        if (rr >= 0) con_reply_h = (iris_cptr_t)INIT_SLOT_CONSOLE_RPLY;
         else init_early_serial_write("[INIT] console reply retype FAILED\r\n");
     }
 
@@ -273,7 +497,7 @@ int init_spawn_console(void) {
         con_mints[n].rights = RIGHT_READ | RIGHT_WRITE;
         con_mints[n].badge  = 0;
         n++;
-        if (con_reply_h != HANDLE_INVALID) {
+        if (con_reply_h != IRIS_CPTR_NULL) {
             con_mints[n].slot   = IRIS_CPTR_OWN_REPLY;
             con_mints[n].src_cptr = con_reply_h;
             con_mints[n].rights = RIGHT_READ | RIGHT_WRITE;
@@ -326,18 +550,18 @@ fail:
  *   slot 5 (OWN_EP)      — svcmgr.ep recv side, READ|WRITE|DUP (recv + re-mint
  *                          IRIS_CPTR_SVCMGR_EP into catalog children);
  *   slot 6 (SPAWN_CAP)   — spawn/authority cap, READ|DUP|TRANSFER.
- * Returns the svcmgr.ep send side (init's discovery handle), or HANDLE_INVALID. */
-handle_id_t init_spawn_svcmgr(void) {
-    handle_id_t svcmgr_proc_h  = HANDLE_INVALID;
-    handle_id_t svcmgr_chan_h  = HANDLE_INVALID;
-    handle_id_t svcmgr_ep_h    = HANDLE_INVALID;
+ * Returns the svcmgr.ep send side (init's discovery handle), or IRIS_CPTR_NULL. */
+iris_cptr_t init_spawn_svcmgr(void) {
+    iris_cptr_t svcmgr_proc_h  = IRIS_CPTR_NULL;
+    iris_cptr_t svcmgr_chan_h  = IRIS_CPTR_NULL;
+    iris_cptr_t svcmgr_ep_h    = IRIS_CPTR_NULL;
     long r;
 
     /* Phase S1: retyped from init's untyped pool (SYS_ENDPOINT_CREATE retired). */
     r = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
                          INIT_SLOT_SVCMGR_EP, 0);
     if (r < 0) goto fail;
-    svcmgr_ep_h = (handle_id_t)INIT_SLOT_SVCMGR_EP;
+    svcmgr_ep_h = (iris_cptr_t)INIT_SLOT_SVCMGR_EP;
 
     /* Step 4: the SYS_HANDLE_DUP that used to sit here is gone.  It produced a
      * rights-reduced duplicate purely to have a HANDLE to pass as a mint
@@ -351,7 +575,7 @@ handle_id_t init_spawn_svcmgr(void) {
      * block) — svcmgr retypes every service endpoint / IRQ notification /
      * reply object from it.  Sized for the whole catalog plus per-service
      * reply sub-untypeds and restart churn. */
-    handle_id_t sm_untyped_h = HANDLE_INVALID;
+    iris_cptr_t sm_untyped_h = IRIS_CPTR_NULL;
     {
         /* Stage 6: svcmgr's pool funds everything its subtree consumes, not
          * just its own endpoints and replies — each child's address space and
@@ -362,12 +586,12 @@ handle_id_t init_spawn_svcmgr(void) {
          * rather than pretending the memory is free. */
         static const uint64_t s1_sm_ut_sizes[] =
             { 32u<<20, 16u<<20, 4u<<20, 1u<<20 };
-        for (uint32_t szi = 0; szi < 4u && sm_untyped_h == HANDLE_INVALID; szi++) {
+        for (uint32_t szi = 0; szi < 4u && sm_untyped_h == IRIS_CPTR_NULL; szi++) {
             long ur = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
                                        INIT_SLOT_SM_UNTYPED, s1_sm_ut_sizes[szi]);
-            if (ur >= 0) sm_untyped_h = (handle_id_t)INIT_SLOT_SM_UNTYPED;
+            if (ur >= 0) sm_untyped_h = (iris_cptr_t)INIT_SLOT_SM_UNTYPED;
         }
-        if (sm_untyped_h == HANDLE_INVALID)
+        if (sm_untyped_h == IRIS_CPTR_NULL)
             init_log("[USER][INIT] svcmgr untyped carve FAILED\n");
     }
 
@@ -438,7 +662,7 @@ handle_id_t init_spawn_svcmgr(void) {
         sm_mints[n].rights   = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
         sm_mints[n].badge  = 0;
         n++;
-        if (sm_untyped_h != HANDLE_INVALID) {
+        if (sm_untyped_h != IRIS_CPTR_NULL) {
             sm_mints[n].slot   = IRIS_CPTR_OWN_UNTYPED;
             sm_mints[n].src_cptr = sm_untyped_h;
             sm_mints[n].rights = RIGHT_READ | RIGHT_WRITE |
@@ -472,8 +696,8 @@ handle_id_t init_spawn_svcmgr(void) {
 fail:
     init_close(&svcmgr_proc_h);
     init_close(&svcmgr_chan_h);
-    if (svcmgr_ep_h != HANDLE_INVALID) init_close(&svcmgr_ep_h);
-    return HANDLE_INVALID;
+    if (svcmgr_ep_h != IRIS_CPTR_NULL) init_close(&svcmgr_ep_h);
+    return IRIS_CPTR_NULL;
 }
 
 /* ── iris_test spawn + wait ──────────────────────────────────────────────── */
@@ -486,10 +710,10 @@ fail:
  * (Phase 13/Track I).  Then waits up to 12 seconds for iris_test to exit and
  * logs the final pass/fail result.
  */
-void init_spawn_iris_test(handle_id_t sm_h) {
-    handle_id_t proc_h      = HANDLE_INVALID;
-    handle_id_t boot_h      = HANDLE_INVALID;
-    handle_id_t watch_base_h = HANDLE_INVALID; /* death notification (Track B) */
+void init_spawn_iris_test(iris_cptr_t sm_h) {
+    iris_cptr_t proc_h      = IRIS_CPTR_NULL;
+    iris_cptr_t boot_h      = IRIS_CPTR_NULL;
+    iris_cptr_t watch_base_h = IRIS_CPTR_NULL; /* death notification (Track B) */
     long r;
 
     /* Phase 8: the full well-known slot set is pre-start-minted into
@@ -501,7 +725,8 @@ void init_spawn_iris_test(handle_id_t sm_h) {
      *   slot 4  — kbd.ep,     RIGHT_WRITE            → T044
      *   slot 30 — KNotification, RIGHT_WRITE (wrong type) → T040 WRONG_TYPE
      *   slot 31 — svcmgr ep, RIGHT_TRANSFER only     → T040 ACCESS_DENIED
-     *             (the dual resolver must NOT fall back to handles).
+     *             (ACCESS_DENIED is a HARD stop: a resolver that kept
+     *              looking after one would answer about another object).
      * Phase 13/Track I: svcmgr.ep/vfs.ep/kbd.ep come from EP_LOOKUP_NAME over
      * init's svcmgr.ep (init holds a supervisor badge → full granted rights,
      * including DUPLICATE for the mint).  Missing caps leave slots empty: the
@@ -509,23 +734,23 @@ void init_spawn_iris_test(handle_id_t sm_h) {
     /* Step 4: declare a receive slot for every lookup.  A recv that declares
      * none takes the delivery-by-handle path, which is the last IPC producer
      * of handles in the productive tree.  Slots 54..56 are free in init. */
-    handle_id_t lk_svcmgr = init_ep_lookup_name_slot(sm_h, "svcmgr.ep",
+    iris_cptr_t lk_svcmgr = init_ep_lookup_name_slot(sm_h, "svcmgr.ep",
                                                      INIT_RSLOT_LK_SVCMGR);
-    handle_id_t lk_vfs    = init_ep_lookup_name_slot(sm_h, "vfs.ep",
+    iris_cptr_t lk_vfs    = init_ep_lookup_name_slot(sm_h, "vfs.ep",
                                                      INIT_RSLOT_LK_VFS);
-    handle_id_t lk_kbd    = init_ep_lookup_name_slot(sm_h, "kbd.ep",
+    iris_cptr_t lk_kbd    = init_ep_lookup_name_slot(sm_h, "kbd.ep",
                                                      INIT_RSLOT_LK_KBD);
     /* Phase 13/Track I: a KNotification serves as the slot-30 wrong-type fixture
      * for T040 (replaces the retired console KChannel cap).  It carries
      * RIGHT_WRITE so EP_CALL passes the rights check and fails on TYPE
      * (WRONG_TYPE), not ACCESS_DENIED. */
-    handle_id_t fix_wrongtype = HANDLE_INVALID;
+    iris_cptr_t fix_wrongtype = IRIS_CPTR_NULL;
     {
         long nr = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
                                    INIT_SLOT_FIX_WRONGTY, 0);
-        if (nr >= 0) fix_wrongtype = (handle_id_t)INIT_SLOT_FIX_WRONGTY;
+        if (nr >= 0) fix_wrongtype = (iris_cptr_t)INIT_SLOT_FIX_WRONGTY;
     }
-    if (lk_svcmgr == HANDLE_INVALID)
+    if (lk_svcmgr == IRIS_CPTR_NULL)
         init_log("[USER][INIT] svcmgr.ep lookup FAILED\n");
 
     /* Phase 18: forward the boot KUntyped (received from userboot at
@@ -533,7 +758,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
      * Resolve init's CSpace slot into a mint-source handle; full rights so the
      * suite can retype (WRITE) and revoke.  Absent grant → slot stays empty and
      * T125–T131 FAIL loudly. */
-    handle_id_t lk_untyped = HANDLE_INVALID;
+    iris_cptr_t lk_untyped = IRIS_CPTR_NULL;
     {
         /* Phase S1: iris_test receives its OWN sub-untyped (carved from init's
          * pool) instead of a second cap to the shared boot block — the suite
@@ -555,12 +780,12 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         uint64_t test_ut_src = IRIS_CPTR_INIT_UNTYPED2;
         if (iris_invoke2((long)test_ut_src, INV_UNTYPED_INFO, 0, 0) != 0)
             test_ut_src = g_init_untyped_c;
-        for (uint32_t szi = 0; szi < 4u && lk_untyped == HANDLE_INVALID; szi++) {
+        for (uint32_t szi = 0; szi < 4u && lk_untyped == IRIS_CPTR_NULL; szi++) {
             long ur = init_retype_slot(test_ut_src, IRIS_KOBJ_UNTYPED,
                                        INIT_SLOT_TEST_UNTYPED, s1_test_ut_sizes[szi]);
-            if (ur >= 0) lk_untyped = (handle_id_t)INIT_SLOT_TEST_UNTYPED;
+            if (ur >= 0) lk_untyped = (iris_cptr_t)INIT_SLOT_TEST_UNTYPED;
         }
-        if (lk_untyped == HANDLE_INVALID)
+        if (lk_untyped == IRIS_CPTR_NULL)
             init_log("[USER][INIT] test untyped carve FAILED\n");
     }
 
@@ -569,7 +794,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[24] = { 0 };
+        struct svc_mint it_mints[26] = { 0 };
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
@@ -676,7 +901,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * lk_vfs came from init's own supervisor-badged lookup
          * (WRITE|DUPLICATE|TRANSFER); the ordinary client lookup strips
          * DUPLICATE, so this pre-mint is the only honest source.
-         * HANDLE_INVALID (lookup miss) → svc_load skips it, and the
+         * IRIS_CPTR_NULL (lookup miss) → svc_load skips it, and the
          * file-backed suite gates loudly. */
         it_mints[11].slot  = IRIS_CPTR_TEST_VFS_DUP;
         it_mints[11].src_h = lk_vfs;
@@ -741,29 +966,42 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         it_mints[17].src_cptr = IRIS_CPTR_DEVICE_UNTYPED;
         it_mints[17].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
         it_mints[17].badge = 0;
-        /* Stage 10-dma §10.2 step 6: the PCI hole, so the suite can retype a
-         * frame over the window a device's BAR decodes and actually DRIVE the
-         * thing.  Nothing else in the system wants it yet, and a region no
-         * capability names is a region nothing can touch — so handing it to
-         * the one task that will use it costs nothing and proves something. */
-        it_mints[23].slot = IRIS_CPTR_MMIO_UNTYPED_TEST;
-        it_mints[23].src_cptr = IRIS_CPTR_MMIO_UNTYPED;
-        it_mints[23].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
+        /* Stage 10: the bus service, so the suite's driver test can ask for
+         * its device's window instead of carving one out of a region it would
+         * then be sharing with `pci`.  WRITE because a client of an endpoint
+         * sends on it; DUPLICATE so the test can derive a narrowed copy and
+         * check that a narrowed one is refused. */
+        it_mints[23].slot = IRIS_CPTR_PCI_EP;
+        it_mints[23].src_cptr = INIT_SLOT_PCI_EP;
+        it_mints[23].rights = RIGHT_WRITE | RIGHT_DUPLICATE;
         it_mints[23].badge = 0;
+        /* Stage 10: the firmware's tables, so the suite can prove ring 3 can
+         * read them.  A device Untyped like any other — it pays for its object
+         * headers out of RAM the holder names. */
+        it_mints[24].slot = IRIS_CPTR_ACPI_UNTYPED_TEST;
+        it_mints[24].src_cptr = IRIS_CPTR_ACPI_UNTYPED;
+        it_mints[24].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
+        it_mints[24].badge = 0;
+        /* Stage 10: the disk, so the suite can prove the bytes a ring-3 driver
+         * read are the bytes that are on it. */
+        it_mints[25].slot = IRIS_CPTR_BLK_EP_TEST;
+        it_mints[25].src_cptr = INIT_SLOT_BLK_EP;
+        it_mints[25].rights = RIGHT_WRITE;
+        it_mints[25].badge = 0;
         /* Step 4: the loader authority is our spawn-cap SLOT.  SYS_INITRD_VMO
          * and SYS_PROCESS_CREATE both resolve it either way, and the slot
          * outlives bootstrap_h by construction — which is the only reason the
          * retired duplicate had to exist. */
         r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
                                "iris_test",
-                            &proc_h, &boot_h, it_mints, 24u,
+                            &proc_h, &boot_h, it_mints, 26u,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
                                16u << 20, /*own_budget_slot=*/0, /* has TEST_UNTYPED */
                                /* Stage 7 Step 9: keep the suite's CSpace root
                                 * long enough for the self-proc mint below. */
                                (uint64_t)INIT_SLOT_TEST_CNODE << 32,
                                (uint64_t)INIT_SLOT_TEST_TCB << 32, 0);
-        init_report_mints("iris_test", it_mints, 24u);
+        init_report_mints("iris_test", it_mints, 26u);
     }
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);
@@ -802,7 +1040,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
     r = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
                          INIT_SLOT_WATCH_NOTIF, 0);
     if (r < 0) goto out;
-    watch_base_h = (handle_id_t)INIT_SLOT_WATCH_NOTIF;
+    watch_base_h = (iris_cptr_t)INIT_SLOT_WATCH_NOTIF;
 
     /* Stage 7 Step 10: wait on the THREAD iris_test was started with. */
     r = iris_invoke2((long)INIT_SLOT_TEST_TCB, INV_TCB_WATCH, (long)watch_base_h, 1);

@@ -3,14 +3,14 @@
  *
  * Tests (VS-1..VS-14):
  *   [VS-1]  KOBJ_VSPACE enum exists and is != 0.
- *   [VS-2]  BOOT_CPTR_VSPACE == 2; distinct from CPTR_NULL and BOOT_CPTR_BOOTSTRAP_CAP.
+ *   [VS-2]  BOOT_CPTR_VSPACE == 2; distinct from IRIS_CPTR_NULL and BOOT_CPTR_BOOTSTRAP_CAP.
  *   [VS-3]  kvspace_alloc initialises cr3 and valid=1; kvspace_free decrements cleanly.
  *   [VS-4]  kvspace_invalidate zeroes cr3/valid without destroying the object.
  *   [VS-5]  KVSpace minted into BOOT_CPTR_VSPACE; cspace_resolve_vspace succeeds.
  *   [VS-6]  cspace_resolve_cap on BOOT_CPTR_VSPACE slot reports KOBJ_VSPACE type.
  *   [VS-7]  cspace_resolve_vspace on a KOBJ_UNTYPED slot returns IRIS_ERR_WRONG_TYPE.
  *   [VS-8]  cspace_resolve_vspace with insufficient rights returns IRIS_ERR_ACCESS_DENIED.
- *   [VS-9]  CPTR_NULL always rejects with IRIS_ERR_INVALID_ARG.
+ *   [VS-9]  IRIS_CPTR_NULL always rejects with IRIS_ERR_INVALID_ARG.
  *   [VS-10] ACCESS_DENIED hard-stops; handle-table fallback is NOT attempted.
  *   [VS-11] Kernel-main dual-insert pattern: refcount=2, active_refs=1 after grants.
  *   [VS-12] Slot 1 (KBootstrapCap) and slots 16+ are unaffected by grant in slot 2.
@@ -117,10 +117,10 @@ void test_vspace_cspace(void) {
         ASSERT_TRUE(KOBJ_VSPACE != KOBJ_TCB);
     }
 
-    /* [VS-2] BOOT_CPTR_VSPACE is 2; distinct from CPTR_NULL and BOOT_CPTR_BOOTSTRAP_CAP. */
+    /* [VS-2] BOOT_CPTR_VSPACE is 2; distinct from IRIS_CPTR_NULL and BOOT_CPTR_BOOTSTRAP_CAP. */
     {
         ASSERT_EQ((uint32_t)BOOT_CPTR_VSPACE, 2u);
-        ASSERT_NE((iris_cptr_t)BOOT_CPTR_VSPACE, CPTR_NULL);
+        ASSERT_NE((iris_cptr_t)BOOT_CPTR_VSPACE, IRIS_CPTR_NULL);
         ASSERT_NE((uint32_t)BOOT_CPTR_VSPACE, (uint32_t)BOOT_CPTR_BOOTSTRAP_CAP);
         ASSERT_TRUE(BOOT_CPTR_VSPACE < BOOT_CPTR_UNTYPED_START);
         ASSERT_TRUE(BOOT_CPTR_VSPACE <= BOOT_CPTR_RES_END);
@@ -279,14 +279,14 @@ void test_vspace_cspace(void) {
         vs_free_proc(p);
     }
 
-    /* [VS-9] CPTR_NULL always rejects — cspace_resolve_vspace returns IRIS_ERR_INVALID_ARG. */
+    /* [VS-9] IRIS_CPTR_NULL always rejects — cspace_resolve_vspace returns IRIS_ERR_INVALID_ARG. */
     {
         struct cs_fixture *p = vs_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(vs_setup_root(p));
 
         struct KVSpace *out; iris_rights_t rout;
-        iris_error_t err = cspace_resolve_vspace(p->cspace_root, CPTR_NULL,
+        iris_error_t err = cspace_resolve_vspace(p->cspace_root, IRIS_CPTR_NULL,
                                                   RIGHT_NONE, &out, &rout);
         ASSERT_TRUE(err != IRIS_OK);
 

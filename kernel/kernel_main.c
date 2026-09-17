@@ -19,6 +19,7 @@
 #include <iris/tlb.h>
 #include <iris/nc/kbootcap.h>
 #include <iris/root_bootinfo.h>
+#include <iris/abi.h>
 #include <iris/nc/kfault.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kcnode.h>
@@ -508,7 +509,8 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                                                     IRIS_ROOT_BOOTINFO_BYTES,
                                                     (uint64_t)cspace_slot,
                                                     blk_phys, size,
-                                                    /*is_device*/0);
+                                                    /*is_device*/0,
+                                                    IRIS_UT_KIND_RAM);
                     ut_cspace_count++;
                     ut_count++;
                 }
@@ -553,7 +555,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                                 (void)root_bootinfo_add_untyped(
                                     bi_kva, IRIS_ROOT_BOOTINFO_BYTES,
                                     (uint64_t)fb_slot, fb_phys, fb_size,
-                                    /*is_device*/1);
+                                    /*is_device*/1, IRIS_UT_KIND_FRAMEBUFFER);
                                 ut_cspace_count++;
                                 ut_count++;
                                 klog_write("[IRIS][USER] framebuffer published "
@@ -562,6 +564,75 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                         }
                     }
                 }
+                /*
+                 * ...and the firmware's own memory, as DEVICE Untypeds.
+                 *
+                 * ACPI describes the machine: which processors exist, where
+                 * the remapping units are, what the interrupt routing is.  The
+                 * kernel reads three of those tables and will never read a
+                 * fourth — deciding what a machine IS belongs in ring 3, and a
+                 * kernel that grew an AML interpreter would be the largest
+                 * policy in the system.
+                 *
+                 * But ring 3 could not read them either, and that is the gap
+                 * this closes.  ACPI tables sit in memory the firmware marked
+                 * RECLAIMABLE or NVS, which is neither usable RAM (so it is in
+                 * no RAM Untyped) nor unmapped address space (so it is not in
+                 * the PCI hole).  There was no capability in the system that
+                 * named it, so there was no way to reach it that did not go
+                 * through the kernel.
+                 *
+                 * Published as DEVICE Untypeds for the reason the framebuffer
+                 * is: the kernel must not put object headers in firmware
+                 * memory.  The RSDP's address rides in BootInfo beside them,
+                 * because a region is not a starting point — a reader needs to
+                 * know where the pointer that anchors the whole set lives, and
+                 * only the bootloader ever knew.
+                 *
+                 * NVS as well as RECLAIMABLE, and deliberately: "reclaimable"
+                 * means an OS may take it back once it has read the tables,
+                 * and this one does not, because the only reader is in ring 3
+                 * and the kernel does not know when it has finished.
+                 */
+                if (bi_kva)
+                    (void)root_bootinfo_set_acpi_rsdp(
+                        bi_kva, IRIS_ROOT_BOOTINFO_BYTES,
+                        saved_boot_info.acpi_rsdp);
+
+                for (uint64_t i = 0;
+                     bi_kva && ut->cspace_root && ut_count < bi_capacity &&
+                     i < saved_boot_info.mmap_entry_count; i++) {
+                    const struct iris_mmap_entry *e = &saved_boot_info.mmap[i];
+                    if (e->type != IRIS_MEM_ACPI_RECLAIMABLE &&
+                        e->type != IRIS_MEM_ACPI_NVS) continue;
+                    uint64_t ab = e->base & ~0xFFFULL;
+                    uint64_t ae = (e->base + e->length + 0xFFFu) & ~0xFFFULL;
+                    if (ae <= ab) continue;
+
+                    uint32_t aslot = BOOT_CPTR_UNTYPED_START + ut_count;
+                    if (aslot >= KCNODE_DEFAULT_SLOTS) break;
+                    struct KUntyped *a_ut =
+                        kuntyped_create(ab, ae - ab, /*is_device*/1);
+                    if (!a_ut) continue;
+                    iris_error_t ae2 = kcnode_mint(
+                        ut->cspace_root, aslot, &a_ut->base,
+                        RIGHT_READ | RIGHT_WRITE |
+                        RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                    kobject_release(&a_ut->base);
+                    if (ae2 != IRIS_OK) continue;
+                    (void)root_bootinfo_add_untyped(
+                        bi_kva, IRIS_ROOT_BOOTINFO_BYTES,
+                        (uint64_t)aslot, ab, ae - ab, /*is_device*/1,
+                        IRIS_UT_KIND_ACPI);
+                    ut_cspace_count++;
+                    ut_count++;
+                    klog_write("[IRIS][USER] ACPI 0x");
+                    klog_write_hex(ab);
+                    klog_write("..0x");
+                    klog_write_hex(ae);
+                    klog_write(" published as a device untyped\n");
+                }
+
                 /*
                  * ...and the rest of the MMIO space, as a DEVICE Untyped.
                  *
@@ -643,7 +714,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                                 (void)root_bootinfo_add_untyped(
                                     bi_kva, IRIS_ROOT_BOOTINFO_BYTES,
                                     (uint64_t)mm_slot, start, end - start,
-                                    /*is_device*/1);
+                                    /*is_device*/1, IRIS_UT_KIND_MMIO);
                                 ut_cspace_count++;
                                 ut_count++;
                                 klog_write("[IRIS][USER] MMIO 0x");
@@ -655,6 +726,18 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                         }
                     }
                 }
+
+                /* Stage 10-abi: which ABI this kernel implements, said out
+                 * loud.  It is in BootInfo for the root task to ACT on; it is
+                 * here so that a log from a machine somebody else ran answers
+                 * the first question anybody asks about it. */
+                klog_write("[IRIS][ABI] version ");
+                klog_write_dec(IRIS_ABI_VERSION_MAJOR);
+                klog_write(".");
+                klog_write_dec(IRIS_ABI_VERSION_MINOR);
+                klog_write(" - 4 syscall numbers, ");
+                klog_write_dec(IRIS_ABI_LABEL_MAX + 1u);
+                klog_write(" invocation labels\n");
 
                 klog_write("[IRIS][USER] boot untyped blocks handed to init: ");
                 klog_write_dec(ut_count);

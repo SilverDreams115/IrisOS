@@ -4,7 +4,7 @@
 #include <iris/nc/kobject.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <stdint.h>
 
 /*
@@ -17,33 +17,36 @@
  * Example — two-level tree, both CNodes with 256 slots (8 bits each):
  *   cptr = (leaf_slot << 8) | root_slot
  *
- * CPTR_NULL (0) is the null capability.  Slot 0 is the null slot in every
+ * IRIS_CPTR_NULL (0) is the null capability.  Slot 0 is the null slot in every
  * CNode by kernel convention and is never populated.  cspace_resolve_cap()
- * rejects CPTR_NULL with IRIS_ERR_INVALID_ARG before any traversal.
+ * rejects IRIS_CPTR_NULL with IRIS_ERR_INVALID_ARG before any traversal.
  *
  * seL4 compatibility note: this matches seL4's CPtr semantics — a raw
  * unsigned index into the process-local CNode tree rooted at the TCB's
  * CSpace root, without guard bits (simplified model, guard bits future).
  */
-typedef uint64_t iris_cptr_t;
-
-#define CPTR_NULL        ((iris_cptr_t)0u)
+/*
+ * `iris_cptr_t` and `IRIS_CPTR_NULL` come from nc/cptr.h, included above,
+ * which is the header ring 3 includes.  This file used to declare the type a
+ * second time and to spell the null capability `CPTR_NULL` — two names for one
+ * thing, which a 1.0 ABI (Stage 10-abi) does not have.
+ */
 #define CSPACE_MAX_DEPTH 8u
 
 /*
  * The value-range split between the two authority namespaces: below the limit
  * a syscall argument is a CPtr, at or above it a handle id
- * (slot | gen << HANDLE_GEN_SHIFT, generation >= 1).
+ * (slot | gen << 10, generation >= 1).
  *
  * This is the discrimination the dual-namespace retirement deletes, so it has
  * exactly ONE definition — every caller tests it through cspace_value_is_cptr
  * and nobody open-codes `< 1024`.  When the handle namespace goes, this block
  * and its callers are the whole edit.
  */
-#define CSPACE_DIRECT_CPTR_LIMIT ((iris_cptr_t)HANDLE_TAG)
+#define CSPACE_DIRECT_CPTR_LIMIT ((iris_cptr_t)IRIS_CPTR_LIMIT)
 
 static inline int cspace_value_is_cptr(iris_cptr_t v) {
-    return v != CPTR_NULL && v < CSPACE_DIRECT_CPTR_LIMIT;
+    return v != IRIS_CPTR_NULL && v < CSPACE_DIRECT_CPTR_LIMIT;
 }
 
 struct KEndpoint;
@@ -74,13 +77,13 @@ struct KFrame;
  * Pass RIGHT_NONE to skip the rights check (syscall layer checks separately).
  *
  * Authority invariants upheld by this function:
- *   1. CPTR_NULL always fails — null slot is never occupied.
+ *   1. IRIS_CPTR_NULL always fails — null slot is never occupied.
  *   2. Rights are monotonically non-increasing: returned rights ⊆ slot rights.
  *   3. Traversal depth is bounded (CSPACE_MAX_DEPTH levels maximum).
  *   4. Each CNode level is released after descent — no lingering borrows.
  *
  * Errors:
- *   IRIS_ERR_INVALID_ARG   — cptr == CPTR_NULL, root NULL, or depth exhausted
+ *   IRIS_ERR_INVALID_ARG   — cptr == IRIS_CPTR_NULL, root NULL, or depth exhausted
  *   IRIS_ERR_NOT_FOUND     — no CSpace root set, or a slot is empty
  *   IRIS_ERR_ACCESS_DENIED — terminal slot rights do not satisfy required
  */
@@ -131,7 +134,7 @@ iris_error_t cspace_resolve_dest_slot(struct KCNode   *root, iris_cptr_t cptr,
  * that was invoked (slot badge on the CSpace path, handle badge on the
  * handle path; 0 = unbadged). */
 iris_error_t cspace_resolve_only_endpoint_badged(struct KCNode    *root,
-                                                       iris_cptr_t       cptr_or_handle,
+                                                       iris_cptr_t       cptr,
                                                        iris_rights_t     required,
                                                        struct KEndpoint **out,
                                                        iris_rights_t    *rights_out,
@@ -187,7 +190,7 @@ iris_error_t cspace_resolve_frame(struct KCNode   *root, iris_cptr_t cptr,
  *   kobject_release(&(*out)->base);
  */
 iris_error_t cspace_resolve_only_frame(struct KCNode   *root,
-                                             iris_cptr_t      cptr_or_handle,
+                                             iris_cptr_t      cptr,
                                              iris_rights_t    required,
                                              struct KFrame  **out,
                                              iris_rights_t   *rights_out);
@@ -200,7 +203,7 @@ iris_error_t cspace_resolve_only_frame(struct KCNode   *root,
  * supervisor pass a SYS_PROCESS_VSPACE handle directly.
  */
 iris_error_t cspace_resolve_only_vspace(struct KCNode   *root,
-                                              iris_cptr_t      cptr_or_handle,
+                                              iris_cptr_t      cptr,
                                               iris_rights_t    required,
                                               struct KVSpace **out,
                                               iris_rights_t   *rights_out);
@@ -212,18 +215,19 @@ iris_error_t cspace_resolve_only_vspace(struct KCNode   *root,
  * required==RIGHT_NONE defers the rights check to the caller.
  */
 iris_error_t cspace_resolve_only_obj(struct KCNode    *root,
-                                          iris_cptr_t       cptr_or_handle,
+                                          iris_cptr_t       cptr,
                                           iris_rights_t     required,
                                           uint32_t          expected_type,
                                           struct KObject  **out,
                                           iris_rights_t    *rights_out);
 
 /*
- * cspace_resolve_only_cnode — dual-resolution helper for CNode syscalls.
+ * cspace_resolve_only_cnode — resolve a CNode capability.
  *
- * Tries CSpace traversal first (if root is set and
- * cptr_or_handle != CPTR_NULL).  Falls back to the handle table if CSpace
- * fails with anything other than ACCESS_DENIED (which is a hard stop).
+ * One resolution, not two: the CSpace traversal is the only one there is.  This
+ * used to fall back to a handle table when the traversal failed with anything
+ * but ACCESS_DENIED, and both the table and the fallback are gone — the helper
+ * keeps its shape and its refcount contract, not its second namespace.
  *
  * Both paths return the same ref-count contract as cspace_resolve_cap:
  * one kobject_active_retain + one kobject_retain on *out.
@@ -232,7 +236,7 @@ iris_error_t cspace_resolve_only_obj(struct KCNode    *root,
  *   kobject_release(&(*out)->base);
  */
 iris_error_t cspace_resolve_only_cnode(struct KCNode   *root,
-                                             iris_cptr_t      cptr_or_handle,
+                                             iris_cptr_t      cptr,
                                              iris_rights_t    required,
                                              struct KCNode  **out,
                                              iris_rights_t   *rights_out);
@@ -240,9 +244,10 @@ iris_error_t cspace_resolve_only_cnode(struct KCNode   *root,
 /*
  * cspace_resolve_only_untyped — dual-resolution helper for KUntyped syscalls.
  *
- * Tries CSpace traversal first (if root is set and
- * cptr_or_handle != CPTR_NULL).  Falls back to the handle table if CSpace
- * fails with anything other than ACCESS_DENIED (which is a hard stop).
+ * One resolution, not two: the CSpace traversal is the only one there is.  This
+ * used to fall back to a handle table when the traversal failed with anything
+ * but ACCESS_DENIED, and both the table and the fallback are gone — the helper
+ * keeps its shape and its refcount contract, not its second namespace.
  *
  * Ref-count contract: ACTIVE + LIFECYCLE (same as cspace_resolve_only_cnode).
  * KUntyped operations (INFO/RETYPE/RESET) never block across task_yield(); holding
@@ -256,7 +261,7 @@ iris_error_t cspace_resolve_only_cnode(struct KCNode   *root,
  * ACCESS_DENIED from CSpace is a hard stop — no fallback to handle table.
  */
 iris_error_t cspace_resolve_only_untyped(struct KCNode    *root,
-                                               iris_cptr_t       cptr_or_handle,
+                                               iris_cptr_t       cptr,
                                                iris_rights_t     required,
                                                struct KUntyped **out,
                                                iris_rights_t    *rights_out);
@@ -286,19 +291,19 @@ iris_error_t cspace_resolve_only_untyped(struct KCNode    *root,
  * ACCESS_DENIED from CSpace is a hard stop — no fallback to handle table.
  */
 iris_error_t cspace_resolve_only_endpoint(struct KCNode     *root,
-                                                iris_cptr_t        cptr_or_handle,
+                                                iris_cptr_t        cptr,
                                                 iris_rights_t      required,
                                                 struct KEndpoint **out,
                                                 iris_rights_t     *rights_out);
 
 iris_error_t cspace_resolve_only_reply(struct KCNode   *root,
-                                             iris_cptr_t      cptr_or_handle,
+                                             iris_cptr_t      cptr,
                                              iris_rights_t    required,
                                              struct KReply  **out,
                                              iris_rights_t   *rights_out);
 
 iris_error_t cspace_resolve_only_notification(struct KCNode      *root,
-                                                    iris_cptr_t           cptr_or_handle,
+                                                    iris_cptr_t           cptr,
                                                     iris_rights_t         required,
                                                     struct KNotification **out,
                                                     iris_rights_t        *rights_out);

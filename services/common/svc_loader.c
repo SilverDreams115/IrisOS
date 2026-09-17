@@ -24,8 +24,8 @@
 
 /* Release a capability: delete its slot.  Stage 4 removed the handle branch —
  * every capability the loader creates is published into its workspace. */
-static inline void sl_close_cap(handle_id_t h) {
-    if (h == HANDLE_INVALID) return;
+static inline void sl_close_cap(iris_cptr_t h) {
+    if (h == IRIS_CPTR_NULL) return;
     (void)iris_invoke1((long)((uint32_t)h & 0xFFu), INV_CNODE_DELETE, (long)((uint32_t)h >> 8));
 }
 
@@ -190,6 +190,9 @@ static long sl_name_to_index(const char *name) {
     if (sl_streq(name, "badelf"))   return 11;
     /* A-24: appended at 16, past the fixtures, so no index below moved. */
     if (sl_streq(name, "timer"))    return 16;
+    /* Stage 10: the bus service, appended for the same reason. */
+    if (sl_streq(name, "pci"))      return 17;
+    if (sl_streq(name, "blk"))      return 18;
     return -1;
 }
 
@@ -200,7 +203,7 @@ long svc_initrd_count(uint64_t initrd_c) {
 }
 
 long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
-              handle_id_t *out_proc_h, handle_id_t *out_chan_h) {
+              iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h) {
     return svc_load_minted(proc_c, initrd_c, name, out_proc_h, out_chan_h, 0, 0);
 }
 
@@ -211,11 +214,11 @@ long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * skipped the workspace, and a silent fall back to handles is exactly what
  * this stage removes. */
 long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
-                     handle_id_t *out_proc_h, handle_id_t *out_chan_h,
+                     iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h,
                      struct svc_mint *mints, uint32_t mint_count) {
     (void)proc_c; (void)initrd_c; (void)name; (void)mints; (void)mint_count;
-    if (out_proc_h) *out_proc_h = HANDLE_INVALID;
-    if (out_chan_h) *out_chan_h = HANDLE_INVALID;
+    if (out_proc_h) *out_proc_h = IRIS_CPTR_NULL;
+    if (out_chan_h) *out_chan_h = IRIS_CPTR_NULL;
     return (long)IRIS_ERR_NOT_SUPPORTED;
 }
 
@@ -324,14 +327,14 @@ static int sl_ws_ensure(uint64_t ws) {
  * with retiring SYS_PROCESS_CREATE's number.
  */
 long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
-                        handle_id_t *out_proc_h, handle_id_t *out_chan_h,
+                        iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h,
                         struct svc_mint *mints, uint32_t mint_count,
                         uint64_t ws, uint64_t child_budget,
                         uint32_t own_budget_slot, uint64_t keep_cnode_dest,
                         uint64_t keep_tcb_dest, uint64_t keep_vspace_dest) {
     (void)proc_c;
-    *out_proc_h = HANDLE_INVALID;
-    *out_chan_h = HANDLE_INVALID;
+    *out_proc_h = IRIS_CPTR_NULL;
+    *out_chan_h = IRIS_CPTR_NULL;
     long self_vs  = 0;   /* the loader's own address space, for parse windows */
     long child_vs = 0;   /* the child's address space, once it exists */
     long child_cn = 0;   /* ...its root CSpace, and the thread runs in both */
@@ -343,11 +346,11 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
     /* State tracking for cleanup */
     int         elf_mapped     = 0;
     uint32_t    segs_in_loader = 0;  /* bitmask of loader-mapped seg slots */
-    handle_id_t elf_h          = HANDLE_INVALID;
-    handle_id_t proc_h         = HANDLE_INVALID;
-    handle_id_t ch_h           = HANDLE_INVALID;
-    handle_id_t stack_vmo_h    = HANDLE_INVALID;
-    handle_id_t seg_vmo[SL_MAX_SEGS];
+    iris_cptr_t elf_h          = IRIS_CPTR_NULL;
+    iris_cptr_t proc_h         = IRIS_CPTR_NULL;
+    iris_cptr_t ch_h           = IRIS_CPTR_NULL;
+    iris_cptr_t stack_vmo_h    = IRIS_CPTR_NULL;
+    iris_cptr_t seg_vmo[SL_MAX_SEGS];
     uint32_t    seg_count = 0;
     uint64_t    seg_p_vaddr [SL_MAX_SEGS];
     uint64_t    seg_p_memsz [SL_MAX_SEGS];
@@ -360,7 +363,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
     long        r = (long)IRIS_ERR_INVALID_ARG;
 
     for (uint32_t i = 0; i < SL_MAX_SEGS; i++) {
-        seg_vmo[i]     = HANDLE_INVALID;
+        seg_vmo[i]     = IRIS_CPTR_NULL;
         seg_p_memsz[i] = 0;
         seg_map_base[i] = 0;
         seg_map_size[i] = 0;
@@ -427,7 +430,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * ABI to read a file the kernel already had. */
         r = iris_invoke((long)initrd_c, INV_BOOT_INITRD_FRAME, idx, sl_ws_dest(ws, SL_WS_ELF), pool);
         if (r <= 0) { if (r == 0) r = (long)IRIS_ERR_NOT_FOUND; goto out; }
-        elf_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_ELF);
+        elf_h = (iris_cptr_t)sl_ws_cptr(ws, SL_WS_ELF);
     }
 
     /* 2. Map ELF read-only at SL_ELF_VADDR for parsing.  One map covers the
@@ -627,7 +630,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             (r >= 0 || r == (long)IRIS_ERR_ALREADY_EXISTS))
             r = (long)IRIS_ERR_NO_MEMORY;
         if (r < 0) goto out;
-        proc_h = (handle_id_t)sl_ws_cptr(ws, proc_leaf);
+        proc_h = (iris_cptr_t)sl_ws_cptr(ws, proc_leaf);
 
         /* 6. Create a sparse VMO for each segment (populated eagerly at map),
          * charged to the child.  Mapped into the loader's temp window below to
@@ -646,7 +649,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
              * makes the VMO's page-at-a-time population unnecessary. */
             r = iris_invoke(pool_c, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)), sl_ws_dest(ws, SL_WS_SEG + i), (long)seg_map_size[i]);
             if (r < 0) goto out;
-            seg_vmo[i] = (handle_id_t)sl_ws_cptr(ws, SL_WS_SEG + i);
+            seg_vmo[i] = (iris_cptr_t)sl_ws_cptr(ws, SL_WS_SEG + i);
         }
 
         /* 7. Map each segment VMO writable in loader's temp window. */
@@ -732,7 +735,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         iris_invoke2((long)elf_h, INV_FRAME_UNMAP, self_vs, (long)SL_ELF_VADDR);
         elf_mapped = 0;
         sl_close_cap(elf_h);
-        elf_h = HANDLE_INVALID;
+        elf_h = IRIS_CPTR_NULL;
 
         /* 12. Target process created earlier (step 5b) so its image VMOs are
          * charged to it (Phase 29).
@@ -756,7 +759,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         /* 14. Create user stack sparse VMO (charged to the child) and map it in. */
         r = iris_invoke(pool_c, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)), sl_ws_dest(ws, SL_WS_STACK), (long)USER_STACK_SIZE);
         if (r < 0) goto out;
-        stack_vmo_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_STACK);
+        stack_vmo_h = (iris_cptr_t)sl_ws_cptr(ws, SL_WS_STACK);
 
         /* Stage 7 Step 9: the map names the child's ADDRESS SPACE, which the
          * loader retyped and still holds — not its process. */
@@ -799,9 +802,9 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         }
 
         /* 17. Release temporary handles — VMOs kept alive by child's mappings. */
-        sl_close_cap(stack_vmo_h); stack_vmo_h = HANDLE_INVALID;
+        sl_close_cap(stack_vmo_h); stack_vmo_h = IRIS_CPTR_NULL;
         for (uint32_t i = 0; i < seg_count; i++) {
-            sl_close_cap(seg_vmo[i]); seg_vmo[i] = HANDLE_INVALID;
+            sl_close_cap(seg_vmo[i]); seg_vmo[i] = IRIS_CPTR_NULL;
         }
 
         /* 18. (Track I) No bootstrap channel to insert — the child gets RBX = 0. */
@@ -886,7 +889,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                 (void)iris_invoke2(child_vs, INV_CSPACE_MINT, (long)((uint64_t)child_cn |
                                      (IRIS_CPTR_OWN_VSPACE << 32)), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
         }
-        if (has_budget && proc_h != HANDLE_INVALID) {
+        if (has_budget && proc_h != IRIS_CPTR_NULL) {
             int taken = 0;
             for (uint32_t mi = 0; mints && mi < mint_count; mi++)
                 if (mints[mi].slot == (uint16_t)IRIS_CPTR_OWN_TCB) taken = 1;
@@ -920,7 +923,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             uint64_t rb = (mints[mi].badge << 32) | (uint64_t)mints[mi].rights;
             uint32_t src = mints[mi].src_cptr ? mints[mi].src_cptr
                                               : (uint32_t)mints[mi].src_h;
-            if (src == 0u || src == (uint32_t)HANDLE_INVALID) {
+            if (src == 0u || src == (uint32_t)IRIS_CPTR_NULL) {
                 mints[mi].result = SVC_MINT_SKIPPED;
                 continue;
             }
@@ -1015,7 +1018,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
     (void)iris_invoke1((long)SL_WS_SLOT(ws), INV_CNODE_DELETE, (long)SL_WS_CHILD_VSPACE);
     (void)iris_invoke1((long)SL_WS_SLOT(ws), INV_CNODE_DELETE, (long)SL_WS_CHILD_CNODE);
     *out_proc_h = proc_h;
-    *out_chan_h  = HANDLE_INVALID;
+    *out_chan_h  = IRIS_CPTR_NULL;
     return 0;
 
 out:

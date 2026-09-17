@@ -158,7 +158,7 @@
  * is a CPtr or it is INVALID_ARG.  Slot 0 is the null slot.
  *
  * Layout (root CNode has KCNODE_DEFAULT_SLOTS = 256 slots):
- *   0          CPTR_NULL (always invalid)
+ *   0          IRIS_CPTR_NULL (always invalid)
  *   1..4       core service endpoints, client side (RIGHT_WRITE):
  *              svcmgr discovery, vfs, console, kbd.  svcmgr mints 1..4
  *              into every catalog child; init mints them into the
@@ -572,7 +572,53 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * window (64..87) and 62 is inside init's (INIT_SLOT_TEST_TCB).  Two crowded
  * CSpaces with no slot free in both is not a problem to solve by picking
  * harder; it is what a second constant is for. */
-#define IRIS_CPTR_MMIO_UNTYPED_TEST ((uint64_t)62)
+/*
+ * ...and where a task that DRIVES a device finds the bus service (Stage 10).
+ *
+ * This slot used to hold a second copy of the MMIO Untyped, handed to
+ * iris_test so its driver test could carve a frame over a device's BAR itself.
+ * That worked while there was exactly one holder and stopped the moment the
+ * `pci` service existed, because an Untyped is a WATERMARK: two holders
+ * carving from one region hand out the same bytes or block each other, and
+ * which of the two happens depends on who runs first.
+ *
+ * The answer is not to arbitrate, it is that there is one holder.  `pci` owns
+ * the region; everybody else owns this — an endpoint on which to ask for one
+ * device's window, and which conveys no ability to reach any other.
+ */
+#define IRIS_CPTR_PCI_EP            ((uint64_t)62)
+
+/*
+ * The firmware's own memory, as a device Untyped (Stage 10).
+ *
+ * ACPI describes the machine, and until this stage nothing in ring 3 could
+ * read a word of it: the tables sit in memory the firmware marked RECLAIMABLE
+ * or NVS, which is neither usable RAM nor unmapped address space, so no
+ * capability in the system named it.  The kernel reads three tables — MADT,
+ * DMAR, and the RSDP that anchors them — and will never read a fourth, because
+ * deciding what a machine IS belongs in ring 3 and a kernel with an AML
+ * interpreter in it would be the largest policy in the system.
+ *
+ * The region arrives here; `struct iris_root_bootinfo.acpi_rsdp` says where
+ * inside it the root pointer is, because a region is not a starting point.
+ *
+ * Two slots for the two crowded CSpaces, as with the MMIO region: 88 is free
+ * in init and inside the suite's S1 scratch window, 61 is free in the suite
+ * and is INIT_SLOT_TEST_CNODE in init.
+ */
+#define IRIS_CPTR_ACPI_UNTYPED      ((uint64_t)88)
+#define IRIS_CPTR_ACPI_UNTYPED_TEST ((uint64_t)61)
+
+/*
+ * Where a task that wants a DISK finds one (Stage 10).
+ *
+ * `_TEST` because this is the SUITE's slot and only the suite's: 60 is
+ * INIT_SLOT_S8_REPLY in init, which is harmless — they are different CSpaces —
+ * but a bare `IRIS_CPTR_BLK_EP` would read as a slot every task uses, and the
+ * next person to add one to init would find out otherwise the hard way.  init
+ * holds the same endpoint at INIT_SLOT_BLK_EP.
+ */
+#define IRIS_CPTR_BLK_EP_TEST       ((uint64_t)60)
 /*
  * Stage 6-pure Step 2 gave this slot a second, guaranteed occupant.
  *

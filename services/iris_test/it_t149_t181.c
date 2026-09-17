@@ -28,8 +28,8 @@ void test_t149(void) {
 
     long ep = it_ep_create_slot();
     long no = it_notify_create_slot();
-    handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
-    handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
+    iris_cptr_t ep_h = (ep >= 0) ? (iris_cptr_t)ep : IRIS_CPTR_NULL;
+    iris_cptr_t no_h = (no >= 0) ? (iris_cptr_t)no : IRIS_CPTR_NULL;
     if (ep < 0 || no < 0) { it_close(&ep_h); it_close(&no_h); it_fail("T149", "fixture"); return; }
 
     struct iris_msg m; iris_msg_zero(&m);
@@ -147,7 +147,7 @@ void test_t150(void) {
      * writer left is the wait itself. */
     {
         long no = it_notify_create();
-        handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
+        iris_cptr_t no_h = (no >= 0) ? (iris_cptr_t)no : IRIS_CPTR_NULL;
         if (no < 0) { ok = 0; why = "notif fixture"; }
         for (int i = 0; ok && i < NB; i++) {
             if (it_invoke1(no, INV_NOTIFY_POLL, bad_ptr[i])
@@ -205,7 +205,7 @@ void test_t151(void) {
     for (i = 0; ok && i < T151_ROUNDS; i++) {
         /* One well-formed object per round, resolved back to baseline at the
          * end of the round; malformed ops are interleaved and must no-op. */
-        handle_id_t fr = HANDLE_INVALID, ep = HANDLE_INVALID, no = HANDLE_INVALID;
+        iris_cptr_t fr = IRIS_CPTR_NULL, ep = IRIS_CPTR_NULL, no = IRIS_CPTR_NULL;
         uint64_t va = 0x8098000000ULL + (uint64_t)(fz_rand() % 8u) * 0x1000ULL;
 
         /* --- malformed batch (must all fail clean) --- */
@@ -223,7 +223,7 @@ void test_t151(void) {
         if (it_invoke0((long)IT_SCRATCH_3, INV_CSPACE_REVOKE) >= 0) { ok = 0; why = "revoke stale ok"; break; }
         /* A HANDLE value must be refused: build a well-formed one rather than
          * a bare large integer, which is a legitimate CPtr now. */
-        if (it_invoke0((long)handle_id_make(8u, 1u), INV_CSPACE_REVOKE) >= 0) { ok = 0; why = "revoke by handle ok"; break; }
+        if (it_invoke0((long)iris_cptr_beyond_limit(8u, 1u), INV_CSPACE_REVOKE) >= 0) { ok = 0; why = "revoke by handle ok"; break; }
         op = 5;
         /* Stage 7 Step 7: a random CPTR, not a random id.  An unoccupied slot
          * resolves to NOT_FOUND and an occupied one to the wrong type, and
@@ -248,14 +248,14 @@ void test_t151(void) {
         /* --- well-formed batch (must all succeed and be observable) --- */
         op = 10;
         long r = it_frame_create_slot(IT_UT, 4096);
-        fr = (r >= 0) ? (handle_id_t)r : HANDLE_INVALID;
-        if (fr == HANDLE_INVALID) { ok = 0; why = "retype frame"; break; }
+        fr = (r >= 0) ? (iris_cptr_t)r : IRIS_CPTR_NULL;
+        if (fr == IRIS_CPTR_NULL) { ok = 0; why = "retype frame"; break; }
         op = 11;
         long en = it_ep_create();
-        ep = (en >= 0) ? (handle_id_t)en : HANDLE_INVALID;
+        ep = (en >= 0) ? (iris_cptr_t)en : IRIS_CPTR_NULL;
         long nn = it_notify_create();
-        no = (nn >= 0) ? (handle_id_t)nn : HANDLE_INVALID;
-        if (ep == HANDLE_INVALID || no == HANDLE_INVALID) { ok = 0; why = "obj create"; it_close(&fr); it_close(&ep); it_close(&no); break; }
+        no = (nn >= 0) ? (iris_cptr_t)nn : IRIS_CPTR_NULL;
+        if (ep == IRIS_CPTR_NULL || no == IRIS_CPTR_NULL) { ok = 0; why = "obj create"; it_close(&fr); it_close(&ep); it_close(&no); break; }
 
         op = 12;
         if ((fz_rand() & 1u)) {
@@ -301,8 +301,8 @@ void test_t152(void) {
 
     /* Occupied VA: map, then a second map is BUSY and must not leak a node. */
     long r = it_retype_frame();
-    handle_id_t fr = (r != HANDLE_INVALID) ? (handle_id_t)r : HANDLE_INVALID;
-    if (fr == HANDLE_INVALID) { it_fail("T152", "retype"); return; }
+    iris_cptr_t fr = (r != IRIS_CPTR_NULL) ? (iris_cptr_t)r : IRIS_CPTR_NULL;
+    if (fr == IRIS_CPTR_NULL) { it_fail("T152", "retype"); return; }
     struct it_snap mid;
     if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)VA, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; }
     mid = it_snap_take();
@@ -316,7 +316,7 @@ void test_t152(void) {
      * no PTE born; a following writable map with a full cap works. */
     if (ok) {
         long rd = it_cdt_reduced(fr, IT_SCRATCH_0, IT_SCRATCH_1, RIGHT_READ);
-        handle_id_t fr_ro = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
+        iris_cptr_t fr_ro = (rd >= 0) ? (iris_cptr_t)rd : IRIS_CPTR_NULL;
         if (rd < 0) { ok = 0; why = "ro derive"; }
         if (ok && it_invoke((long)fr_ro, INV_FRAME_MAP, IT_VS, (long)VA, (long)IT_MAP_W) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable not denied"; }
         if (ok && it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)VA, (long)IT_MAP_W) != 0) { ok = 0; why = "valid map after deny"; }
@@ -360,16 +360,16 @@ void test_t153(void) {
     for (i = 0; ok && i < T153_ROUNDS; i++) {
         uint32_t kind = fz_rand() % 4u;   /* 0 recv, 1 send, 2 call, 3 fault */
         long ep = it_ep_create();
-        handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
-        handle_id_t proc_h = HANDLE_INVALID;
+        iris_cptr_t ep_h = (ep >= 0) ? (iris_cptr_t)ep : IRIS_CPTR_NULL;
+        iris_cptr_t proc_h = IRIS_CPTR_NULL;
         if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; it_close(&ep_h); break; }
 
-        handle_id_t n_h = HANDLE_INVALID;
+        iris_cptr_t n_h = IRIS_CPTR_NULL;
         op = kind;
         if (kind == 3u) {
             /* Fault-pending waiter: register a handler, drive an invalid-VA fault. */
             long n = it_ep_create();   /* A-22: faults go to an ENDPOINT */
-            n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+            n_h = (n >= 0) ? (iris_cptr_t)n : IRIS_CPTR_NULL;
             if (n < 0 || it_invoke(it_child_tcb((long)proc_h), INV_TCB_SET_FAULT_HANDLER, n, 0, 0) != 0) { ok = 0; why = "reg handler"; }
             if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
             if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no fault"; }
@@ -422,12 +422,12 @@ void test_t154(void) {
     const char *why = "rights monotonicity";
 
     long no = it_notify_create_slot();
-    handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
+    iris_cptr_t no_h = (no >= 0) ? (iris_cptr_t)no : IRIS_CPTR_NULL;
     if (no < 0) { it_fail("T154", "notif fixture"); return; }
 
     /* RIGHT_READ dup cannot signal (needs RIGHT_WRITE) — no fallback. */
     long rd = it_cs_reduce(no, RIGHT_READ);
-    handle_id_t rd_h = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
+    iris_cptr_t rd_h = (rd >= 0) ? (iris_cptr_t)rd : IRIS_CPTR_NULL;
     if (rd < 0) { ok = 0; why = "read dup"; }
     if (ok && it_invoke1(rd, INV_NOTIFY_SIGNAL, 1) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read cap signalled"; }
     /* Re-deriving from the reduced cap cannot recover RIGHT_WRITE: either the
@@ -435,7 +435,7 @@ void test_t154(void) {
     if (ok) {
         long wr = it_cs_reduce(rd, RIGHT_READ | RIGHT_WRITE);
         if (wr >= 0) {
-            handle_id_t wr_h = (handle_id_t)wr;
+            iris_cptr_t wr_h = (iris_cptr_t)wr;
             if (it_invoke1(wr, INV_NOTIFY_SIGNAL, 1) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights amplified via re-derive"; }
             it_close(&wr_h);
         }
@@ -449,11 +449,11 @@ void test_t154(void) {
      * writable map; the PTE reflects the cap, never the request. */
     if (ok && it_setup_self_vspace()) {
         long r = it_retype_frame();
-        handle_id_t fr = (r != HANDLE_INVALID) ? (handle_id_t)r : HANDLE_INVALID;
+        iris_cptr_t fr = (r != IRIS_CPTR_NULL) ? (iris_cptr_t)r : IRIS_CPTR_NULL;
         const uint64_t VA = 0x80A8000000ULL;
-        if (fr == HANDLE_INVALID) { ok = 0; why = "retype"; }
+        if (fr == IRIS_CPTR_NULL) { ok = 0; why = "retype"; }
         long dr = ok ? it_cdt_reduced(fr, IT_SCRATCH_0, IT_SCRATCH_1, RIGHT_READ) : -1;
-        handle_id_t fr_ro = (dr >= 0) ? (handle_id_t)dr : HANDLE_INVALID;
+        iris_cptr_t fr_ro = (dr >= 0) ? (iris_cptr_t)dr : IRIS_CPTR_NULL;
         if (ok && dr < 0) { ok = 0; why = "ro derive"; }
         if (ok && it_invoke((long)fr_ro, INV_FRAME_MAP, IT_VS, (long)VA, (long)IT_MAP_W) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable map"; }
         if (ok && it_invoke((long)fr_ro, INV_FRAME_MAP, IT_VS, (long)VA, 0L) != 0) { ok = 0; why = "ro readable map"; }
@@ -485,8 +485,8 @@ void test_t155(void) {
         /* Object churn: retype a frame, map/derive/revoke/unmap, close. */
         op = 1;
         long r = it_frame_create_slot(IT_UT, 4096);
-        handle_id_t fr = (r >= 0) ? (handle_id_t)r : HANDLE_INVALID;
-        if (fr == HANDLE_INVALID) { ok = 0; why = "retype"; break; }
+        iris_cptr_t fr = (r >= 0) ? (iris_cptr_t)r : IRIS_CPTR_NULL;
+        if (fr == IRIS_CPTR_NULL) { ok = 0; why = "retype"; break; }
         uint64_t va = 0x80B0000000ULL + (uint64_t)(fz_rand() % 4u) * 0x1000ULL;
         op = 2;
         if (it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)va, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; it_close(&fr); break; }
@@ -506,8 +506,8 @@ void test_t155(void) {
         /* Notification rendezvous. */
         op = 5;
         long nn = it_notify_create();
-        handle_id_t no = (nn >= 0) ? (handle_id_t)nn : HANDLE_INVALID;
-        if (no != HANDLE_INVALID && (fz_rand() & 1u)) {
+        iris_cptr_t no = (nn >= 0) ? (iris_cptr_t)nn : IRIS_CPTR_NULL;
+        if (no != IRIS_CPTR_NULL && (fz_rand() & 1u)) {
             if (it_invoke1((long)no, INV_NOTIFY_SIGNAL, 3) != 0) { ok = 0; why = "signal"; }
             uint64_t bits = 0;
             if (ok && it_wait_timeout( (long)no, (long)(uintptr_t)&bits, 500000000L) != 0) { ok = 0; why = "wait"; }
@@ -519,8 +519,8 @@ void test_t155(void) {
         if (ok && (i % 4u) == 0u) {
             op = 6;
             long ep = it_ep_create();
-            handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
-            handle_id_t proc_h = HANDLE_INVALID;
+            iris_cptr_t ep_h = (ep >= 0) ? (iris_cptr_t)ep : IRIS_CPTR_NULL;
+            iris_cptr_t proc_h = IRIS_CPTR_NULL;
             if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; it_close(&ep_h); break; }
             uint32_t what = fz_rand() % 3u;
             if (what == 0u) {                    /* clean run */
@@ -533,7 +533,7 @@ void test_t155(void) {
                 if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "kill exit"; }
             } else {                             /* controlled fault → kill */
                 long n = it_ep_create();   /* A-22: faults go to an ENDPOINT */
-                handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+                iris_cptr_t n_h = (n >= 0) ? (iris_cptr_t)n : IRIS_CPTR_NULL;
                 if (n < 0 || it_invoke(it_child_tcb((long)proc_h), INV_TCB_SET_FAULT_HANDLER, n, 0, 0) != 0) { ok = 0; why = "reg handler"; }
                 if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
                 if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no fault"; }
@@ -571,7 +571,7 @@ void test_t155(void) {
 long it_lp_report_slots(const struct svc_mint *extra, uint32_t nextra) {
     long ep = it_ep_create();
     if (ep < 0) return -1;
-    handle_id_t cmd = (handle_id_t)ep;
+    iris_cptr_t cmd = (iris_cptr_t)ep;
 
     struct svc_mint mints[8] = { 0 };
     mints[0].slot = LP_CPTR_CMD_EP;
@@ -581,14 +581,14 @@ long it_lp_report_slots(const struct svc_mint *extra, uint32_t nextra) {
     uint32_t n = 1u;
     for (uint32_t i = 0; i < nextra && n < 8u; i++) mints[n++] = extra[i];
 
-    handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
+    iris_cptr_t proc = IRIS_CPTR_NULL, boot = IRIS_CPTR_NULL;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              &proc, &boot, mints, n,
                              IT_LOADER_WS, 0,
                                /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(proc);
     it_close(&boot);
-    if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
+    if (r < 0 || proc == IRIS_CPTR_NULL) { it_close(&cmd); it_close(&proc); return -1; }
 
     long mask = -1;
     if (it_lp_cmd(cmd, LP_CMD_REPORT_SLOTS) == 0) mask = it_lp_wait_exit(proc);
@@ -649,8 +649,8 @@ void test_t156(void) {
 
     long no = it_notify_create();
     long ep = it_ep_create();
-    handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
-    handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
+    iris_cptr_t no_h = (no >= 0) ? (iris_cptr_t)no : IRIS_CPTR_NULL;
+    iris_cptr_t ep_h = (ep >= 0) ? (iris_cptr_t)ep : IRIS_CPTR_NULL;
     if (no < 0 || ep < 0) { it_close(&no_h); it_close(&ep_h); it_fail("T156", "fixture"); return; }
 
     /* Declared set {cmd@3, notif@5, ep@7}. */
@@ -737,7 +737,7 @@ void test_t158(void) {
     if (ok && iris_msg_call((long)IRIS_CPTR_VFS_EP, &m) == 0 &&
         m.label == IRIS_EP_REPLY_OK && m.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
         ok = 0; why = "vfs served a registry op";
-        handle_id_t h = (handle_id_t)m.got_cap; it_close(&h);
+        iris_cptr_t h = (iris_cptr_t)m.got_cap; it_close(&h);
     }
 
     /* Ordinary vfs.ep cap is call-only (no DUPLICATE) — cannot be re-minted. */
@@ -778,7 +778,7 @@ void test_t159(void) {
         if (iris_msg_call(eps[i], &m) == 0 &&
             m.label == IRIS_EP_REPLY_OK && m.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
             ok = 0; why = "driver served registry op";
-            handle_id_t h = (handle_id_t)m.got_cap; it_close(&h); break;
+            iris_cptr_t h = (iris_cptr_t)m.got_cap; it_close(&h); break;
         }
     }
 
@@ -841,7 +841,7 @@ void test_t161(void) {
     if (ok && slots0 < 0) { ok = 0; why = "diag baseline"; }
 
     long e = it_ep_create();
-    handle_id_t svc_ep = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
+    iris_cptr_t svc_ep = (e >= 0) ? (iris_cptr_t)e : IRIS_CPTR_NULL;
     if (ok && e < 0) { ok = 0; why = "svc ep"; }
 
     long id = ok ? it_register_ep("t161.svc", svc_ep) : -1;
@@ -896,7 +896,7 @@ void test_t162(void) {
     /* Teeth: mint one extra cap at slot 6 → the report must show it. */
     if (ok) {
         long n = it_notify_create();
-        handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+        iris_cptr_t n_h = (n >= 0) ? (iris_cptr_t)n : IRIS_CPTR_NULL;
         if (n < 0) { ok = 0; why = "teeth fixture"; }
         else {
             struct svc_mint extra[1] = { 0 };
@@ -951,7 +951,7 @@ void test_t163(void) {
         /* Well-formed: register → lookup → unregister, each round balanced. */
         op = 10;
         long e = it_ep_create();
-        handle_id_t svc_ep = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
+        iris_cptr_t svc_ep = (e >= 0) ? (iris_cptr_t)e : IRIS_CPTR_NULL;
         if (e < 0) { ok = 0; why = "svc ep"; break; }
         long id = it_register_ep("t163.svc", svc_ep);
         if (id < 0) { ok = 0; why = "register"; it_close(&svc_ep); break; }
@@ -980,7 +980,7 @@ void test_t163(void) {
 }
 
 /* Create an ioport cap over [base, base+count) via the HW_ACCESS spawn cap;
- * returns the handle or HANDLE_INVALID. */
+ * returns the handle or IRIS_CPTR_NULL. */
 /* Phase S4: the cap is published into a CSpace slot (MDB child of the spawn-cap
  * slot) and the CPtr is what callers hold.  Slots rotate over the device block
  * so nested creations (e.g. two live ioport caps in T171) do not collide; the
@@ -996,23 +996,23 @@ static long it_dev_mint(long src_cptr, uint32_t dest_slot, uint32_t rights) {
     return (r != 0) ? r : (long)dest_slot;
 }
 
-static handle_id_t it_make_ioport(long base, long count) {
+static iris_cptr_t it_make_ioport(long base, long count) {
     static const uint32_t pool[2] = { IT_DEV_SLOT_A, IT_DEV_SLOT_B };
     uint32_t slot = pool[__atomic_fetch_add(&g_it_dev_next, 1u,
                                             __ATOMIC_RELAXED) % 2u];
     it_slot_delete(slot);
-    if (it_ioport_create((long)IRIS_CPTR_IOPORT_CONTROL, base, count, (long)slot) != 0) return HANDLE_INVALID;
-    return (handle_id_t)slot;
+    if (it_ioport_create((long)IRIS_CPTR_IOPORT_CONTROL, base, count, (long)slot) != 0) return IRIS_CPTR_NULL;
+    return (iris_cptr_t)slot;
 }
 
 /* Same, for an IRQ capability. */
-static handle_id_t it_make_irqcap(long irq) {
+static iris_cptr_t it_make_irqcap(long irq) {
     static const uint32_t pool[2] = { IT_DEV_SLOT_A, IT_DEV_SLOT_B };
     uint32_t slot = pool[__atomic_fetch_add(&g_it_dev_next, 1u,
                                             __ATOMIC_RELAXED) % 2u];
     it_slot_delete(slot);
-    if (it_irqcap_create((long)IRIS_CPTR_IRQ_CONTROL, irq, (long)slot) != 0) return HANDLE_INVALID;
-    return (handle_id_t)slot;
+    if (it_irqcap_create((long)IRIS_CPTR_IRQ_CONTROL, irq, (long)slot) != 0) return IRIS_CPTR_NULL;
+    return (iris_cptr_t)slot;
 }
 
 /* Spawn a lifecycle_probe with an ioport cap at slot 10 (its only device
@@ -1022,10 +1022,10 @@ static handle_id_t it_make_irqcap(long irq) {
  * escalation denied).  With an IN-RANGE offset bit 1 (a legitimate IN through
  * the held cap) is set — the teeth check proving the probe genuinely attempts
  * each op.  Returns -1 on spawn/command failure. */
-static long it_dev_probe(handle_id_t ioport_h, uint64_t offset, iris_rights_t dev_rights) {
+static long it_dev_probe(iris_cptr_t ioport_h, uint64_t offset, iris_rights_t dev_rights) {
     long ep = it_ep_create();
     if (ep < 0) return -1;
-    handle_id_t cmd = (handle_id_t)ep;
+    iris_cptr_t cmd = (iris_cptr_t)ep;
 
     /* The source ioport cap carries DUPLICATE (needed to mint it); the child's
      * cap is reduced to dev_rights — modelling a driver's exact port authority. */
@@ -1037,14 +1037,14 @@ static long it_dev_probe(handle_id_t ioport_h, uint64_t offset, iris_rights_t de
     mints[1].slot = 10; mints[1].src_cptr = (uint64_t)ioport_h;
     mints[1].rights = dev_rights; mints[1].badge = 0;
 
-    handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
+    iris_cptr_t proc = IRIS_CPTR_NULL, boot = IRIS_CPTR_NULL;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              &proc, &boot, mints, 2u,
                              IT_LOADER_WS, 0,
                                /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(proc);
     it_close(&boot);
-    if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
+    if (r < 0 || proc == IRIS_CPTR_NULL) { it_close(&cmd); it_close(&proc); return -1; }
 
     long mask = -1;
     if (it_lp_cmd_va(cmd, LP_CMD_DEV_PROBE, offset) == 0) mask = it_lp_wait_exit(proc);
@@ -1064,8 +1064,8 @@ void test_t164(void) {
     int ok = b.ok;
     const char *why = "ioport boundaries";
 
-    handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
-    if (io == HANDLE_INVALID) { it_fail("T164", "com2 cap"); return; }
+    iris_cptr_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
+    if (io == IRIS_CPTR_NULL) { it_fail("T164", "com2 cap"); return; }
 
     /* In-range access works (COM2 is unwired: IN returns a byte, OUT is a no-op). */
     if (ok && it_invoke1((long)io, INV_IOPORT_IN, 5) < 0) { ok = 0; why = "in-range IN"; }
@@ -1078,7 +1078,7 @@ void test_t164(void) {
     /* Wrong-type cap: a notification is not a KIoPort. */
     if (ok) {
         long n = it_notify_create();
-        handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+        iris_cptr_t n_h = (n >= 0) ? (iris_cptr_t)n : IRIS_CPTR_NULL;
         if (n < 0) { ok = 0; why = "notif fixture"; }
         if (ok && it_invoke1(n, INV_IOPORT_IN, 0) >= 0) { ok = 0; why = "wrong-type IN honoured"; }
         it_close(&n_h);
@@ -1087,13 +1087,13 @@ void test_t164(void) {
     /* Rights enforcement: READ-only cap denies OUT; WRITE-only denies IN. */
     if (ok) {
         long rr = it_dev_mint((long)io, IT_DEV_MINT_A, RIGHT_READ);
-        handle_id_t ro = (rr >= 0) ? (handle_id_t)rr : HANDLE_INVALID;
+        iris_cptr_t ro = (rr >= 0) ? (iris_cptr_t)rr : IRIS_CPTR_NULL;
         if (rr < 0) { ok = 0; why = "read derive"; }
         if (ok && it_invoke2(ro, INV_IOPORT_OUT, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "RO OUT not denied"; }
         if (ok && it_invoke1(ro, INV_IOPORT_IN, 0) < 0) { ok = 0; why = "RO IN broken"; }
         it_close(&ro);
         long wr = it_dev_mint((long)io, IT_DEV_MINT_B, RIGHT_WRITE);
-        handle_id_t wo = (wr >= 0) ? (handle_id_t)wr : HANDLE_INVALID;
+        iris_cptr_t wo = (wr >= 0) ? (iris_cptr_t)wr : IRIS_CPTR_NULL;
         if (ok && wr < 0) { ok = 0; why = "write derive"; }
         if (ok && it_invoke1(wo, INV_IOPORT_IN, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "WO IN not denied"; }
         it_close(&wo);
@@ -1204,8 +1204,8 @@ void test_t165(void) {
     const char *why = "kbd containment";
 
     /* Model kbd's data port as a READ-only device cap in the child. */
-    handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
-    if (io == HANDLE_INVALID) { it_fail("T165", "io cap"); return; }
+    iris_cptr_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
+    if (io == IRIS_CPTR_NULL) { it_fail("T165", "io cap"); return; }
 
     /* Contained: out-of-range offset → every escalation denied (mask 0). */
     long mask = it_dev_probe(io, 1000u, RIGHT_READ);
@@ -1239,8 +1239,8 @@ void test_t166(void) {
     int ok = b.ok;
     const char *why = "console containment";
 
-    handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);   /* RW, like the UART */
-    if (io == HANDLE_INVALID) { it_fail("T166", "io cap"); return; }
+    iris_cptr_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);   /* RW, like the UART */
+    if (io == IRIS_CPTR_NULL) { it_fail("T166", "io cap"); return; }
 
     long mask = it_dev_probe(io, 1000u, RIGHT_READ | RIGHT_WRITE);
     if (ok && mask < 0) { ok = 0; why = "probe failed"; }
@@ -1269,12 +1269,12 @@ void test_t167(void) {
     const char *why = "irq authority";
 
     /* Create an IRQ cap for the unused line 5. */
-    handle_id_t irq = it_make_irqcap(5);
-    if (ok && irq == HANDLE_INVALID) { ok = 0; why = "irqcap create"; }
+    iris_cptr_t irq = it_make_irqcap(5);
+    if (ok && irq == IRIS_CPTR_NULL) { ok = 0; why = "irqcap create"; }
 
     long nn = it_notify_create_slot();
-    handle_id_t notif = (nn >= 0) ? (handle_id_t)nn : HANDLE_INVALID;
-    if (ok && notif == HANDLE_INVALID) { ok = 0; why = "notif"; }
+    iris_cptr_t notif = (nn >= 0) ? (iris_cptr_t)nn : IRIS_CPTR_NULL;
+    if (ok && notif == IRIS_CPTR_NULL) { ok = 0; why = "notif"; }
 
     /* ACK with the valid IRQ cap (RIGHT_ROUTE) succeeds — unmasks the unused
      * line, harmless. */
@@ -1285,7 +1285,7 @@ void test_t167(void) {
         /* IRQ caps carry ROUTE|DUPLICATE|TRANSFER; derive DUPLICATE-only to get
          * a cap that lacks ROUTE (a subset — never amplified). */
         long rd = it_dev_mint((long)irq, IT_DEV_MINT_A, RIGHT_DUPLICATE);
-        handle_id_t irq_ro = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
+        iris_cptr_t irq_ro = (rd >= 0) ? (iris_cptr_t)rd : IRIS_CPTR_NULL;
         if (rd < 0) { ok = 0; why = "irq derive"; }
         if (ok && it_invoke0(irq_ro, INV_IRQ_ACK) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-route ack not denied"; }
         /* Route with an IRQ cap lacking ROUTE → ACCESS_DENIED. */
@@ -1296,7 +1296,7 @@ void test_t167(void) {
     /* Route with a wrong-type destination (endpoint, not notification). */
     if (ok) {
         long e = it_ep_create_slot();
-        handle_id_t ep_h = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
+        iris_cptr_t ep_h = (e >= 0) ? (iris_cptr_t)e : IRIS_CPTR_NULL;
         if (e < 0) { ok = 0; why = "ep fixture"; }
         if (ok && it_invoke2((long)irq, INV_IRQ_SET_NOTIFICATION, (long)ep_h, 0)
                   != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "route wrong-type notif"; }
@@ -1305,7 +1305,7 @@ void test_t167(void) {
     /* Route with a notification lacking WRITE → ACCESS_DENIED. */
     if (ok) {
         long nrd = it_cs_reduce((long)notif, RIGHT_READ);
-        handle_id_t n_ro = (nrd >= 0) ? (handle_id_t)nrd : HANDLE_INVALID;
+        iris_cptr_t n_ro = (nrd >= 0) ? (iris_cptr_t)nrd : IRIS_CPTR_NULL;
         if (nrd < 0) { ok = 0; why = "notif read dup"; }
         if (ok && it_invoke2((long)irq, INV_IRQ_SET_NOTIFICATION, n_ro, 0)
                   != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "route no-write notif"; }
@@ -1381,7 +1381,7 @@ void test_t168(void) {
      * is an authority answer and not a type one. */
     if (ok) {
         long n = it_notify_create();
-        handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+        iris_cptr_t n_h = (n >= 0) ? (iris_cptr_t)n : IRIS_CPTR_NULL;
         if (n < 0) { ok = 0; why = "notif fixture"; }
         if (ok && it_invoke2(n, INV_BOOT_FRAMEBUFFER_INFO, (long)(uintptr_t)&fb1, 0)
                   != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong-type got framebuffer"; }
@@ -1412,18 +1412,18 @@ void test_t169(void) {
     int ok = b.ok;
     const char *why = "device derivation";
 
-    handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
-    if (io == HANDLE_INVALID) { it_fail("T169", "io cap"); return; }
+    iris_cptr_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
+    if (io == IRIS_CPTR_NULL) { it_fail("T169", "io cap"); return; }
 
     long rr = it_dev_mint((long)io, IT_DEV_MINT_A, RIGHT_READ);
-    handle_id_t ro = (rr >= 0) ? (handle_id_t)rr : HANDLE_INVALID;
+    iris_cptr_t ro = (rr >= 0) ? (iris_cptr_t)rr : IRIS_CPTR_NULL;
     if (ok && rr < 0) { ok = 0; why = "read derive"; }
     /* Re-derive asking for WRITE from a READ-only cap: either rejected or the
      * result still cannot OUT (rights never amplified). */
     if (ok) {
         long wr = it_dev_mint((long)ro, IT_DEV_MINT_B, RIGHT_READ | RIGHT_WRITE);
         if (wr >= 0) {
-            handle_id_t w_h = (handle_id_t)wr;
+            iris_cptr_t w_h = (iris_cptr_t)wr;
             if (it_invoke2(wr, INV_IOPORT_OUT, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights amplified via re-derive"; }
             it_close(&w_h);
         }
@@ -1436,10 +1436,10 @@ void test_t169(void) {
     /* IRQ cap: a ROUTE-less derivation cannot ack. */
     if (ok) {
         long ic = (long)it_make_irqcap(5);
-        handle_id_t irq = (ic >= 0) ? (handle_id_t)ic : HANDLE_INVALID;
+        iris_cptr_t irq = (ic >= 0) ? (iris_cptr_t)ic : IRIS_CPTR_NULL;
         if (ic < 0) { ok = 0; why = "irqcap"; }
         long rd = ok ? it_dev_mint((long)irq, IT_DEV_MINT_A, RIGHT_DUPLICATE) : -1;
-        handle_id_t irq_ro = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
+        iris_cptr_t irq_ro = (rd >= 0) ? (iris_cptr_t)rd : IRIS_CPTR_NULL;
         if (ok && rd < 0) { ok = 0; why = "irq derive"; }
         if (ok && it_invoke0(irq_ro, INV_IRQ_ACK) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "route-less ack not denied"; }
         it_close(&irq_ro); it_close(&irq);
@@ -1464,17 +1464,17 @@ void test_t170(void) {
     const char *why = "driver death cleanup";
 
     for (int i = 0; ok && i < 4; i++) {
-        handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
-        if (io == HANDLE_INVALID) { ok = 0; why = "io cap"; break; }
+        iris_cptr_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
+        if (io == IRIS_CPTR_NULL) { ok = 0; why = "io cap"; break; }
 
         long ep = it_ep_create();
-        handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
+        iris_cptr_t cmd = (ep >= 0) ? (iris_cptr_t)ep : IRIS_CPTR_NULL;
         struct svc_mint mints[2] = { 0 };
         mints[0].slot = LP_CPTR_CMD_EP; IT_MINT_SRC(mints[0], cmd);
         mints[0].rights = RIGHT_READ | RIGHT_WRITE; mints[0].badge = 0;
         mints[1].slot = 10; IT_MINT_SRC(mints[1], io);
         mints[1].rights = RIGHT_READ | RIGHT_WRITE; mints[1].badge = 0;
-        handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
+        iris_cptr_t proc = IRIS_CPTR_NULL, boot = IRIS_CPTR_NULL;
         long r = (ep < 0) ? -1 : svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL,
                                                     IRIS_CPTR_INITRD_CONTROL,
                      "lifecycle_probe", &proc, &boot, mints, 2u,
@@ -1482,7 +1482,7 @@ void test_t170(void) {
                                /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
         it_child_bind(proc);
         it_close(&boot); it_close(&io);
-        if (r < 0 || proc == HANDLE_INVALID) { ok = 0; why = "spawn"; it_close(&cmd); it_close(&proc); break; }
+        if (r < 0 || proc == IRIS_CPTR_NULL) { ok = 0; why = "spawn"; it_close(&cmd); it_close(&proc); break; }
 
         /* The child blocks in its first recv; kill it while parked. */
         it_settle(2);
@@ -1523,8 +1523,8 @@ void test_t171(void) {
 
         /* A valid COM2 cap, exercised in and out of range. */
         op = 2;
-        handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
-        if (io == HANDLE_INVALID) { ok = 0; why = "io cap"; break; }
+        iris_cptr_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
+        if (io == IRIS_CPTR_NULL) { ok = 0; why = "io cap"; break; }
         uint32_t off = fz_rand() % 32u;
         long rin = it_invoke1((long)io, INV_IOPORT_IN, (long)off);
         if (off < (uint32_t)IT_COM2_COUNT) { if (rin < 0) { ok = 0; why = "in-range IN failed"; } }
@@ -1536,7 +1536,7 @@ void test_t171(void) {
         if (fz_rand() & 1u) {
             long rr = it_dev_mint((long)io, IT_DEV_MINT_A, RIGHT_READ);
             if (rr >= 0) {
-                handle_id_t ro = (handle_id_t)rr;
+                iris_cptr_t ro = (iris_cptr_t)rr;
                 if (it_invoke2(rr, INV_IOPORT_OUT, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "RO OUT honoured"; }
                 if (ok && it_invoke0((long)io, INV_CSPACE_REVOKE) < 0) { ok = 0; why = "revoke"; }
                 if (ok && it_invoke1(rr, INV_IOPORT_IN, 0) >= 0) { ok = 0; why = "revoked usable"; }
@@ -1549,8 +1549,8 @@ void test_t171(void) {
         /* Occasionally: a compromised-driver probe must stay contained. */
         op = 4;
         if (fz_rand() & 1u) {
-            handle_id_t io2 = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
-            if (io2 == HANDLE_INVALID) { ok = 0; why = "io2"; break; }
+            iris_cptr_t io2 = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
+            if (io2 == IRIS_CPTR_NULL) { ok = 0; why = "io2"; break; }
             long mask = it_dev_probe(io2, 500u + (fz_rand() & 0xFFu), RIGHT_READ | RIGHT_WRITE);
             it_close(&io2);
             if (mask != 0) { ok = 0; why = "probe escalated"; break; }
@@ -1561,7 +1561,7 @@ void test_t171(void) {
         {
             long n = it_notify_create();
             if (n >= 0) {
-                handle_id_t n_h = (handle_id_t)n;
+                iris_cptr_t n_h = (iris_cptr_t)n;
                 if (it_invoke0(n, INV_IRQ_ACK) >= 0) { ok = 0; why = "ack wrong-type honoured"; }
                 it_close(&n_h);
             }
@@ -1717,7 +1717,7 @@ void test_t174(void) {
     const char *why = "stale generation";
 
     long e = it_ep_create();
-    handle_id_t svc_ep = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
+    iris_cptr_t svc_ep = (e >= 0) ? (iris_cptr_t)e : IRIS_CPTR_NULL;
     if (e < 0) { it_fail("T174", "ep"); return; }
 
     long id0 = it_register_ep("t174.svc", svc_ep);
@@ -1763,8 +1763,8 @@ void test_t175(void) {
     /* Supervision loop: (re)start until the budget is spent. */
     while (ok && !degraded) {
         long ep = it_ep_create();
-        handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
-        handle_id_t proc = HANDLE_INVALID;
+        iris_cptr_t cmd = (ep >= 0) ? (iris_cptr_t)ep : IRIS_CPTR_NULL;
+        iris_cptr_t proc = IRIS_CPTR_NULL;
         if (ep < 0 || lp_spawn_child(cmd, &proc) < 0) { ok = 0; why = "spawn"; it_close(&cmd); break; }
         generation++;                              /* each (re)start is a new generation */
 
@@ -1805,8 +1805,8 @@ void test_t176(void) {
     const char *why = "client during death";
 
     long ep = it_ep_create();
-    handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
-    handle_id_t proc = HANDLE_INVALID;
+    iris_cptr_t cmd = (ep >= 0) ? (iris_cptr_t)ep : IRIS_CPTR_NULL;
+    iris_cptr_t proc = IRIS_CPTR_NULL;
     if (ep < 0 || lp_spawn_child(cmd, &proc) < 0) { it_close(&cmd); it_fail("T176", "spawn"); return; }
 
     /* Drive the child to block as a caller, then kill it mid-call. */
@@ -1848,8 +1848,8 @@ void test_t177(void) {
 
     for (int gen = 0; ok && gen < 2; gen++) {
         /* Each "generation" is a fresh driver instance with the SAME manifest. */
-        handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
-        if (io == HANDLE_INVALID) { ok = 0; why = "io cap"; break; }
+        iris_cptr_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
+        if (io == IRIS_CPTR_NULL) { ok = 0; why = "io cap"; break; }
         long mask = it_dev_probe(io, 1000u, RIGHT_READ);   /* out-of-range → contained */
         it_close(&io);
         if (mask != 0) { ok = 0; why = "restarted driver escalated"; break; }
@@ -1859,8 +1859,8 @@ void test_t177(void) {
      * its well-known slots and assert no high-authority slot appears. */
     if (ok) {
         long io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
-        handle_id_t io_h = (io >= 0) ? (handle_id_t)io : HANDLE_INVALID;
-        if (io_h == HANDLE_INVALID) { ok = 0; why = "io cap 2"; }
+        iris_cptr_t io_h = (io >= 0) ? (iris_cptr_t)io : IRIS_CPTR_NULL;
+        if (io_h == IRIS_CPTR_NULL) { ok = 0; why = "io cap 2"; }
         else {
             struct svc_mint extra[1] = { 0 };
             /* Phase S4: CSpace-sourced device delegation. */
@@ -1931,14 +1931,14 @@ void test_t179(void) {
     /* Register a service, spawn a probe, kill the probe: the registration (owned
      * by iris_test) is unaffected by the unrelated death. */
     long e = it_ep_create();
-    handle_id_t svc_ep = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
+    iris_cptr_t svc_ep = (e >= 0) ? (iris_cptr_t)e : IRIS_CPTR_NULL;
     if (e < 0) { it_fail("T179", "ep"); return; }
     long id = it_register_ep("t179.svc", svc_ep);
     if (ok && id < 0) { ok = 0; why = "register"; }
 
     long cep = it_ep_create();
-    handle_id_t cmd = (cep >= 0) ? (handle_id_t)cep : HANDLE_INVALID;
-    handle_id_t proc = HANDLE_INVALID;
+    iris_cptr_t cmd = (cep >= 0) ? (iris_cptr_t)cep : IRIS_CPTR_NULL;
+    iris_cptr_t proc = IRIS_CPTR_NULL;
     if (ok && (cep < 0 || lp_spawn_child(cmd, &proc) < 0)) { ok = 0; why = "spawn"; }
     if (ok) {
         it_settle(2);
@@ -1985,8 +1985,8 @@ void test_t180(void) {
         /* A supervised probe: spawn, kill or fault-crash, reap. */
         op = 2;
         long ep = it_ep_create();
-        handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
-        handle_id_t proc = HANDLE_INVALID;
+        iris_cptr_t cmd = (ep >= 0) ? (iris_cptr_t)ep : IRIS_CPTR_NULL;
+        iris_cptr_t proc = IRIS_CPTR_NULL;
         if (ep < 0 || lp_spawn_child(cmd, &proc) < 0) { ok = 0; why = "spawn"; it_close(&cmd); break; }
 
         uint32_t how = fz_rand() % 3u;
@@ -2007,7 +2007,7 @@ void test_t180(void) {
         op = 3;
         if (ok && (fz_rand() & 1u)) {
             long e2 = it_ep_create();
-            handle_id_t sep = (e2 >= 0) ? (handle_id_t)e2 : HANDLE_INVALID;
+            iris_cptr_t sep = (e2 >= 0) ? (iris_cptr_t)e2 : IRIS_CPTR_NULL;
             if (e2 < 0) { ok = 0; why = "reg ep"; it_close(&cmd); break; }
             long id = it_register_ep("t180.svc", sep);
             if (id < 0) { ok = 0; why = "register"; }
@@ -2031,8 +2031,8 @@ void test_t180(void) {
  * forever: the child holds its own mint of the command endpoint, so closing
  * the parent's handle alone never wakes it, and a leaked live child keeps its
  * exception-handler notification pinned. */
-void t25_reap(handle_id_t *proc_h) {
-    if (*proc_h != HANDLE_INVALID) {
+void t25_reap(iris_cptr_t *proc_h) {
+    if (*proc_h != IRIS_CPTR_NULL) {
         (void)it_kill((long)*proc_h);
         (void)it_lp_wait_exit(*proc_h);
     }
@@ -2055,13 +2055,13 @@ void t25_tgt_reap(struct t25_tgt *g) {
  * this fixture keeps it — the suite RECEIVES on it, and a target handed to a
  * pager is re-aimed at the pager's own endpoint instead. */
 static int t25_tgt_spawn_dest(struct t25_tgt *g, const char **why) {
-    g->cmd = g->proc = g->vs = g->notif = g->watch = HANDLE_INVALID;
+    g->cmd = g->proc = g->vs = g->notif = g->watch = IRIS_CPTR_NULL;
     g->fault_leaf = 0u;
     long ep = it_ep_create();
     if (ep < 0) { *why = "ep create"; return 0; }
-    g->cmd = (handle_id_t)ep;
+    g->cmd = (iris_cptr_t)ep;
     it_child_keep_vspace();   /* the pager maps into this child */
-    if (lp_spawn_child(g->cmd, &g->proc) < 0 || g->proc == HANDLE_INVALID) {
+    if (lp_spawn_child(g->cmd, &g->proc) < 0 || g->proc == IRIS_CPTR_NULL) {
         it_close(&g->cmd); *why = "spawn"; return 0;
     }
     /* Stage 4: the target's VSpace is published into a CSpace slot (arg1 is
@@ -2073,9 +2073,9 @@ static int t25_tgt_spawn_dest(struct t25_tgt *g, const char **why) {
     if (vs == 0) vs = -1;
     long n  = it_ep_create();     /* A-22: the target's FAULT ENDPOINT */
     long w  = it_notify_create();
-    g->vs    = (vs >= 0) ? (handle_id_t)vs : HANDLE_INVALID;
-    g->notif = (n  >= 0) ? (handle_id_t)n  : HANDLE_INVALID;
-    g->watch = (w  >= 0) ? (handle_id_t)w  : HANDLE_INVALID;
+    g->vs    = (vs >= 0) ? (iris_cptr_t)vs : IRIS_CPTR_NULL;
+    g->notif = (n  >= 0) ? (iris_cptr_t)n  : IRIS_CPTR_NULL;
+    g->watch = (w  >= 0) ? (iris_cptr_t)w  : IRIS_CPTR_NULL;
     long eh = 0, wt = 0;
     /*
      * Registered through a copy BADGED 1 — target index 0 plus one — even
@@ -2120,11 +2120,11 @@ int t25_tgt_spawn(struct t25_tgt *g, const char **why) {
 
 /* Spawn an external pager over `g` with the declared manifest (plus optional
  * extra mints, e.g. T184's under-privileged victim caps).  0 on success. */
-long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
+long t25_pager_spawn(const struct t25_tgt *g, iris_cptr_t frame_h,
                             iris_rights_t frame_rights,
                             const struct svc_mint *extra, uint32_t nextra,
-                            handle_id_t *out_cmd, handle_id_t *out_proc) {
-    *out_cmd = *out_proc = HANDLE_INVALID;
+                            iris_cptr_t *out_cmd, iris_cptr_t *out_proc) {
+    *out_cmd = *out_proc = IRIS_CPTR_NULL;
     /*
      * Ledger A-22: nothing is RE-AIMED.
      *
@@ -2141,7 +2141,7 @@ long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
     if (!it_pgr_mbox_fresh(1u)) return -1;
     long ep = it_ep_create();
     if (ep < 0) return -1;
-    handle_id_t cmd = (handle_id_t)ep;
+    iris_cptr_t cmd = (iris_cptr_t)ep;
     struct svc_mint m[10] = { 0 };
     m[0].slot = LP_CPTR_CMD_EP;    IT_MINT_SRC(m[0], cmd);      m[0].rights = RIGHT_READ | RIGHT_WRITE;  m[0].badge = 0;
     m[1].slot = LP_PGR_SLOT_TPROC; IT_MINT_SRC(m[1], g->proc);  m[1].rights = RIGHT_READ | RIGHT_MANAGE; m[1].badge = 0;
@@ -2156,7 +2156,7 @@ long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
     m[5].rights = RIGHT_READ | RIGHT_WRITE; m[5].badge = 0;
     uint32_t n = 6u;
     for (uint32_t i = 0; i < nextra && n < 10u; i++) m[n++] = extra[i];
-    handle_id_t boot = HANDLE_INVALID;
+    iris_cptr_t boot = IRIS_CPTR_NULL;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              out_proc, &boot, m, n,
                              IT_LOADER_WS, 0,
@@ -2172,14 +2172,14 @@ long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
                                /*own_budget_slot=*/LP_SLOT_BUDGET, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(*out_proc);
     it_close(&boot);
-    if (r < 0 || *out_proc == HANDLE_INVALID) {
+    if (r < 0 || *out_proc == IRIS_CPTR_NULL) {
         it_close(&cmd); it_close(out_proc); return -1;
     }
     *out_cmd = cmd;
     return 0;
 }
 
-long t25_serve(handle_id_t pcmd, uint32_t sub, uint32_t count,
+long t25_serve(iris_cptr_t pcmd, uint32_t sub, uint32_t count,
                       uint64_t mflags, uint64_t va_ovr, uint64_t expect_cr2) {
     struct iris_msg m;
     iris_msg_zero(&m);
@@ -2192,7 +2192,7 @@ long t25_serve(handle_id_t pcmd, uint32_t sub, uint32_t count,
     return iris_msg_send((long)pcmd, &m);
 }
 
-long t25_xprobe(handle_id_t pcmd, uint32_t vtid, uint64_t va, uint32_t vseq) {
+long t25_xprobe(iris_cptr_t pcmd, uint32_t vtid, uint64_t va, uint32_t vseq) {
     struct iris_msg m;
     iris_msg_zero(&m);
     m.label = LP_CMD_PAGER_XPROBE;
@@ -2277,7 +2277,7 @@ int t25_wait_refault(const struct t25_tgt *g, uint32_t old_seq,
 
 /* Write (write=1) or read back (write=0) word 0 of a frame through the
  * parent's own VSpace — frame preparation and post-mortem inspection. */
-int t25_frame_word(handle_id_t fr, uint32_t *val, int write) {
+int t25_frame_word(iris_cptr_t fr, uint32_t *val, int write) {
     if (!it_setup_self_vspace()) return 0;
     if (it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)T25_SELF_VA, write ? 1L : 0L) != 0) return 0;
     volatile uint32_t *p = (volatile uint32_t *)(uintptr_t)T25_SELF_VA;
@@ -2306,7 +2306,7 @@ void test_t181(void) {
     struct t25_tgt g;
     if (!t25_tgt_spawn(&g, &why)) { it_fail("T181", why); return; }
     long fr = it_frame_create_slot(IT_UT, 4096);
-    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    iris_cptr_t fr_h = (fr >= 0) ? (iris_cptr_t)fr : IRIS_CPTR_NULL;
     if (fr < 0) { ok = 0; why = "frame retype"; }
 
     if (ok) {
@@ -2335,7 +2335,7 @@ void test_t181(void) {
     long vmo_t = ok ? it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096u) : -1;
     if (ok && vmo_t < 0) { ok = 0; why = "probe vmo"; }
     long ro = ok ? it_cs_reduce((long)g.vs, RIGHT_READ) : -1;
-    handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
+    iris_cptr_t ro_h = (ro >= 0) ? (iris_cptr_t)ro : IRIS_CPTR_NULL;
     if (ok && ro < 0) { ok = 0; why = "ro dup"; }
     /* A READ-only address space cannot be mapped into. */
     if (ok && it_invoke(vmo_t, INV_FRAME_MAP, ro, (long)0x80D0000000ULL, 1)
@@ -2354,9 +2354,9 @@ void test_t181(void) {
     if (ok) {
         long sv = it_vspace_self_slot();
         if (sv < 0) { ok = 0; why = "self vspace"; }
-        else { handle_id_t h = (handle_id_t)sv; it_close(&h); }
+        else { iris_cptr_t h = (iris_cptr_t)sv; it_close(&h); }
     }
-    if (vmo_t >= 0) { handle_id_t h = (handle_id_t)vmo_t; it_close(&h); }
+    if (vmo_t >= 0) { iris_cptr_t h = (iris_cptr_t)vmo_t; it_close(&h); }
     it_close(&ro_h);
 
     if (it_kill((long)g.proc) != 0 && ok) { ok = 0; why = "kill"; }

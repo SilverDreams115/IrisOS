@@ -173,7 +173,7 @@ void test_syscall_retype(void) {
         struct task *t = rt_caller();
         ASSERT_NOT_NULL(t);
         /* arg3 is the standard destination packing (cnode | slot<<32); a
-         * destination of 0 is slot 0, which is CPTR_NULL and refused. */
+         * destination of 0 is slot 0, which is IRIS_CPTR_NULL and refused. */
         ASSERT_EQ(rt_err(sys_cap_create_irqcap(1, 16, 4, 4ULL << 32)), /* IRQ > 15 */
                   (long)IRIS_ERR_INVALID_ARG);
         ASSERT_EQ(rt_err(sys_cap_create_irqcap(1, 1, 0, 0)),    /* slot 0   */

@@ -19,16 +19,17 @@
  *   [RBI-3]  init refuses a buffer that cannot hold the header
  *   [RBI-4]  descriptors append in order and track total_bytes
  *   [RBI-5]  the array stops at capacity — it never overruns the buffer
- *   [RBI-6]  a descriptor naming CPTR_NULL or a zero-sized region is refused
+ *   [RBI-6]  a descriptor naming IRIS_CPTR_NULL or a zero-sized region is refused
  *   [RBI-7]  add on an uninitialised / wrong-magic buffer is refused
  *   [RBI-8]  the empty range is validated against the CNode it describes
  *   [RBI-9]  the mapped region describes every untyped a 256-slot root holds
  *   [RBI-10] total_bytes never exceeds the buffer, at any fill level
  *   [RBI-11] each control capability lands in its own field; an unknown kind
- *            or a CPTR_NULL grant is refused
+ *            or a IRIS_CPTR_NULL grant is refused
  */
 #include "framework.h"
 #include <iris/root_bootinfo.h>
+#include <iris/abi.h>
 #include <iris/nc/error.h>
 #include <iris/nc/kbootcap.h>
 #include <iris/nc/kcnode.h>
@@ -115,7 +116,9 @@ void test_root_bootinfo(void) {
                                                 BOOT_CPTR_UNTYPED_START + i,
                                                 0x100000ULL * (i + 1u),
                                                 0x4000ULL * (i + 1u),
-                                                (int)(i & 1u)),
+                                                (int)(i & 1u),
+                                                (i & 1u) ? IRIS_UT_KIND_MMIO
+                                                         : IRIS_UT_KIND_RAM),
                       IRIS_OK);
         ASSERT_EQ(bi->untyped_count, 4u);
         for (uint32_t i = 0; i < 4u; i++) {
@@ -123,7 +126,11 @@ void test_root_bootinfo(void) {
             ASSERT_EQ(bi->untyped[i].paddr, 0x100000ULL * (i + 1u));
             ASSERT_EQ(bi->untyped[i].size_bytes, 0x4000ULL * (i + 1u));
             ASSERT_EQ(bi->untyped[i].is_device, (uint32_t)(i & 1u));
-            ASSERT_EQ(bi->untyped[i].reserved, 0u);
+            /* Stage 10: `reserved` became `kind`, because four classes of
+             * device region needed telling apart and the kernel is the only
+             * thing that knows which is which. */
+            ASSERT_EQ(bi->untyped[i].kind,
+                      (uint32_t)((i & 1u) ? IRIS_UT_KIND_MMIO : IRIS_UT_KIND_RAM));
         }
         ASSERT_EQ(bi->total_bytes,
                   (uint64_t)sizeof(*bi) + 4u * sizeof(struct iris_bootinfo_untyped));
@@ -138,10 +145,10 @@ void test_root_bootinfo(void) {
         memset(guard_page, 0xEE, sizeof(guard_page));
 
         ASSERT_EQ(root_bootinfo_init(guard_page, bytes, 2u, 9u, 10u, 256u), IRIS_OK);
-        ASSERT_EQ(root_bootinfo_add_untyped(guard_page, bytes, 16u, 0x1000u, 0x1000u, 0), IRIS_OK);
-        ASSERT_EQ(root_bootinfo_add_untyped(guard_page, bytes, 17u, 0x2000u, 0x1000u, 0), IRIS_OK);
+        ASSERT_EQ(root_bootinfo_add_untyped(guard_page, bytes, 16u, 0x1000u, 0x1000u, 0, IRIS_UT_KIND_RAM), IRIS_OK);
+        ASSERT_EQ(root_bootinfo_add_untyped(guard_page, bytes, 17u, 0x2000u, 0x1000u, 0, IRIS_UT_KIND_RAM), IRIS_OK);
         /* Third does not fit — refused, and nothing past `bytes` is touched. */
-        ASSERT_EQ(root_bootinfo_add_untyped(guard_page, bytes, 18u, 0x3000u, 0x1000u, 0),
+        ASSERT_EQ(root_bootinfo_add_untyped(guard_page, bytes, 18u, 0x3000u, 0x1000u, 0, IRIS_UT_KIND_RAM),
                   IRIS_ERR_NO_MEMORY);
         ASSERT_EQ(rbi_buf(guard_page)->untyped_count, 2u);
         ASSERT_EQ(rbi_buf(guard_page)->total_bytes, (uint64_t)bytes);
@@ -153,9 +160,9 @@ void test_root_bootinfo(void) {
     {
         memset(page, 0, RBI_PAGE);
         ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, 2u, 9u, 10u, 256u), IRIS_OK);
-        ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 0u, 0x1000u, 0x1000u, 0),
-                  IRIS_ERR_INVALID_ARG);   /* CPTR_NULL */
-        ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 16u, 0x1000u, 0u, 0),
+        ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 0u, 0x1000u, 0x1000u, 0, IRIS_UT_KIND_RAM),
+                  IRIS_ERR_INVALID_ARG);   /* IRIS_CPTR_NULL */
+        ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 16u, 0x1000u, 0u, 0, IRIS_UT_KIND_RAM),
                   IRIS_ERR_INVALID_ARG);   /* empty region */
         ASSERT_EQ(rbi_buf(page)->untyped_count, 0u);
     }
@@ -163,17 +170,68 @@ void test_root_bootinfo(void) {
     /* ── [RBI-7] add refuses a buffer it did not write ────────────── */
     {
         memset(page, 0, RBI_PAGE);
-        ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 16u, 0x1000u, 0x1000u, 0),
+        ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 16u, 0x1000u, 0x1000u, 0, IRIS_UT_KIND_RAM),
                   IRIS_ERR_INVALID_ARG);
         ASSERT_EQ(root_bootinfo_set_empty_range(page, RBI_PAGE, 0u, 0u),
                   IRIS_ERR_INVALID_ARG);
 
         ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, 2u, 9u, 10u, 256u), IRIS_OK);
         rbi_buf(page)->version = IRIS_ROOT_BOOTINFO_VERSION + 1u;
-        ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 16u, 0x1000u, 0x1000u, 0),
+        ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 16u, 0x1000u, 0x1000u, 0, IRIS_UT_KIND_RAM),
                   IRIS_ERR_INVALID_ARG);
         ASSERT_EQ(root_bootinfo_set_empty_range(page, RBI_PAGE, 16u, 256u),
                   IRIS_ERR_INVALID_ARG);
+    }
+
+    /* ── [RBI-9] the machine's own description travels with it ──────
+     *
+     * Stage 10 added two things the root task cannot ask anyone for: which ABI
+     * this kernel implements, and where ACPI's root pointer is.  Both are
+     * facts about the BUILD and the MACHINE rather than about any capability,
+     * so BootInfo is where they belong — and a zero in either would read as a
+     * value ("version 0.0", "address zero") rather than as "nobody said",
+     * which is why the ABI pair is written by init and not by the boot path.
+     */
+    {
+        memset(page, 0, RBI_PAGE);
+        ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, 2u, 9u, 10u, 256u), IRIS_OK);
+        struct iris_root_bootinfo *bi = rbi_buf(page);
+
+        /* The ABI is stamped by init, with no call needed. */
+        ASSERT_EQ(bi->abi_major, IRIS_ABI_VERSION_MAJOR);
+        ASSERT_EQ(bi->abi_minor, IRIS_ABI_VERSION_MINOR);
+        /* ACPI starts as "nobody said". */
+        ASSERT_EQ(bi->acpi_rsdp, 0ull);
+
+        ASSERT_EQ(root_bootinfo_set_acpi_rsdp(page, RBI_PAGE, 0x1FB7E000ull),
+                  IRIS_OK);
+        ASSERT_EQ(bi->acpi_rsdp, 0x1FB7E000ull);
+
+        /* A reader that does not recognise the version must not be answered,
+         * for the same reason every other setter refuses one. */
+        bi->version = IRIS_ROOT_BOOTINFO_VERSION + 1u;
+        ASSERT_EQ(root_bootinfo_set_acpi_rsdp(page, RBI_PAGE, 0x2000ull),
+                  IRIS_ERR_INVALID_ARG);
+        ASSERT_EQ(bi->acpi_rsdp, 0x1FB7E000ull);
+        bi->version = IRIS_ROOT_BOOTINFO_VERSION;
+
+        /* And the four kinds of region are told apart, which is what the root
+         * task routes on: guessing from the physical address was wrong twice. */
+        ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 20u, 0x80000000ull,
+                                            0x400000ull, 1, IRIS_UT_KIND_FRAMEBUFFER),
+                  IRIS_OK);
+        ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 21u, 0x80400000ull,
+                                            0x1000ull, 1, IRIS_UT_KIND_MMIO),
+                  IRIS_OK);
+        ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 22u, 0x1FB00000ull,
+                                            0x1000ull, 1, IRIS_UT_KIND_ACPI),
+                  IRIS_OK);
+        ASSERT_EQ(bi->untyped[0].kind, IRIS_UT_KIND_FRAMEBUFFER);
+        ASSERT_EQ(bi->untyped[1].kind, IRIS_UT_KIND_MMIO);
+        ASSERT_EQ(bi->untyped[2].kind, IRIS_UT_KIND_ACPI);
+        /* All three are device memory; `kind` is the finer question and the
+         * one that had no answer before. */
+        for (uint32_t i = 0; i < 3u; i++) ASSERT_EQ(bi->untyped[i].is_device, 1u);
     }
 
     /* ── [RBI-8] the empty range describes real slots ─────────────── */
@@ -216,12 +274,13 @@ void test_root_bootinfo(void) {
         uint32_t cap = root_bootinfo_capacity(RBI_PAGE);
         for (uint32_t i = 0; i < cap; i++) {
             ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 16u + i,
-                                                0x1000u * (i + 1u), 0x1000u, 0),
+                                                0x1000u * (i + 1u), 0x1000u, 0,
+                                                IRIS_UT_KIND_RAM),
                       IRIS_OK);
             ASSERT_TRUE(rbi_buf(page)->total_bytes <= (uint64_t)RBI_PAGE);
         }
         ASSERT_EQ(rbi_buf(page)->untyped_count, cap);
-        ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 4000u, 0x1000u, 0x1000u, 0),
+        ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 4000u, 0x1000u, 0x1000u, 0, IRIS_UT_KIND_RAM),
                   IRIS_ERR_NO_MEMORY);
     }
 
@@ -272,7 +331,7 @@ void test_root_bootinfo(void) {
         ASSERT_EQ(bi->cap_domain_control, 13u);
         ASSERT_EQ(bi->cap_iospace_control, 14u);
 
-        /* A kind the page has no field for, and a grant naming CPTR_NULL, are
+        /* A kind the page has no field for, and a grant naming IRIS_CPTR_NULL, are
          * refused rather than dropped silently. */
         ASSERT_EQ(root_bootinfo_set_control_cap(page, RBI_PAGE, 0u, 9u),
                   IRIS_ERR_INVALID_ARG);

@@ -6,7 +6,27 @@
 #endif
 
 /*
- * IRIS syscall ABI target v1
+ * IRIS syscall numbers — the four that are live, and the ones that never will
+ * be again.
+ *
+ * ── Read `iris/abi.h` first ────────────────────────────────────────────────
+ *
+ * That file is the 1.0 contract: what the surface IS, how it may grow, and
+ * what a caller may rely on.  This one is the number line — the four live
+ * numbers and the hundred and thirty-six that are permanently reserved, each
+ * with the history of why.  The split is deliberate: a contract nobody can
+ * read because it is interleaved with a hundred obituaries is not a contract,
+ * and obituaries are worth keeping.
+ *
+ * ── The line this header used to open with ─────────────────────────────────
+ *
+ * "Current exported syscall number surface: 0..122 ... the first unassigned
+ * number is 124."  It was true when it was written and had been wrong since
+ * ledger A-32 retired the numbered door: there are four numbers, and the
+ * largest is 144.  A sentence in a header that nothing checks is a sentence
+ * that will be wrong, which is why the surface is now asserted by
+ * `tests/kernel/test_abi.c` over every number the dispatcher can see rather
+ * than described here.
  *
  * External contract:
  *   - Every syscall returns a signed long value in the architecture ABI sense.
@@ -25,10 +45,9 @@
  *   - live/transitional: current supported surface with compatibility notes
  *   - retired: permanently reserved; returns IRIS_ERR_NOT_SUPPORTED
  *
- * Current exported syscall number surface: 0..122 (119-121 are Stage 5's
- * SYS_CSPACE_SELF / SYS_TCB_CONFIGURE / SYS_TCB_WRITE_REGS, 122 is Stage
- * 6-pure's SYS_VSPACE_MAP_TABLE, 123 is Stage 7's SYS_TCB_FAULT_INFO; the
- * first unassigned number is 124).
+ * Surface: four live numbers (SYS_INVOKE, SYS_EXIT, SYS_YIELD,
+ * SYS_CLOCK_GET); every other value is refused, whether it has a name here or
+ * not.  See iris/abi.h.
  */
 
 /*
@@ -1215,7 +1234,7 @@ struct iris_iommu_fault_info {
  * over now (svc_load_minted_ws's `keep_vspace_dest`), opt-in, because keeping
  * one keeps that address space and every page table in it alive past the
  * child's death.  For the caller's own address space, SYS_VSPACE_SELF — which
- * this syscall's HANDLE_INVALID case was always documented as equivalent to.
+ * this syscall's IRIS_CPTR_NULL case was always documented as equivalent to.
  */
 #define SYS_PROCESS_VSPACE 107
 
@@ -1291,7 +1310,7 @@ struct iris_iommu_fault_info {
  * SYS_RESOURCE_INFO(proc_h, out_ptr) → 0 or iris_error_t (Phase 29)
  *
  * Read-only resource-accounting snapshot for a process (its resource domain).
- * proc_h == HANDLE_INVALID → self; otherwise a KProcess cap (any rights: the
+ * proc_h == IRIS_CPTR_NULL → self; otherwise a KProcess cap (any rights: the
  * snapshot is a read-only oracle).  Writes a struct iris_resource_info (see
  * iris/syscall.h) to out_ptr: per-type usage / limit / high-water for the
  * process, plus global failed-charge / rollback / kslab counters.  Additive,

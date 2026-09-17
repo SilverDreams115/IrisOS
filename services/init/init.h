@@ -23,9 +23,10 @@
 #include <stdint.h>
 #include <iris/syscall.h>
 #include <iris/invoke.h>
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>
+#include <iris/endpoint_proto.h>
 
 static inline long init_sys3(long nr, long a0, long a1, long a2) {
     return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
@@ -105,6 +106,29 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
 #define INIT_SLOT_TIMER_UT     75u   /* its budget */
 #define INIT_SLOT_TIMER_GIVE   76u   /* the derived copy init hands over per arm */
 #define INIT_SLOT_IDLE_NOTIF   77u   /* A-24: what init stops on, forever */
+/*
+ * Stage 10: the PCI bus service's fixtures.
+ *
+ * 82 and up.  The first pick was 78, which is IRIS_CPTR_MMIO_UNTYPED — the
+ * capability init has to HAND to this very service — so retyping an endpoint
+ * into it destroyed the thing being handed over, and the service came up
+ * holding an endpoint where its device region should have been.  It failed
+ * with WRONG_TYPE four calls later, in a function that had no idea why.
+ *
+ * That was the third slot collision in this work, so it is the last one that
+ * gets to be found by running: the static assertions at the bottom of this
+ * file fail the BUILD for any init slot that collides with a service-wide
+ * constant.  See IRIS_CPTR_MMIO_UNTYPED in endpoint_proto.h for the other two.
+ */
+#define INIT_SLOT_PCI_EP       82u   /* the endpoint init keeps and hands on  */
+#define INIT_SLOT_PCI_IOPORT   83u   /* 0xCF8..0xCFF, claimed for the service */
+#define INIT_SLOT_PCI_REPLY    84u   /* its reply object                      */
+#define INIT_SLOT_PCI_UT       85u   /* its budget                            */
+/* ...and the AHCI disk service's.  89 and up: 86 and 87 are IRIS_CPTR_ASID_POOL
+ * and IRIS_CPTR_DOMAIN_CONTROL_TEST, 88 is IRIS_CPTR_ACPI_UNTYPED. */
+#define INIT_SLOT_BLK_EP       89u
+#define INIT_SLOT_BLK_REPLY    90u
+#define INIT_SLOT_BLK_UT       91u
 #define INIT_SLOT_S8_TCB       59u
 /* Stage 7 Step 7: where a fault delivers the faulting thread's capability.
  * init arms the handler for ITSELF, so its own root CNode is the mailbox and
@@ -132,14 +156,16 @@ void init_log(const char *s);
 /* Console KEndpoint master send side (defined in main.c next to the log
  * sink): created by init_spawn_console, read by init_log, re-minted into
  * children by the launch module. */
-extern handle_id_t g_init_console_ep_h;
+extern iris_cptr_t g_init_console_ep_h;
 /* A-24: the timer service's control endpoint, init's own copy. */
-extern handle_id_t g_init_timer_ep_h;
+extern iris_cptr_t g_init_timer_ep_h;
 int init_spawn_timer(void);
+int init_spawn_pci(void);
+int init_spawn_blk(void);
 
 /* Tiny process utilities (main.c). */
 void init_exit(long code);
-void init_close(handle_id_t *h);
+void init_close(iris_cptr_t *h);
 
 /* Initial-authority wiring (init_bootstrap.c). */
 void init_early_serial_start(void);
@@ -150,24 +176,78 @@ void init_ipc_buffer_init(void);
 extern uint8_t *g_init_buf;
 void init_early_serial_stop(void);
 void init_retry_pause(void);
-handle_id_t init_ep_lookup_name(handle_id_t svcmgr_ep_h, const char *name);
-handle_id_t init_ep_lookup_name_slot(handle_id_t svcmgr_ep_h, const char *name,
+iris_cptr_t init_ep_lookup_name(iris_cptr_t svcmgr_ep_h, const char *name);
+iris_cptr_t init_ep_lookup_name_slot(iris_cptr_t svcmgr_ep_h, const char *name,
                                      uint32_t reply_slot);
-int  init_wait_vfs_list_ep(handle_id_t vfs_ep_h);
-int  init_wait_vfs_rw_ep(handle_id_t vfs_ep_h);
+int  init_wait_vfs_list_ep(iris_cptr_t vfs_ep_h);
+int  init_wait_vfs_rw_ep(iris_cptr_t vfs_ep_h);
 
 /* Service launch (init_launch.c): initrd loads via svc_load_minted with the
  * pre-start CSpace mint tables; init_spawn_svcmgr returns the svcmgr.ep send
- * side (init's discovery handle) or HANDLE_INVALID; init_spawn_iris_test
+ * side (init's discovery handle) or IRIS_CPTR_NULL; init_spawn_iris_test
  * consumes spawn_cap_h. */
 void init_spawn_fb(void);
 int  init_spawn_console(void);
-handle_id_t init_spawn_svcmgr(void);
-void init_spawn_iris_test(handle_id_t sm_h);
+iris_cptr_t init_spawn_svcmgr(void);
+void init_spawn_iris_test(iris_cptr_t sm_h);
 
 /* Runtime probes + S8 exception selftest (init_test.c). */
 void init_runtime_probe_invalid_userptr(void);
 void init_runtime_probe_timeout_overflow(void);
 void init_selftest_exception(void);
+
+/*
+ * ── init's own slots never collide with a service-wide constant ────────────
+ *
+ * A mint into an occupied slot DELETES the occupant, so a collision here does
+ * not fail — it succeeds, over something that was in use, and the damage shows
+ * up somewhere else entirely.  Three of them were found by running the system
+ * during Stage 10, one of which destroyed init's loader workspace and made
+ * every subsequent service load fail with nothing naming the slot.
+ *
+ * So the build checks.  Adding an init slot that shadows an IRIS_CPTR_* is now
+ * a compile error that names the line, which is the difference between a rule
+ * and a rule that holds.
+ */
+#define INIT_SLOT_FREE_OF(name, slot) \
+    _Static_assert((uint64_t)(slot) != (name), \
+                   "init slot collides with " #name)
+
+#define INIT_SLOT_CHECK(slot)                                 \
+    INIT_SLOT_FREE_OF(IRIS_CPTR_INIT_UNTYPED,   slot);        \
+    INIT_SLOT_FREE_OF(IRIS_CPTR_INIT_UNTYPED2,  slot);        \
+    INIT_SLOT_FREE_OF(IRIS_CPTR_PROC_CONTROL,   slot);        \
+    INIT_SLOT_FREE_OF(IRIS_CPTR_IOPORT_CONTROL, slot);        \
+    INIT_SLOT_FREE_OF(IRIS_CPTR_IRQ_CONTROL,    slot);        \
+    INIT_SLOT_FREE_OF(IRIS_CPTR_DEVICE_UNTYPED, slot);        \
+    INIT_SLOT_FREE_OF(IRIS_CPTR_MMIO_UNTYPED,   slot);        \
+    INIT_SLOT_FREE_OF(IRIS_CPTR_OWN_CSPACE,     slot);        \
+    INIT_SLOT_FREE_OF(IRIS_CPTR_OWN_VSPACE,     slot);        \
+    INIT_SLOT_FREE_OF(IRIS_CPTR_OWN_TCB,        slot);        \
+    INIT_SLOT_FREE_OF(IRIS_CPTR_FB_CONTROL,     slot);        \
+    INIT_SLOT_FREE_OF(IRIS_CPTR_ASID_POOL,      slot);        \
+    INIT_SLOT_FREE_OF(IRIS_CPTR_IOSPACE_CONTROL, slot)
+
+INIT_SLOT_CHECK(INIT_SLOT_PCI_EP);
+INIT_SLOT_CHECK(INIT_SLOT_PCI_IOPORT);
+INIT_SLOT_CHECK(INIT_SLOT_PCI_REPLY);
+INIT_SLOT_CHECK(INIT_SLOT_PCI_UT);
+INIT_SLOT_CHECK(INIT_SLOT_BLK_EP);
+INIT_SLOT_CHECK(INIT_SLOT_BLK_REPLY);
+INIT_SLOT_CHECK(INIT_SLOT_BLK_UT);
+INIT_SLOT_CHECK(INIT_SLOT_TIMER_EP);
+INIT_SLOT_CHECK(INIT_SLOT_TIMER_IRQCAP);
+INIT_SLOT_CHECK(INIT_SLOT_TIMER_NOTIF);
+INIT_SLOT_CHECK(INIT_SLOT_TIMER_REPLY);
+INIT_SLOT_CHECK(INIT_SLOT_TIMER_CN);
+INIT_SLOT_CHECK(INIT_SLOT_TIMER_UT);
+INIT_SLOT_CHECK(INIT_SLOT_TIMER_GIVE);
+INIT_SLOT_CHECK(INIT_SLOT_IDLE_NOTIF);
+INIT_SLOT_CHECK(INIT_SLOT_LOADER_WS);
+INIT_SLOT_CHECK(INIT_SLOT_TEST_CNODE);
+INIT_SLOT_CHECK(INIT_SLOT_TEST_TCB);
+INIT_SLOT_CHECK(INIT_SLOT_S8_FAULT_EP);
+INIT_SLOT_CHECK(INIT_SLOT_S8_REPLY);
+INIT_SLOT_CHECK(INIT_SLOT_S8_TCB);
 
 #endif /* IRIS_INIT_H */

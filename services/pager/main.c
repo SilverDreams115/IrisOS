@@ -34,7 +34,7 @@
 #include <iris/syscall.h>
 #include <iris/invoke.h>
 #include "../common/iris_vspace.h"
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <iris/ipc_msg.h>
 #include <iris/endpoint_proto.h>
 #include <iris/fault_proto.h>
@@ -644,8 +644,8 @@ static long pg_serve_raw(uint32_t op, uint32_t tidx, uint32_t vidx, uint32_t fla
     return pg_fault_answer(tidx, /*resume=*/(op != PGR_OP_KILL));
 }
 
-void pager_main(handle_id_t bootstrap_ch_h);
-void pager_main(handle_id_t bootstrap_ch_h) {
+void pager_main(iris_cptr_t bootstrap_ch_h);
+void pager_main(iris_cptr_t bootstrap_ch_h) {
     (void)bootstrap_ch_h;
     /* Stage 4: publish our own VSpace into a CSpace slot instead of taking a
      * handle for it.  The manifest oracle reports slot 15 from here on — the
@@ -681,7 +681,7 @@ void pager_main(handle_id_t bootstrap_ch_h) {
             for (uint32_t i = 0; i < n; i++) g_ctrl_buf[i] = g_pg_buf[i];
         }
 
-        handle_id_t reply_h = (handle_id_t)msg.got_cap;
+        iris_cptr_t reply_h = (iris_cptr_t)msg.got_cap;
         uint32_t op    = PGR_OP(msg.words[0]);
         uint32_t tidx  = PGR_TIDX(msg.words[0]);
         uint32_t vidx  = PGR_VIDX(msg.words[0]);
@@ -714,7 +714,7 @@ void pager_main(handle_id_t bootstrap_ch_h) {
         default:                       result = -(long)PGR_ERR_BADOP; break;
         }
 
-        if (reply_h != HANDLE_INVALID) {
+        if (reply_h != IRIS_CPTR_NULL) {
             struct iris_msg reply;
             pg_msg_zero(&reply);
             reply.label = IRIS_EP_REPLY_OK;

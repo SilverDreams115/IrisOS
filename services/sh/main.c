@@ -24,7 +24,7 @@
 #include "../common/iris_msg.h"
 #include <iris/syscall.h>
 #include <iris/invoke.h>
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>
 #include <iris/svcmgr_proto.h>
@@ -49,9 +49,9 @@ static void sh_imsg_zero(struct iris_msg *msg) {
 }
 
 /* VFS endpoint handle (Phase 7.1; mandatory since Phase 7.2). Resolved once
- * after bootstrap via the svcmgr discovery endpoint; HANDLE_INVALID means
+ * after bootstrap via the svcmgr discovery endpoint; IRIS_CPTR_NULL means
  * VFS is unavailable — ls/cat fail loudly, there is no legacy fallback. */
-static handle_id_t g_sh_vfs_ep_h = HANDLE_INVALID;
+static iris_cptr_t g_sh_vfs_ep_h = IRIS_CPTR_NULL;
 
 /*
  * IPC bulk buffer for EP_CALL round trips (request payload and reply data
@@ -74,13 +74,13 @@ static uint8_t *g_sh_buf = g_sh_ep_buf;
  * There is no legacy console cap anymore: if the slot is broken, sh stays
  * silent and every gated "[SH] ... OK" marker is missing, which fails the
  * smoke run. The `con` parameter is kept so call sites stay unchanged. */
-static handle_id_t g_sh_con_ep_h = (handle_id_t)IRIS_CPTR_CONSOLE_EP;
+static iris_cptr_t g_sh_con_ep_h = (iris_cptr_t)IRIS_CPTR_CONSOLE_EP;
 /* D-4: the console client marshals into the buffer it is given, and a thread
  * with a registered IPC buffer must marshal into THAT — the kernel refuses a
  * send that names any other address.  So the log path shares the service's one
  * IPC buffer, which is what having one buffer means. */
 
-static void sh_cout(handle_id_t con, const char *s) {
+static void sh_cout(iris_cptr_t con, const char *s) {
     (void)con;
     (void)console_ep_write(g_sh_con_ep_h, g_sh_buf, s);
 }
@@ -149,7 +149,7 @@ static uint32_t sh_strlen(const char *s) {
 
 /* ── Console output helpers ──────────────────────────────────────── */
 
-static void sh_write_u32(handle_id_t con, uint32_t v) {
+static void sh_write_u32(iris_cptr_t con, uint32_t v) {
     char buf[11];
     uint32_t i = 0;
     if (v == 0) { sh_cout(con, "0"); return; }
@@ -182,7 +182,7 @@ static int sh_vfs_ep_call(struct iris_msg *msg, const char *path) {
     return (int)iris_msg_call((long)g_sh_vfs_ep_h, msg);
 }
 
-static void sh_cmd_ls_ep(handle_id_t con) {
+static void sh_cmd_ls_ep(iris_cptr_t con) {
     for (uint32_t idx = 0; idx < 64u; idx++) {
         struct iris_msg msg;
         sh_imsg_zero(&msg);
@@ -210,7 +210,7 @@ static void sh_cmd_ls_ep(handle_id_t con) {
     }
 }
 
-static void sh_cmd_cat_ep(handle_id_t con, const char *path) {
+static void sh_cmd_cat_ep(iris_cptr_t con, const char *path) {
     uint64_t offset = 0;
 
     for (;;) {
@@ -248,7 +248,7 @@ static void sh_cmd_cat_ep(handle_id_t con, const char *path) {
 
 /* ── Command dispatch ────────────────────────────────────────────── */
 
-static void sh_dispatch(handle_id_t con, const char *line) {
+static void sh_dispatch(iris_cptr_t con, const char *line) {
     if (sh_word_eq(line, "help")) {
         sh_cout(con, "Commands:\r\n"
                            "  help          this message\r\n"
@@ -290,7 +290,7 @@ static void sh_dispatch(handle_id_t con, const char *line) {
     }
     if (sh_word_eq(line, "ls")) {
         /* Endpoint-only path (Phase 7.2): no legacy KChannel fallback. */
-        if (g_sh_vfs_ep_h == HANDLE_INVALID) {
+        if (g_sh_vfs_ep_h == IRIS_CPTR_NULL) {
             sh_cout(con, "ls: VFS endpoint unavailable\r\n");
             return;
         }
@@ -303,7 +303,7 @@ static void sh_dispatch(handle_id_t con, const char *line) {
             sh_cout(con, "usage: cat <filename>\r\n");
             return;
         }
-        if (g_sh_vfs_ep_h == HANDLE_INVALID) {
+        if (g_sh_vfs_ep_h == IRIS_CPTR_NULL) {
             sh_cout(con, "cat: VFS endpoint unavailable\r\n");
             return;
         }
@@ -322,9 +322,9 @@ static void sh_dispatch(handle_id_t con, const char *line) {
 
 /* ── Main entry ──────────────────────────────────────────────────── */
 
-void sh_main_c(handle_id_t rbx_unused) {
-    handle_id_t console_h     = HANDLE_INVALID;  /* unused: pure CPtr client */
-    handle_id_t kbd_ep_h      = HANDLE_INVALID;
+void sh_main_c(iris_cptr_t rbx_unused) {
+    iris_cptr_t console_h     = IRIS_CPTR_NULL;  /* unused: pure CPtr client */
+    iris_cptr_t kbd_ep_h      = IRIS_CPTR_NULL;
 
     /* D-4: a page sh owns, registered as its IPC buffer.  Best-effort — a
      * failure leaves the kernel staging path, which still works. */
@@ -359,7 +359,7 @@ void sh_main_c(handle_id_t rbx_unused) {
         pmsg.label = IRIS_EP_OP_PING;
         if (iris_msg_call((long)IRIS_CPTR_VFS_EP, &pmsg) == IRIS_OK &&
             pmsg.label == IRIS_EP_REPLY_OK) {
-            g_sh_vfs_ep_h = (handle_id_t)IRIS_CPTR_VFS_EP;
+            g_sh_vfs_ep_h = (iris_cptr_t)IRIS_CPTR_VFS_EP;
             sh_cout(console_h, "[SH] vfs cptr OK\n");
         } else {
             sh_cout(console_h, "[SH] vfs cptr FAILED\n");
@@ -369,7 +369,7 @@ void sh_main_c(handle_id_t rbx_unused) {
         pmsg.label = IRIS_EP_OP_PING;
         if (iris_msg_call((long)IRIS_CPTR_KBD_EP, &pmsg) == IRIS_OK &&
             pmsg.label == IRIS_EP_REPLY_OK) {
-            kbd_ep_h = (handle_id_t)IRIS_CPTR_KBD_EP;
+            kbd_ep_h = (iris_cptr_t)IRIS_CPTR_KBD_EP;
             sh_cout(console_h, "[SH] kbd cptr OK\n");
         } else {
             sh_cout(console_h, "[SH] kbd cptr FAILED\n");
@@ -398,7 +398,7 @@ void sh_main_c(handle_id_t rbx_unused) {
     uint8_t shift = 0;
 
     for (;;) {
-        if (kbd_ep_h == HANDLE_INVALID) {
+        if (kbd_ep_h == IRIS_CPTR_NULL) {
             (void)sh_sys0(SYS_YIELD);
             continue;
         }

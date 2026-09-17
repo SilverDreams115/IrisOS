@@ -17,11 +17,17 @@
 
 uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                           uint64_t arg3) {
-    handle_id_t sc_h    = (handle_id_t)arg0;
+    /* Stage 10-abi: this read `handle_id_t sc_h = (handle_id_t)arg0`, which
+     * truncated a 64-bit capability argument to 32 bits and then widened it
+     * again at the resolver — a round trip that was only harmless because a
+     * CPtr owns the low 31 bits.  A value above the boundary would have been
+     * folded INTO the CPtr range instead of being refused by it, which is the
+     * one thing the boundary exists to prevent. */
+    iris_cptr_t sc_h    = arg0;
     uint64_t    budget  = arg1;
     uint64_t    period  = arg2;
 
-    if (!sc_h) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (sc_h == IRIS_CPTR_NULL) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -152,7 +158,7 @@ uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    handle_id_t sc_h = (handle_id_t)arg0;
+    iris_cptr_t sc_h = arg0;          /* see sys_sc_configure on the cast */
     (void)arg1; (void)arg2;
 
     struct task *t = task_current();
@@ -160,12 +166,14 @@ uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KSchedContext *new_sc = 0;
 
-    if (sc_h != 0) {
+    if (sc_h != IRIS_CPTR_NULL) {
         struct KObject *obj;
         iris_rights_t   rights;
-        /* A1 Increment 2b: dual resolver (CPtr slot or handle); sc_h == 0
-         * stays the unbind path above.  A-30: WRONG_TYPE travels. */
-        iris_error_t err = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)sc_h,
+        /* The null capability is the UNBIND path, handled below; anything else
+         * is a CPtr and is resolved as one.  The comment here used to say
+         * "dual resolver (CPtr slot or handle)", which described a namespace
+         * Stage 4 deleted.  A-30: WRONG_TYPE travels. */
+        iris_error_t err = cspace_resolve_only_obj(t->cspace_root, sc_h,
                                      RIGHT_NONE, KOBJ_SCHED_CONTEXT, &obj, &rights);
         if (err != IRIS_OK) return syscall_err(err);
 

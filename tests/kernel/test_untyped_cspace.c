@@ -8,7 +8,7 @@
  *   - Missing rights returns IRIS_ERR_ACCESS_DENIED
  *   - ACCESS_DENIED from CSpace does not fall through to handle table
  *   - Refcounts balance across repeated lookups
- *   - CPTR_NULL is rejected
+ *   - IRIS_CPTR_NULL is rejected
  *   - Legacy handle ABI continues to work
  *   - child_count enforcement (reset with live children)
  *   - child_count increments/decrements correctly
@@ -141,7 +141,7 @@ void test_untyped_cspace(void) {
 
 
 
-    /* ── [UT] CPTR_NULL is rejected by the underlying CSpace traversal ── */
+    /* ── [UT] IRIS_CPTR_NULL is rejected by the underlying CSpace traversal ── */
     {
         struct cs_fixture *p = make_proc();
         ASSERT_NOT_NULL(p);
@@ -149,9 +149,9 @@ void test_untyped_cspace(void) {
         ASSERT_NOT_NULL(root);
 
         struct KUntyped *out; iris_rights_t rout;
-        /* CPTR_NULL → CSpace rejects it → falls back to handle table.
-         * Handle table lookup with id=0 (CPTR_NULL) → NOT_FOUND or INVALID_ARG. */
-        iris_error_t err = cspace_resolve_only_untyped(p->cspace_root, CPTR_NULL,
+        /* IRIS_CPTR_NULL → CSpace rejects it → falls back to handle table.
+         * Handle table lookup with id=0 (IRIS_CPTR_NULL) → NOT_FOUND or INVALID_ARG. */
+        iris_error_t err = cspace_resolve_only_untyped(p->cspace_root, IRIS_CPTR_NULL,
                                                              RIGHT_NONE, &out, &rout);
         ASSERT_TRUE(err != IRIS_OK);
 

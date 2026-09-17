@@ -251,11 +251,11 @@ void test_t329(void) {
     long fep = it_ep_create();
     if (fep < 0) { it_fail("T329", "fault ep"); return; }
 
-    handle_id_t cmd_a = HANDLE_INVALID, cmd_b = HANDLE_INVALID;
-    handle_id_t pa = HANDLE_INVALID, pb = HANDLE_INVALID;
+    iris_cptr_t cmd_a = IRIS_CPTR_NULL, cmd_b = IRIS_CPTR_NULL;
+    iris_cptr_t pa = IRIS_CPTR_NULL, pb = IRIS_CPTR_NULL;
     long ea = it_ep_create(), eb = it_ep_create();
     if (ea < 0 || eb < 0) { it_fail("T329", "cmd eps"); return; }
-    cmd_a = (handle_id_t)ea; cmd_b = (handle_id_t)eb;
+    cmd_a = (iris_cptr_t)ea; cmd_b = (iris_cptr_t)eb;
     if (lp_spawn_child(cmd_a, &pa) < 0 || lp_spawn_child(cmd_b, &pb) < 0) {
         it_fail("T329", "spawn"); return;
     }
@@ -334,7 +334,7 @@ void test_t329(void) {
 
     it_close(&pa); it_close(&pb);
     it_close(&cmd_a); it_close(&cmd_b);
-    { handle_id_t fh = (handle_id_t)fep; it_close(&fh); }
+    { iris_cptr_t fh = (iris_cptr_t)fep; it_close(&fh); }
     it_quiesce_reaper();
     if (ok) it_pass("T329"); else it_fail("T329", why);
 }
@@ -441,10 +441,10 @@ void test_t330(void) {
     }
 
     it_slot_delete((uint32_t)self);
-    { handle_id_t h;
-      h = (handle_id_t)n2; it_close(&h);
-      h = (handle_id_t)n1; it_close(&h);
-      h = (handle_id_t)ep; it_close(&h); }
+    { iris_cptr_t h;
+      h = (iris_cptr_t)n2; it_close(&h);
+      h = (iris_cptr_t)n1; it_close(&h);
+      h = (iris_cptr_t)ep; it_close(&h); }
     it_quiesce_reaper();
     if (ok) it_pass("T330"); else it_fail("T330", why);
 }
@@ -563,7 +563,7 @@ void test_t331(void) {
         }
     }
 
-    { handle_id_t h = (handle_id_t)n; it_close(&h); }
+    { iris_cptr_t h = (iris_cptr_t)n; it_close(&h); }
     it_quiesce_reaper();
     if (ok) it_pass("T331"); else it_fail("T331", why);
 }
@@ -695,7 +695,7 @@ void test_t332(void) {
         if (g_t332_tcb[i] > 0) it_slot_delete((uint32_t)g_t332_tcb[i]);
     it_slot_delete((uint32_t)b2);
     it_slot_delete((uint32_t)b1);
-    { handle_id_t h = (handle_id_t)ep; it_close(&h); }
+    { iris_cptr_t h = (iris_cptr_t)ep; it_close(&h); }
     it_quiesce_reaper();
     if (ok) it_pass("T332"); else it_fail("T332", why);
 }
@@ -835,7 +835,7 @@ void test_t333(void) {
                 }
                 it_slot_delete(T333_DST_SLOT);
             }
-            { handle_id_t h = (handle_id_t)n; it_close(&h); }
+            { iris_cptr_t h = (iris_cptr_t)n; it_close(&h); }
         }
     }
 
@@ -886,7 +886,7 @@ void test_t333(void) {
     if (ok) it_pass("T333"); else it_fail("T333", why);
 }
 
-static handle_id_t  g_t334_ep   = HANDLE_INVALID;
+static iris_cptr_t  g_t334_ep   = IRIS_CPTR_NULL;
 static long         g_t334_src  = -1;
 static volatile int g_t334_done = 0;
 static          int g_t334_res  = 999;
@@ -938,7 +938,7 @@ void test_t334(void) {
     long n  = it_notify_create_slot();
     long ep = it_ep_create_slot();
     if (n < 0 || ep < 0) { it_fail("T334", "create"); return; }
-    g_t334_ep = (handle_id_t)ep;
+    g_t334_ep = (iris_cptr_t)ep;
 
     /* ── 1. the sender still holds what it sent ── */
     if (ok && !t334_transfer(n, &why)) ok = 0;
@@ -1000,7 +1000,7 @@ void test_t334(void) {
 
     it_slot_delete(T334_DST_SLOT);
     it_slot_delete(T334_SRC_SLOT);
-    { handle_id_t h = (handle_id_t)n; it_close(&h); }
+    { iris_cptr_t h = (iris_cptr_t)n; it_close(&h); }
     it_close(&g_t334_ep);
     it_quiesce_reaper();
 
@@ -1494,12 +1494,12 @@ void test_t295(void) {
                 r.recv_slot = (uint32_t)(root_ok | (1L << 16));
                 if (iris_msg_nb_recv(cmd, &r)
                     != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "alias declared"; }
-                handle_id_t ch = (handle_id_t)cmd;
+                iris_cptr_t ch = (iris_cptr_t)cmd;
                 it_close(&ch);
             }
         }
 
-        handle_id_t eh = (handle_id_t)ep;
+        iris_cptr_t eh = (iris_cptr_t)ep;
         it_close(&eh);
     }
 

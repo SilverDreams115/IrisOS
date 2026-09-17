@@ -62,7 +62,7 @@ void test_t002(void) {
         if (n < 0) { ok = 0; why = "notif"; }
         else if (it_wait_timeout(n, (long)(uintptr_t)&bits, 40000000L)
                  != (long)IRIS_ERR_TIMED_OUT) { ok = 0; why = "wait"; }
-        if (n >= 0) { handle_id_t h = (handle_id_t)n; it_close(&h); }
+        if (n >= 0) { iris_cptr_t h = (iris_cptr_t)n; it_close(&h); }
     }
     if (ok && it_timer_uptime(&t1) != 0) { ok = 0; why = "uptime 2"; }
     if (ok && t1 <= t0) { ok = 0; why = "clock did not advance"; }
@@ -83,7 +83,7 @@ void test_t003(void) {
 void test_t008(void) {
     long vmo_raw = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, T008_VMO_SIZE);
     if (vmo_raw < 0) { it_fail("T008", "vmo create"); return; }
-    handle_id_t vmo_h = (handle_id_t)vmo_raw;
+    iris_cptr_t vmo_h = (iris_cptr_t)vmo_raw;
 
     /* Map writable (flag=1) at T008_VMO_ADDR */
     long r = it_invoke(vmo_raw, INV_FRAME_MAP, IT_VS, (long)T008_VMO_ADDR, 1);
@@ -172,7 +172,7 @@ void test_t010(void) {
 void test_t013(void) {
     long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T013", "ep create"); return; }
-    handle_id_t ep_h = (handle_id_t)ep_raw;
+    iris_cptr_t ep_h = (iris_cptr_t)ep_raw;
 
     /* Derive a READ-only copy (no WRITE right) */
     long ro_raw = it_cs_reduce(ep_raw, RIGHT_READ);
@@ -180,7 +180,7 @@ void test_t013(void) {
         it_close(&ep_h);
         it_fail("T013", "ro derive"); return;
     }
-    handle_id_t ro_h = (handle_id_t)ro_raw;
+    iris_cptr_t ro_h = (iris_cptr_t)ro_raw;
 
     struct iris_msg msg;
     iris_msg_zero(&msg);
@@ -217,7 +217,7 @@ void test_t014(void) {
 
 /* ── T015: EP_SEND / EP_RECV (two-thread rendezvous) ────────────────────── */
 
-static handle_id_t g_t015_ep_h   = HANDLE_INVALID;
+static iris_cptr_t g_t015_ep_h   = IRIS_CPTR_NULL;
 static volatile int g_t015_done  = 0;
 static          int g_t015_ok    = 0;
 static uint8_t      g_t015_stack[8192];
@@ -238,7 +238,7 @@ void test_t015(void) {
 
     long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T015", "ep create"); return; }
-    g_t015_ep_h = (handle_id_t)ep_raw;
+    g_t015_ep_h = (iris_cptr_t)ep_raw;
 
     uint64_t entry = (uint64_t)(uintptr_t)t015_server;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t015_stack + sizeof(g_t015_stack))) & ~0xFULL;
@@ -247,7 +247,7 @@ void test_t015(void) {
         it_close(&g_t015_ep_h);
         it_fail("T015", "thread create"); return;
     }
-    handle_id_t tid_h = (handle_id_t)tid;
+    iris_cptr_t tid_h = (iris_cptr_t)tid;
 
     /* EP_SEND blocks until server is ready to rendezvous */
     struct iris_msg msg;
@@ -271,7 +271,7 @@ void test_t015(void) {
 
 /* ── T016: EP_CALL / SYS_REPLY (two-thread) ─────────────────────────────── */
 
-static handle_id_t g_t016_ep_h   = HANDLE_INVALID;
+static iris_cptr_t g_t016_ep_h   = IRIS_CPTR_NULL;
 static volatile int g_t016_done  = 0;
 static          int g_t016_ok    = 0;
 static uint8_t      g_t016_stack[8192];
@@ -286,7 +286,7 @@ static void t016_server(void) {
         for (;;) {}
     }
 
-    handle_id_t reply_h = (handle_id_t)msg.got_cap;
+    iris_cptr_t reply_h = (iris_cptr_t)msg.got_cap;
     struct iris_msg reply;
     iris_msg_zero(&reply);
     reply.label      = 0xFEEDBEEFULL;
@@ -304,7 +304,7 @@ void test_t016(void) {
 
     long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T016", "ep create"); return; }
-    g_t016_ep_h = (handle_id_t)ep_raw;
+    g_t016_ep_h = (iris_cptr_t)ep_raw;
     if (it_reply_create_at(88) < 0) {
         it_close(&g_t016_ep_h);
         it_fail("T016", "reply create"); return;
@@ -317,7 +317,7 @@ void test_t016(void) {
         it_close(&g_t016_ep_h);
         it_fail("T016", "thread create"); return;
     }
-    handle_id_t tid_h = (handle_id_t)tid;
+    iris_cptr_t tid_h = (iris_cptr_t)tid;
 
     /* EP_CALL blocks until server calls SYS_REPLY */
     struct iris_msg msg;
@@ -361,7 +361,7 @@ void test_t018(void) {
 
 /* ── T019: endpoint close wakes blocked EP_RECV thread ──────────────────── */
 
-static handle_id_t g_t019_ep_h    = HANDLE_INVALID;
+static iris_cptr_t g_t019_ep_h    = IRIS_CPTR_NULL;
 static volatile int g_t019_done   = 0;
 static          int g_t019_result = 0;
 static uint8_t      g_t019_stack[8192];
@@ -386,24 +386,24 @@ void test_t019(void) {
      * slot delete instead of a handle close. */
     long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T019", "ep create"); return; }
-    g_t019_ep_h = (handle_id_t)ep_raw;
+    g_t019_ep_h = (iris_cptr_t)ep_raw;
 
     uint64_t entry = (uint64_t)(uintptr_t)t019_thread;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t019_stack + sizeof(g_t019_stack))) & ~0xFULL;
     long tid = it_thread_create(entry, rsp, 0);
     if (tid < 0) {
         it_slot_delete((uint32_t)g_t019_ep_h);
-        g_t019_ep_h = HANDLE_INVALID;
+        g_t019_ep_h = IRIS_CPTR_NULL;
         it_fail("T019", "thread create"); return;
     }
-    handle_id_t tid_h = (handle_id_t)tid;
+    iris_cptr_t tid_h = (iris_cptr_t)tid;
 
     /* Let thread enter EP_RECV and block */
     it_settle(5);
 
     /* Delete the slot → last cap gone → endpoint close fires → thread wakes */
     it_slot_delete((uint32_t)g_t019_ep_h);
-    g_t019_ep_h = HANDLE_INVALID;
+    g_t019_ep_h = IRIS_CPTR_NULL;
 
     for (int i = 0; i < 200 && !g_t019_done; i++)
         it_settle(1);
@@ -418,7 +418,7 @@ void test_t019(void) {
 
 /* ── T020: endpoint close wakes blocked EP_SEND thread ──────────────────── */
 
-static handle_id_t g_t020_ep_h    = HANDLE_INVALID;
+static iris_cptr_t g_t020_ep_h    = IRIS_CPTR_NULL;
 static volatile int g_t020_done   = 0;
 static          int g_t020_result = 0;
 static uint8_t      g_t020_stack[8192];
@@ -440,7 +440,7 @@ void test_t020(void) {
 
     long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T020", "ep create"); return; }
-    g_t020_ep_h = (handle_id_t)ep_raw;
+    g_t020_ep_h = (iris_cptr_t)ep_raw;
 
     /* A second capability to the same endpoint — active_refs = 2.  It was a
      * handle dup; it is a CSpace copy, which is the only kind left. */
@@ -449,7 +449,7 @@ void test_t020(void) {
         it_close(&g_t020_ep_h);
         it_fail("T020", "second cap"); return;
     }
-    handle_id_t ep2_h = (handle_id_t)ep2_raw;
+    iris_cptr_t ep2_h = (iris_cptr_t)ep2_raw;
 
     uint64_t entry = (uint64_t)(uintptr_t)t020_thread;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t020_stack + sizeof(g_t020_stack))) & ~0xFULL;
@@ -459,7 +459,7 @@ void test_t020(void) {
         it_close(&g_t020_ep_h);
         it_fail("T020", "thread create"); return;
     }
-    handle_id_t tid_h = (handle_id_t)tid;
+    iris_cptr_t tid_h = (iris_cptr_t)tid;
 
     /* Let thread enter EP_SEND and block (no receiver present) */
     it_settle(5);
@@ -481,7 +481,7 @@ void test_t020(void) {
 
 /* ── T021: SYS_REPLY twice → second returns NOT_FOUND ───────────────────── */
 
-static handle_id_t g_t021_ep_h   = HANDLE_INVALID;
+static iris_cptr_t g_t021_ep_h   = IRIS_CPTR_NULL;
 static volatile int g_t021_done  = 0;
 static          int g_t021_ok    = 0;
 static uint8_t      g_t021_stack[8192];
@@ -503,7 +503,7 @@ void test_t021(void) {
 
     long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T021", "ep create"); return; }
-    g_t021_ep_h = (handle_id_t)ep_raw;
+    g_t021_ep_h = (iris_cptr_t)ep_raw;
 
     uint64_t entry = (uint64_t)(uintptr_t)t021_client;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t021_stack + sizeof(g_t021_stack))) & ~0xFULL;
@@ -512,7 +512,7 @@ void test_t021(void) {
         it_close(&g_t021_ep_h);
         it_fail("T021", "thread create"); return;
     }
-    handle_id_t tid_h = (handle_id_t)tid;
+    iris_cptr_t tid_h = (iris_cptr_t)tid;
 
     /* Main is server: receive the EP_CALL and get reply_h */
     if (it_reply_create_at(89) < 0) {
@@ -530,7 +530,7 @@ void test_t021(void) {
         it_fail("T021", "ep_recv"); return;
     }
 
-    handle_id_t reply_h = (handle_id_t)msg.got_cap;
+    iris_cptr_t reply_h = (iris_cptr_t)msg.got_cap;
 
     /* First SYS_REPLY → client unblocks */
     struct iris_msg reply;
@@ -562,7 +562,7 @@ uint8_t *g_ep_io_buf;
 
 /* ── T022: EP_CALL + bulk kbuf round-trip ───────────────────────────────── */
 
-static handle_id_t g_t022_ep_h   = HANDLE_INVALID;
+static iris_cptr_t g_t022_ep_h   = IRIS_CPTR_NULL;
 static volatile int g_t022_done  = 0;
 static          int g_t022_ok    = 0;
 static uint8_t      g_t022_stack[8192];
@@ -594,7 +594,7 @@ static void t022_server(void) {
     b[2] = (uint8_t)(b[2] + 1u);
     b[3] = (uint8_t)(b[3] + 1u);
 
-    handle_id_t reply_h = (handle_id_t)rmsg.got_cap;
+    iris_cptr_t reply_h = (iris_cptr_t)rmsg.got_cap;
     struct iris_msg repl;
     iris_msg_zero(&repl);
     repl.label   = 0xB01FULL;
@@ -613,7 +613,7 @@ void test_t022(void) {
 
     long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T022", "ep create"); return; }
-    g_t022_ep_h = (handle_id_t)ep_raw;
+    g_t022_ep_h = (iris_cptr_t)ep_raw;
     if (it_reply_create_at(90) < 0) {
         it_close(&g_t022_ep_h);
         it_fail("T022", "reply create"); return;
@@ -626,7 +626,7 @@ void test_t022(void) {
         it_close(&g_t022_ep_h);
         it_fail("T022", "thread create"); return;
     }
-    handle_id_t tid_h = (handle_id_t)tid;
+    iris_cptr_t tid_h = (iris_cptr_t)tid;
 
     g_ep_io_buf[0] = 0x10; g_ep_io_buf[1] = 0x20;
     g_ep_io_buf[2] = 0x30; g_ep_io_buf[3] = 0x40;
@@ -658,7 +658,7 @@ void test_t022(void) {
 void test_t023(void) {
     long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T023", "ep create"); return; }
-    handle_id_t ep_h = (handle_id_t)ep_raw;
+    iris_cptr_t ep_h = (iris_cptr_t)ep_raw;
 
     /* Derive a READ-only copy (no WRITE right) */
     long ro_raw = it_cs_reduce(ep_raw, RIGHT_READ);
@@ -666,7 +666,7 @@ void test_t023(void) {
         it_close(&ep_h);
         it_fail("T023", "ro derive"); return;
     }
-    handle_id_t ro_h = (handle_id_t)ro_raw;
+    iris_cptr_t ro_h = (iris_cptr_t)ro_raw;
 
     struct iris_msg msg;
     iris_msg_zero(&msg);
@@ -681,7 +681,7 @@ void test_t023(void) {
     else
         it_fail("T023", "expected ACCESS_DENIED");
 }
-static handle_id_t g_t024_ep_h   = HANDLE_INVALID;
+static iris_cptr_t g_t024_ep_h   = IRIS_CPTR_NULL;
 static volatile int g_t024_done  = 0;
 static          int g_t024_ok    = 0;
 static uint32_t     g_t024_got_h = 0;
@@ -709,7 +709,7 @@ void test_t024(void) {
 
     long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T024", "ep create"); return; }
-    g_t024_ep_h = (handle_id_t)ep_raw;
+    g_t024_ep_h = (iris_cptr_t)ep_raw;
 
     uint64_t entry = (uint64_t)(uintptr_t)t024_client;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t024_stack + sizeof(g_t024_stack))) & ~0xFULL;
@@ -718,7 +718,7 @@ void test_t024(void) {
         it_close(&g_t024_ep_h);
         it_fail("T024", "thread create"); return;
     }
-    handle_id_t tid_h = (handle_id_t)tid;
+    iris_cptr_t tid_h = (iris_cptr_t)tid;
 
     /* Main is server: receive the call, reply with an attached notification */
     if (it_reply_create_at(91) < 0) {
@@ -735,7 +735,7 @@ void test_t024(void) {
         it_slot_delete(91);
         it_fail("T024", "ep_recv"); return;
     }
-    handle_id_t reply_h = (handle_id_t)msg.got_cap;
+    iris_cptr_t reply_h = (iris_cptr_t)msg.got_cap;
 
     long rr = -1;
     long notif_raw = it_notify_create_slot();
@@ -752,7 +752,7 @@ void test_t024(void) {
             it_xfer_release(src);
         }
         /* the master notification handle is ours regardless of the transfer */
-        handle_id_t nh = (handle_id_t)notif_raw;
+        iris_cptr_t nh = (iris_cptr_t)notif_raw;
         it_close(&nh);
     }
 
@@ -763,7 +763,7 @@ void test_t024(void) {
     if (g_t024_got_h != (uint32_t)IRIS_MSG_NO_CAP)
         ty = it_invoke0((long)g_t024_got_h, INV_CAP_IDENTIFY);
 
-    handle_id_t got_h = (handle_id_t)g_t024_got_h;
+    iris_cptr_t got_h = (iris_cptr_t)g_t024_got_h;
     it_close(&got_h);
     it_close(&tid_h);
     it_close(&g_t024_ep_h);
@@ -780,7 +780,7 @@ void test_t024(void) {
 /* ── T025: SYS_REPLY with non-transferable cap → ACCESS_DENIED, KReply
  *          survives the failed attempt and a clean reply still unblocks ──── */
 
-static handle_id_t g_t025_ep_h  = HANDLE_INVALID;
+static iris_cptr_t g_t025_ep_h  = IRIS_CPTR_NULL;
 static volatile int g_t025_done = 0;
 static          int g_t025_ok   = 0;
 static uint8_t      g_t025_stack[8192];
@@ -802,7 +802,7 @@ void test_t025(void) {
 
     long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T025", "ep create"); return; }
-    g_t025_ep_h = (handle_id_t)ep_raw;
+    g_t025_ep_h = (iris_cptr_t)ep_raw;
 
     uint64_t entry = (uint64_t)(uintptr_t)t025_client;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t025_stack + sizeof(g_t025_stack))) & ~0xFULL;
@@ -811,7 +811,7 @@ void test_t025(void) {
         it_close(&g_t025_ep_h);
         it_fail("T025", "thread create"); return;
     }
-    handle_id_t tid_h = (handle_id_t)tid;
+    iris_cptr_t tid_h = (iris_cptr_t)tid;
 
     if (it_reply_create_at(92) < 0) {
         it_close(&tid_h);
@@ -827,16 +827,16 @@ void test_t025(void) {
         it_slot_delete(92);
         it_fail("T025", "ep_recv"); return;
     }
-    handle_id_t reply_h = (handle_id_t)msg.got_cap;
+    iris_cptr_t reply_h = (iris_cptr_t)msg.got_cap;
 
     /* Phase S4 (Step 2): a SOURCE SLOT without RIGHT_TRANSFER → staging must
      * fail with ACCESS_DENIED and leave the slot intact. */
-    handle_id_t notif_h = HANDLE_INVALID;
+    iris_cptr_t notif_h = IRIS_CPTR_NULL;
     long r1 = -1;
     int  src_preserved = 0;
     long notif_raw = it_notify_create_slot();
     if (notif_raw >= 0) {
-        notif_h = (handle_id_t)notif_raw;
+        notif_h = (iris_cptr_t)notif_raw;
         /* Stage 4: the fixture is a CSpace slot, so the reduced-rights copy is
          * a slot-to-slot derive (SYS_CSPACE_MINT).  SYS_CNODE_MINT's source is
          * handle-only and would simply not resolve a CPtr. */
@@ -880,10 +880,10 @@ void test_t025(void) {
 
 /* Phase 8: the discovery endpoint is the well-known CPtr slot (kind 0x20
  * retired); it is a CNode slot index, NOT a handle — never close it. */
-handle_id_t g_svcmgr_ep_h = (handle_id_t)IRIS_CPTR_SVCMGR_EP;
-handle_id_t g_vfs_ep_h    = HANDLE_INVALID;  /* from T026 lookup   */
-static handle_id_t g_kbd_ep_h    = HANDLE_INVALID;  /* from T034 lookup   */
-static handle_id_t g_con_ep_h    = HANDLE_INVALID;  /* from T036 lookup   */
+iris_cptr_t g_svcmgr_ep_h = (iris_cptr_t)IRIS_CPTR_SVCMGR_EP;
+iris_cptr_t g_vfs_ep_h    = IRIS_CPTR_NULL;  /* from T026 lookup   */
+static iris_cptr_t g_kbd_ep_h    = IRIS_CPTR_NULL;  /* from T034 lookup   */
+static iris_cptr_t g_con_ep_h    = IRIS_CPTR_NULL;  /* from T036 lookup   */
 
 /* EP_CALL buffer reuse: request payload AND reply bulk destination. */
 /*
@@ -936,7 +936,7 @@ static long it_lookup_ep(const char *name, uint32_t dest_cptr) {
         /* Landed somewhere else (or nowhere): drop whatever arrived so the
          * failure does not leak authority into the next test. */
         if (msg.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
-            handle_id_t h = (handle_id_t)msg.got_cap;
+            iris_cptr_t h = (iris_cptr_t)msg.got_cap;
             it_close(&h);
         }
         return -1;
@@ -953,14 +953,14 @@ static long it_lookup_ep(const char *name, uint32_t dest_cptr) {
 void test_t026(void) {
     long c = it_lookup_ep(VFS_EP_SVC_NAME, IT_LOOKUP_VFS);
     if (c < 0) { it_fail("T026", "vfs.ep lookup"); return; }
-    g_vfs_ep_h = (handle_id_t)c;
+    g_vfs_ep_h = (iris_cptr_t)c;
     it_pass("T026");
 }
 
 /* ── T027: VFS EP ping ──────────────────────────────────────────────────── */
 
 void test_t027(void) {
-    if (g_vfs_ep_h == HANDLE_INVALID) {
+    if (g_vfs_ep_h == IRIS_CPTR_NULL) {
         it_fail("T027", "vfs ep missing"); return;
     }
 
@@ -978,7 +978,7 @@ void test_t027(void) {
 /* ── T028: VFS EP READ_AT("iris.txt") content + EOF semantics ───────────── */
 
 void test_t028(void) {
-    if (g_vfs_ep_h == HANDLE_INVALID) {
+    if (g_vfs_ep_h == IRIS_CPTR_NULL) {
         it_fail("T028", "vfs ep missing"); return;
     }
 
@@ -1030,7 +1030,7 @@ void test_t028(void) {
 /* ── T029: VFS EP unknown opcode → NOT_SUPPORTED; LIST oob → NOT_FOUND ──── */
 
 void test_t029(void) {
-    if (g_vfs_ep_h == HANDLE_INVALID) {
+    if (g_vfs_ep_h == IRIS_CPTR_NULL) {
         it_fail("T029", "vfs ep missing"); return;
     }
 
@@ -1064,7 +1064,7 @@ static int t030_expect_inval(struct iris_msg *msg) {
 }
 
 void test_t030(void) {
-    if (g_vfs_ep_h == HANDLE_INVALID) {
+    if (g_vfs_ep_h == IRIS_CPTR_NULL) {
         it_fail("T030", "vfs ep missing"); return;
     }
 
@@ -1117,7 +1117,7 @@ void test_t030(void) {
  * would mean a fabricated/spoofed endpoint.
  */
 void test_t031(void) {
-    if (g_svcmgr_ep_h == HANDLE_INVALID) {
+    if (g_svcmgr_ep_h == IRIS_CPTR_NULL) {
         it_fail("T031", "svcmgr ep missing"); return;
     }
 
@@ -1134,7 +1134,7 @@ void test_t031(void) {
         it_pass("T031");
     } else {
         if (msg.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
-            handle_id_t h = (handle_id_t)msg.got_cap;
+            iris_cptr_t h = (iris_cptr_t)msg.got_cap;
             it_close(&h);
         }
         it_fail("T031", "spoof.ep lookup must NOT resolve");
@@ -1150,7 +1150,7 @@ void test_t031(void) {
  * legacy KChannel route back into the stateful protocol.
  */
 void test_t032(void) {
-    if (g_svcmgr_ep_h == HANDLE_INVALID) {
+    if (g_svcmgr_ep_h == IRIS_CPTR_NULL) {
         it_fail("T032", "svcmgr ep missing"); return;
     }
 
@@ -1167,7 +1167,7 @@ void test_t032(void) {
         it_pass("T032");
     } else {
         if (msg.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
-            handle_id_t h = (handle_id_t)msg.got_cap;
+            iris_cptr_t h = (iris_cptr_t)msg.got_cap;
             it_close(&h);
         }
         it_fail("T032", "legacy vfs name must NOT resolve");
@@ -1177,7 +1177,7 @@ void test_t032(void) {
 /* ── T033: VFS EP STATUS (Phase 7.5) ─────────────────────────────────────── */
 
 void test_t033(void) {
-    if (g_vfs_ep_h == HANDLE_INVALID) {
+    if (g_vfs_ep_h == IRIS_CPTR_NULL) {
         it_fail("T033", "vfs ep missing"); return;
     }
 
@@ -1209,13 +1209,13 @@ void test_t033(void) {
 /* ── T034: svcmgr EP LOOKUP_NAME("kbd.ep") → endpoint cap + PING (7.4) ─── */
 
 void test_t034(void) {
-    if (g_svcmgr_ep_h == HANDLE_INVALID) {
+    if (g_svcmgr_ep_h == IRIS_CPTR_NULL) {
         it_fail("T034", "svcmgr ep missing"); return;
     }
 
     long c = it_lookup_ep(KBD_EP_SVC_NAME, IT_LOOKUP_KBD);
     if (c < 0) { it_fail("T034", "kbd.ep lookup"); return; }
-    g_kbd_ep_h = (handle_id_t)c;
+    g_kbd_ep_h = (iris_cptr_t)c;
 
     struct iris_msg msg;
     long r;
@@ -1236,7 +1236,7 @@ static int t035_expect_err(struct iris_msg *msg, uint32_t want) {
 }
 
 void test_t035(void) {
-    if (g_kbd_ep_h == HANDLE_INVALID) {
+    if (g_kbd_ep_h == IRIS_CPTR_NULL) {
         it_fail("T035", "kbd ep missing"); return;
     }
 
@@ -1272,13 +1272,13 @@ void test_t035(void) {
 /* ── T036: svcmgr EP LOOKUP_NAME("console.ep") → endpoint cap + PING (7.3) ─ */
 
 void test_t036(void) {
-    if (g_svcmgr_ep_h == HANDLE_INVALID) {
+    if (g_svcmgr_ep_h == IRIS_CPTR_NULL) {
         it_fail("T036", "svcmgr ep missing"); return;
     }
 
     long c = it_lookup_ep(CONSOLE_EP_SVC_NAME, IT_LOOKUP_CON);
     if (c < 0) { it_fail("T036", "console.ep lookup"); return; }
-    g_con_ep_h = (handle_id_t)c;
+    g_con_ep_h = (iris_cptr_t)c;
 
     struct iris_msg msg;
     long r;
@@ -1294,7 +1294,7 @@ void test_t036(void) {
 /* ── T037: console EP WRITE — gated marker lands on the UART (7.3) ──────── */
 
 void test_t037(void) {
-    if (g_con_ep_h == HANDLE_INVALID) {
+    if (g_con_ep_h == IRIS_CPTR_NULL) {
         it_fail("T037", "console ep missing"); return;
     }
 
@@ -1317,7 +1317,7 @@ void test_t037(void) {
 /* ── T038: console EP SYNC + malformed requests (7.3) ───────────────────── */
 
 void test_t038(void) {
-    if (g_con_ep_h == HANDLE_INVALID) {
+    if (g_con_ep_h == IRIS_CPTR_NULL) {
         it_fail("T038", "console ep missing"); return;
     }
 
@@ -1384,7 +1384,7 @@ void test_t039(void) {
  * slot 30 (IRIS_CPTR_TEST_FIX_A) = console KChannel cap (wrong type),
  * slot 31 (IRIS_CPTR_TEST_FIX_B) = svcmgr ep with RIGHT_TRANSFER only
  * (insufficient for EP_CALL's RIGHT_WRITE).
- *   - CPTR_NULL → clean negative error (never a crash);
+ *   - IRIS_CPTR_NULL → clean negative error (never a crash);
  *   - wrong type → IRIS_ERR_WRONG_TYPE from the CSpace path;
  *   - ACCESS_DENIED → hard stop: the dual resolver must NOT fall back to
  *     the handle table (a fallback would yield BAD_HANDLE instead, since
@@ -1396,7 +1396,7 @@ void test_t040(void) {
 
     iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    long r = iris_msg_call(0L /* CPTR_NULL */, &msg);
+    long r = iris_msg_call(0L /* IRIS_CPTR_NULL */, &msg);
     if (r >= 0) ok = 0;
 
     iris_msg_zero(&msg);
@@ -1624,7 +1624,7 @@ void test_t052(void) {
         uint64_t b = 0xFFu;
         if (it_ping_badge((long)msg.got_cap, &b) == 0 && b == 0u)
             ok = 1;
-        handle_id_t h = (handle_id_t)msg.got_cap;
+        iris_cptr_t h = (iris_cptr_t)msg.got_cap;
         it_close(&h);
     }
     if (ok)
@@ -1684,13 +1684,13 @@ static uint32_t g_vfs_gen0 = 0;
 
 /* Phase 11: a dynamic test service registered by cap-transfer (T054), reused by
  * the lookup/unregister tests T063–T066. */
-static handle_id_t g_ltst_ep = (handle_id_t)0;   /* HANDLE_INVALID */
+static iris_cptr_t g_ltst_ep = (iris_cptr_t)0;   /* IRIS_CPTR_NULL */
 static uint32_t    g_ltst_id = 0;
 
 /* Register endpoint `ep` under `name` via EP_CALL cap-transfer (attached_cap).
  * The dup is a give-away, released once the call lands (A-29); returns the
  * dynamic id, or -(error code). */
-long it_register_ep(const char *name, handle_id_t ep) {
+long it_register_ep(const char *name, iris_cptr_t ep) {
     /* The master svcmgr keeps must carry DUPLICATE so it can hand each client a
      * fresh WRITE cap on lookup (+TRANSFER so the cap is deliverable to it). */
     iris_rights_t mr = (iris_rights_t)(RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
@@ -1716,7 +1716,7 @@ long it_register_ep(const char *name, handle_id_t ep) {
 void test_t054(void) {
     long e = it_ep_create_slot();
     if (e < 0) { it_fail("T054", "endpoint create"); return; }
-    g_ltst_ep = (handle_id_t)e;
+    g_ltst_ep = (iris_cptr_t)e;
 
     long id = it_register_ep("ltst.svc", g_ltst_ep);
     if (id < 0) { it_fail("T054", "cap register"); return; }
@@ -1749,7 +1749,7 @@ void test_t055(void) {
     int ok = 0;
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
         msg.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
-        handle_id_t cap = (handle_id_t)msg.got_cap;
+        iris_cptr_t cap = (iris_cptr_t)msg.got_cap;
         struct iris_msg p;
         iris_msg_zero(&p);
         p.label = IRIS_EP_OP_PING;
@@ -1851,7 +1851,7 @@ void test_t060(void) {
     int ok = 0;
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
         msg.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
-        handle_id_t cap = (handle_id_t)msg.got_cap;
+        iris_cptr_t cap = (iris_cptr_t)msg.got_cap;
         struct iris_msg p;
         iris_msg_zero(&p);
         p.label = IRIS_EP_OP_PING;
@@ -1902,7 +1902,7 @@ void test_t062(void) {
  * SYS_HANDLE_SAME_OBJECT proves it is the very endpoint object iris_test
  * created and transferred (not a forged number, and not the reply cap). */
 void test_t063(void) {
-    if (g_ltst_ep == (handle_id_t)0) { it_fail("T063", "no ltst ep"); return; }
+    if (g_ltst_ep == (iris_cptr_t)0) { it_fail("T063", "no ltst ep"); return; }
     uint32_t len = it_stage_path("ltst.svc");
     struct iris_msg msg;
     iris_msg_zero(&msg);
@@ -1917,7 +1917,7 @@ void test_t063(void) {
     int ok = 0;
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
         msg.got_cap != (uint32_t)IRIS_MSG_NO_CAP) {
-        handle_id_t got = (handle_id_t)msg.got_cap;
+        iris_cptr_t got = (iris_cptr_t)msg.got_cap;
         long ty   = it_invoke0((long)got, INV_CAP_IDENTIFY);
         long same = it_invoke1((long)got, INV_CAP_SAME_OBJECT, (long)g_ltst_ep);
         if (ty == (long)IRIS_HANDLE_TYPE_ENDPOINT && same == 1) ok = 1;
@@ -1943,7 +1943,7 @@ void test_t064(void) {
     /* wrong type: transfer a notification cap */
     long n = it_notify_create();
     if (n < 0) { it_fail("T064", "notify create"); return; }
-    handle_id_t notif = (handle_id_t)n;
+    iris_cptr_t notif = (iris_cptr_t)n;
     /* Phase S4 (Step 2): the EP_CALL transfer source is a CSpace slot. */
     long d = it_xfer_dup((long)notif, (uint32_t)RIGHT_WRITE);
     if (d < 0) { it_close(&notif); it_fail("T064", "xfer slot"); return; }
@@ -2002,7 +2002,7 @@ void test_t066(void) {
     long r = iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &msg);
     int ok = (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
               msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND);
-    if (g_ltst_ep != (handle_id_t)0) it_close(&g_ltst_ep);
+    if (g_ltst_ep != (iris_cptr_t)0) it_close(&g_ltst_ep);
     if (ok) it_pass("T066"); else it_fail("T066", "lookup after unregister");
 }
 
@@ -2096,7 +2096,7 @@ void test_t070(void) {
 void test_t071(void) {
     long eh = it_ep_create();
     if (eh < 0) { it_fail("T071", "ep create"); return; }
-    handle_id_t root_h = (handle_id_t)eh;
+    iris_cptr_t root_h = (iris_cptr_t)eh;
 
     /* Bridge the endpoint into a scratch slot: it is the derivation ROOT. */
     long root = it_cdt_root(root_h, IT_SCRATCH_0);
@@ -2142,7 +2142,7 @@ void test_t071(void) {
 void test_t072(void) {
     long eh = it_ep_create();
     if (eh < 0) { it_fail("T072", "ep create"); return; }
-    handle_id_t root_h = (handle_id_t)eh;
+    iris_cptr_t root_h = (iris_cptr_t)eh;
 
     long root = it_cdt_root(root_h, IT_SCRATCH_0);
     if (root < 0) { it_close(&root_h); it_fail("T072", "root slot"); return; }
@@ -2188,11 +2188,11 @@ void test_t072(void) {
 void test_t073(void) {
     long ep = it_ep_create_slot();
     if (ep < 0) { it_fail("T073", "ep create"); return; }
-    handle_id_t ep_h = (handle_id_t)ep;
+    iris_cptr_t ep_h = (iris_cptr_t)ep;
 
     /* Phase S4 (Step 2): the SOURCE is a CSpace slot.  Three failure shapes,
      * each of which must leave the source cap exactly where it was. */
-    handle_id_t root = T28_OWN_ROOT_CNODE;
+    iris_cptr_t root = T28_OWN_ROOT_CNODE;
 
     /* (a) A source slot WITHOUT RIGHT_TRANSFER → ACCESS_DENIED, slot intact.
      * Stage 4: the fixture is a slot, so the reduced copy is a slot-to-slot
@@ -2250,7 +2250,7 @@ void test_t073(void) {
  * EP_CALL must return 0 (first reply landed); the second SYS_REPLY must fail with
  * IRIS_ERR_NOT_FOUND — proving the reply cap cannot re-unblock a caller and leaves
  * no dangling reply authority.  (Mirrors the T016 EP_CALL/REPLY rendezvous.) */
-static handle_id_t g_t074_ep_h  = HANDLE_INVALID;
+static iris_cptr_t g_t074_ep_h  = IRIS_CPTR_NULL;
 static volatile int g_t074_done = 0;
 static          int g_t074_r1   = 999;
 static          int g_t074_r2   = 999;
@@ -2261,7 +2261,7 @@ static void t074_server(void) {
     iris_msg_zero(&msg);
     long rr = (msg.reply = 93, iris_msg_recv((long)g_t074_ep_h, &msg));
     if (rr == 0) {
-        handle_id_t reply_h = (handle_id_t)msg.got_cap;
+        iris_cptr_t reply_h = (iris_cptr_t)msg.got_cap;
         struct iris_msg rmsg;
         iris_msg_zero(&rmsg);
         rmsg.label = 0x74;
@@ -2284,7 +2284,7 @@ void test_t074(void) {
 
     long ep = it_ep_create();
     if (ep < 0) { it_fail("T074", "ep create"); return; }
-    g_t074_ep_h = (handle_id_t)ep;
+    g_t074_ep_h = (iris_cptr_t)ep;
     if (it_reply_create_at(93) < 0) {
         it_close(&g_t074_ep_h);
         it_fail("T074", "reply create"); return;
@@ -2294,7 +2294,7 @@ void test_t074(void) {
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t074_stack + sizeof(g_t074_stack))) & ~0xFULL;
     long tid = it_thread_create(entry, rsp, 0);
     if (tid < 0) { it_close(&g_t074_ep_h); it_fail("T074", "thread create"); return; }
-    handle_id_t tid_h = (handle_id_t)tid;
+    iris_cptr_t tid_h = (iris_cptr_t)tid;
 
     struct iris_msg msg;
     iris_msg_zero(&msg);
@@ -2319,14 +2319,14 @@ void test_t074(void) {
 /* Stage 7 Step 9: `cn_leaf` is where the child's ROOT CSpace is kept, so the
  * caller can go on minting into it — naming the CSpace it holds instead of the
  * process it does not. */
-long lp_spawn_child_cn(uint32_t cn_leaf, handle_id_t cmd_ep_h,
-                              handle_id_t *out_proc_h) {
+long lp_spawn_child_cn(uint32_t cn_leaf, iris_cptr_t cmd_ep_h,
+                              iris_cptr_t *out_proc_h) {
     struct svc_mint mints[2] = { 0 };
     uint32_t n = 0;
     mints[n].slot   = LP_CPTR_CMD_EP;
     /* A CPtr source wins over src_h in svc_mint and mints slot-to-slot, so the
      * child's capability is an MDB child of ours. */
-    if (((uint32_t)cmd_ep_h & HANDLE_TAG) == 0u && cmd_ep_h != 0)
+    if (((uint32_t)cmd_ep_h & IRIS_CPTR_LIMIT) == 0u && cmd_ep_h != 0)
         mints[n].src_cptr = (uint64_t)cmd_ep_h;
     else
         IT_MINT_SRC(mints[n], cmd_ep_h);
@@ -2337,11 +2337,11 @@ long lp_spawn_child_cn(uint32_t cn_leaf, handle_id_t cmd_ep_h,
      * an explicit reply object at slot 13 (LP_CPTR_REPLY).  Retyped fresh
      * from the test untyped; the parent drops its handle right after the
      * mint so child death still fires close-wakes-caller. */
-    handle_id_t reply_h = HANDLE_INVALID;
+    iris_cptr_t reply_h = IRIS_CPTR_NULL;
     {
         long rr = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
         if (rr >= 0) {
-            reply_h = (handle_id_t)rr;
+            reply_h = (iris_cptr_t)rr;
             mints[n].slot   = 13u;
             IT_MINT_SRC(mints[n], reply_h);
             mints[n].rights = RIGHT_READ | RIGHT_WRITE;
@@ -2349,8 +2349,8 @@ long lp_spawn_child_cn(uint32_t cn_leaf, handle_id_t cmd_ep_h,
             n++;
         }
     }
-    handle_id_t boot_h = HANDLE_INVALID;
-    *out_proc_h = HANDLE_INVALID;
+    iris_cptr_t boot_h = IRIS_CPTR_NULL;
+    *out_proc_h = IRIS_CPTR_NULL;
     if (cn_leaf) it_slot_delete(IT_OBJ_CPTR(IT_CHILD_CN_LEAF(cn_leaf - 1u)));
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              out_proc_h, &boot_h, mints, n,
@@ -2360,12 +2360,12 @@ long lp_spawn_child_cn(uint32_t cn_leaf, handle_id_t cmd_ep_h,
                                it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(*out_proc_h);
     it_close(&reply_h);  /* the child's slot-13 mint is the only reply cap */
-    it_close(&boot_h);   /* Track I: no bootstrap channel (HANDLE_INVALID anyway) */
+    it_close(&boot_h);   /* Track I: no bootstrap channel (IRIS_CPTR_NULL anyway) */
     return r;
 }
 
 /* The common case: a child the caller does not delegate into after spawn. */
-long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
+long lp_spawn_child(iris_cptr_t cmd_ep_h, iris_cptr_t *out_proc_h) {
     return lp_spawn_child_cn(0u, cmd_ep_h, out_proc_h);
 }
 
@@ -2375,18 +2375,18 @@ long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
 void test_t075(void) {
     long ep = it_ep_create();
     if (ep < 0) { it_fail("T075", "ep create"); return; }
-    handle_id_t cmd_ep_h = (handle_id_t)ep;
+    iris_cptr_t cmd_ep_h = (iris_cptr_t)ep;
 
-    handle_id_t proc_h = HANDLE_INVALID;
-    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+    iris_cptr_t proc_h = IRIS_CPTR_NULL;
+    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == IRIS_CPTR_NULL) {
         it_close(&cmd_ep_h);
         it_fail("T075", "spawn"); return;
     }
 
     /* Watch the child for exit on a notification, bit 0. */
     long n = it_notify_create();
-    handle_id_t watch_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
-    int watch_ok = (watch_h != HANDLE_INVALID) &&
+    iris_cptr_t watch_h = (n >= 0) ? (iris_cptr_t)n : IRIS_CPTR_NULL;
+    int watch_ok = (watch_h != IRIS_CPTR_NULL) &&
                    (it_invoke2(it_child_tcb((long)proc_h), INV_TCB_WATCH, (long)watch_h, 1) == 0);
 
     /* Drive the child: EP_NB_SEND until it is blocked in EP_RECV (bounded). */
@@ -2424,10 +2424,10 @@ void test_t075(void) {
 void test_t077(void) {
     long ep = it_ep_create();
     if (ep < 0) { it_fail("T077", "ep create"); return; }
-    handle_id_t cmd_ep_h = (handle_id_t)ep;
+    iris_cptr_t cmd_ep_h = (iris_cptr_t)ep;
 
-    handle_id_t proc_h = HANDLE_INVALID;
-    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+    iris_cptr_t proc_h = IRIS_CPTR_NULL;
+    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == IRIS_CPTR_NULL) {
         it_close(&cmd_ep_h);
         it_fail("T077", "spawn"); return;
     }
@@ -2464,10 +2464,10 @@ void test_t077(void) {
 void test_t078(void) {
     long ep = it_ep_create();
     if (ep < 0) { it_fail("T078", "ep create"); return; }
-    handle_id_t cmd_ep_h = (handle_id_t)ep;
+    iris_cptr_t cmd_ep_h = (iris_cptr_t)ep;
 
-    handle_id_t proc_h = HANDLE_INVALID;
-    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+    iris_cptr_t proc_h = IRIS_CPTR_NULL;
+    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == IRIS_CPTR_NULL) {
         it_close(&cmd_ep_h);
         it_fail("T078", "spawn"); return;
     }
@@ -2498,20 +2498,20 @@ void test_t078(void) {
 void test_t076(void) {
     long ep = it_ep_create();
     if (ep < 0) { it_fail("T076", "ep create"); return; }
-    handle_id_t cmd_ep_h = (handle_id_t)ep;
+    iris_cptr_t cmd_ep_h = (iris_cptr_t)ep;
 
-    handle_id_t proc_h = HANDLE_INVALID;
+    iris_cptr_t proc_h = IRIS_CPTR_NULL;
     /* This test maps into the child, so the spawn keeps its address space. */
     it_child_keep_vspace();
-    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == IRIS_CPTR_NULL) {
         it_close(&cmd_ep_h);
         it_fail("T076", "spawn"); return;
     }
 
     /* One-page VMO mapped writable into the CHILD's address space. */
     long vmo = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096);
-    handle_id_t vmo_h = (vmo >= 0) ? (handle_id_t)vmo : HANDLE_INVALID;
-    long mi = (vmo_h != HANDLE_INVALID)
+    iris_cptr_t vmo_h = (vmo >= 0) ? (iris_cptr_t)vmo : IRIS_CPTR_NULL;
+    long mi = (vmo_h != IRIS_CPTR_NULL)
         ? it_invoke((long)vmo_h, INV_FRAME_MAP, it_child_vspace(proc_h), (long)LP_MAP_VA, 1)
         : -1;
 

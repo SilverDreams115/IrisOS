@@ -46,17 +46,19 @@
  *
  * ── What the driver has to do, and why each step is a capability operation ──
  *
- *   1. PCI configuration space lives behind an index/data register pair at
- *      0xCF8/0xCFC.  Reaching it takes an I/O-port capability, derived from
- *      the suite's IOPORT_CONTROL authority for those eight ports and nothing
- *      else.  The index register ignores anything narrower than a dword, which
- *      is why INV_IOPORT_IN32/OUT32 exist at all — a byte-only port ABI cannot
- *      host a PCI driver, and that is how the hole was found.
- *   2. The device's BAR says which physical window it decodes.  Touching that
- *      window takes a FRAME over it, retyped from the PCI-hole device Untyped
- *      that Stage 10-dma's kernel-side change publishes, and mapped UNCACHED —
- *      a register read answered out of a cache line is a read of what the
- *      register said some time ago.
+ *   1. The device is FOUND through the `pci` service (Stage 10), not by this
+ *      test reading configuration space.  0xCF8/0xCFC is one pair of ports
+ *      through which any device on the machine can be reprogrammed, so a
+ *      driver holding a capability for it would hold the bus — exactly the
+ *      thing Stage 10-dma closed for DMA, reopened through the config space
+ *      that programs the DMA.  One task holds those ports; this one holds an
+ *      endpoint and asks.
+ *   2. The register window arrives as a FRAME capability, from the same
+ *      service, which owns the PCI-hole device Untyped.  This test cannot
+ *      retype one for itself, and that is the point rather than a limitation:
+ *      it holds no device Untyped, so there is no window it could reach that
+ *      it was not handed.  It maps it UNCACHED — a register read answered out
+ *      of a cache line is a read of what the register said some time ago.
  *   3. The DMA target is an ordinary frame out of the suite's own Untyped.
  *      Its PHYSICAL address comes from INV_FRAME_GET_ADDRESS, because a device
  *      takes physical addresses and a capability holder is the only one who
@@ -87,6 +89,7 @@
  */
 
 #include "it_priv.h"
+#include <iris/pci_ep_proto.h>
 
 /*
  * The device.  1234:11e8 is QEMU's `edu`; the register map below is its
@@ -110,15 +113,9 @@
 #define EDU_BUF_BASE       0x40000ull
 #define EDU_BUF_BYTES      4096ull
 
-/* PCI configuration space, the 1994 way. */
-#define PCI_CFG_PORTS      8u      /* 0xCF8..0xCFF */
-#define PCI_CFG_ADDR_OFF   0u      /* 0xCF8 within the capability */
-#define PCI_CFG_DATA_OFF   4u      /* 0xCFC */
-#define PCI_CFG_VENDOR     0x00u
-#define PCI_CFG_COMMAND    0x04u
-#define PCI_CFG_BAR0       0x10u
-#define PCI_CMD_MEMORY     0x0002u
-#define PCI_CMD_BUS_MASTER 0x0004u
+/* Configuration space is not reachable from here at all — that is the point.
+ * `PCI_CMD_*` come from the bus service's protocol, which is the only way this
+ * test can ask for a device to be turned on. */
 
 /*
  * Leaves of the suite's object CNode.  244..250 again: T352 is the last test
@@ -131,7 +128,6 @@
 #define T353_LEAF_L(i)  (IT_OBJ_SLOT_SPAN + 45u + (uint32_t)(i))  /* 245..247 */
 #define T353_LEAF_BUF   (IT_OBJ_SLOT_SPAN + 48u)      /* 248, the DMA target */
 #define T353_LEAF_BAR   (IT_OBJ_SLOT_SPAN + 49u)      /* 249, the register window */
-#define T353_LEAF_PAD   (IT_OBJ_SLOT_SPAN + 50u)      /* 250, see "the watermark" */
 
 /* Two windows in the suite's own address space, clear of every VA above. */
 #define T353_BAR_VA     0x807D000000ULL
@@ -163,34 +159,43 @@ static void     edu_wr64(uint32_t off, uint64_t v) {
     *(volatile uint64_t *)(uintptr_t)(T353_BAR_VA + off) = v;
 }
 
-/* ── PCI configuration space, through the port capability ────────────────── */
+/* ── the bus, asked rather than read ─────────────────────────────────────── */
 
-static uint32_t t353_cfg_read(long io, uint32_t devfn, uint32_t off) {
-    uint32_t addr = 0x80000000u | (devfn << 8) | (off & 0xFCu);
-    (void)it_invoke2(io, INV_IOPORT_OUT32, (long)PCI_CFG_ADDR_OFF, (long)addr);
-    return (uint32_t)it_invoke1(io, INV_IOPORT_IN32, (long)PCI_CFG_DATA_OFF);
-}
-
-static void t353_cfg_write(long io, uint32_t devfn, uint32_t off, uint32_t v) {
-    uint32_t addr = 0x80000000u | (devfn << 8) | (off & 0xFCu);
-    (void)it_invoke2(io, INV_IOPORT_OUT32, (long)PCI_CFG_ADDR_OFF, (long)addr);
-    (void)it_invoke2(io, INV_IOPORT_OUT32, (long)PCI_CFG_DATA_OFF, (long)v);
+/*
+ * One request to the `pci` service.  `recv` is the slot a delivered capability
+ * should land in, or 0 when the answer is only numbers.
+ */
+static long t353_pci(uint64_t op, uint64_t a0, uint64_t a1,
+                     long recv, struct iris_msg *out) {
+    struct iris_msg m;
+    iris_msg_zero(&m);
+    m.label      = op;
+    m.words[0]   = a0;
+    m.words[1]   = a1;
+    m.word_count = 2u;
+    m.recv_slot  = recv;
+    long r = iris_msg_call((long)IRIS_CPTR_PCI_EP, &m);
+    if (out) *out = m;
+    if (r != 0) return r;
+    return (m.label == PCI_REP_OK) ? 0 : (long)IRIS_ERR_NOT_FOUND;
 }
 
 /*
- * Bus zero, every device, function zero.
+ * The device, by identity.
  *
- * Not a general enumerator: a PCI-to-PCI bridge behind which the device might
- * sit, or a multifunction device at any function but zero, are both real and
- * both absent from this machine.  Writing the general scan would be writing
- * code no test covers, and the honest version of that is to say what this
- * looks at rather than to look convincing.
+ * A driver knows what it drives and nothing else: it walks what the bus
+ * service reports and matches on vendor:device.  It never sees a config dword
+ * it did not ask for and cannot address a function it did not match.
  */
-static int t353_find_device(long io, uint32_t *out_devfn) {
-    for (uint32_t dev = 0; dev < 32u; dev++) {
-        uint32_t devfn = dev << 3;
-        if (t353_cfg_read(io, devfn, PCI_CFG_VENDOR) != EDU_VENDOR_DEVICE) continue;
-        *out_devfn = devfn;
+static int t353_find_device(uint32_t *out_index, uint16_t *out_sid) {
+    struct iris_msg r;
+    if (t353_pci(PCI_OP_COUNT, 0, 0, 0, &r) != 0) return 0;
+    uint32_t n = (uint32_t)r.words[0];
+    for (uint32_t i = 0; i < n; i++) {
+        if (t353_pci(PCI_OP_INFO, i, 0, 0, &r) != 0) continue;
+        if ((uint32_t)r.words[0] != EDU_VENDOR_DEVICE) continue;
+        *out_index = i;
+        *out_sid   = (uint16_t)r.words[2];
         return 1;
     }
     return 0;
@@ -269,7 +274,7 @@ static void t353_drain_faults(void) {
     for (uint32_t i = 0; i < 8u; i++) if (!t353_fault(&f)) return;
 }
 
-static void t353_cleanup(long io_slot) {
+static void t353_cleanup(void) {
     (void)it_invoke2((long)IT_OBJ_CPTR(T353_LEAF_BAR), INV_FRAME_UNMAP, IT_VS,
                      (long)T353_BAR_VA);
     (void)it_invoke2((long)IT_OBJ_CPTR(T353_LEAF_BUF), INV_FRAME_UNMAP, IT_VS,
@@ -280,8 +285,6 @@ static void t353_cleanup(long io_slot) {
     (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)T353_LEAF_IO);
     (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)T353_LEAF_BUF);
     (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)T353_LEAF_BAR);
-    (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)T353_LEAF_PAD);
-    if (io_slot >= 0) it_slot_delete((uint32_t)io_slot);
 }
 
 static long t353_retype_leaf(long ut, uint32_t type, uint32_t leaf, uint64_t bytes) {
@@ -297,121 +300,55 @@ void test_t353(void) {
     it_quiesce_reaper();
     int ok = 1;
     const char *why = "dma containment";
-    long io_slot = -1;
-
     uint32_t w7[4];
     if (!it_sched_ext7(w7)) { it_fail("T353", "containment tier"); return; }
     int have_iommu = (w7[IT_S7_TRANSLATING] != 0u);
 
     if (!it_setup_self_vspace()) { it_fail("T353", "vspace self"); return; }
 
-    /* ── 1. the authority to reach PCI configuration space ───────────────*/
-    io_slot = (long)IT_SCRATCH_0;
-    it_slot_delete((uint32_t)io_slot);
-    if (it_ioport_create((long)IRIS_CPTR_IOPORT_CONTROL, 0xCF8, PCI_CFG_PORTS,
-                         io_slot) != 0) {
-        it_fail("T353", "pci config ports"); return;
-    }
-    long io = io_slot;
-
-    /* A four-byte access at the last byte of the range would read three bytes
-     * the capability does not cover.  Checked here because this is the first
-     * caller of the wide accessors and the check is new with them. */
-    if (it_invoke1(io, INV_IOPORT_IN32, (long)(PCI_CFG_PORTS - 2u))
-        != (long)IRIS_ERR_INVALID_ARG) {
-        ok = 0; why = "a dword read ran off the end of the authority";
-    }
-
-    /* ── 2. find the device ──────────────────────────────────────────────*/
-    uint32_t devfn = 0;
-    if (ok && !t353_find_device(io, &devfn)) {
+    /* ── 1. find the device, through the service that owns the bus ───────*/
+    uint32_t dev_index = 0;
+    uint16_t source_id = 0;
+    if (!t353_find_device(&dev_index, &source_id)) {
         /* Not a failure of the kernel — a failure of the machine to have the
-         * device the gate asks for.  Said out loud so a run that quietly
-         * stopped proving anything cannot look like a run that passed. */
-        it_serial_write("[IRIS][TEST] T353 no DMA device on bus 0\n");
-        t353_cleanup(io_slot);
+         * device the gate asks for, or of `pci` to have started.  Said out
+         * loud so a run that quietly stopped proving anything cannot look like
+         * a run that passed. */
+        it_serial_write("[IRIS][TEST] T353 no DMA device on the bus\n");
+        t353_cleanup();
         it_fail("T353", "no DMA-capable device present");
         return;
     }
-    uint16_t source_id = (uint16_t)devfn;   /* bus 0, so the devfn IS the sid */
 
-    /* ── 3. the window its BAR decodes, as a frame ───────────────────────*/
-    uint64_t bar = 0;
-    if (ok) {
-        bar = (uint64_t)(t353_cfg_read(io, devfn, PCI_CFG_BAR0) & ~0xFu);
-        if (bar == 0u) { ok = 0; why = "the firmware assigned no window"; }
-    }
-
-    /*
-     * The MMIO Untyped pays for its objects' headers out of the suite's RAM —
-     * a device region cannot hold them, and the pairing is set once for the
-     * life of the object, so a second caller finding it already paired is not
-     * an error.
-     */
-    if (ok) {
-        long r = it_invoke1((long)IRIS_CPTR_MMIO_UNTYPED_TEST,
-                            INV_UNTYPED_SET_DEVICE_BUDGET,
-                            (long)IRIS_CPTR_TEST_UNTYPED);
-        if (r != 0 && r != (long)IRIS_ERR_ALREADY_EXISTS) {
-            ok = 0; why = "the MMIO region has no header budget";
-        }
-    }
-
-    /*
-     * THE WATERMARK.
-     *
-     * An Untyped hands out its region in order, so the frame a retype produces
-     * lands wherever the region has been consumed to — and the address this
-     * driver needs is not that, it is the one the firmware already assigned to
-     * this device.  The gap is skipped by retyping it as a frame nobody maps.
-     *
-     * That is not a trick, it is what consuming an Untyped in order means, and
-     * it is how seL4 userspace reaches a particular device region too.  What
-     * would be a trick is retyping "at" an address, which would make the
-     * Untyped's watermark a suggestion and two holders able to carve the same
-     * bytes.
-     *
-     * The skipped frame is never mapped and never touched, which matters:
-     * the first few megabytes of this region are inside the VGA aperture,
-     * because the framebuffer Untyped covers the visible framebuffer and the
-     * card decodes rather more than that.  A device Untyped is a physical
-     * range, not a promise that the range is free — in seL4 as here — and the
-     * holder is what has to know the difference.
-     */
-    if (ok) {
-        struct it_utq_one q;
-        if (!it_utq_1((long)IRIS_CPTR_MMIO_UNTYPED_TEST, &q)) {
-            ok = 0; why = "no MMIO untyped";
-        } else if (!q.is_device) {
-            ok = 0; why = "the MMIO untyped is not device memory";
+    /* ── 2. its register window, as a capability ─────────────────────────*/
+    uint64_t bar = 0, bar_size = 0;
+    long bar_fr = (long)IT_OBJ_CPTR(T353_LEAF_BAR);
+    {
+        (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE,
+                         (long)T353_LEAF_BAR);
+        struct iris_msg r;
+        if (t353_pci(PCI_OP_CLAIM, dev_index, 0, bar_fr, &r) != 0) {
+            ok = 0; why = "the bus service would not hand over the window";
+        } else if (r.got_caps == 0u) {
+            /* A-33: the MessageInfo says whether a capability landed.  A reply
+             * carrying only numbers is the answer to "how big is it", and this
+             * request was not that. */
+            ok = 0; why = "the window arrived without a frame";
         } else {
-            uint64_t mark = q.phys_base + q.used_bytes;
-            uint64_t end  = q.phys_base + q.total_bytes;
+            bar      = r.words[0];
+            bar_size = r.words[1];
             it_serial_write("[IRIS][TEST] T353 device 1234:11e8 sid ");
             it_log_hex(source_id);
             it_serial_write(" bar "); it_log_hex(bar);
-            it_serial_write(" mmio "); it_log_hex(q.phys_base);
-            it_serial_write(".."); it_log_hex(end);
+            it_serial_write(" size "); it_log_hex(bar_size);
             it_serial_write("\n");
-            if (bar < mark || bar + 4096u > end) {
-                ok = 0; why = "the device window is outside the MMIO region";
-            } else if (bar > mark &&
-                       t353_retype_leaf((long)IRIS_CPTR_MMIO_UNTYPED_TEST,
-                                        IRIS_KOBJ_FRAME, T353_LEAF_PAD,
-                                        bar - mark) < 0) {
-                ok = 0; why = "could not skip to the device window";
-            }
         }
     }
-
-    long bar_fr = -1;
-    if (ok) {
-        bar_fr = t353_retype_leaf((long)IRIS_CPTR_MMIO_UNTYPED_TEST, IRIS_KOBJ_FRAME,
-                                  T353_LEAF_BAR, 4096u);
-        if (bar_fr < 0) { ok = 0; why = "no frame over the device window"; }
-    }
+    /* The frame is over the window the service said it was.  Checked rather
+     * than trusted: this is the one number the driver did not measure itself,
+     * and a frame over the wrong window would drive some other device. */
     if (ok && (uint64_t)it_invoke0(bar_fr, INV_FRAME_GET_ADDRESS) != bar) {
-        ok = 0; why = "the frame did not land on the device window";
+        ok = 0; why = "the frame is not over the window the service named";
     }
     /* Uncached: see PAGE_PCD.  A register read answered from a cache line is
      * not a register read. */
@@ -420,11 +357,44 @@ void test_t353(void) {
         ok = 0; why = "map the device window";
     }
 
+    /* ── 3. what the service will NOT do ─────────────────────────────────
+     *
+     * A driver asks for its own device and gets its own device.  The refusals
+     * are what make that a property rather than a convention: an index past
+     * the end of the scan and a BAR past the end of a function are both
+     * requests for a window that would belong to somebody else if it existed.
+     *
+     * What this test CANNOT prove is the other half — that a driver is unable
+     * to reach configuration space directly — because iris_test holds
+     * IRIS_CPTR_IOPORT_CONTROL for two dozen other tests and could therefore
+     * claim 0xCF8 for itself.  That is a fact about this task, not about
+     * drivers, and pretending otherwise by asserting a refusal that would not
+     * happen is worse than saying so.  Where the claim IS made good is init's
+     * manifest: it derives the port capability once, hands it to `pci`, and
+     * deletes its own copy, so no later task can be given one.
+     */
+    if (ok) {
+        struct iris_msg r;
+        if (t353_pci(PCI_OP_CLAIM, 0xFFFFu, 0, 0, &r) == 0) {
+            ok = 0; why = "the service claimed a device that does not exist";
+        }
+    }
+    if (ok) {
+        struct iris_msg r;
+        if (t353_pci(PCI_OP_BAR, dev_index, 99u, 0, &r) == 0) {
+            ok = 0; why = "the service described a BAR that cannot exist";
+        }
+    }
+
     /* ── 4. the device answers ───────────────────────────────────────────*/
     if (ok) {
-        t353_cfg_write(io, devfn, PCI_CFG_COMMAND,
-                       t353_cfg_read(io, devfn, PCI_CFG_COMMAND) |
-                       PCI_CMD_MEMORY | PCI_CMD_BUS_MASTER);
+        struct iris_msg r;
+        if (t353_pci(PCI_OP_ENABLE, dev_index,
+                     PCI_CMD_MEMORY | PCI_CMD_BUS_MASTER, 0, &r) != 0) {
+            ok = 0; why = "the bus service would not enable the device";
+        }
+    }
+    if (ok) {
         edu_wr32(EDU_REG_LIVENESS, 0x12345678u);
         if (edu_rd32(EDU_REG_LIVENESS) != ~0x12345678u) {
             ok = 0; why = "the device did not answer through its BAR";
@@ -573,13 +543,19 @@ void test_t353(void) {
                             "again\n");
     }
 
-    /* Stop the device before the frame under it goes away. */
-    if (bar_fr >= 0) {
-        t353_cfg_write(io, devfn, PCI_CFG_COMMAND,
-                       t353_cfg_read(io, devfn, PCI_CFG_COMMAND) &
-                       ~(uint32_t)(PCI_CMD_MEMORY | PCI_CMD_BUS_MASTER));
-    }
-    t353_cleanup(io_slot);
+    /*
+     * The device is left decoding and bus-mastering.
+     *
+     * Turning it off would take a PCI_OP_DISABLE, and there is deliberately no
+     * such operation: a caller that could clear another device's command bits
+     * could stop somebody else's hardware, and this test is not a special case
+     * — it holds the same endpoint every driver holds.  What makes leaving it
+     * on safe is the thing under test: with a remapping unit the device
+     * reaches exactly the frame it was mapped, and that mapping is revoked
+     * below.  Without one it reaches whatever its registers say, and its
+     * registers are left pointing at a frame this test still owns.
+     */
+    t353_cleanup();
     it_quiesce_reaper();
     if (ok) it_pass("T353"); else it_fail("T353", why);
 }

@@ -15,7 +15,7 @@
 #define KCNODE_DEFAULT_SLOTS  256u   /* used by UNTYPED_RETYPE when no count given */
 
 /* Stage 8-cap / D-2 — guard limits.  A CPtr owns the low 31 bits (the top of
- * the value space is the retired handle range, see nc/handle.h), so a guard
+ * the value space is the retired handle range, see nc/cptr.h), so a guard
  * can never be wider than that and guard+radix must fit inside it. */
 #define CSPACE_CPTR_BITS       31u
 #define KCNODE_GUARD_BITS_MAX  ((uint8_t)CSPACE_CPTR_BITS)

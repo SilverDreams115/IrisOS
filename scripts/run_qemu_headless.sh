@@ -242,6 +242,24 @@ fi
 # from the command line would read exactly like a green run.  So the device
 # line is required unconditionally, and then each configuration's own claim.
 if [ "$EXPECT_SELFTESTS" = "1" ]; then
+  # ...and ring 3 read a real root pointer out of firmware memory, not merely
+  # a region that was published.  The revision is whatever the firmware wrote;
+  # what is asserted is that something checksummed.
+  if ! grep -Eq "^\[IRIS\]\[TEST\] T354 RSDP at 0x[0-9a-f]+ revision " "$LOG_FILE"; then
+    echo "[headless] ring 3 did not read the ACPI root pointer"
+    grep -F "[IRIS][TEST] T354" "$LOG_FILE" | sed 's/^/           /'
+    cat "$LOG_FILE"
+    exit 1
+  fi
+  # ...and the bytes that came off the disk are the bytes on it.  A command
+  # that completed and a transfer that landed are different claims about a bus
+  # master, and only the second is worth anything.
+  if ! grep -Fq "[IRIS][TEST] T355 sector 0 read, boot signature ok" "$LOG_FILE"; then
+    echo "[headless] the disk read did not produce the data that is on the disk"
+    grep -F "[IRIS][TEST] T355" "$LOG_FILE" | sed 's/^/           /'
+    cat "$LOG_FILE"
+    exit 1
+  fi
   if ! grep -Fq "[IRIS][TEST] T353 device 1234:11e8" "$LOG_FILE"; then
     echo "[headless] the DMA-capable device was never found; T353 proved nothing"
     grep -F "[IRIS][TEST] T353" "$LOG_FILE" | sed 's/^/           /'
@@ -272,6 +290,86 @@ if [ "$EXPECT_SELFTESTS" = "1" ]; then
       exit 1
     fi
   fi
+fi
+
+# The ABI the kernel implements, and the fact that the root task accepted it
+# (Stage 10-abi).  userboot halts the boot on a major mismatch, so reaching the
+# scheduler already implies agreement — what this gate adds is that the kernel
+# SAYS which ABI, because a log that does not is a log nobody can interpret
+# later, and because a version silently reading 0.0 would pass every other
+# check in this file.
+if ! grep -Eq "^\[IRIS\]\[ABI\] version [1-9][0-9]*\.[0-9]+ " "$LOG_FILE"; then
+  echo "[headless] the kernel did not report which ABI it implements"
+  grep -F "[IRIS][ABI]" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+# Storage: a ring-3 AHCI driver brought a real disk up (Stage 10).
+#
+# Three claims in one line, and they fail apart.  `disk 1` means the driver
+# claimed its controller, built its command structures, brought a port up and
+# READ A SECTOR — it reports 0 if any of that failed, so a service that started
+# and could not drive anything does not read as success.  The source id is the
+# controller's, which is what an IOSpace binds to.  And `dma contained` versus
+# `dma open` is the difference the IOMMU makes, seen from the one driver that
+# most needs it: AHCI takes physical addresses from its driver, so an
+# uncontained controller writes wherever the driver says.
+#
+# The two arms are checked separately below, because "contained" on a machine
+# with no unit and "open" on a machine with one are both lies and neither would
+# be caught by looking for the line alone.
+if ! grep -Eq "^\[USER\]\[INIT\] blk: disk 1 sid 0x[0-9a-f]+ dma (contained|open)$" "$LOG_FILE"; then
+  echo "[headless] no ring-3 driver brought a disk up:"
+  grep -F "blk:" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+if [ "${IRIS_QEMU_IOMMU:-0}" != "0" ]; then
+  if ! grep -Fq "dma contained" "$LOG_FILE"; then
+    echo "[headless] a bus master is loose on a machine that can contain it"
+    grep -F "blk:" "$LOG_FILE" | sed 's/^/           /'
+    cat "$LOG_FILE"
+    exit 1
+  fi
+else
+  if ! grep -Fq "dma open" "$LOG_FILE"; then
+    echo "[headless] the disk driver claims containment with no unit present"
+    grep -F "blk:" "$LOG_FILE" | sed 's/^/           /'
+    cat "$LOG_FILE"
+    exit 1
+  fi
+fi
+
+# The firmware's own description is reachable from ring 3 (Stage 10).
+#
+# ACPI tables live in memory that is neither usable RAM nor unmapped address
+# space, so until this stage no capability in the system named it and ring 3
+# could not read a word.  The root task reports whether the pointer that
+# anchors every table is inside a region it was handed; the SUITE (T354) does
+# the read.  Both are required, because "the region was published" and "the
+# region is readable" are different claims and the first is cheap to get right
+# while being useless.
+if ! grep -Fq "[USERBOOT] ACPI: root pointer reachable from ring 3" "$LOG_FILE"; then
+  echo "[headless] ACPI is not reachable from ring 3:"
+  grep -F "ACPI" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+# The PCI bus service came up and described the machine (Stage 10).
+#
+# Three separate claims, and they fail apart: the service STARTED (init's call
+# returned), it FOUND devices, and it CARVED a frame over every window in the
+# region it owns.  A service that started and found nothing would answer every
+# driver's claim with a refusal, and from outside that is indistinguishable
+# from a machine with no devices on it — which is why the counts are in the
+# line and why `carve 0` is required rather than merely logged.
+if ! grep -Eq "^\[USER\]\[INIT\] pci: functions [1-9][0-9]* windows [1-9][0-9]* carve 0$" "$LOG_FILE"; then
+  echo "[headless] the PCI bus service did not describe the machine:"
+  grep -F "pci:" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
 fi
 
 if ! grep -Fq "[SVCMGR] ready" "$LOG_FILE"; then

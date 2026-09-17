@@ -5,7 +5,7 @@
 #include <iris/invoke.h>
 #include <iris/vfs_ep_proto.h>
 #include <iris/nc/error.h>
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <iris/ipc_msg.h>
 #include <iris/ipc_recv_slot.h>
 #include <iris/endpoint_proto.h>
@@ -57,9 +57,9 @@ _Static_assert(SVCMGR_IOPORT_SLOT_BASE >= SVCMGR_IRQCAP_SLOT_BASE + 16u,
 #define SVCMGR_IOPORT_CAPS_TABLE_SIZE IRIS_SERVICE_RUNTIME_SLOT_COUNT
 
 struct svcmgr_service_state {
-    handle_id_t public_h;
-    handle_id_t reply_h;
-    handle_id_t proc_h;
+    iris_cptr_t public_h;
+    iris_cptr_t reply_h;
+    iris_cptr_t proc_h;
     /* Service-owned KEndpoint master (Phase 7.1; manifest own_service_ep=1).
      * Created once at first boot and kept across restarts so client caps
      * stay valid; recv side goes to the child at bootstrap (kind 0x21) and
@@ -88,11 +88,11 @@ struct svcmgr_service_state {
 
 struct svcmgr_dynamic_service {
     uint32_t endpoint;
-    handle_id_t public_h;
+    iris_cptr_t public_h;
     /* A1.6: canonical CSpace storage for the registered master.  When the
      * REGISTER cap arrives through a declared receive-slot it lives in
      * svcmgr's root CNode at this CPtr (1..1023) and public_h stays
-     * HANDLE_INVALID; when it arrives as a legacy handle (no slot available,
+     * IRIS_CPTR_NULL; when it arrives as a legacy handle (no slot available,
      * or the TOCTOU fallback) public_h holds it and public_cptr is 0.
      * Exactly one of the two is set while active. */
     uint32_t public_cptr;
@@ -258,14 +258,14 @@ static void svcmgr_log_u32(uint32_t value) {
  * Closing one as a handle is a silent no-op, and the symptom is not local: the
  * slot keeps the capability alive, so the process never reaches zero
  * references and the live-process gauge drifts upward across restarts. */
-static void svcmgr_close_handle_if_valid(handle_id_t *h) {
-    if (!h || *h == HANDLE_INVALID) return;
+static void svcmgr_close_handle_if_valid(iris_cptr_t *h) {
+    if (!h || *h == IRIS_CPTR_NULL) return;
     uint32_t v = (uint32_t)*h;
     if (v >= 256u)
         (void)iris_invoke1((uint64_t)(v & 0xFFu), INV_CNODE_DELETE, (uint64_t)(v >> 8));
     else
         (void)iris_invoke1(0, INV_CNODE_DELETE, (uint64_t)v);
-    *h = HANDLE_INVALID;
+    *h = IRIS_CPTR_NULL;
 }
 
 /*
@@ -434,7 +434,7 @@ static int svcmgr_name_has_ep_suffix(const char *name) {
  * spoofed by runtime registration.
  */
 static int svcmgr_resolve_ep_name(struct svcmgr_state *state, const char *name,
-                                  handle_id_t *master_h, iris_rights_t *allowed,
+                                  iris_cptr_t *master_h, iris_rights_t *allowed,
                                   uint32_t *out_cptr) {
     if (!state || !master_h || !allowed || !out_cptr) return 0;
     if (!svcmgr_name_has_ep_suffix(name)) return 0;
@@ -501,7 +501,7 @@ static uint32_t svcmgr_dynamic_ready_count(const struct svcmgr_state *state) {
     if (!state) return 0;
     for (uint32_t i = 0; i < SVCMGR_DYNAMIC_SERVICE_CAP; i++) {
         if (state->dynamic[i].active &&
-            (state->dynamic[i].public_h != HANDLE_INVALID ||
+            (state->dynamic[i].public_h != IRIS_CPTR_NULL ||
              state->dynamic[i].public_cptr != 0u))
             ready++;
     }
@@ -577,7 +577,7 @@ static void svcmgr_discard_delivered_cap(struct svcmgr_state *state, uint32_t v)
     if (iris_msg_cap_is_cptr(v)) {
         (void)iris_invoke1(SVCMGR_OWN_ROOT_CNODE, INV_CNODE_DELETE, (uint64_t)v);
     } else {
-        handle_id_t h = (handle_id_t)v;
+        iris_cptr_t h = (iris_cptr_t)v;
         svcmgr_close_handle_if_valid(&h);
     }
 }
@@ -585,7 +585,7 @@ static void svcmgr_discard_delivered_cap(struct svcmgr_state *state, uint32_t v)
 static void svcmgr_dynamic_clear(struct svcmgr_dynamic_service *svc, int seal) {
     if (!svc || !svc->active) return;
     (void)seal;  /* Track I: dynamic masters are KEndpoints — always closed. */
-    if (svc->public_h != HANDLE_INVALID)
+    if (svc->public_h != IRIS_CPTR_NULL)
         svcmgr_close_handle_if_valid(&svc->public_h);
     /* A1.6: release the CSpace-held master — the CNode slot owns its own
      * reference, so deleting the slot is the release; the pool slot becomes
@@ -641,7 +641,7 @@ static uint32_t svcmgr_active_slot_count(const struct svcmgr_state *state);
 /* Liveness of a catalog service per the kernel (Phase 10 STATUS oracle). */
 static int svcmgr_service_alive(struct svcmgr_state *state, uint32_t service_id) {
     struct svcmgr_service_state *svc = svcmgr_service_state(state, service_id);
-    if (!svc || svc->proc_h == HANDLE_INVALID) return 0;
+    if (!svc || svc->proc_h == IRIS_CPTR_NULL) return 0;
     /* Stage 7 Step 13: liveness is the EXECUTION's.  svcmgr already holds each
      * service's first thread (SVCMGR_MSLOT_TCB) because that is what it
      * watches and what it must delete before a respawn; asking the thread its
@@ -693,13 +693,13 @@ static int svcmgr_name_status(struct svcmgr_state *state, const char *name,
 static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg *msg) {
     struct iris_msg reply;
     uint32_t i;
-    handle_id_t reply_h;
+    iris_cptr_t reply_h;
 
     /* A-33: a receive reports what it was given in `got_cap`, and on a Call it
      * is the reply capability.  It used to be `attached_handle`, which also
      * meant "a capability I am sending" everywhere else. */
     if (!msg || msg->got_cap == (long)IRIS_MSG_NO_CAP) return;
-    reply_h = (handle_id_t)msg->got_cap;
+    reply_h = (iris_cptr_t)msg->got_cap;
 
     /* A1.6: only REGISTER consumes a transferred cap.  A cap attached to any
      * other opcode used to leak into svcmgr's handle table (the delivered
@@ -719,7 +719,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
                            ? msg->buf_len : IRIS_EP_SVCNAME_MAX - 1u;
         g_ep_buf[namelen] = '\0';
 
-        handle_id_t master_h  = HANDLE_INVALID;
+        iris_cptr_t master_h  = IRIS_CPTR_NULL;
         iris_rights_t granted = RIGHT_NONE;
         /* Phase S4 (Step 2): when the master already lives in a CSpace slot we
          * mint straight from it — no handle is materialized at any point. */
@@ -738,20 +738,20 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
                  * the A1.6 CSPACE_RESOLVE bridge is no longer needed here. */
                 src_cptr = dyn->public_cptr;
                 granted  = dyn->client_rights;
-            } else if (dyn && dyn->public_h != HANDLE_INVALID) {
+            } else if (dyn && dyn->public_h != IRIS_CPTR_NULL) {
                 master_h = dyn->public_h;
                 granted  = dyn->client_rights;
             } else if (cat) {
                 struct svcmgr_service_state *svc =
                     svcmgr_service_state(state, cat->service_id);
-                if (svc && svc->public_h != HANDLE_INVALID) {
+                if (svc && svc->public_h != IRIS_CPTR_NULL) {
                     master_h = svc->public_h;
                     granted  = cat->client_service_rights;
                 }
             }
         }
 
-        if ((master_h != HANDLE_INVALID || src_cptr != 0u) && granted != RIGHT_NONE) {
+        if ((master_h != IRIS_CPTR_NULL || src_cptr != 0u) && granted != RIGHT_NONE) {
             /* Phase 10 grant tightening: an ordinary client receives a
              * call-only cap (RIGHT_WRITE).  RIGHT_DUPLICATE/RIGHT_TRANSFER —
              * the authority to re-mint or hand the cap onward — is granted
@@ -867,7 +867,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
         if (!iris_badge_is_supervisor(msg->sender_badge)) {
             reply.label    = IRIS_EP_REPLY_ERR;
             reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_ACCESS_DENIED;
-        } else if (!m || !svc || svc->proc_h == HANDLE_INVALID) {
+        } else if (!m || !svc || svc->proc_h == IRIS_CPTR_NULL) {
             reply.label    = IRIS_EP_REPLY_ERR;
             reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND;
         } else {
@@ -922,9 +922,9 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
                                   (uint32_t)(slot - state->dynamic);
             if (iris_msg_cap_is_cptr(cap_v)) {
                 slot->public_cptr = cap_v;           /* CSpace-canonical master */
-                slot->public_h    = HANDLE_INVALID;
+                slot->public_h    = IRIS_CPTR_NULL;
             } else {
-                slot->public_h    = (handle_id_t)cap_v; /* legacy handle master */
+                slot->public_h    = (iris_cptr_t)cap_v; /* legacy handle master */
                 slot->public_cptr = 0u;
             }
             slot->client_rights = RIGHT_WRITE;
@@ -984,7 +984,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
 
 static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
                                       const struct iris_service_catalog_entry *manifest,
-                                      handle_id_t child_boot_h) {
+                                      iris_cptr_t child_boot_h) {
     struct svcmgr_service_state *svc = svcmgr_service_state(state, manifest->service_id);
 
     if (!svc) return IRIS_ERR_INVALID_ARG;
@@ -1154,12 +1154,12 @@ static uint32_t svcmgr_ready_service_count(const struct svcmgr_state *state) {
             if (manifest->own_service_ep) {
                 if (state->services[i].ep_c != 0u) ready++;
             } else {
-                if (state->services[i].proc_h != HANDLE_INVALID) ready++;
+                if (state->services[i].proc_h != IRIS_CPTR_NULL) ready++;
             }
             continue;
         }
-        if (state->services[i].public_h != HANDLE_INVALID &&
-            state->services[i].reply_h != HANDLE_INVALID) ready++;
+        if (state->services[i].public_h != IRIS_CPTR_NULL &&
+            state->services[i].reply_h != IRIS_CPTR_NULL) ready++;
     }
     return ready + svcmgr_dynamic_ready_count(state);
 }
@@ -1170,7 +1170,7 @@ static uint32_t svcmgr_active_slot_count(const struct svcmgr_state *state) {
     for (uint32_t i = 0;
          i < (uint32_t)(sizeof(state->services) / sizeof(state->services[0]));
          i++) {
-        if (state->services[i].proc_h != HANDLE_INVALID) active++;
+        if (state->services[i].proc_h != IRIS_CPTR_NULL) active++;
     }
     return active;
 }
@@ -1180,7 +1180,7 @@ static uint32_t svcmgr_active_slot_count(const struct svcmgr_state *state) {
  * stateless protocol has no open-file table, so opens/capacity report 0. */
 static int svcmgr_track_spawn(struct svcmgr_state *state,
                               const struct iris_service_catalog_entry *manifest,
-                              handle_id_t proc_h, handle_id_t public_h) {
+                              iris_cptr_t proc_h, iris_cptr_t public_h) {
     struct svcmgr_service_state *svc;
     const char *service_name = manifest ? manifest->image_name : 0;
 
@@ -1203,7 +1203,7 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
         uint32_t irqcap_c = (manifest->irq_num < SVCMGR_IRQ_CAPS_TABLE_SIZE)
                                 ? state->irq_caps[manifest->irq_num]
                                 : 0u;
-        handle_id_t route_h = public_h;
+        iris_cptr_t route_h = public_h;
         if (manifest->irq_notify) {
             /* Phase 7.6: IRQ → KNotification. Created once, reused across
              * restarts so the kernel route only needs re-registering. */
@@ -1213,11 +1213,11 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
                                                    IRIS_KOBJ_NOTIFICATION, sl, 0);
                 svc->irq_notif_c = (nr >= 0) ? sl : 0u;
             }
-            route_h = (handle_id_t)svc->irq_notif_c;
+            route_h = (iris_cptr_t)svc->irq_notif_c;
         }
-        if (irqcap_c == 0u || route_h == HANDLE_INVALID ||
+        if (irqcap_c == 0u || route_h == IRIS_CPTR_NULL ||
             iris_invoke2(irqcap_c, INV_IRQ_SET_NOTIFICATION, route_h, 0) < 0) {
-            svc->proc_h = HANDLE_INVALID;
+            svc->proc_h = IRIS_CPTR_NULL;
             svcmgr_close_handle_if_valid(&proc_h);
             svcmgr_log(sm_str_irqfail);
             return 0;
@@ -1228,7 +1228,7 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
      * the same event named by the thing that produces it — and svcmgr holds
      * that thread, where it needed authority over a process before. */
     if (iris_invoke2((uint64_t)SVCMGR_MSLOT_TCB(manifest->service_id), INV_TCB_WATCH, state->death_notif_c, (uint64_t)1u << manifest->service_id) != IRIS_OK) {
-        svc->proc_h = HANDLE_INVALID;
+        svc->proc_h = IRIS_CPTR_NULL;
         svcmgr_close_handle_if_valid(&proc_h);
         svcmgr_log(sm_str_spawnfail);
         return 0;
@@ -1247,7 +1247,7 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
 static void svcmgr_boot_service(struct svcmgr_state *state,
                                 const struct iris_service_catalog_entry *manifest) {
     struct svcmgr_service_state *svc;
-    handle_id_t child_boot_h = HANDLE_INVALID;
+    iris_cptr_t child_boot_h = IRIS_CPTR_NULL;
     int64_t proc_h;
 
     if (!manifest) {
@@ -1295,8 +1295,8 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
     }
 
     {
-        handle_id_t loaded_proc_h = HANDLE_INVALID;
-        handle_id_t loaded_chan_h = HANDLE_INVALID;
+        iris_cptr_t loaded_proc_h = IRIS_CPTR_NULL;
+        iris_cptr_t loaded_chan_h = IRIS_CPTR_NULL;
         /* Phase 8: CPtr-first handoff — the well-known slots (discovery +
          * core service eps + own ep + irq notify) are minted into the
          * child's root CNode BEFORE its first thread starts, so even a
@@ -1391,7 +1391,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
         svcmgr_log(sm_str_bootfail);
     }
 
-    if (!svcmgr_track_spawn(state, manifest, (handle_id_t)proc_h, HANDLE_INVALID)) {
+    if (!svcmgr_track_spawn(state, manifest, (iris_cptr_t)proc_h, IRIS_CPTR_NULL)) {
         svcmgr_clear_service_masters(state, manifest->service_id);
     }
 }
@@ -1412,7 +1412,7 @@ static void svcmgr_release_service(struct svcmgr_state *state,
                                    uint32_t service_id,
                                    struct svcmgr_service_state *svc) {
     const struct iris_service_catalog_entry *manifest;
-    if (!svc || svc->proc_h == HANDLE_INVALID) return;
+    if (!svc || svc->proc_h == IRIS_CPTR_NULL) return;
 
     manifest = iris_service_catalog_find_by_service_id(service_id);
     svcmgr_log("[SVCMGR] service exited: ");
@@ -1432,7 +1432,7 @@ static void svcmgr_handle_service_death(struct svcmgr_state *state, uint32_t ser
 
     /* Only act once per death: a still-armed watch has a live proc_h. A bit
      * for an already-released (or never-booted) slot is ignored. */
-    if (!svc || svc->proc_h == HANDLE_INVALID) return;
+    if (!svc || svc->proc_h == IRIS_CPTR_NULL) return;
 
     svcmgr_release_service(state, service_id, svc);
 
@@ -1467,7 +1467,7 @@ static void svcmgr_handle_service_death(struct svcmgr_state *state, uint32_t ser
     svcmgr_boot_service(state, manifest);
 }
 
-void svcmgr_main_c(handle_id_t rbx_unused) {
+void svcmgr_main_c(iris_cptr_t rbx_unused) {
     struct svcmgr_state *state = &g_svcmgr_state;
 
     /* Phase 13 (Track I): the entry bootstrap KChannel is gone — every cap is a
@@ -1496,9 +1496,9 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
     for (uint32_t i = 0; i < SVCMGR_IOPORT_CAPS_TABLE_SIZE; i++)
         state->ioport_caps[i] = 0u;
     for (uint32_t i = 0; i < (uint32_t)(sizeof(state->services) / sizeof(state->services[0])); i++) {
-        state->services[i].public_h = HANDLE_INVALID;
-        state->services[i].reply_h = HANDLE_INVALID;
-        state->services[i].proc_h = HANDLE_INVALID;
+        state->services[i].public_h = IRIS_CPTR_NULL;
+        state->services[i].reply_h = IRIS_CPTR_NULL;
+        state->services[i].proc_h = IRIS_CPTR_NULL;
         state->services[i].ep_c = 0u;
         state->services[i].irq_notif_c = 0u;
         state->services[i].reply_ut_c = 0u;
@@ -1506,7 +1506,7 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
     state->untyped_c = 0u;
     for (uint32_t i = 0; i < SVCMGR_DYNAMIC_SERVICE_CAP; i++) {
         state->dynamic[i].endpoint = 0;
-        state->dynamic[i].public_h = HANDLE_INVALID;
+        state->dynamic[i].public_h = IRIS_CPTR_NULL;
         state->dynamic[i].public_cptr = 0u;
         state->dynamic[i].client_rights = RIGHT_NONE;
         state->dynamic[i].active = 0;

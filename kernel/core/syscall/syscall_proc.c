@@ -82,7 +82,7 @@ uint64_t sys_yield(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * sys_process_fault_info(proc_handle, out_uptr) → 0 or iris_error_t
  *
  * Phase 13 (Track I): reads the last fault recorded for proc_handle (or self when
- * proc_handle == HANDLE_INVALID) into a 32-byte user buffer laid out per
+ * proc_handle == IRIS_CPTR_NULL) into a 32-byte user buffer laid out per
  * iris/fault_proto.h (FAULT_OFF_VECTOR/TASK_ID/RIP/ERROR/CR2).  The exception
  * handler calls this after its KNotification fires.  Returns IRIS_ERR_WOULD_BLOCK
  * if no fault is pending.  Requires RIGHT_READ on a non-self proc_handle.

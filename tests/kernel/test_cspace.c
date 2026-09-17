@@ -42,17 +42,17 @@ static struct KObject *make_obj(kobject_type_t type) {
 void test_cspace(void) {
     TEST_SUITE("cspace");
 
-    /* ── CPTR_NULL always rejected ── */
+    /* ── IRIS_CPTR_NULL always rejected ── */
     {
         struct cs_fixture *p = make_test_proc();
         ASSERT_NOT_NULL(p);
         struct KObject *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_resolve_cap(p->cspace_root, CPTR_NULL, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_cap(p->cspace_root, IRIS_CPTR_NULL, RIGHT_NONE, &out, &rout),
                   IRIS_ERR_INVALID_ARG);
         free_test_proc(p);
     }
 
-    /* ── No CSpace root (HANDLE_INVALID) → NOT_FOUND ── */
+    /* ── No CSpace root (IRIS_CPTR_NULL) → NOT_FOUND ── */
     {
         struct cs_fixture *p = make_test_proc();
         ASSERT_NOT_NULL(p);

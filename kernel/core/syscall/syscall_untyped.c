@@ -516,7 +516,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     }
 
     /* ── destination slot range: in bounds and currently empty ──
-     * Slot 0 is CPTR_NULL when addressing the root: refuse it so every
+     * Slot 0 is IRIS_CPTR_NULL when addressing the root: refuse it so every
      * published cap is actually invocable. */
     err = IRIS_OK;
     if (dest_slot == 0u || (uint64_t)dest_slot + count > cn->slot_count)

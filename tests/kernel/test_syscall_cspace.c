@@ -95,12 +95,12 @@ void test_syscall_cspace(void) {
     /* ── SC-2: a HANDLE value is INVALID_ARG, with no fallback ────────────
      * Stage 4 deleted the handle table; the boundary survives as a rejection.
      * This is the charter's "one authority namespace" made testable: a value
-     * at or above HANDLE_TAG is not an address in some other table, it is a
+     * at or above IRIS_CPTR_LIMIT is not an address in some other table, it is a
      * malformed argument. */
     {
         struct KCNode *root; struct task *t = sk_caller(&root);
         ASSERT_NOT_NULL(t);
-        const uint64_t handle_shaped = (uint64_t)1u << 31;   /* HANDLE_TAG */
+        const uint64_t handle_shaped = (uint64_t)1u << 31;   /* IRIS_CPTR_LIMIT */
         ASSERT_EQ(sc_err(sys_cspace_mint(handle_shaped, 2, 0)),
                   (long)IRIS_ERR_INVALID_ARG);
         ASSERT_EQ(sc_err(sys_cspace_revoke(handle_shaped, 0, 0)),
@@ -110,18 +110,18 @@ void test_syscall_cspace(void) {
         sk_teardown();
     }
 
-    /* ── SC-3: CPTR_NULL is never an address ─────────────────────────────*/
+    /* ── SC-3: IRIS_CPTR_NULL is never an address ─────────────────────────────*/
     {
         struct KCNode *root; struct task *t = sk_caller(&root);
         ASSERT_NOT_NULL(t);
-        ASSERT_EQ(sc_err(sys_cspace_mint(CPTR_NULL, 2, 0)), (long)IRIS_ERR_INVALID_ARG);
-        ASSERT_EQ(sc_err(sys_cap_identify(CPTR_NULL, 0, 0)), (long)IRIS_ERR_INVALID_ARG);
+        ASSERT_EQ(sc_err(sys_cspace_mint(IRIS_CPTR_NULL, 2, 0)), (long)IRIS_ERR_INVALID_ARG);
+        ASSERT_EQ(sc_err(sys_cap_identify(IRIS_CPTR_NULL, 0, 0)), (long)IRIS_ERR_INVALID_ARG);
         sk_teardown();
     }
 
     /* ── SC-4: minting into slot 0 is refused ────────────────────────────
      * Slot 0 is the null slot in every CNode by kernel convention and is never
-     * populated.  If a mint could fill it, CPTR_NULL would resolve — and every
+     * populated.  If a mint could fill it, IRIS_CPTR_NULL would resolve — and every
      * "is this capability null" test in the system is a comparison against 0. */
     {
         struct KCNode *root; struct task *t = sk_caller(&root);

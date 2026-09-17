@@ -22,14 +22,14 @@ void test_t210(void) {
 
     for (round = 0; ok && round < T210_ROUNDS; round++) {
         op = t210_rnd(&rng) % 4u;
-        handle_id_t vmo = t26_grant();
-        if (vmo == HANDLE_INVALID) { ok = 0; why = "vmo create"; break; }
+        iris_cptr_t vmo = t26_grant();
+        if (vmo == IRIS_CPTR_NULL) { ok = 0; why = "vmo create"; break; }
         word = T27_PAT ^ round;
         if (t26_page_word(T26_AT(vmo, 0x1000ULL), &word, 1) != 0) { ok = 0; why = "vmo fill"; t26_grant_close(&vmo); break; }
 
         struct t25_tgt g;
         if (!t25_tgt_spawn(&g, &why)) { ok = 0; t26_grant_close(&vmo); break; }
-        handle_id_t vmos[1] = { vmo };
+        iris_cptr_t vmos[1] = { vmo };
         struct it_fault f;
 
         switch (op) {
@@ -139,7 +139,7 @@ void test_t211(void) {
     for (long i = 0; ok && i < n; i++) {
         long v = it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, i);
         if (v < 0) { ok = 0; why = "image vmo"; break; }
-        handle_id_t vh = (handle_id_t)v;
+        iris_cptr_t vh = (iris_cptr_t)v;
         /* D-5: the image is a frame, and the call that produced it said how
          * big the FILE was — a frame only knows its region. */
         if (g_it_initrd_size <= 0) { ok = 0; why = "image size"; }
@@ -174,7 +174,7 @@ void test_t212(void) {
     for (long i = 0; ok && i < n; i++) {
         long v = it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, i);
         if (v < 0) { ok = 0; why = "vmo"; break; }
-        handle_id_t vh = (handle_id_t)v;
+        iris_cptr_t vh = (iris_cptr_t)v;
         long sz = g_it_initrd_size;
         if (sz <= 0 || sz > (long)(64u * 1024u * 1024u)) { ok = 0; why = "size range"; }
         /* Map it read-only into our own VSpace at a scratch VA; a mappable
@@ -208,8 +208,8 @@ void test_t213(void) {
     /* 1. A valid launch works. */
     {
         long ep = it_ep_create();
-        handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
-        handle_id_t proc = HANDLE_INVALID;
+        iris_cptr_t cmd = (ep >= 0) ? (iris_cptr_t)ep : IRIS_CPTR_NULL;
+        iris_cptr_t proc = IRIS_CPTR_NULL;
         if (ep < 0 || lp_spawn_child(cmd, &proc) < 0) { ok = 0; why = "valid launch 1"; }
         if (ok) { (void)it_kill((long)proc); (void)it_lp_wait_exit(proc); }
         it_close(&cmd); it_close(&proc);
@@ -219,14 +219,14 @@ void test_t213(void) {
     /* 2. The invalid-ELF fixture fails cleanly with no ghost state. */
     {
         struct it_snap fb = it_snap_take();
-        handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
+        iris_cptr_t proc = IRIS_CPTR_NULL, boot = IRIS_CPTR_NULL;
         long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf",
                                  &proc, &boot, 0, 0u,
                              IT_LOADER_WS, 0,
                                /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
         it_child_bind(proc);
         if (r != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "badelf not INVALID_ARG"; }
-        if (ok && proc != HANDLE_INVALID) { ok = 0; why = "badelf left a process"; }
+        if (ok && proc != IRIS_CPTR_NULL) { ok = 0; why = "badelf left a process"; }
         it_close(&boot); it_close(&proc);
         it_quiesce_reaper();
         struct it_snap fa = it_snap_take();
@@ -236,8 +236,8 @@ void test_t213(void) {
     /* 3. A valid launch AFTER the failure still works. */
     {
         long ep = it_ep_create();
-        handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
-        handle_id_t proc = HANDLE_INVALID;
+        iris_cptr_t cmd = (ep >= 0) ? (iris_cptr_t)ep : IRIS_CPTR_NULL;
+        iris_cptr_t proc = IRIS_CPTR_NULL;
         if (ok && (ep < 0 || lp_spawn_child(cmd, &proc) < 0)) { ok = 0; why = "valid launch 2"; }
         if (ok) { (void)it_kill((long)proc); (void)it_lp_wait_exit(proc); }
         it_close(&cmd); it_close(&proc);
@@ -261,7 +261,7 @@ void test_t214(void) {
     int ok = b.ok;
     const char *why = "boot failure diagnostics";
 
-    handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
+    iris_cptr_t proc = IRIS_CPTR_NULL, boot = IRIS_CPTR_NULL;
     /* Unknown name → NOT_FOUND, no hang, no process. */
     long r1 = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "no_such_image",
                               &proc, &boot, 0, 0u,
@@ -269,25 +269,25 @@ void test_t214(void) {
                                /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(proc);
     if (r1 != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "unknown not NOT_FOUND"; }
-    if (ok && proc != HANDLE_INVALID) { ok = 0; why = "unknown left process"; }
+    if (ok && proc != IRIS_CPTR_NULL) { ok = 0; why = "unknown left process"; }
     it_close(&boot); it_close(&proc);
 
     /* Malformed image → INVALID_ARG, no hang, no process. */
-    proc = boot = HANDLE_INVALID;
+    proc = boot = IRIS_CPTR_NULL;
     long r2 = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf",
                               &proc, &boot, 0, 0u,
                              IT_LOADER_WS, 0,
                                /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(proc);
     if (ok && r2 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "malformed not INVALID_ARG"; }
-    if (ok && proc != HANDLE_INVALID) { ok = 0; why = "malformed left process"; }
+    if (ok && proc != IRIS_CPTR_NULL) { ok = 0; why = "malformed left process"; }
     it_close(&boot); it_close(&proc);
 
     /* Initrd VMO of the invalid image still succeeds (it is bytes, not code) —
      * the failure is the LOADER's, cleanly reported, not the initrd layer's. */
     long v = it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, (long)T2_BADELF_IDX);
     if (ok && v < 0) { ok = 0; why = "badelf vmo"; }
-    if (v >= 0) { handle_id_t vh = (handle_id_t)v; it_close(&vh); }
+    if (v >= 0) { iris_cptr_t vh = (iris_cptr_t)v; it_close(&vh); }
 
     it_quiesce_reaper();
     struct it_snap a = it_snap_take();
@@ -309,15 +309,15 @@ void test_t215(void) {
     int ok = b.ok;
     const char *why = "pager binary promotion";
 
-    handle_id_t vmo = t26_grant();
-    if (vmo == HANDLE_INVALID) { it_fail("T215", "vmo create"); return; }
+    iris_cptr_t vmo = t26_grant();
+    if (vmo == IRIS_CPTR_NULL) { it_fail("T215", "vmo create"); return; }
     word = T27_PAT;
     if (ok && t26_page_word(T26_AT(vmo, 0x1000ULL), &word, 1) != 0) { ok = 0; why = "vmo fill"; }
 
     struct t25_tgt g;
     if (ok && !t25_tgt_spawn(&g, &why)) { t26_grant_close(&vmo); it_fail("T215", why); return; }
     struct t27_pager p;
-    handle_id_t vmos[1] = { vmo };
+    iris_cptr_t vmos[1] = { vmo };
     if (ok && !t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; }
 
     /* Manifest is exactly the grant set (a standalone binary gained nothing). */
@@ -388,7 +388,7 @@ void test_t216(void) {
             long i = (long)(t216_rnd(&rng) % (uint32_t)n);
             long v = it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, i);
             if (v < 0) { ok = 0; why = "map vmo"; break; }
-            handle_id_t vh = (handle_id_t)v;
+            iris_cptr_t vh = (iris_cptr_t)v;
             /* D-5: a frame, mapped whole (D-10). */
             if (it_invoke(v, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 0) != 0) { ok = 0; why = "map"; }
             if (ok) (void)it_invoke2(v, INV_FRAME_UNMAP, IT_VS, (long)T26_SELF_VA);
@@ -404,7 +404,7 @@ void test_t216(void) {
         case 2: {
             /* Invalid-ELF load fails clean, no ghost. */
             struct it_snap fb = it_snap_take();
-            handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
+            iris_cptr_t proc = IRIS_CPTR_NULL, boot = IRIS_CPTR_NULL;
             long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf", &proc, &boot, 0, 0u,
                              IT_LOADER_WS, 0,
                                /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
@@ -419,8 +419,8 @@ void test_t216(void) {
         case 3: {
             /* Valid launch works and reaps cleanly. */
             long ep = it_ep_create();
-            handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
-            handle_id_t proc = HANDLE_INVALID;
+            iris_cptr_t cmd = (ep >= 0) ? (iris_cptr_t)ep : IRIS_CPTR_NULL;
+            iris_cptr_t proc = IRIS_CPTR_NULL;
             if (ep < 0 || lp_spawn_child(cmd, &proc) < 0) { ok = 0; why = "launch"; }
             if (ok) { (void)it_kill((long)proc); (void)it_lp_wait_exit(proc); }
             it_close(&cmd); it_close(&proc);
@@ -444,7 +444,7 @@ void test_t216(void) {
 
 /* Send a multi-page fault-read sequence to a target (words[0]=base VA,
  * words[1]=count, words[2]=visit order). */
-static long t28_cmd_read_seq(handle_id_t cmd, uint64_t base, uint32_t count, uint64_t order) {
+static long t28_cmd_read_seq(iris_cptr_t cmd, uint64_t base, uint32_t count, uint64_t order) {
     struct iris_msg m; iris_msg_zero(&m);
     m.label = LP_CMD_FAULT_READ_SEQ;
     m.words[0] = base; m.words[1] = (uint64_t)count; m.words[2] = order;
@@ -452,7 +452,7 @@ static long t28_cmd_read_seq(handle_id_t cmd, uint64_t base, uint32_t count, uin
     return iris_msg_send((long)cmd, &m);
 }
 /* Two-offset fault-read: read base+off0 and (count==2) base+off1. */
-static long t28_cmd_read_offs(handle_id_t cmd, uint64_t base, uint32_t count,
+static long t28_cmd_read_offs(iris_cptr_t cmd, uint64_t base, uint32_t count,
                               uint64_t off0, uint64_t off1) {
     struct iris_msg m; iris_msg_zero(&m);
     m.label = LP_CMD_FAULT_READ_OFFS_M;
@@ -475,29 +475,29 @@ static long t28_cmd_read_offs(handle_id_t cmd, uint64_t base, uint32_t count,
 /* Stage 4: these are the pre-mint SLOTS themselves.  They used to be
  * materialised into handles for every use and closed again; every syscall they
  * are passed to resolves a CPtr, so the round trip bought nothing. */
-static handle_id_t t28_vfs_cap(void) {
+static iris_cptr_t t28_vfs_cap(void) {
     return (it_invoke0((long)IRIS_CPTR_TEST_VFS_MINT, INV_CAP_IDENTIFY) >= 0)
-           ? (handle_id_t)IRIS_CPTR_TEST_VFS_MINT : HANDLE_INVALID;
+           ? (iris_cptr_t)IRIS_CPTR_TEST_VFS_MINT : IRIS_CPTR_NULL;
 }
-static handle_id_t t28_admin_cap(void) {
+static iris_cptr_t t28_admin_cap(void) {
     return (it_invoke0((long)IRIS_CPTR_TEST_VFS_DUP, INV_CAP_IDENTIFY) >= 0)
-           ? (handle_id_t)IRIS_CPTR_TEST_VFS_DUP : HANDLE_INVALID;
+           ? (iris_cptr_t)IRIS_CPTR_TEST_VFS_DUP : IRIS_CPTR_NULL;
 }
-static handle_id_t t28_session_cap(uint32_t session) {
-    if (session >= T28_FG_SESSIONS) return HANDLE_INVALID;
-    handle_id_t src = t28_vfs_cap();
-    if (src == HANDLE_INVALID) return HANDLE_INVALID;
-    handle_id_t root = T28_OWN_ROOT_CNODE;
+static iris_cptr_t t28_session_cap(uint32_t session) {
+    if (session >= T28_FG_SESSIONS) return IRIS_CPTR_NULL;
+    iris_cptr_t src = t28_vfs_cap();
+    if (src == IRIS_CPTR_NULL) return IRIS_CPTR_NULL;
+    iris_cptr_t root = T28_OWN_ROOT_CNODE;
     (void)it_invoke1((long)root, INV_CNODE_DELETE, (long)T28_FG_SLOT(session));
     long mr = it_invoke2((long)src, INV_CSPACE_MINT, IT_MINT_SELF((long)T28_FG_SLOT(session)), (long)((IRIS_BADGE_FILEGRANT_S(session) << 32) | RIGHT_WRITE));
     it_close(&src);
-    if (mr != 0) return HANDLE_INVALID;
+    if (mr != 0) return IRIS_CPTR_NULL;
     return (it_invoke0((long)T28_FG_SLOT(session), INV_CAP_IDENTIFY) >= 0)
-           ? (handle_id_t)T28_FG_SLOT(session) : HANDLE_INVALID;
+           ? (iris_cptr_t)T28_FG_SLOT(session) : IRIS_CPTR_NULL;
 }
 
 /* STAT a file via a vfs cap → size, or -1. */
-long t28_stat(handle_id_t vfs_cap, const char *name) {
+long t28_stat(iris_cptr_t vfs_cap, const char *name) {
     struct iris_msg m;
     iris_msg_zero(&m);
     uint32_t n = 0; while (name[n] && n + 1u < IT_EP_IO_CAP) { g_ep_io_buf[n] = (uint8_t)name[n]; n++; }
@@ -511,7 +511,7 @@ long t28_stat(handle_id_t vfs_cap, const char *name) {
 /* Generic VFS grant-protocol call.  Stages `name` (may be NULL) as the bulk
  * payload, sends label/w0..w2, and returns 0 on REPLY_OK (msg copied to *out
  * when non-NULL) or the NEGATIVE iris_error_t from the error reply. */
-static long t28_gcall(handle_id_t cap, uint64_t label, uint64_t w0, uint64_t w1,
+static long t28_gcall(iris_cptr_t cap, uint64_t label, uint64_t w0, uint64_t w1,
                       uint64_t w2, uint32_t wc, const char *name,
                       struct iris_msg *out) {
     struct iris_msg m;
@@ -532,7 +532,7 @@ static long t28_gcall(handle_id_t cap, uint64_t label, uint64_t w0, uint64_t w1,
 }
 
 /* Supervisor grant operations (ADMIN cap). */
-static long t28_grant_open(handle_id_t admin, uint32_t session, const char *name,
+static long t28_grant_open(iris_cptr_t admin, uint32_t session, const char *name,
                            uint32_t rights, struct t28_grant *out) {
     struct iris_msg m;
     long r = t28_gcall(admin, VFS_EP_OP_GRANT_OPEN, session, rights, 0, 2u, name, &m);
@@ -540,10 +540,10 @@ static long t28_grant_open(handle_id_t admin, uint32_t session, const char *name
     if (out) { out->idx = (uint32_t)m.words[1]; out->bid = m.words[2]; out->gen = m.words[3]; }
     return 0;
 }
-static long t28_session_reset(handle_id_t admin, uint32_t session) {
+static long t28_session_reset(iris_cptr_t admin, uint32_t session) {
     return t28_gcall(admin, VFS_EP_OP_GRANT_SESSION_RESET, session, 0, 0, 1u, 0, 0);
 }
-long t28_grant_revoke_name(handle_id_t admin, const char *name, uint64_t *newgen) {
+long t28_grant_revoke_name(iris_cptr_t admin, const char *name, uint64_t *newgen) {
     struct iris_msg m;
     long r = t28_gcall(admin, VFS_EP_OP_GRANT_REVOKE, 0, 0, 0, 0u, name, &m);
     if (r != 0) return r;
@@ -552,7 +552,7 @@ long t28_grant_revoke_name(handle_id_t admin, const char *name, uint64_t *newgen
 }
 
 /* Session-holder grant operations (a SESSION-badged cap). */
-static long t28_grant_read(handle_id_t cap, uint32_t idx, uint64_t off, uint32_t len,
+static long t28_grant_read(iris_cptr_t cap, uint32_t idx, uint64_t off, uint32_t len,
                            uint8_t *first_byte, uint64_t *bytes) {
     struct iris_msg m;
     long r = t28_gcall(cap, VFS_EP_OP_GRANT_READ_AT, idx, off, len, 3u, 0, &m);
@@ -561,7 +561,7 @@ static long t28_grant_read(handle_id_t cap, uint32_t idx, uint64_t off, uint32_t
     if (first_byte) *first_byte = (m.words[1] > 0u) ? g_ep_io_buf[0] : 0u;
     return 0;
 }
-static long t28_grant_stat(handle_id_t cap, uint32_t idx, uint64_t *size,
+static long t28_grant_stat(iris_cptr_t cap, uint32_t idx, uint64_t *size,
                            uint64_t *bid, uint64_t *gen) {
     struct iris_msg m;
     long r = t28_gcall(cap, VFS_EP_OP_GRANT_STAT, idx, 0, 0, 1u, 0, &m);
@@ -573,7 +573,7 @@ static long t28_grant_stat(handle_id_t cap, uint32_t idx, uint64_t *size,
 }
 /* t28_grant_query removed — its last caller was retired with the T28x grant
  * refactor; GRANT_QUERY_IDENTITY coverage lives in the vfs_ep host suite. */
-static long t28_grant_derive(handle_id_t cap, uint32_t src, uint32_t rights,
+static long t28_grant_derive(iris_cptr_t cap, uint32_t src, uint32_t rights,
                              uint32_t *newidx) {
     struct iris_msg m;
     long r = t28_gcall(cap, VFS_EP_OP_GRANT_DERIVE, src, rights, 0, 2u, 0, &m);
@@ -581,7 +581,7 @@ static long t28_grant_derive(handle_id_t cap, uint32_t src, uint32_t rights,
     if (newidx) *newidx = (uint32_t)m.words[1];
     return 0;
 }
-static long t28_grant_revoke_idx(handle_id_t cap, uint32_t idx, uint64_t *newgen) {
+static long t28_grant_revoke_idx(iris_cptr_t cap, uint32_t idx, uint64_t *newgen) {
     struct iris_msg m;
     long r = t28_gcall(cap, VFS_EP_OP_GRANT_REVOKE, idx, 0, 0, 1u, 0, &m);
     if (r != 0) return r;
@@ -595,15 +595,15 @@ static long t28_grant_revoke_idx(handle_id_t cap, uint32_t idx, uint64_t *newgen
  * previous pager instance can survive into this one (A11).  0 on success. */
 int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt,
                          const char **why) {
-    f->ctrl_ep = f->proc = HANDLE_INVALID;
-    f->vfs_cap = f->admin = HANDLE_INVALID;
+    f->ctrl_ep = f->proc = IRIS_CPTR_NULL;
+    f->vfs_cap = f->admin = IRIS_CPTR_NULL;
     long ep = it_ep_create();
     if (ep < 0) { *why = "ctrl ep"; return 0; }
-    handle_id_t ctrl = (handle_id_t)ep;
-    handle_id_t vfs  = t28_vfs_cap();
-    handle_id_t adm  = t28_admin_cap();
+    iris_cptr_t ctrl = (iris_cptr_t)ep;
+    iris_cptr_t vfs  = t28_vfs_cap();
+    iris_cptr_t adm  = t28_admin_cap();
     if (
-        vfs == HANDLE_INVALID || adm == HANDLE_INVALID) {
+        vfs == IRIS_CPTR_NULL || adm == IRIS_CPTR_NULL) {
         it_close(&ctrl); it_close(&vfs); it_close(&adm);
         *why = "fbk grants"; return 0;
     }
@@ -648,23 +648,23 @@ int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt,
     }
 
     /* Phase S1: explicit reply object for the pager's ctrl EP (slot 13). */
-    handle_id_t pgr_reply_h = HANDLE_INVALID;
+    iris_cptr_t pgr_reply_h = IRIS_CPTR_NULL;
     {
         long rr = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
         if (rr >= 0) {
-            pgr_reply_h = (handle_id_t)rr;
+            pgr_reply_h = (iris_cptr_t)rr;
             m[k].slot = 13u; IT_MINT_SRC(m[k], pgr_reply_h);
             m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
         }
     }
-    handle_id_t boot = HANDLE_INVALID;
+    iris_cptr_t boot = IRIS_CPTR_NULL;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager", &f->proc, &boot, m, k,
                              IT_LOADER_WS, 0,
                                /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(f->proc);
     it_close(&pgr_reply_h);
     it_close(&boot);
-    if (r < 0 || f->proc == HANDLE_INVALID) {
+    if (r < 0 || f->proc == IRIS_CPTR_NULL) {
         it_close(&ctrl); it_close(&vfs); it_close(&adm); it_close(&f->proc);
         *why = "pager spawn"; return 0;
     }
@@ -674,14 +674,14 @@ int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt,
 }
 
 void t28_fbk_reap(struct t28_fbk *f) {
-    if (f->proc != HANDLE_INVALID) { (void)it_kill((long)f->proc); (void)it_lp_wait_exit(f->proc); }
+    if (f->proc != IRIS_CPTR_NULL) { (void)it_kill((long)f->proc); (void)it_lp_wait_exit(f->proc); }
     it_close(&f->proc); it_close(&f->ctrl_ep);
     it_close(&f->vfs_cap); it_close(&f->admin);
 }
 
 /* Open a grant for the pager session and register it as pager backing `bidx`
  * — the whole supervisor-side backing setup.  Returns 1 and fills *gr. */
-static long t28_reg_backing2(handle_id_t ctrl, uint32_t bidx,
+static long t28_reg_backing2(iris_cptr_t ctrl, uint32_t bidx,
                              const struct t28_grant *gr, uint64_t size);
 int t28_backing_setup(struct t28_fbk *f, uint32_t bidx, const char *name,
                              uint64_t size, struct t28_grant *gr, const char **why) {
@@ -695,7 +695,7 @@ int t28_backing_setup(struct t28_fbk *f, uint32_t bidx, const char *name,
 }
 
 /* Control calls. */
-static long t28_ctrl_words(handle_id_t ctrl, uint32_t op, uint64_t w1, uint64_t w2) {
+static long t28_ctrl_words(iris_cptr_t ctrl, uint32_t op, uint64_t w1, uint64_t w2) {
     struct iris_msg m; iris_msg_zero(&m);
     m.words[0] = (uint64_t)op; m.words[1] = w1; m.words[2] = w2; m.word_count = 3u;
     long r = iris_msg_call((long)ctrl, &m);
@@ -703,7 +703,7 @@ static long t28_ctrl_words(handle_id_t ctrl, uint32_t op, uint64_t w1, uint64_t 
     if (m.label != IRIS_EP_REPLY_OK) return -100000L;
     return (long)m.words[0];
 }
-static long t28_map_region(handle_id_t ctrl, uint32_t tidx) {
+static long t28_map_region(iris_cptr_t ctrl, uint32_t tidx) {
     struct iris_msg m; iris_msg_zero(&m);
     m.words[0] = (uint64_t)FBK_OP_MAP_REGION | ((uint64_t)tidx << 8);
     m.word_count = 1u;
@@ -714,7 +714,7 @@ static long t28_map_region(handle_id_t ctrl, uint32_t tidx) {
 }
 /* Register a pager backing from raw fields (attack surface: the values may
  * deliberately MISMATCH the VFS-issued identity). */
-static long t28_reg_backing_raw(handle_id_t ctrl, uint32_t idx, uint32_t grant_idx,
+static long t28_reg_backing_raw(iris_cptr_t ctrl, uint32_t idx, uint32_t grant_idx,
                                 uint64_t id, uint64_t gen, uint64_t size) {
     struct pgr_backing_req *rq = (struct pgr_backing_req *)g_t28_buf;
     for (uint32_t i = 0; i < sizeof(*rq); i++) g_t28_buf[i] = 0;
@@ -729,11 +729,11 @@ static long t28_reg_backing_raw(handle_id_t ctrl, uint32_t idx, uint32_t grant_i
     return (long)m.words[0];
 }
 /* Register a pager backing from a VFS-issued grant (the honest path). */
-static long t28_reg_backing2(handle_id_t ctrl, uint32_t bidx,
+static long t28_reg_backing2(iris_cptr_t ctrl, uint32_t bidx,
                              const struct t28_grant *gr, uint64_t size) {
     return t28_reg_backing_raw(ctrl, bidx, gr->idx, gr->bid, gr->gen, size);
 }
-long t28_reg_region(handle_id_t ctrl, const struct pgr_region_req *src) {
+long t28_reg_region(iris_cptr_t ctrl, const struct pgr_region_req *src) {
     struct pgr_region_req *rq = (struct pgr_region_req *)g_t28_buf;
     for (uint32_t i = 0; i < sizeof(*rq); i++) g_t28_buf[i] = ((const uint8_t *)src)[i];
     struct iris_msg m; iris_msg_zero(&m);
@@ -744,7 +744,7 @@ long t28_reg_region(handle_id_t ctrl, const struct pgr_region_req *src) {
     if (m.label != IRIS_EP_REPLY_OK) return -100000L;
     return (long)m.words[0];
 }
-static int t28_diag(handle_id_t ctrl, struct pgr_diag *out) {
+static int t28_diag(iris_cptr_t ctrl, struct pgr_diag *out) {
     struct iris_msg m; iris_msg_zero(&m);
     m.words[0] = (uint64_t)FBK_OP_DIAG; m.word_count = 1u;
     if (iris_msg_call((long)ctrl, &m) != 0) return 0;
@@ -1708,8 +1708,8 @@ void test_t231(void) {
     if (ok && (ga.bid == gb.bid || ga.idx == gb.idx)) { ok = 0; why = "identities not distinct"; }
 
     /* The session's own cap — the exact authority the pager holds. */
-    handle_id_t sc = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
-    if (ok && sc == HANDLE_INVALID) { ok = 0; why = "session cap"; }
+    iris_cptr_t sc = ok ? t28_session_cap(FBK_SESSION) : IRIS_CPTR_NULL;
+    if (ok && sc == IRIS_CPTR_NULL) { ok = 0; why = "session cap"; }
 
     /* Each grant reads ITS file's byte at offset 0x1000 (A5). */
     uint8_t byte; uint64_t n;
@@ -1760,8 +1760,8 @@ void test_t232(void) {
     struct t28_grant gr;
     if (ok && t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME, VFS_FILE_RIGHT_READ, &gr) != 0) { ok = 0; why = "open"; }
 
-    handle_id_t sc = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
-    if (ok && sc == HANDLE_INVALID) { ok = 0; why = "session cap"; }
+    iris_cptr_t sc = ok ? t28_session_cap(FBK_SESSION) : IRIS_CPTR_NULL;
+    if (ok && sc == IRIS_CPTR_NULL) { ok = 0; why = "session cap"; }
 
     /* Attack 1: name-based READ_AT with the OTHER file's name — denied (a
      * session badge cannot touch the name-based path at all). */
@@ -1790,8 +1790,8 @@ void test_t232(void) {
      * badge selects the session, so index gr.idx in session 1 is empty →
      * NOT_FOUND, never session 0's data. */
     if (ok) {
-        handle_id_t sc1 = t28_session_cap(1u);
-        if (sc1 == HANDLE_INVALID) { ok = 0; why = "session1 cap"; }
+        iris_cptr_t sc1 = t28_session_cap(1u);
+        if (sc1 == IRIS_CPTR_NULL) { ok = 0; why = "session1 cap"; }
         else {
             if (t28_grant_read(sc1, gr.idx, 0x1000, 1, 0, 0) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "cross-session read"; }
             it_close(&sc1);
@@ -1825,8 +1825,8 @@ void test_t233(void) {
     if (ok && !t25_tgt_spawn(&g, &why)) ok = 0;
     struct t28_fbk f;
     if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) ok = 0;
-    handle_id_t sc = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
-    if (ok && sc == HANDLE_INVALID) { ok = 0; why = "session cap"; }
+    iris_cptr_t sc = ok ? t28_session_cap(FBK_SESSION) : IRIS_CPTR_NULL;
+    if (ok && sc == IRIS_CPTR_NULL) { ok = 0; why = "session cap"; }
 
     /* STAT-only grant: STAT works, READ denied. */
     struct t28_grant gs;
@@ -1882,8 +1882,8 @@ void test_t234(void) {
     if (ok && !t25_tgt_spawn(&g, &why)) ok = 0;
     struct t28_fbk f;
     if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) ok = 0;
-    handle_id_t sc = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
-    if (ok && sc == HANDLE_INVALID) { ok = 0; why = "session cap"; }
+    iris_cptr_t sc = ok ? t28_session_cap(FBK_SESSION) : IRIS_CPTR_NULL;
+    if (ok && sc == IRIS_CPTR_NULL) { ok = 0; why = "session cap"; }
 
     struct t28_grant gN;
     if (ok && t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME,
@@ -1939,8 +1939,8 @@ void test_t235(void) {
     struct t28_grant gold;
     if (ok && t28_grant_open(f1.admin, FBK_SESSION, FBK_FILE_NAME, VFS_FILE_RIGHT_READ, &gold) != 0) { ok = 0; why = "open old"; }
     /* Prove it was live. */
-    handle_id_t sc1 = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
-    if (ok && (sc1 == HANDLE_INVALID || t28_grant_read(sc1, gold.idx, 0x1000, 1, 0, 0) != 0)) { ok = 0; why = "old read"; }
+    iris_cptr_t sc1 = ok ? t28_session_cap(FBK_SESSION) : IRIS_CPTR_NULL;
+    if (ok && (sc1 == IRIS_CPTR_NULL || t28_grant_read(sc1, gold.idx, 0x1000, 1, 0, 0) != 0)) { ok = 0; why = "old read"; }
     it_close(&sc1);
     t28_fbk_reap(&f1);
     t25_tgt_reap(&g1);
@@ -1950,8 +1950,8 @@ void test_t235(void) {
     if (ok && !t25_tgt_spawn(&g2, &why)) ok = 0;
     struct t28_fbk f2;
     if (ok && !t28_fbk_spawn(&f2, &g2, 1u, &why)) ok = 0;
-    handle_id_t sc2 = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
-    if (ok && sc2 == HANDLE_INVALID) { ok = 0; why = "session cap 2"; }
+    iris_cptr_t sc2 = ok ? t28_session_cap(FBK_SESSION) : IRIS_CPTR_NULL;
+    if (ok && sc2 == IRIS_CPTR_NULL) { ok = 0; why = "session cap 2"; }
     /* The OLD grant index is gone from the session (A11). */
     if (ok && t28_grant_read(sc2, gold.idx, 0x1000, 1, 0, 0) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "stale grant survived restart"; }
     /* A fresh grant + backing + region resolves end to end. */
@@ -2045,7 +2045,7 @@ static void t28_multi_close(struct t28_multi *m) {
 }
 static void t28_multi_reap(struct t28_multi *m) {
     for (uint32_t i = 0; i < m->n; i++)
-        if (m->proc[i] != HANDLE_INVALID) {
+        if (m->proc[i] != IRIS_CPTR_NULL) {
             (void)it_kill((long)m->proc[i]);
             (void)it_lp_wait_exit(m->proc[i]);
         }
@@ -2055,26 +2055,26 @@ static void t28_multi_reap(struct t28_multi *m) {
  * faults CALL the shared fault endpoint through a copy badged (i+1); its exit watch signals
  * exit_notif bit (1<<i). */
 static int t28_multi_spawn(struct t28_multi *m, uint32_t nt, const char **why) {
-    for (uint32_t i = 0; i < T28_MT_MAX; i++) { m->cmd[i] = m->proc[i] = m->vs[i] = HANDLE_INVALID; }
-    m->fault_notif = m->exit_notif = HANDLE_INVALID; m->n = 0;
+    for (uint32_t i = 0; i < T28_MT_MAX; i++) { m->cmd[i] = m->proc[i] = m->vs[i] = IRIS_CPTR_NULL; }
+    m->fault_notif = m->exit_notif = IRIS_CPTR_NULL; m->n = 0;
     if (nt > T28_MT_MAX) { *why = "too many targets"; return 0; }
     long fn = it_ep_create();       /* A-22: the shared fault ENDPOINT */
     long en = it_notify_create();
     if (fn < 0 || en < 0) { it_close(&m->fault_notif); it_close(&m->exit_notif);
-        if (fn >= 0) { handle_id_t h = (handle_id_t)fn; it_close(&h); }
-        if (en >= 0) { handle_id_t h = (handle_id_t)en; it_close(&h); }
+        if (fn >= 0) { iris_cptr_t h = (iris_cptr_t)fn; it_close(&h); }
+        if (en >= 0) { iris_cptr_t h = (iris_cptr_t)en; it_close(&h); }
         *why = "shared notifs"; return 0; }
-    m->fault_notif = (handle_id_t)fn; m->exit_notif = (handle_id_t)en;
+    m->fault_notif = (iris_cptr_t)fn; m->exit_notif = (iris_cptr_t)en;
     if (!it_pgr_mbox_fresh(nt)) { *why = "fault replies"; t28_multi_close(m); return 0; }
     for (uint32_t i = 0; i < nt; i++) {
         long ep = it_ep_create();
         if (ep < 0) { *why = "cmd ep"; t28_multi_close(m); return 0; }
-        m->cmd[i] = (handle_id_t)ep;
+        m->cmd[i] = (iris_cptr_t)ep;
         it_child_keep_vspace();   /* each target is mapped into by the pager */
-        if (lp_spawn_child(m->cmd[i], &m->proc[i]) < 0 || m->proc[i] == HANDLE_INVALID) { *why = "spawn"; t28_multi_close(m); return 0; }
+        if (lp_spawn_child(m->cmd[i], &m->proc[i]) < 0 || m->proc[i] == IRIS_CPTR_NULL) { *why = "spawn"; t28_multi_close(m); return 0; }
         long vs = it_child_vspace(m->proc[i]);
         if (vs < 0) { *why = "vspace"; t28_multi_close(m); return 0; }
-        m->vs[i] = (handle_id_t)vs;
+        m->vs[i] = (iris_cptr_t)vs;
         {
             long bep = it_cs_badge((long)m->fault_notif,
                                    RIGHT_READ | RIGHT_WRITE, i + 1u);
@@ -2093,14 +2093,14 @@ static int t28_multi_spawn(struct t28_multi *m, uint32_t nt, const char **why) {
 /* Spawn a pager over a t28_multi group: shares the group's fault notification
  * (slot 5) and grants proc/vs for each target.  Resets session 0 first. */
 static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const char **why) {
-    f->ctrl_ep = f->proc = HANDLE_INVALID;
-    f->vfs_cap = f->admin = HANDLE_INVALID;
+    f->ctrl_ep = f->proc = IRIS_CPTR_NULL;
+    f->vfs_cap = f->admin = IRIS_CPTR_NULL;
     long ep = it_ep_create();
     if (ep < 0) { *why = "ctrl ep"; return 0; }
-    handle_id_t ctrl = (handle_id_t)ep;
-    handle_id_t vfs  = t28_vfs_cap();
-    handle_id_t adm  = t28_admin_cap();
-    if (vfs == HANDLE_INVALID || adm == HANDLE_INVALID) {
+    iris_cptr_t ctrl = (iris_cptr_t)ep;
+    iris_cptr_t vfs  = t28_vfs_cap();
+    iris_cptr_t adm  = t28_admin_cap();
+    if (vfs == IRIS_CPTR_NULL || adm == IRIS_CPTR_NULL) {
         it_close(&ctrl); it_close(&vfs); it_close(&adm);
         *why = "grants"; return 0;
     }
@@ -2119,13 +2119,13 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
     for (uint32_t i = 0; i < m->n; i++) {
         mm[k].slot = PGR_TSLOT_VS(i);   IT_MINT_SRC(mm[k], m->vs[i]);   mm[k].rights = RIGHT_WRITE;               mm[k].badge = 0; k++;
     }
-    handle_id_t boot = HANDLE_INVALID;
+    iris_cptr_t boot = IRIS_CPTR_NULL;
     /* Phase S1: explicit reply object for the pager's ctrl EP (slot 13). */
-    handle_id_t pgr_reply_h = HANDLE_INVALID;
+    iris_cptr_t pgr_reply_h = IRIS_CPTR_NULL;
     {
         long rr = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
         if (rr >= 0) {
-            pgr_reply_h = (handle_id_t)rr;
+            pgr_reply_h = (iris_cptr_t)rr;
             mm[k].slot = 13u; IT_MINT_SRC(mm[k], pgr_reply_h);
             mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
         }
@@ -2136,7 +2136,7 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
     it_child_bind(f->proc);
     it_close(&pgr_reply_h);
     it_close(&boot);
-    if (r < 0 || f->proc == HANDLE_INVALID) {
+    if (r < 0 || f->proc == IRIS_CPTR_NULL) {
         it_close(&ctrl); it_close(&vfs); it_close(&adm); it_close(&f->proc);
         *why = "pager spawn"; return 0;
     }
@@ -2274,8 +2274,8 @@ void test_t238(void) {
             if (!t28_fbk_spawn(&f, &g, 1u, &why)) { ok = 0; t25_tgt_reap(&g); break; }
             struct t28_grant gr;
             if (t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME, VFS_FILE_RIGHT_STAT | VFS_FILE_RIGHT_READ, &gr) != 0) { ok = 0; why = "s0 open"; }
-            handle_id_t sc = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
-            if (ok && sc == HANDLE_INVALID) { ok = 0; why = "s0 cap"; }
+            iris_cptr_t sc = ok ? t28_session_cap(FBK_SESSION) : IRIS_CPTR_NULL;
+            if (ok && sc == IRIS_CPTR_NULL) { ok = 0; why = "s0 cap"; }
             uint8_t byte;
             if (ok && (t28_grant_read(sc, gr.idx, 0x1000, 1, &byte, 0) != 0 || byte != t28_pat(0x1000))) { ok = 0; why = "s0 read"; }
             /* wrong-name (session cannot use name path). */
@@ -2295,8 +2295,8 @@ void test_t238(void) {
             if (!t28_fbk_spawn(&f, &g, 1u, &why)) { ok = 0; t25_tgt_reap(&g); break; }
             struct t28_grant gr;
             if (t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME, VFS_FILE_RIGHT_READ, &gr) != 0) { ok = 0; why = "s1 open"; }
-            handle_id_t sc = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
-            if (ok && sc == HANDLE_INVALID) { ok = 0; why = "s1 cap"; }
+            iris_cptr_t sc = ok ? t28_session_cap(FBK_SESSION) : IRIS_CPTR_NULL;
+            if (ok && sc == IRIS_CPTR_NULL) { ok = 0; why = "s1 cap"; }
             if (ok && t28_grant_read(sc, gr.idx, 0, 1, 0, 0) != 0) { ok = 0; why = "s1 read"; }
             uint64_t ng = 0;
             if (ok && t28_grant_revoke_name(f.admin, FBK_FILE_NAME, &ng) != 0) { ok = 0; why = "s1 revoke"; }
@@ -2374,17 +2374,17 @@ void test_t238(void) {
  * GLOBAL kind, mirrored above as struct it_utq_global. */
 
 /* Spawn a bare lifecycle_probe child (cmd endpoint + process).  0 on success. */
-int it_bare_child(handle_id_t *cmd_out, handle_id_t *proc_out) {
-    *cmd_out = *proc_out = HANDLE_INVALID;
+int it_bare_child(iris_cptr_t *cmd_out, iris_cptr_t *proc_out) {
+    *cmd_out = *proc_out = IRIS_CPTR_NULL;
     long ep = it_ep_create();
     if (ep < 0) return 0;
-    *cmd_out = (handle_id_t)ep;
-    if (lp_spawn_child(*cmd_out, proc_out) < 0 || *proc_out == HANDLE_INVALID) {
+    *cmd_out = (iris_cptr_t)ep;
+    if (lp_spawn_child(*cmd_out, proc_out) < 0 || *proc_out == IRIS_CPTR_NULL) {
         it_close(cmd_out); return 0;
     }
     return 1;
 }
-void it_bare_kill(handle_id_t *cmd, handle_id_t *proc) {
-    if (*proc != HANDLE_INVALID) { (void)it_kill((long)*proc); (void)it_lp_wait_exit(*proc); }
+void it_bare_kill(iris_cptr_t *cmd, iris_cptr_t *proc) {
+    if (*proc != IRIS_CPTR_NULL) { (void)it_kill((long)*proc); (void)it_lp_wait_exit(*proc); }
     it_close(cmd); it_close(proc);
 }

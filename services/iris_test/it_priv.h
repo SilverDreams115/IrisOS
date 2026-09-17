@@ -22,7 +22,7 @@
 #include <iris/invoke.h>
 #include <iris/nc/error.h>
 #include "../common/iris_vspace.h"
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
 #include <iris/fault_proto.h>
@@ -240,8 +240,8 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 #define IT_MINT_SRC(m, v)                                                     \
     do {                                                                      \
         uint32_t _v = (uint32_t)(v);                                          \
-        if (_v != 0u && (_v & HANDLE_TAG) == 0u) (m).src_cptr = _v;           \
-        else                                     (m).src_h    = (handle_id_t)_v; \
+        if (_v != 0u && (_v & IRIS_CPTR_LIMIT) == 0u) (m).src_cptr = _v;           \
+        else                                     (m).src_h    = (iris_cptr_t)_v; \
     } while (0)
 
 /* Stage 5 Step 4: threads are retyped from an Untyped and configured with
@@ -300,11 +300,10 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  *
  * Slots 29, 43, 63 and 254 are the scratch pool (IT_SCRATCH_0..3) and 255 is
  * the serial KIoPort; those ARE named here and are not free for anything else.
- * Slot 62 is IRIS_CPTR_MMIO_UNTYPED_TEST (Stage 10-dma §10.2 step 6): 60..62
- * appear in this file only as destination slots in a SPAWNED CHILD's CSpace,
- * so they were free in this one, and finding that out took two collisions —
- * the story is on the constant in endpoint_proto.h and it is worth reading
- * before picking a third.
+ * Slot 62 is IRIS_CPTR_PCI_EP (Stage 10): 60..62 appear in this file only as
+ * destination slots in a SPAWNED CHILD's CSpace, so they were free in this
+ * one, and finding that out took two collisions — the story is on the constant
+ * in endpoint_proto.h and it is worth reading before picking a third.
  */
 
 /*
@@ -358,7 +357,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * the kernel published every process's root CNode as its first handle.  The
  * root is structural now and lives in no handle table, so the operations that
  * needed it (DELETE a CSpace slot before re-minting) pass arg0 == 0 — the
- * "my own root CNode" convention.  It is a constant, never HANDLE_INVALID, so
+ * "my own root CNode" convention.  It is a constant, never IRIS_CPTR_NULL, so
  * the old "no root found" guards are gone with the probe. */
 #define T28_OWN_ROOT_CNODE 0u
 
@@ -430,7 +429,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 
 /*
  * Receives the SPAWN_CAP bootstrap cap from init (serial/test loading).
- * Timeout-bounded so a missing message degrades to HANDLE_INVALID — the
+ * Timeout-bounded so a missing message degrades to IRIS_CPTR_NULL — the
  * dependent tests then FAIL loudly instead of hanging boot or being
  * silently skipped.  (Phase 8: the discovery endpoint no longer arrives
  * here; it is the well-known slot IRIS_CPTR_SVCMGR_EP.)
@@ -1366,7 +1365,7 @@ struct it_snap {
 /* A supervised pager target: command endpoint, proc cap, VSpace cap (via
  * SYS_PROCESS_VSPACE), fault-handler notification, exit watch. */
 struct t25_tgt {
-    handle_id_t cmd, proc, vs, notif, watch;
+    iris_cptr_t cmd, proc, vs, notif, watch;
     /* Stage 7 Step 7: the mailbox leaf this target's faults deliver into.
      * Allocated per spawn out of the suite's own mailbox, so two targets
      * blocked in a fault at once (T183, T184) never overwrite each other's
@@ -1452,7 +1451,7 @@ struct t25_tgt {
  * every other fixture: delete before use, never hold across a test boundary.
  */
 #define T26_GRANT_PAGES 4u
-#define T26_PAGE(v, n)  ((handle_id_t)((uint64_t)(v) + ((uint64_t)(n) << 8)))
+#define T26_PAGE(v, n)  ((iris_cptr_t)((uint64_t)(v) + ((uint64_t)(n) << 8)))
 /* The byte offset a test names, as the page capability it names. */
 #define T26_AT(v, off)  T26_PAGE((v), (uint32_t)((off) >> 12))
 
@@ -1525,8 +1524,8 @@ struct t25_tgt {
 #define T27_WMARK   0xFA017E57u   /* == the probe's LP_CMD_FAULT_WRITE store */
 
 struct t27_pager {
-    handle_id_t ctrl_ep;   /* supervisor's WRITE cap to call the pager */
-    handle_id_t proc;      /* pager process cap (watch / kill) */
+    iris_cptr_t ctrl_ep;   /* supervisor's WRITE cap to call the pager */
+    iris_cptr_t proc;      /* pager process cap (watch / kill) */
     long        reg_id;    /* svcmgr "pager.ep" registration id, or -1 */
     uint32_t    generation;/* supervisor-tracked restart generation */
 };
@@ -1666,10 +1665,10 @@ struct pgr_diag {
 };
 
 struct t28_fbk {
-    handle_id_t ctrl_ep;   /* supervisor's control cap */
-    handle_id_t proc;      /* pager process cap */
-    handle_id_t vfs_cap;   /* UNBADGED dup vfs cap (mint source; name-op client) */
-    handle_id_t admin;     /* the grant-ADMIN cap (badge IRIS_BADGE_FILEGRANT_ADMIN) */
+    iris_cptr_t ctrl_ep;   /* supervisor's control cap */
+    iris_cptr_t proc;      /* pager process cap */
+    iris_cptr_t vfs_cap;   /* UNBADGED dup vfs cap (mint source; name-op client) */
+    iris_cptr_t admin;     /* the grant-ADMIN cap (badge IRIS_BADGE_FILEGRANT_ADMIN) */
 };
 
 /* A VFS-issued file grant as seen by the supervisor (GRANT_OPEN reply). */
@@ -1702,11 +1701,11 @@ struct t28_grant { uint32_t idx; uint64_t bid; uint64_t gen; };
  * 5) for all of them, waking on bit (1<<i). */
 #define T28_MT_MAX 16u
 struct t28_multi {
-    handle_id_t fault_notif;     /* A-22: shared fault ENDPOINT, badge i+1 */
-    handle_id_t exit_notif;      /* shared: bit i set when target i exits */
-    handle_id_t cmd[T28_MT_MAX];
-    handle_id_t proc[T28_MT_MAX];
-    handle_id_t vs[T28_MT_MAX];
+    iris_cptr_t fault_notif;     /* A-22: shared fault ENDPOINT, badge i+1 */
+    iris_cptr_t exit_notif;      /* shared: bit i set when target i exits */
+    iris_cptr_t cmd[T28_MT_MAX];
+    iris_cptr_t proc[T28_MT_MAX];
+    iris_cptr_t vs[T28_MT_MAX];
     uint32_t    n;
 };
 
@@ -2070,13 +2069,26 @@ struct it_utq_taskobj {
  * the hardware behind them may write to.  A system that hands out the first
  * two without the third has handed out all of memory.
  *
+ * STAGE 10 adds five more, and they are a different shape worth naming: the
+ * kernel now publishes the firmware's own memory — the regions ACPI's tables
+ * live in — as device Untypeds, so that ring 3 can read the description of the
+ * machine it is running on.  This one has five such regions.  They are roots
+ * for exactly the reason a boot Untyped is: they exist before there is
+ * anything for them to be a child of.
+ *
+ * So the ceiling is 32, and the five it went up by are the five regions the
+ * boot log names.  A machine with a different firmware will have a different
+ * number of them, which is worth saying plainly: this ceiling is a fact about
+ * the MACHINE the gate runs on as well as about the kernel, and a run on other
+ * hardware would have to re-derive it rather than assume it.
+ *
  * This number going UP is not automatically fine, which is why the test
- * refuses rather than reporting.  What makes these four fine is that each is
- * a BOOT AUTHORITY: it exists before any Untyped a capability could be
- * parented to, so "unparented" is a fact about when it was made and not about
- * an ancestry that was lost.  A root appearing anywhere else is a defect, and
- * the ceiling is what makes the difference visible. */
-#define IT_MDB_LEGACY_ROOT_CEILING 27u
+ * refuses rather than reporting.  What makes all of these fine is that each is
+ * a BOOT-PATH capability: it exists before any Untyped it could be parented
+ * to, so "unparented" is a fact about when it was made and not about an
+ * ancestry that was lost.  A root appearing anywhere else is a defect, and the
+ * ceiling is what makes the difference visible. */
+#define IT_MDB_LEGACY_ROOT_CEILING 32u
 
 /* ── T309: a passive server serves a LOOP on donated time (Stage 8-mcs) ───
  *
@@ -2534,19 +2546,19 @@ struct t322_case { uint32_t type; long arg; const char *name; };
 
 /* ── everything the suite's files share ─────────────────────────────────── */
 
-extern handle_id_t g_serial_h;
+extern iris_cptr_t g_serial_h;
 void it_serial_write(const char *s);
 void it_log_num(uint32_t n);
 void it_log_hex(uint64_t v);
 extern uint32_t g_pass;
 extern uint32_t g_total;
 void it_child_keep_vspace(void);
-void it_child_bind(handle_id_t proc_h);
+void it_child_bind(iris_cptr_t proc_h);
 long it_child_tcb_dest(void);
 long it_child_vs_dest(void);
-long it_child_tcb(handle_id_t proc_h);
-long it_child_vspace(handle_id_t proc_h);
-void it_child_drop_vspace(handle_id_t proc_h);
+long it_child_tcb(iris_cptr_t proc_h);
+long it_child_vspace(iris_cptr_t proc_h);
+void it_child_drop_vspace(iris_cptr_t proc_h);
 long it_kill(long proc_cptr);
 long it_tcb_alive(long tcb_cptr);
 long it_alive(long proc_cptr);
@@ -2612,12 +2624,12 @@ long it_reply_create_at(uint32_t slot);
 extern uint32_t g_it_slot_guard_hits;
 extern uint32_t g_it_slot_guard_last;
 void it_slot_delete(uint32_t slot);
-long it_xfer_slot(handle_id_t src_h, uint32_t slot, uint32_t rights);
+long it_xfer_slot(iris_cptr_t src_h, uint32_t slot, uint32_t rights);
 int it_slot_is_notif(long slot);
 long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights);
-long it_cdt_root(handle_id_t src_h, uint32_t slot);
+long it_cdt_root(iris_cptr_t src_h, uint32_t slot);
 long it_cdt_derive(long src_cptr, uint32_t dest_slot, uint32_t rights);
-long it_cdt_reduced(handle_id_t src_h, uint32_t root_slot,
+long it_cdt_reduced(iris_cptr_t src_h, uint32_t root_slot,
                            uint32_t dest_slot, uint32_t rights);
 int it_cdt_alive(long cptr);
 long it_cdt_revoke(long cptr);
@@ -2625,7 +2637,7 @@ long it_xfer_dup(long src_h, uint32_t rights);
 void it_xfer_release(long cptr);
 void it_pass(const char *id);
 void it_fail(const char *id, const char *reason);
-void it_close(handle_id_t *h);
+void it_close(iris_cptr_t *h);
 void test_t001(void);
 void test_t002(void);
 void test_t003(void);
@@ -2645,8 +2657,8 @@ void test_t022(void);
 void test_t023(void);
 void test_t024(void);
 void test_t025(void);
-extern handle_id_t g_svcmgr_ep_h;
-extern handle_id_t g_vfs_ep_h;
+extern iris_cptr_t g_svcmgr_ep_h;
+extern iris_cptr_t g_vfs_ep_h;
 extern uint8_t *g_ep_io_buf;
 uint32_t it_stage_path(const char *path);
 void test_t026(void);
@@ -2678,7 +2690,7 @@ void test_t051(void);
 void test_t052(void);
 void test_t053(void);
 long it_status(const char *name, uint32_t *alive, uint32_t *gen);
-long it_register_ep(const char *name, handle_id_t ep);
+long it_register_ep(const char *name, iris_cptr_t ep);
 void test_t054(void);
 void test_t055(void);
 void test_t056(void);
@@ -2700,9 +2712,9 @@ void test_t071(void);
 void test_t072(void);
 void test_t073(void);
 void test_t074(void);
-long lp_spawn_child_cn(uint32_t cn_leaf, handle_id_t cmd_ep_h,
-                              handle_id_t *out_proc_h);
-long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h);
+long lp_spawn_child_cn(uint32_t cn_leaf, iris_cptr_t cmd_ep_h,
+                              iris_cptr_t *out_proc_h);
+long lp_spawn_child(iris_cptr_t cmd_ep_h, iris_cptr_t *out_proc_h);
 void test_t075(void);
 void test_t077(void);
 void test_t078(void);
@@ -2755,10 +2767,10 @@ void test_t095(void);
 void test_t096(void);
 void test_t097(void);
 void test_t098(void);
-long it_lp_cmd_rslot(handle_id_t cmd_ep_h, uint32_t slot);
-long it_lp_send_cap(handle_id_t cmd_ep_h, long notif);
-long it_lp_cmd(handle_id_t cmd_ep_h, uint32_t label);
-long it_lp_wait_exit(handle_id_t proc_h);
+long it_lp_cmd_rslot(iris_cptr_t cmd_ep_h, uint32_t slot);
+long it_lp_send_cap(iris_cptr_t cmd_ep_h, long notif);
+long it_lp_cmd(iris_cptr_t cmd_ep_h, uint32_t label);
+long it_lp_wait_exit(iris_cptr_t proc_h);
 void test_t099(void);
 void test_t100(void);
 void test_t101(void);
@@ -2770,7 +2782,7 @@ void test_t106(void);
 extern uint32_t g_fz_seed;
 uint32_t fz_rand(void);
 void fz_note(const char *t, uint32_t seed, uint32_t iter);
-extern handle_id_t       g_fz_data_ep;
+extern iris_cptr_t       g_fz_data_ep;
 void test_t107(void);
 void test_t108(void);
 void test_t109(void);
@@ -2787,10 +2799,10 @@ void test_t118(void);
 extern uint8_t           g_sh_stk[SH_NWORK][8192];
 extern volatile int      g_sh_done[SH_NWORK];
 extern volatile uint32_t g_sh_prog[SH_NWORK];
-extern handle_id_t       g_sh_ep;
+extern iris_cptr_t       g_sh_ep;
 extern volatile uint32_t g_sh_mode;
 extern volatile uint32_t g_sh_iters;
-extern handle_id_t       g_sh_sc;
+extern iris_cptr_t       g_sh_sc;
 extern void (*const g_sh_entries[SH_NWORK])(void);
 int sh_start(uint32_t n);
 int sh_wait_all(uint32_t n);
@@ -2811,7 +2823,7 @@ void test_t128(void);
 void test_t129(void);
 void test_t130(void);
 void test_t131(void);
-handle_id_t it_retype_frame(void);
+iris_cptr_t it_retype_frame(void);
 void test_t132(void);
 void test_t133(void);
 void test_t134(void);
@@ -2824,7 +2836,7 @@ extern uint8_t g_it_fault_have[IT_FAULT_LEAVES];
 extern uint64_t g_it_fault_label[IT_FAULT_LEAVES];
 extern uint64_t g_it_fault_badge[IT_FAULT_LEAVES];
 long it_fault_info(uint32_t leaf, struct it_fault *f);
-long it_lp_cmd_va(handle_id_t ep_h, uint32_t label, uint64_t va);
+long it_lp_cmd_va(iris_cptr_t ep_h, uint32_t label, uint64_t va);
 int it_fault_wait_ep(long fault_ep, uint32_t mbox);
 long it_fault_resume(uint32_t mbox);
 long it_fault_kill(uint32_t mbox);
@@ -2879,16 +2891,16 @@ void test_t177(void);
 void test_t178(void);
 void test_t179(void);
 void test_t180(void);
-void t25_reap(handle_id_t *proc_h);
+void t25_reap(iris_cptr_t *proc_h);
 void t25_tgt_reap(struct t25_tgt *g);
 int t25_tgt_spawn(struct t25_tgt *g, const char **why);
-long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
+long t25_pager_spawn(const struct t25_tgt *g, iris_cptr_t frame_h,
                             iris_rights_t frame_rights,
                             const struct svc_mint *extra, uint32_t nextra,
-                            handle_id_t *out_cmd, handle_id_t *out_proc);
-long t25_serve(handle_id_t pcmd, uint32_t sub, uint32_t count,
+                            iris_cptr_t *out_cmd, iris_cptr_t *out_proc);
+long t25_serve(iris_cptr_t pcmd, uint32_t sub, uint32_t count,
                       uint64_t mflags, uint64_t va_ovr, uint64_t expect_cr2);
-long t25_xprobe(handle_id_t pcmd, uint32_t vtid, uint64_t va, uint32_t vseq);
+long t25_xprobe(iris_cptr_t pcmd, uint32_t vtid, uint64_t va, uint32_t vseq);
 long t25_resume_seq(const struct t25_tgt *g, uint32_t tid, uint32_t seq,
                            int kill);
 int t25_wait_fault(const struct t25_tgt *g, struct it_fault *f);
@@ -2896,7 +2908,7 @@ int t25_wait_delivered(uint32_t base);
 uint32_t t25_delivered_now(void);
 int t25_wait_refault(const struct t25_tgt *g, uint32_t old_seq,
                             struct it_fault *f);
-int t25_frame_word(handle_id_t fr, uint32_t *val, int write);
+int t25_frame_word(iris_cptr_t fr, uint32_t *val, int write);
 void test_t181(void);
 void test_t182(void);
 void test_t183(void);
@@ -2908,9 +2920,9 @@ void test_t188(void);
 void test_t189(void);
 void test_t190(void);
 long it_frame_live(void);
-void t26_grant_close(handle_id_t *g);
-handle_id_t t26_grant(void);
-int t26_page_word(handle_id_t page, uint32_t *val, int write);
+void t26_grant_close(iris_cptr_t *g);
+iris_cptr_t t26_grant(void);
+int t26_page_word(iris_cptr_t page, uint32_t *val, int write);
 void test_t191(void);
 void test_t192(void);
 void test_t193(void);
@@ -2923,9 +2935,9 @@ void test_t199(void);
 void test_t200(void);
 int t27_pager_spawn(struct t27_pager *p,
                            struct t25_tgt *targets, uint32_t nt,
-                           handle_id_t *vmos, uint32_t nv, uint32_t vmo_w_mask,
+                           iris_cptr_t *vmos, uint32_t nv, uint32_t vmo_w_mask,
                            int do_register, const char **why);
-long t27_pager_call(handle_id_t ctrl_ep, uint32_t op, uint32_t tidx,
+long t27_pager_call(iris_cptr_t ctrl_ep, uint32_t op, uint32_t tidx,
                            uint32_t vidx, uint32_t flags,
                            uint64_t offset, uint64_t expect);
 void t27_pager_reap(struct t27_pager *p);
@@ -2949,14 +2961,14 @@ void test_t213(void);
 void test_t214(void);
 void test_t215(void);
 void test_t216(void);
-long t28_stat(handle_id_t vfs_cap, const char *name);
-long t28_grant_revoke_name(handle_id_t admin, const char *name, uint64_t *newgen);
+long t28_stat(iris_cptr_t vfs_cap, const char *name);
+long t28_grant_revoke_name(iris_cptr_t admin, const char *name, uint64_t *newgen);
 int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt,
                          const char **why);
 void t28_fbk_reap(struct t28_fbk *f);
 int t28_backing_setup(struct t28_fbk *f, uint32_t bidx, const char *name,
                              uint64_t size, struct t28_grant *gr, const char **why);
-long t28_reg_region(handle_id_t ctrl, const struct pgr_region_req *src);
+long t28_reg_region(iris_cptr_t ctrl, const struct pgr_region_req *src);
 void t28_region(struct pgr_region_req *rq, uint32_t ridx, uint32_t tidx, uint32_t bidx,
                        uint64_t va, uint64_t mem_len, uint64_t file_off, uint64_t file_len,
                        uint32_t prot, uint32_t mode, uint64_t gen);
@@ -2991,8 +3003,8 @@ int it_utq_o(struct it_utq_objects *q);
 int it_utq_mdb(struct it_utq_mdb *q);
 long s1_sub_ut(uint64_t bytes);
 void test_t238(void);
-int it_bare_child(handle_id_t *cmd_out, handle_id_t *proc_out);
-void it_bare_kill(handle_id_t *cmd, handle_id_t *proc);
+int it_bare_child(iris_cptr_t *cmd_out, iris_cptr_t *proc_out);
+void it_bare_kill(iris_cptr_t *cmd, iris_cptr_t *proc);
 void test_t239(void);
 void test_t240(void);
 void test_t244(void);
@@ -3084,6 +3096,8 @@ void test_t350(void);
 void test_t351(void);
 void test_t352(void);
 void test_t353(void);
+void test_t354(void);
+void test_t355(void);
 void test_t324(void);
 void test_t319(void);
 void test_t296(void);

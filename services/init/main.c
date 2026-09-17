@@ -31,8 +31,8 @@
  * svcmgr publishes the send side as "console.ep".  Phase 13/Track I: the legacy
  * console KChannel write handle (g_init_console_h) is retired — init logs over
  * console.ep, with early-serial as the only pre-console.ep fallback. */
-handle_id_t g_init_console_ep_h = HANDLE_INVALID;
-handle_id_t g_init_timer_ep_h   = HANDLE_INVALID;
+iris_cptr_t g_init_console_ep_h = IRIS_CPTR_NULL;
+iris_cptr_t g_init_timer_ep_h   = IRIS_CPTR_NULL;
 /* D-4: the console client marshals into the buffer it is given, and a thread
  * with a registered IPC buffer must marshal into THAT — the kernel refuses a
  * send that names any other address.  So the log path shares the service's one
@@ -50,7 +50,7 @@ void init_log(const char *s) {
      * UART (early-serial) — never the legacy console KChannel.  No silent
      * fallback after verification: a broken EP drops the gated markers and
      * fails smoke. */
-    if (g_init_console_ep_h != HANDLE_INVALID) {
+    if (g_init_console_ep_h != IRIS_CPTR_NULL) {
         (void)console_ep_write(g_init_console_ep_h, g_init_buf, s);
         return;
     }
@@ -79,7 +79,7 @@ void init_exit(long code) {
  * The loader hands back capabilities that live in CSpace now — including in a
  * second-level CNode — and closing one as a handle is a silent no-op that
  * leaves the slot occupied.  The next spawn then fails to publish into it. */
-void init_close(handle_id_t *h) {
+void init_close(iris_cptr_t *h) {
     uint32_t v = (uint32_t)*h;
     if (v != 0u) {
         if (v >= 256u)
@@ -87,7 +87,7 @@ void init_close(handle_id_t *h) {
         else
             iris_invoke1(0, INV_CNODE_DELETE, (long)v);
     }
-    *h = HANDLE_INVALID;
+    *h = IRIS_CPTR_NULL;
 }
 
 /* init_msg_zero retired — Phase 13/Track I (no KChannel messages in init). */
@@ -160,9 +160,9 @@ static void init_idle_loop(void) {
 
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
-void init_main(handle_id_t rbx_unused) {
-    handle_id_t sm_h               = HANDLE_INVALID;
-    handle_id_t vfs_ep_h           = HANDLE_INVALID;
+void init_main(iris_cptr_t rbx_unused) {
+    iris_cptr_t sm_h               = IRIS_CPTR_NULL;
+    iris_cptr_t vfs_ep_h           = IRIS_CPTR_NULL;
 
     /* Step 4: the spawn/authority capability is invoked as the CSpace slot
      * userboot minted it into.  init_recv_spawn_cap used to materialise it
@@ -207,7 +207,7 @@ void init_main(handle_id_t rbx_unused) {
      * console boot.  Done BEFORE early-serial is stopped so a broken EP can
      * still report LOUDLY over the direct UART (the missing OK marker fails
      * smoke either way — no legacy console KChannel fallback). */
-    if (g_init_console_ep_h != HANDLE_INVALID) {
+    if (g_init_console_ep_h != IRIS_CPTR_NULL) {
         if (console_ep_write(g_init_console_ep_h, g_init_buf,
                              "[USER] console ep OK\n") != 0) {
             init_close(&g_init_console_ep_h);
@@ -227,8 +227,20 @@ void init_main(handle_id_t rbx_unused) {
     if (!init_spawn_timer())
         init_log("[USER] timer spawn FAILED\n");
 
+    /* Stage 10: the PCI bus service, before anything that drives a device.
+     * Same rule as the timer — a failure is fatal to whoever needs a device,
+     * and they say so where it matters. */
+    if (!init_spawn_pci())
+        init_log("[USER] pci spawn FAILED\n");
+
+    /* Stage 10: the disk, which needs the bus service above it.  Not fatal —
+     * a machine with no disk is a machine, and the services that need storage
+     * say so where it matters. */
+    if (!init_spawn_blk())
+        init_log("[USER] blk spawn FAILED\n");
+
     sm_h = init_spawn_svcmgr();
-    if (sm_h == HANDLE_INVALID) {
+    if (sm_h == IRIS_CPTR_NULL) {
         init_log("[USER] svcmgr spawn FAILED\n");
         init_exit(1);
     }
@@ -259,10 +271,10 @@ void init_main(handle_id_t rbx_unused) {
     for (uint32_t attempt = 0; attempt < INIT_RETRY_LIMIT; attempt++) {
         vfs_ep_h = init_ep_lookup_name_slot(sm_h, VFS_EP_SVC_NAME,
                                             INIT_RSLOT_VFS_EP);
-        if (vfs_ep_h != HANDLE_INVALID) break;
+        if (vfs_ep_h != IRIS_CPTR_NULL) break;
         init_retry_pause();
     }
-    if (vfs_ep_h == HANDLE_INVALID) {
+    if (vfs_ep_h == IRIS_CPTR_NULL) {
         init_log("[USER] vfs.ep lookup FAILED\n");
         init_exit(5);
     }
@@ -305,7 +317,7 @@ void init_main(handle_id_t rbx_unused) {
         /* Drain our queued console output first: iris_test writes raw to
          * COM1, and a half-flushed backlog line would otherwise interleave
          * mid-line with test output under load. */
-        if (g_init_console_ep_h != HANDLE_INVALID)
+        if (g_init_console_ep_h != IRIS_CPTR_NULL)
             (void)console_ep_sync(g_init_console_ep_h);
         /* Step 4: unconditional.  The old guard was "did the DUP succeed?";
          * with the slot named directly there is nothing to fail early, and an

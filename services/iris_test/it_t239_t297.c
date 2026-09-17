@@ -60,7 +60,7 @@ void test_t239(void) {
     /* ...and closing it gives the region back: a bump allocator does not
      * rewind, so what "released" means is that the budget can RESET, which it
      * refuses while a single child of it is alive. */
-    handle_id_t vh = (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
+    iris_cptr_t vh = (v >= 0) ? (iris_cptr_t)v : IRIS_CPTR_NULL;
     if (ok && it_invoke0(pool, INV_UNTYPED_RESET) == 0) { ok = 0; why = "reset while live"; }
     it_close(&vh);
     it_quiesce_reaper();
@@ -79,7 +79,7 @@ void test_t239(void) {
     if (ok && (!it_utq_1(cpool, &c1) || !it_utq_1(pool, &p2))) { ok = 0; why = "info child1"; }
     if (ok && c1.used_bytes <= c0.used_bytes) { ok = 0; why = "child budget not spent"; }
     if (ok && p2.used_bytes != p1.used_bytes) { ok = 0; why = "creator budget spent"; }
-    handle_id_t vch = (vc >= 0) ? (handle_id_t)vc : HANDLE_INVALID;
+    iris_cptr_t vch = (vc >= 0) ? (iris_cptr_t)vc : IRIS_CPTR_NULL;
     it_close(&vch);
 
     it_quiesce_reaper();
@@ -96,12 +96,12 @@ void test_t240(void) {
     int ok = b.ok;
     const char *why = "many children";
 
-    static handle_id_t cmd[T240_MAX], proc[T240_MAX];
+    static iris_cptr_t cmd[T240_MAX], proc[T240_MAX];
 
     const uint32_t rungs[4] = { 1u, 8u, 16u, 32u };
     for (uint32_t ri = 0; ok && ri < 4u; ri++) {
         uint32_t n = rungs[ri];
-        for (uint32_t i = 0; i < T240_MAX; i++) { cmd[i] = proc[i] = HANDLE_INVALID; }
+        for (uint32_t i = 0; i < T240_MAX; i++) { cmd[i] = proc[i] = IRIS_CPTR_NULL; }
         uint32_t spawned = 0;
         for (uint32_t i = 0; ok && i < n; i++) {
             if (!it_bare_child(&cmd[i], &proc[i])) { ok = 0; why = "spawn"; break; }
@@ -113,7 +113,7 @@ void test_t240(void) {
         for (uint32_t i = 1; ok && i < spawned; i += 2u) {
             if (it_alive((long)proc[i]) != 1) { ok = 0; why = "survivor died"; }
         }
-        for (uint32_t i = 0; i < spawned; i++) if (proc[i] != HANDLE_INVALID) it_bare_kill(&cmd[i], &proc[i]);
+        for (uint32_t i = 0; i < spawned; i++) if (proc[i] != IRIS_CPTR_NULL) it_bare_kill(&cmd[i], &proc[i]);
         it_quiesce_reaper();
     }
 
@@ -139,7 +139,7 @@ void test_t240(void) {
         const uint32_t n = 8u;
         if (!it_utq_1((long)IRIS_CPTR_TEST_UNTYPED, &w0)) { ok = 0; why = "budget query"; }
         for (uint32_t pass = 0; ok && pass < 2u; pass++) {
-            for (uint32_t i = 0; i < T240_MAX; i++) { cmd[i] = proc[i] = HANDLE_INVALID; }
+            for (uint32_t i = 0; i < T240_MAX; i++) { cmd[i] = proc[i] = IRIS_CPTR_NULL; }
             uint32_t got = 0;
             for (uint32_t i = 0; i < n; i++) {
                 if (!it_bare_child(&cmd[i], &proc[i])) break;
@@ -160,7 +160,7 @@ void test_t240(void) {
     /* Spawn until failure (cap T240_MAX).  At least 32 must succeed, any
      * failure is CLEAN, and teardown returns to baseline (Q20/Q21/Q29). */
     if (ok) {
-        for (uint32_t i = 0; i < T240_MAX; i++) { cmd[i] = proc[i] = HANDLE_INVALID; }
+        for (uint32_t i = 0; i < T240_MAX; i++) { cmd[i] = proc[i] = IRIS_CPTR_NULL; }
         uint32_t got = 0;
         for (uint32_t i = 0; i < T240_MAX; i++) {
             if (!it_bare_child(&cmd[i], &proc[i])) break;
@@ -280,7 +280,7 @@ void test_t245(void) {
     int ok = b.ok;
     const char *why = "independent children";
 
-    handle_id_t cmdA, procA, cmdB, procB;
+    iris_cptr_t cmdA, procA, cmdB, procB;
     if (ok && !it_bare_child(&cmdA, &procA)) { ok = 0; why = "childA"; }
     if (ok && !it_bare_child(&cmdB, &procB)) { ok = 0; why = "childB"; }
 
@@ -291,8 +291,8 @@ void test_t245(void) {
     if (ok && (poolA < 0 || poolB < 0)) { ok = 0; why = "child pools"; }
     long va = ok ? it_frame_create_slot(poolA, 8192u) : -1;
     long vb = ok ? it_frame_create_slot(poolB, 8192u) : -1;
-    handle_id_t vah = (va >= 0) ? (handle_id_t)va : HANDLE_INVALID;
-    handle_id_t vbh = (vb >= 0) ? (handle_id_t)vb : HANDLE_INVALID;
+    iris_cptr_t vah = (va >= 0) ? (iris_cptr_t)va : IRIS_CPTR_NULL;
+    iris_cptr_t vbh = (vb >= 0) ? (iris_cptr_t)vb : IRIS_CPTR_NULL;
     if (ok && (va < 0 || vb < 0)) { ok = 0; why = "create in pool"; }
     /* Both regions are spoken for: neither can be reset under a live object. */
     if (ok && it_invoke0(poolA, INV_UNTYPED_RESET) == 0) { ok = 0; why = "A resettable while live"; }
@@ -365,7 +365,7 @@ void test_t248(void) {
     if (ok && r0.kslab_failed_allocs != 0u) { ok = 0; why = "spurious kslab failure"; }
     /* Spawning and reaping a child churns kernel objects; used (bump high-water)
      * may rise but never exceeds total, and no allocation fails. */
-    handle_id_t cmd, proc;
+    iris_cptr_t cmd, proc;
     if (ok && !it_bare_child(&cmd, &proc)) { ok = 0; why = "child"; }
     struct it_utq_global r1;
     if (ok && !it_utq_g(&r1)) { ok = 0; why = "rinfo1"; }
@@ -445,13 +445,13 @@ void test_t250(void) {
         switch (op) {
         case 0: {
             /* Child owns its image + an extra VMO; kill releases exactly it. */
-            handle_id_t cmd, proc;
+            iris_cptr_t cmd, proc;
             if (!it_bare_child(&cmd, &proc)) { ok = 0; why = "s0 child"; break; }
             /* Carved from the round's budget, not from the suite's own: the
              * spend is visible and must come back at the end of the round. */
             long v = it_frame_create_slot(pool, 4096u);
             if (v < 0) { ok = 0; why = "s0 create"; }
-            if (v >= 0) { handle_id_t vh = (handle_id_t)v; it_close(&vh); }
+            if (v >= 0) { iris_cptr_t vh = (iris_cptr_t)v; it_close(&vh); }
             it_bare_kill(&cmd, &proc);
             break;
         }
@@ -459,13 +459,13 @@ void test_t250(void) {
             /* Self VMO create + dup + close: single charge, exact release. */
             long v = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096);
             if (v < 0) { ok = 0; why = "s1 create"; break; }
-            handle_id_t vh = (handle_id_t)v;
+            iris_cptr_t vh = (iris_cptr_t)v;
             long d = it_cs_reduce((long)vh, RIGHT_READ);
             /* One object, two capabilities: the live-frame gauge counts
              * objects, so a derived capability must not move it. */
             struct it_snap sd = it_snap_take();
             if (!sd.ok || sd.fr != s0.fr + 1u) { ok = 0; why = "s1 charge"; }
-            if (d >= 0) { handle_id_t dh = (handle_id_t)d; it_close(&dh); }
+            if (d >= 0) { iris_cptr_t dh = (iris_cptr_t)d; it_close(&dh); }
             it_close(&vh);
             break;
         }
@@ -482,12 +482,12 @@ void test_t250(void) {
              */
             long small = s1_sub_ut(32u * 1024u);
             if (small < 0) { ok = 0; why = "s2 pool"; break; }
-            static handle_id_t vv[24];
+            static iris_cptr_t vv[24];
             uint32_t made = 0;
             while (made < 24u) {
                 long v = it_frame_create_slot(small, 4096u);
                 if (v < 0) break;
-                vv[made++] = (handle_id_t)v;
+                vv[made++] = (iris_cptr_t)v;
             }
             if (made == 0u) { ok = 0; why = "s2 nothing made"; }
             /* The refusal is clean and names memory, not a policy. */
@@ -505,7 +505,7 @@ void test_t250(void) {
             if (!it_setup_self_vspace()) { ok = 0; why = "s3 vspace"; break; }
             long v = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096);
             if (v < 0) { ok = 0; why = "s3 create"; break; }
-            handle_id_t vh = (handle_id_t)v;
+            iris_cptr_t vh = (iris_cptr_t)v;
             if (it_invoke((long)vh, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 0L) != 0) { ok = 0; why = "s3 map"; }
             if (ok) (void)it_invoke2((long)vh, INV_FRAME_UNMAP, IT_VS, (long)T26_SELF_VA);
             it_close(&vh);
@@ -541,7 +541,7 @@ void test_t251(void) {
     const char *why = "object manifest";
     long su = s1_sub_ut(65536);
     if (su < 0) { it_fail("T251", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
 
     static const struct { uint32_t t; long arg; long ht; } canon[] = {
         { IRIS_KOBJ_NOTIFICATION,  0,    IRIS_HANDLE_TYPE_NOTIFICATION },
@@ -625,7 +625,7 @@ void test_t252(void) {
     const char *why = "storage provenance";
     long su = s1_sub_ut(65536);
     if (su < 0) { it_fail("T252", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
 
     struct it_utq_one u0, u1, u2;
     struct it_utq_global k0, k1;
@@ -680,7 +680,7 @@ void test_t253(void) {
     const char *why = "atomic batch";
     long su = s1_sub_ut(8192);
     if (su < 0) { it_fail("T253", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
 
     /* Success batch: 4 endpoints into 241..244. */
     if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 4u, 0) != 0) { ok = 0; why = "batch"; }
@@ -733,7 +733,7 @@ void test_t254(void) {
     const char *why = "validation";
     long su = s1_sub_ut(65536);
     if (su < 0) { it_fail("T254", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
     struct it_utq_one ub, ua;
     if (!it_utq_1(su, &ub)) { it_close(&su_h); it_fail("T254", "query"); return; }
 
@@ -759,7 +759,7 @@ void test_t254(void) {
     }
     /* Missing RIGHT_WRITE on the source untyped. */
     if (ok) {
-        long ro = it_cdt_reduced((handle_id_t)su, IT_SCRATCH_0, IT_SCRATCH_1,
+        long ro = it_cdt_reduced((iris_cptr_t)su, IT_SCRATCH_0, IT_SCRATCH_1,
                                  RIGHT_READ);
         if (ro < 0) { ok = 0; why = "ro derive"; }
         else {
@@ -781,7 +781,7 @@ void test_t254(void) {
         long su2 = s1_sub_ut(4096);
         if (su2 < 0) { ok = 0; why = "second sub"; }
         else {
-            handle_id_t s2h = (handle_id_t)su2; it_close(&s2h);
+            iris_cptr_t s2h = (iris_cptr_t)su2; it_close(&s2h);
             if (it_retype2_at(su2, IRIS_KOBJ_ENDPOINT, S1_SLOT_B, 1u, 0) !=
                 (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "stale untyped"; }
         }
@@ -818,7 +818,7 @@ void test_t255(void) {
     const char *why = "endpoint lifecycle";
     long su = s1_sub_ut(8192);
     if (su < 0) { it_fail("T255", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
 
     if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype"; }
     /* Phase S4 (Step 3): the source is ALREADY a CPtr — derive natively, with
@@ -890,7 +890,7 @@ void test_t256(void) {
     const char *why = "notification lifecycle";
     long su = s1_sub_ut(8192);
     if (su < 0) { it_fail("T256", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
 
     if (it_retype2_at(su, IRIS_KOBJ_NOTIFICATION, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype"; }
     /* Two holders of ONE object: signal through a derived copy, observe
@@ -965,7 +965,7 @@ void test_t257(void) {
     const char *why = "reply lifecycle";
     long su = s1_sub_ut(8192);
     if (su < 0) { it_fail("T257", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
 
     struct it_utq_objects o0, o1;
     struct it_utq_global k0, k1;
@@ -997,8 +997,8 @@ void test_t257(void) {
     /* Caller death while bound: the reply object returns to FREE. */
     if (ok) {
         long ep2 = it_ep_create();
-        handle_id_t cmd = (ep2 >= 0) ? (handle_id_t)ep2 : HANDLE_INVALID;
-        handle_id_t proc = HANDLE_INVALID;
+        iris_cptr_t cmd = (ep2 >= 0) ? (iris_cptr_t)ep2 : IRIS_CPTR_NULL;
+        iris_cptr_t proc = IRIS_CPTR_NULL;
         if (ep2 < 0 || lp_spawn_child(cmd, &proc) < 0) { ok = 0; why = "spawn"; }
         if (ok && it_lp_cmd(cmd, LP_CMD_CALL_BLOCK) != 0) { ok = 0; why = "cmd"; }
         if (ok) {
@@ -1075,7 +1075,7 @@ void test_t258(void) {
     const char *why = "revoke during ipc";
     long su = s1_sub_ut(8192);
     if (su < 0) { it_fail("T258", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
     struct it_utq_objects o0, oz;
     if (!it_utq_o(&o0)) { it_close(&su_h); it_fail("T258", "query"); return; }
 
@@ -1099,8 +1099,8 @@ void test_t258(void) {
      * destroyed (last cap) → the caller wakes CLOSED, exits (S27). */
     if (ok) {
         long ep2 = it_ep_create();
-        handle_id_t cmd = (ep2 >= 0) ? (handle_id_t)ep2 : HANDLE_INVALID;
-        handle_id_t proc = HANDLE_INVALID;
+        iris_cptr_t cmd = (ep2 >= 0) ? (iris_cptr_t)ep2 : IRIS_CPTR_NULL;
+        iris_cptr_t proc = IRIS_CPTR_NULL;
         if (ep2 < 0 || lp_spawn_child(cmd, &proc) < 0) { ok = 0; why = "spawn"; }
         if (ok && it_reply_create_at(S1_SLOT_B) < 0) { ok = 0; why = "reply fixture"; }
         if (ok && it_lp_cmd(cmd, LP_CMD_CALL_BLOCK) != 0) { ok = 0; why = "cmd"; }
@@ -1137,7 +1137,7 @@ void test_t259(void) {
     const char *why = "reuse/stale defense";
     long su = s1_sub_ut(4096);
     if (su < 0) { it_fail("T259", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
 
     struct it_utq_one q0, q1, q2;
     if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype A"; }
@@ -1272,7 +1272,7 @@ void test_t262(void) {
 
     long su = s1_sub_ut(65536);
     if (su < 0) { it_fail("T262", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
 
     struct it_utq_objects o0, oz;
     struct it_utq_global k0, kz;
@@ -1401,7 +1401,7 @@ void test_t267(void) {
 
     long su = s1_sub_ut(8192);
     if (su < 0) { it_fail("T267", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
 
     struct it_utq_taskobj t0, t1;
     struct it_utq_global k0, k1;
@@ -1417,7 +1417,7 @@ void test_t267(void) {
 
     /* Unconfigured SC cannot bind (B2/B3). */
     long self_tcb = ok ? it_own_tcb_derived() : -1;
-    handle_id_t self_h = (self_tcb >= 0) ? (handle_id_t)self_tcb : HANDLE_INVALID;
+    iris_cptr_t self_h = (self_tcb >= 0) ? (iris_cptr_t)self_tcb : IRIS_CPTR_NULL;
     if (ok && self_tcb < 0) { ok = 0; why = "tcb self"; }
     if (ok && it_invoke1((long)S1_SLOT_A, INV_SC_BIND, (long)self_h) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "unconfigured bind allowed";
@@ -1549,7 +1549,7 @@ void test_t283(void) {
      * a retired syscall must write NOTHING at all, not merely stay inside a
      * declared prefix. */
     if (ok) { QABI_RESET();
-        long r = it_sys3(SYS_RESOURCE_INFO, (long)HANDLE_INVALID, buf, 8L);
+        long r = it_sys3(SYS_RESOURCE_INFO, (long)IRIS_CPTR_NULL, buf, 8L);
         if (r != (long)IRIS_ERR_NOT_SUPPORTED || !QABI_CANARY_OK()) { ok = 0; why = "rinfo prefix"; }
     }
 
@@ -1585,7 +1585,7 @@ void test_t284(void) {
     const char *why = "tcb retype";
     long su = s1_sub_ut(65536);
     if (su < 0) { it_fail("T284", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
 
     struct it_utq_taskobj t0, t1, t2;
     struct it_utq_one u1;
@@ -1678,7 +1678,7 @@ void test_t285(void) {
 
     IT_AWAIT(g_t285_ready, 200);
     if (!g_t285_ready || g_t285_tcb < 0) { it_fail("T285", "tcb self"); return; }
-    handle_id_t tcb_h = (handle_id_t)g_t285_tcb;
+    iris_cptr_t tcb_h = (iris_cptr_t)g_t285_tcb;
 
     /* Stage 5 Step 4: thread creation returns a CAPABILITY, not a global
      * thread id — so the id this test tracks across death is read from the
@@ -1723,7 +1723,7 @@ void test_t286(void) {
     const char *why = "tcb churn";
     long su = s1_sub_ut(65536);
     if (su < 0) { it_fail("T286", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
 
     struct it_utq_taskobj t0, t1;
     if (!it_utq_t(&t0)) { it_close(&su_h); it_fail("T286", "query"); return; }
@@ -1779,7 +1779,7 @@ void test_t286(void) {
         long su2 = s1_sub_ut(4096);
         if (su2 < 0) { ok = 0; why = "sub2"; }
         else {
-            handle_id_t su2_h = (handle_id_t)su2;
+            iris_cptr_t su2_h = (iris_cptr_t)su2;
             if (it_retype2_at(su2, IRIS_KOBJ_TCB, S1_SLOT_C, 8u, 0) !=
                 (long)IRIS_ERR_NO_MEMORY) { ok = 0; why = "capacity not refused"; }
             struct it_utq_one u2;
@@ -1832,7 +1832,7 @@ void test_t287(void) {
     if (tid_a < 0) { it_fail("T287", "thread A create"); return; }
     IT_AWAIT(g_t285_ready, 200);
     if (!g_t285_ready || g_t285_tcb < 0) { it_fail("T287", "A tcb self"); return; }
-    handle_id_t a_h = (handle_id_t)g_t285_tcb;
+    iris_cptr_t a_h = (iris_cptr_t)g_t285_tcb;
 
     /* Stage 5 Step 4: creation returns a capability, so A's identity is read
      * from A's own object rather than from the value the creation returned. */
@@ -1849,7 +1849,7 @@ void test_t287(void) {
     if (ok && ia.state != (uint8_t)IT_TASK_TERMINATED) { ok = 0; why = "A never terminated"; }
 
     /* Thread B: must build and RUN while A's terminated object pins backing. */
-    handle_id_t b_h = HANDLE_INVALID;
+    iris_cptr_t b_h = IRIS_CPTR_NULL;
     if (ok) {
         g_t287_ready = 0; g_t287_count = 0; g_t287_tcb = -1;
         uint64_t entry_b = (uint64_t)(uintptr_t)t287_helper;
@@ -1860,7 +1860,7 @@ void test_t287(void) {
         if (ok && (!g_t287_ready || g_t287_tcb < 0)) { ok = 0; why = "B never ran"; }
         uint32_t id_b = 0u;
         if (ok) {
-            b_h = (handle_id_t)g_t287_tcb;
+            b_h = (iris_cptr_t)g_t287_tcb;
             struct iris_tcb_info ib0;
             if (it_invoke1((long)b_h, INV_TCB_GET_INFO, (long)(uintptr_t)&ib0) == 0)
                 id_b = ib0.task_id;
@@ -1941,7 +1941,7 @@ void test_t288(void) {
     const char *why = "cspace mdb";
     long su = s1_sub_ut(65536);
     if (su < 0) { it_fail("T288", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
 
     /* A = endpoint retyped from the sub-untyped (child of the untyped slot).
      * D = a second endpoint: an INDEPENDENT sibling under the same untyped. */
@@ -1963,7 +1963,7 @@ void test_t288(void) {
     if (ok && it_cs_mint(S1_SLOT_A, S1_SLOT_B, RIGHT_SAME_RIGHTS, 0) !=
               (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "occupied not refused"; }
     /* A handle source is refused (CSpace-only authority). */
-    if (ok && it_cs_mint(handle_id_make(2u, 1u), S1_SLOT_B + 5u, RIGHT_SAME_RIGHTS, 0) !=
+    if (ok && it_cs_mint(iris_cptr_beyond_limit(2u, 1u), S1_SLOT_B + 5u, RIGHT_SAME_RIGHTS, 0) !=
               (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "handle source accepted"; }
 
     /* Revoke A's subtree: B and C die; A survives; D and E untouched. */
@@ -1993,7 +1993,7 @@ void test_t289(void) {
     const char *why = "cross-process revoke";
     long su = s1_sub_ut(65536);
     if (su < 0) { it_fail("T289", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
 
     /* A = endpoint in OUR CSpace (child of the untyped slot). */
     if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype A"; }
@@ -2007,7 +2007,7 @@ void test_t289(void) {
         ok = 0; why = "cross slot not filled";
     }
     /* A handle source is refused even for the cross-process path. */
-    if (ok && it_cs_mint_into(IRIS_CPTR_TEST_PROC, T289_TSLOT + 1u, handle_id_make(3u, 1u),
+    if (ok && it_cs_mint_into(IRIS_CPTR_TEST_PROC, T289_TSLOT + 1u, iris_cptr_beyond_limit(3u, 1u),
                               RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "cross handle source accepted";
     }
@@ -2036,7 +2036,7 @@ void test_t290(void) {
     const char *why = "untyped ancestor";
     long su = s1_sub_ut(65536);
     if (su < 0) { it_fail("T290", "sub untyped"); return; }
-    handle_id_t su_h = (handle_id_t)su;
+    iris_cptr_t su_h = (iris_cptr_t)su;
 
     /* Carve a SECOND untyped as a CSpace slot (child of su's slot), then
      * retype an endpoint FROM that slot: the endpoint is an MDB child of the
@@ -2078,7 +2078,7 @@ void test_t290(void) {
  *     because naming the slot is the authority;
  * (3) an EMPTY slot is NOT_FOUND, indistinguishable from a never-assigned
  *     one: the caller cannot enumerate its own CSpace by scanning;
- * (4) it is CPtr-only — CPTR_NULL and a handle value are INVALID_ARG with no
+ * (4) it is CPtr-only — IRIS_CPTR_NULL and a handle value are INVALID_ARG with no
  *     fallback to the handle table (charter §3.6/§3.7).
  * Invariant: A6 (no cross-namespace fallback), A3. */
 void test_t292(void) {
@@ -2128,13 +2128,13 @@ void test_t292(void) {
      * used to be a REAL handle from the materialising factory; with the
      * namespace gone the encoding is what is left to reject, and that is the
      * property worth pinning. */
-    if (ok && it_invoke0((long)(HANDLE_TAG | 0x401u), INV_CAP_IDENTIFY)
+    if (ok && it_invoke0((long)(IRIS_CPTR_LIMIT | 0x401u), INV_CAP_IDENTIFY)
               != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "tagged value accepted";
     }
 
     {
-        handle_id_t eh = (handle_id_t)ep, nh = (handle_id_t)no;
+        iris_cptr_t eh = (iris_cptr_t)ep, nh = (iris_cptr_t)no;
         it_close(&eh); it_close(&nh);
     }
     if (ok) it_pass("T292"); else it_fail("T292", why);
@@ -2182,20 +2182,20 @@ void test_t293(void) {
         ok = 0; why = "null b accepted";
     }
     /* Same rule on the second argument: a tagged value is not a CPtr. */
-    if (ok && it_invoke1(a, INV_CAP_SAME_OBJECT, (long)(HANDLE_TAG | 0x401u))
+    if (ok && it_invoke1(a, INV_CAP_SAME_OBJECT, (long)(IRIS_CPTR_LIMIT | 0x401u))
               != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "tagged value accepted";
     }
 
     {
-        handle_id_t ah = (handle_id_t)a, bh = (handle_id_t)b;
+        iris_cptr_t ah = (iris_cptr_t)a, bh = (iris_cptr_t)b;
         it_close(&ah); it_close(&bh);
     }
     if (ok) it_pass("T293"); else it_fail("T293", why);
 }
 
-static handle_id_t  g_t294_cmd_ep = HANDLE_INVALID;
-static handle_id_t  g_t294_cap    = HANDLE_INVALID;
+static iris_cptr_t  g_t294_cmd_ep = IRIS_CPTR_NULL;
+static iris_cptr_t  g_t294_cap    = IRIS_CPTR_NULL;
 static volatile int g_t294_s1 = 999, g_t294_done = 0;
 static uint8_t      g_t294_stack[8192];
 
@@ -2218,15 +2218,15 @@ void test_t294(void) {
     long n   = it_notify_create_slot();   /* the cap being transferred */
     long cmd = it_ep_create_slot();       /* the transfer channel */
     if (n < 0 || cmd < 0) { it_fail("T294", "create"); return; }
-    handle_id_t n_h = (handle_id_t)n;
-    g_t294_cmd_ep = (handle_id_t)cmd;
+    iris_cptr_t n_h = (iris_cptr_t)n;
+    g_t294_cmd_ep = (iris_cptr_t)cmd;
 
     long c = it_xfer_slot(n_h, IT_XFER_SLOT_C, RIGHT_WRITE);
     if (c < 0) {
         it_close(&n_h); it_close(&g_t294_cmd_ep);
         it_fail("T294", "xfer slot"); return;
     }
-    g_t294_cap = (handle_id_t)c;
+    g_t294_cap = (iris_cptr_t)c;
 
     uint64_t entry = (uint64_t)(uintptr_t)t294_sender;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t294_stack + sizeof(g_t294_stack))) & ~0xFULL;
@@ -2371,7 +2371,7 @@ void test_t297(void) {
      *
      * What survives is that both arguments must be capabilities you can
      * actually resolve, which the two probes above (wrong type each way) and
-     * the one below (CPTR_NULL) cover.
+     * the one below (IRIS_CPTR_NULL) cover.
      */
     if (ok && it_invoke2(tcb, INV_TCB_CONFIGURE, 0, IT_VS)
               != (long)IRIS_ERR_INVALID_ARG) {

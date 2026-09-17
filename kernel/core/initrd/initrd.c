@@ -68,6 +68,12 @@ extern const uint8_t _binary_services_lifecycle_probe_lifecycle_probe_elf_end[];
 
 extern const uint8_t _binary_services_timer_timer_elf_start[];
 extern const uint8_t _binary_services_timer_timer_elf_end[];
+
+extern const uint8_t _binary_services_pci_pci_elf_start[];
+extern const uint8_t _binary_services_pci_pci_elf_end[];
+
+extern const uint8_t _binary_services_blk_blk_elf_start[];
+extern const uint8_t _binary_services_blk_blk_elf_end[];
 extern const uint8_t _binary_services_pager_pager_elf_start[];
 extern const uint8_t _binary_services_pager_pager_elf_end[];
 
@@ -143,6 +149,17 @@ static const struct initrd_entry g_initrd[] = {
      * every index below is a compile-time agreement with ring 3. */
     { _binary_services_timer_timer_elf_start,
       _binary_services_timer_timer_elf_end  },
+    /* [17] pci — the ring-3 PCI BUS SERVICE (Stage 10).  The kernel does not
+     * enumerate PCI and never will; this holds the configuration ports and the
+     * PCI-hole device Untyped, so a driver can be handed its own device's
+     * register window without being handed the bus. */
+    { _binary_services_pci_pci_elf_start,
+      _binary_services_pci_pci_elf_end  },
+    /* [18] blk — the ring-3 AHCI DISK SERVICE (Stage 10).  It asks `pci` for
+     * its controller, contains the controller's DMA behind a remapping unit
+     * when the machine has one, and reads sectors. */
+    { _binary_services_blk_blk_elf_start,
+      _binary_services_blk_blk_elf_end  },
 };
 
 #define INITRD_ENTRY_COUNT \

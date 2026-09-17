@@ -88,7 +88,7 @@ void test_t299(void) {
      * They asserted that its address-space argument was REQUIRED and was a
      * capability of a specific type — real claims about a syscall that no
      * longer exists.  A thread is given its address space by
-     * SYS_TCB_CONFIGURE, whose equivalents (CPTR_NULL refused, a wrong type
+     * SYS_TCB_CONFIGURE, whose equivalents (IRIS_CPTR_NULL refused, a wrong type
      * refused either way round) are T297's.
      */
 
@@ -183,7 +183,7 @@ void test_t299(void) {
      * that address space — and every page table in it, each a child entry on
      * the budget — alive past the death.  Naming the address space to map into
      * it (Stage 7 Step 9) means the caller must also let go of it. */
-    if (t299_vs >= 0) { handle_id_t h = (handle_id_t)t299_vs; it_close(&h); }
+    if (t299_vs >= 0) { iris_cptr_t h = (iris_cptr_t)t299_vs; it_close(&h); }
     if (ok && it_invoke2(pool, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&after) != 0) {
         ok = 0; why = "info2";
     }
@@ -689,12 +689,12 @@ void test_t305(void) {
      * unparented capabilities would show up as a count that does not come
      * back down. */
     {
-        handle_id_t cmd = HANDLE_INVALID, proc = HANDLE_INVALID;
+        iris_cptr_t cmd = IRIS_CPTR_NULL, proc = IRIS_CPTR_NULL;
         long ep = it_ep_create();
         if (ep < 0) { ok = 0; why = "ep"; }
         else {
-            cmd = (handle_id_t)ep;
-            if (lp_spawn_child(cmd, &proc) < 0 || proc == HANDLE_INVALID) {
+            cmd = (iris_cptr_t)ep;
+            if (lp_spawn_child(cmd, &proc) < 0 || proc == IRIS_CPTR_NULL) {
                 ok = 0; why = "spawn";
             } else {
                 (void)it_kill((long)proc);
@@ -710,7 +710,7 @@ void test_t305(void) {
             long d = it_cs_reduce(n, RIGHT_READ);
             if (d < 0) { ok = 0; why = "mint"; }
             else if (it_invoke0(n, INV_CSPACE_REVOKE) < 0) { ok = 0; why = "revoke"; }
-            handle_id_t nh = (handle_id_t)n; it_close(&nh);
+            iris_cptr_t nh = (iris_cptr_t)n; it_close(&nh);
         }
     }
     it_quiesce_reaper();
@@ -1260,7 +1260,7 @@ void test_t310(void) {
         ok = 0; why = "blocking wait did not re-execute";
     }
 
-    { handle_id_t h = (handle_id_t)n; it_close(&h); }
+    { iris_cptr_t h = (iris_cptr_t)n; it_close(&h); }
     it_quiesce_reaper();
     if (ok) it_pass("T310"); else it_fail("T310", why);
 }
@@ -2143,7 +2143,7 @@ void test_t320(void) {
 
     /* VSpace resolver — a map target wants RIGHT_WRITE on a KVSpace. */
     long fr = ok ? it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096) : -1;
-    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    iris_cptr_t fr_h = (fr >= 0) ? (iris_cptr_t)fr : IRIS_CPTR_NULL;
     if (ok && fr < 0) { ok = 0; why = "frame"; }
     if (ok && it_invoke(fr, INV_FRAME_MAP, wrong, (long)T26_SELF_VA, 0L)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "vspace slot"; }
@@ -2156,9 +2156,9 @@ void test_t320(void) {
     /* Endpoint resolver — EP_SEND wants RIGHT_WRITE on a KEndpoint.  A
      * READ-only derivation of a NOTIFICATION is double-wrong the same way. */
     long n = ok ? it_notify_create() : -1;
-    handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+    iris_cptr_t n_h = (n >= 0) ? (iris_cptr_t)n : IRIS_CPTR_NULL;
     long n_ro = (n >= 0) ? it_cs_reduce(n, RIGHT_READ) : -1;
-    handle_id_t n_ro_h = (n_ro >= 0) ? (handle_id_t)n_ro : HANDLE_INVALID;
+    iris_cptr_t n_ro_h = (n_ro >= 0) ? (iris_cptr_t)n_ro : IRIS_CPTR_NULL;
     if (ok && (n < 0 || n_ro < 0)) { ok = 0; why = "notif"; }
     if (ok) {
         struct iris_msg m;
@@ -2172,7 +2172,7 @@ void test_t320(void) {
     /* And the ordering does not swallow a real rights failure: the RIGHT type
      * without the right is still ACCESS_DENIED. */
     long fr_ro = ok ? it_cs_reduce(fr, RIGHT_READ) : -1;
-    handle_id_t fr_ro_h = (fr_ro >= 0) ? (handle_id_t)fr_ro : HANDLE_INVALID;
+    iris_cptr_t fr_ro_h = (fr_ro >= 0) ? (iris_cptr_t)fr_ro : IRIS_CPTR_NULL;
     if (ok && fr_ro < 0) { ok = 0; why = "frame ro"; }
     if (ok && it_invoke(fr_ro, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 1L)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights no longer checked"; }

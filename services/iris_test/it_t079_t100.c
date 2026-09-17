@@ -27,7 +27,7 @@ void test_t079(void) {
 
     long vmo = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096);
     if (vmo < 0) { it_fail("T079", "vmo create"); return; }
-    handle_id_t vmo_h = (handle_id_t)vmo;
+    iris_cptr_t vmo_h = (iris_cptr_t)vmo;
 
     int ok = 1;
     const char *why = "map by cptr";
@@ -72,7 +72,7 @@ void test_t080(void) {
 
     long vmo = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, T080_VMO_SIZE);
     if (vmo < 0) { it_fail("T080", "frame create"); return; }
-    handle_id_t vmo_h = (handle_id_t)vmo;
+    iris_cptr_t vmo_h = (iris_cptr_t)vmo;
 
     int ok = 1;
     const char *why = "frame family by cptr";
@@ -91,10 +91,10 @@ void test_t080(void) {
     /* SHARE/MAP_INTO target: a lifecycle_probe child (blocks in EP_RECV). */
     long ep = it_ep_create();
     if (ep < 0) { it_close(&vmo_h);                  it_fail("T080", "ep create"); return; }
-    handle_id_t cmd_ep_h = (handle_id_t)ep;
-    handle_id_t proc_h   = HANDLE_INVALID;
+    iris_cptr_t cmd_ep_h = (iris_cptr_t)ep;
+    iris_cptr_t proc_h   = IRIS_CPTR_NULL;
     it_child_keep_vspace();   /* T080 maps into the child */
-    if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+    if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == IRIS_CPTR_NULL) {
         it_close(&cmd_ep_h); it_close(&vmo_h);        it_fail("T080", "spawn"); return;
     }
 
@@ -141,10 +141,10 @@ void test_t080(void) {
 void test_t081(void) {
     long ep = it_ep_create();
     if (ep < 0) { it_fail("T081", "ep create"); return; }
-    handle_id_t cmd_ep_h = (handle_id_t)ep;
+    iris_cptr_t cmd_ep_h = (iris_cptr_t)ep;
 
-    handle_id_t proc_h = HANDLE_INVALID;
-    if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+    iris_cptr_t proc_h = IRIS_CPTR_NULL;
+    if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == IRIS_CPTR_NULL) {
         it_close(&cmd_ep_h);
         it_fail("T081", "spawn"); return;
     }
@@ -212,8 +212,8 @@ void test_t081(void) {
 
     /* WATCH by CPtr, then KILL by CPtr; the watch must fire. */
     long n = it_notify_create();
-    handle_id_t watch_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
-    if (watch_h == HANDLE_INVALID) { ok = 0; why = "notify"; }
+    iris_cptr_t watch_h = (n >= 0) ? (iris_cptr_t)n : IRIS_CPTR_NULL;
+    if (watch_h == IRIS_CPTR_NULL) { ok = 0; why = "notify"; }
     if (ok && it_invoke2(it_child_tcb(proc_h), INV_TCB_WATCH, (long)watch_h, 1) != 0)
         { ok = 0; why = "watch"; }
     if (ok && it_invoke0(T081_SLOT_PROC, INV_TCB_EXIT) != 0) { ok = 0; why = "kill"; }
@@ -243,19 +243,19 @@ void test_t082(void) {
     const char *why = "frame ops proc by cptr";
     long vmo = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096);
     if (vmo < 0) { it_fail("T082", "frame create"); return; }
-    handle_id_t vmo_h = (handle_id_t)vmo;
+    iris_cptr_t vmo_h = (iris_cptr_t)vmo;
 
     long ep = it_ep_create();
     if (ep < 0) { it_close(&vmo_h); it_fail("T082", "ep create"); return; }
-    handle_id_t cmd_ep_h = (handle_id_t)ep;
+    iris_cptr_t cmd_ep_h = (iris_cptr_t)ep;
 
-    handle_id_t proc_h = HANDLE_INVALID;
+    iris_cptr_t proc_h = IRIS_CPTR_NULL;
     /* Stage 7 Step 9: keep the child's ROOT CSPACE.  Delegating into a child
      * names the CSpace, so a spawner that intends to keep delegating keeps it
      * — there is no longer a way to reach it by naming the process instead.
      * Step 15: and its ADDRESS SPACE, for the same reason, one object over. */
     it_child_keep_vspace();
-    if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+    if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == IRIS_CPTR_NULL) {
         it_close(&cmd_ep_h); it_close(&vmo_h);
         it_fail("T082", "spawn"); return;
     }
@@ -292,7 +292,7 @@ void test_t082(void) {
         if (ok && vs_ro < 0) ok = 0;
         if (ok && it_invoke(T082_SLOT_VMO, INV_FRAME_MAP, vs_ro, (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_ACCESS_DENIED)
             ok = 0;
-        if (vs_ro >= 0) { handle_id_t h = (handle_id_t)vs_ro; it_close(&h); }
+        if (vs_ro >= 0) { iris_cptr_t h = (iris_cptr_t)vs_ro; it_close(&h); }
     }
     if (ok && it_invoke(T082_SLOT_VMO, INV_FRAME_MAP, (long)IRIS_CPTR_TEST_PROC, (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_WRONG_TYPE)
         { ok = 0; why = "process as vspace"; }
@@ -341,7 +341,7 @@ void test_t083(void) {
 
     IT_AWAIT(g_t083_ready, 200);
     if (!g_t083_ready || g_t083_tcb < 0) { it_fail("T083", "tcb self"); return; }
-    handle_id_t tcb_h = (handle_id_t)g_t083_tcb;
+    iris_cptr_t tcb_h = (iris_cptr_t)g_t083_tcb;
 
     int ok = 1;
 
@@ -398,7 +398,7 @@ void test_t083(void) {
     if (ok && it_sys0(SYS_SC_CREATE) != (long)IRIS_ERR_NOT_SUPPORTED) ok = 0;
     long sc = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
     if (sc < 0) ok = 0;
-    handle_id_t sc_h = (sc >= 0) ? (handle_id_t)sc : HANDLE_INVALID;
+    iris_cptr_t sc_h = (sc >= 0) ? (iris_cptr_t)sc : IRIS_CPTR_NULL;
 
     if (ok && it_invoke2((long)sc_h, INV_CSPACE_MINT, IT_MINT_SELF(T083_SLOT_SC), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
         ok = 0;
@@ -432,14 +432,14 @@ void test_t083(void) {
     }
 
     it_close(&sc_h);
-    { handle_id_t th = tcb_h; it_close(&th); }
+    { iris_cptr_t th = tcb_h; it_close(&th); }
 
     if (ok) it_pass("T083"); else it_fail("T083", "tcb/sc by cptr");
 }
 
-static handle_id_t  g_t084_cmd_ep = HANDLE_INVALID;
-static handle_id_t  g_t084_cap1   = HANDLE_INVALID;
-static handle_id_t  g_t084_cap2   = HANDLE_INVALID;
+static iris_cptr_t  g_t084_cmd_ep = IRIS_CPTR_NULL;
+static iris_cptr_t  g_t084_cap1   = IRIS_CPTR_NULL;
+static iris_cptr_t  g_t084_cap2   = IRIS_CPTR_NULL;
 static volatile int g_t084_s1 = 999, g_t084_s2 = 999, g_t084_done = 0;
 static uint8_t      g_t084_stack[8192];
 
@@ -466,8 +466,8 @@ void test_t084(void) {
     long epx = it_ep_create();   /* the cap being transferred */
     long cmd = it_ep_create();   /* the transfer channel */
     if (epx < 0 || cmd < 0) { it_fail("T084", "ep create"); return; }
-    handle_id_t epx_h = (handle_id_t)epx;
-    g_t084_cmd_ep = (handle_id_t)cmd;
+    iris_cptr_t epx_h = (iris_cptr_t)epx;
+    g_t084_cmd_ep = (iris_cptr_t)cmd;
 
     /* Phase S4 (Step 2): transfer sources are CSpace SLOTS, not handles.
      * EP_SEND consumes the slot exactly as it used to consume the dup. */
@@ -477,8 +477,8 @@ void test_t084(void) {
         it_close(&epx_h); it_close(&g_t084_cmd_ep);
         it_fail("T084", "xfer slot"); return;
     }
-    g_t084_cap1 = (handle_id_t)c1;
-    g_t084_cap2 = (handle_id_t)c2;
+    g_t084_cap1 = (iris_cptr_t)c1;
+    g_t084_cap2 = (iris_cptr_t)c2;
 
     uint64_t entry = (uint64_t)(uintptr_t)t084_sender;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t084_stack + sizeof(g_t084_stack))) & ~0xFULL;
@@ -522,8 +522,8 @@ void test_t084(void) {
     if (ok) it_pass("T084"); else it_fail("T084", "recv-slot basic");
 }
 
-static handle_id_t  g_t085_cmd_ep = HANDLE_INVALID;
-static handle_id_t  g_t085_cap    = HANDLE_INVALID;
+static iris_cptr_t  g_t085_cmd_ep = IRIS_CPTR_NULL;
+static iris_cptr_t  g_t085_cap    = IRIS_CPTR_NULL;
 static volatile int g_t085_s1 = 999, g_t085_done = 0;
 static uint8_t      g_t085_stack[8192];
 
@@ -545,15 +545,15 @@ void test_t085(void) {
     long n   = it_notify_create();
     long cmd = it_ep_create();
     if (n < 0 || cmd < 0) { it_fail("T085", "create"); return; }
-    handle_id_t n_h = (handle_id_t)n;
-    g_t085_cmd_ep = (handle_id_t)cmd;
+    iris_cptr_t n_h = (iris_cptr_t)n;
+    g_t085_cmd_ep = (iris_cptr_t)cmd;
 
     long c = it_xfer_dup( n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
     if (c < 0) {
         it_close(&n_h); it_close(&g_t085_cmd_ep);
         it_fail("T085", "dup"); return;
     }
-    g_t085_cap = (handle_id_t)c;
+    g_t085_cap = (iris_cptr_t)c;
 
     uint64_t entry = (uint64_t)(uintptr_t)t085_sender;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t085_stack + sizeof(g_t085_stack))) & ~0xFULL;
@@ -595,8 +595,8 @@ void test_t085(void) {
     if (ok) it_pass("T085"); else it_fail("T085", "recv-slot rights");
 }
 
-static handle_id_t  g_t086_cmd_ep = HANDLE_INVALID;
-static handle_id_t  g_t086_cap    = HANDLE_INVALID;
+static iris_cptr_t  g_t086_cmd_ep = IRIS_CPTR_NULL;
+static iris_cptr_t  g_t086_cap    = IRIS_CPTR_NULL;
 static volatile int g_t086_s1 = 999, g_t086_done = 0;
 static uint8_t      g_t086_stack[8192];
 
@@ -618,15 +618,15 @@ void test_t086(void) {
     long n   = it_notify_create();
     long cmd = it_ep_create();
     if (n < 0 || cmd < 0) { it_fail("T086", "create"); return; }
-    handle_id_t n_h = (handle_id_t)n;
-    g_t086_cmd_ep = (handle_id_t)cmd;
+    iris_cptr_t n_h = (iris_cptr_t)n;
+    g_t086_cmd_ep = (iris_cptr_t)cmd;
 
     long c = it_xfer_dup( n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
     if (c < 0) {
         it_close(&n_h); it_close(&g_t086_cmd_ep);
         it_fail("T086", "dup"); return;
     }
-    g_t086_cap = (handle_id_t)c;
+    g_t086_cap = (iris_cptr_t)c;
 
     uint64_t entry = (uint64_t)(uintptr_t)t086_sender;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t086_stack + sizeof(g_t086_stack))) & ~0xFULL;
@@ -686,8 +686,8 @@ void test_t086(void) {
     if (ok) it_pass("T086"); else it_fail("T086", "recv-slot atomicity");
 }
 
-static handle_id_t       g_t087_ep   = HANDLE_INVALID;
-static handle_id_t       g_t087_capB = HANDLE_INVALID;
+static iris_cptr_t       g_t087_ep   = IRIS_CPTR_NULL;
+static iris_cptr_t       g_t087_capB = IRIS_CPTR_NULL;
 static volatile uint32_t g_t087_got_cap = 0, g_t087_reply_h = 0;
 static volatile int      g_t087_sig = 999, g_t087_r1 = 999, g_t087_r2 = 999;
 static volatile int      g_t087_done = 0;
@@ -733,8 +733,8 @@ void test_t087(void) {
     long ep = it_ep_create();
     if (nA < 0 || nB < 0 || ep < 0) { it_fail("T087", "create"); return; }
     if (it_reply_create_at(94) < 0) { it_fail("T087", "reply create"); return; }
-    handle_id_t nA_h = (handle_id_t)nA, nB_h = (handle_id_t)nB;
-    g_t087_ep = (handle_id_t)ep;
+    iris_cptr_t nA_h = (iris_cptr_t)nA, nB_h = (iris_cptr_t)nB;
+    g_t087_ep = (iris_cptr_t)ep;
 
     long cA = it_xfer_dup( nA, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
     long cB = it_xfer_dup( nB, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
@@ -742,7 +742,7 @@ void test_t087(void) {
         it_close(&nA_h); it_close(&nB_h); it_close(&g_t087_ep);
         it_fail("T087", "dup"); return;
     }
-    g_t087_capB = (handle_id_t)cB;
+    g_t087_capB = (iris_cptr_t)cB;
 
     uint64_t entry = (uint64_t)(uintptr_t)t087_server;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t087_stack + sizeof(g_t087_stack))) & ~0xFULL;
@@ -797,8 +797,8 @@ void test_t087(void) {
     if (ok) it_pass("T087"); else it_fail("T087", "recv-slot ep_call");
 }
 
-static handle_id_t       g_t088_ep  = HANDLE_INVALID;
-static handle_id_t       g_t088_ep2 = HANDLE_INVALID;
+static iris_cptr_t       g_t088_ep  = IRIS_CPTR_NULL;
+static iris_cptr_t       g_t088_ep2 = IRIS_CPTR_NULL;
 static long              g_t088_r1_tcb = -1;
 static volatile int      g_t088_r1_ready = 0;
 static volatile uint32_t g_t088_r2_got = 0;
@@ -852,9 +852,9 @@ void test_t088(void) {
     long ep  = it_ep_create();
     long ep2 = it_ep_create();
     if (n < 0 || ep < 0 || ep2 < 0) { it_fail("T088", "create"); return; }
-    handle_id_t n_h = (handle_id_t)n;
-    g_t088_ep  = (handle_id_t)ep;
-    g_t088_ep2 = (handle_id_t)ep2;
+    iris_cptr_t n_h = (iris_cptr_t)n;
+    g_t088_ep  = (iris_cptr_t)ep;
+    g_t088_ep2 = (iris_cptr_t)ep2;
 
     int ok = 1;
 
@@ -961,7 +961,7 @@ long it_unregister_id(uint32_t id) {
 void test_t089(void) {
     long e = it_ep_create();
     if (e < 0) { it_fail("T089", "ep create"); return; }
-    handle_id_t ep = (handle_id_t)e;
+    iris_cptr_t ep = (iris_cptr_t)e;
     int ok = 1;
 
     long id = it_register_ep("t89.svc", ep);
@@ -1009,7 +1009,7 @@ void test_t089(void) {
 void test_t090(void) {
     long e = it_ep_create();
     if (e < 0) { it_fail("T090", "ep create"); return; }
-    handle_id_t ep = (handle_id_t)e;
+    iris_cptr_t ep = (iris_cptr_t)e;
     int ok = 1;
 
     long id = it_register_ep("t90.svc", ep);
@@ -1332,7 +1332,7 @@ static long it_tcb_leaf_alloc(void) {
             return (long)IRIS_ERR_NO_MEMORY;
         g_it_tcb_ready = 1;
     }
-    /* Leaf 0 is CPTR_NULL and refuses publication — start at 1. */
+    /* Leaf 0 is IRIS_CPTR_NULL and refuses publication — start at 1. */
     uint32_t span  = IT_TCB_SLOTS - 1u;
     uint32_t start = __atomic_fetch_add(&g_it_tcb_next, 1u, __ATOMIC_RELAXED);
     for (uint32_t i = 0; i < span; i++) {
@@ -1462,7 +1462,7 @@ int it_sched_ext2(uint32_t w2[4]) {
 void test_t093(void) {
     long e = it_ep_create();
     if (e < 0) { it_fail("T093", "ep create"); return; }
-    handle_id_t ep = (handle_id_t)e;
+    iris_cptr_t ep = (iris_cptr_t)e;
     int ok = 1;
     long ids[8];
     char name[6] = { 't', '9', '3', '.', 'a', '\0' };
@@ -1506,7 +1506,7 @@ void test_t093(void) {
     if (ok) it_pass("T093"); else it_fail("T093", "recv-slot pool stress");
 }
 
-static handle_id_t       g_t094_ep = HANDLE_INVALID;
+static iris_cptr_t       g_t094_ep = IRIS_CPTR_NULL;
 static volatile uint32_t g_t094_got = 0;
 static volatile int      g_t094_ready = 0, g_t094_done = 0;
 static uint8_t           g_t094_stack[8192];
@@ -1533,8 +1533,8 @@ void test_t094(void) {
     const long selfp = (it_invoke0((long)IRIS_CPTR_TEST_PROC, INV_CAP_IDENTIFY) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
     if (nA < 0 || nB < 0 || ep < 0 || selfp < 0) { it_fail("T094", "create"); return; }
-    handle_id_t nA_h = (handle_id_t)nA, nB_h = (handle_id_t)nB;
-    g_t094_ep = (handle_id_t)ep;
+    iris_cptr_t nA_h = (iris_cptr_t)nA, nB_h = (iris_cptr_t)nB;
+    g_t094_ep = (iris_cptr_t)ep;
     int ok = 1;
     const char *why = "toctou fallback";
 
@@ -1587,7 +1587,7 @@ void test_t094(void) {
             if (it_invoke1(T094_SLOT, INV_CAP_SAME_OBJECT, nB) != 1) {
                 ok = 0; why = "slot object changed";
             }
-            handle_id_t r = (handle_id_t)rh;
+            iris_cptr_t r = (iris_cptr_t)rh;
             it_close(&r);
         }
     }
@@ -1713,9 +1713,9 @@ void test_t096(void) {
 void test_t097(void) {
     long ep = it_ep_create();
     if (ep < 0) { it_fail("T097", "ep create"); return; }
-    handle_id_t cmd_ep_h = (handle_id_t)ep;
-    handle_id_t proc_h = HANDLE_INVALID;
-    if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+    iris_cptr_t cmd_ep_h = (iris_cptr_t)ep;
+    iris_cptr_t proc_h = IRIS_CPTR_NULL;
+    if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == IRIS_CPTR_NULL) {
         it_close(&cmd_ep_h);
         it_fail("T097", "spawn"); return;
     }
@@ -1725,7 +1725,7 @@ void test_t097(void) {
         it_close(&proc_h); it_close(&cmd_ep_h);
         it_fail("T097", "vmo create"); return;
     }
-    handle_id_t vmo_h = (handle_id_t)vmo;
+    iris_cptr_t vmo_h = (iris_cptr_t)vmo;
     int ok = 1;
     const char *why = "canonical placement";
 
@@ -1745,7 +1745,7 @@ void test_t097(void) {
         else {
             if (it_invoke2(ro, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT2), (long)RIGHT_WRITE) !=
                 (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "escalation"; }
-            handle_id_t roh = (handle_id_t)ro;
+            iris_cptr_t roh = (iris_cptr_t)ro;
             it_close(&roh);
         }
     }
@@ -1790,7 +1790,7 @@ void test_t097(void) {
         ok = 0; why = "dead dest";
     }
 
-    if (!ok && proc_h != HANDLE_INVALID)
+    if (!ok && proc_h != IRIS_CPTR_NULL)
         (void)it_kill((long)proc_h);
     it_close(&vmo_h);
     it_close(&proc_h);
@@ -1812,9 +1812,9 @@ void test_t097(void) {
 void test_t098(void) {
     long ep = it_ep_create();
     if (ep < 0) { it_fail("T098", "ep create"); return; }
-    handle_id_t cmd_ep_h = (handle_id_t)ep;
-    handle_id_t proc_h = HANDLE_INVALID;
-    if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+    iris_cptr_t cmd_ep_h = (iris_cptr_t)ep;
+    iris_cptr_t proc_h = IRIS_CPTR_NULL;
+    if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == IRIS_CPTR_NULL) {
         it_close(&cmd_ep_h);
         it_fail("T098", "spawn"); return;
     }
@@ -1824,7 +1824,7 @@ void test_t098(void) {
         it_close(&proc_h); it_close(&cmd_ep_h);
         it_fail("T098", "vmo create"); return;
     }
-    handle_id_t vmo_h = (handle_id_t)vmo;
+    iris_cptr_t vmo_h = (iris_cptr_t)vmo;
     int ok = 1;
     const char *why = "vmo share cspace";
 
@@ -1839,7 +1839,7 @@ void test_t098(void) {
             if (it_invoke2(ro, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT2), (long)RIGHT_READ) != (long)IRIS_ERR_ACCESS_DENIED) {
                 ok = 0; why = "mint no-dup";
             }
-            handle_id_t roh = (handle_id_t)ro;
+            iris_cptr_t roh = (iris_cptr_t)ro;
             it_close(&roh);
         }
     }
@@ -1851,7 +1851,7 @@ void test_t098(void) {
             if (it_invoke2(rd, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT2), (long)RIGHT_MANAGE) >= 0) {
                 ok = 0; why = "mint disjoint";
             }
-            handle_id_t rdh = (handle_id_t)rd;
+            iris_cptr_t rdh = (iris_cptr_t)rd;
             it_close(&rdh);
         }
     }
@@ -1868,7 +1868,7 @@ void test_t098(void) {
         if (it_invoke0(child_ep, INV_CAP_IDENTIFY) >= 0) { ok = 0; why = "dead dest"; }
     }
 
-    if (!ok && proc_h != HANDLE_INVALID)
+    if (!ok && proc_h != IRIS_CPTR_NULL)
         (void)it_kill((long)proc_h);
     it_close(&vmo_h);
     it_close(&proc_h);
@@ -1877,7 +1877,7 @@ void test_t098(void) {
 }
 
 /* Command a child into receive-slot mode (second recv declares `slot`). */
-long it_lp_cmd_rslot(handle_id_t cmd_ep_h, uint32_t slot) {
+long it_lp_cmd_rslot(iris_cptr_t cmd_ep_h, uint32_t slot) {
     struct iris_msg m;
     iris_msg_zero(&m);
     m.label      = LP_CMD_RSLOT_RECV;
@@ -1888,7 +1888,7 @@ long it_lp_cmd_rslot(handle_id_t cmd_ep_h, uint32_t slot) {
 
 /* Transfer a WRITE|TRANSFER dup of `notif` to the child (blocks until the
  * child's declared recv rendezvouses — natural synchronization). */
-long it_lp_send_cap(handle_id_t cmd_ep_h, long notif) {
+long it_lp_send_cap(iris_cptr_t cmd_ep_h, long notif) {
     long d = it_xfer_dup( notif,
                      (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
     if (d < 0) return d;
@@ -1901,7 +1901,7 @@ long it_lp_send_cap(handle_id_t cmd_ep_h, long notif) {
     it_xfer_release(d);
     return r;
 }
-long it_lp_cmd(handle_id_t cmd_ep_h, uint32_t label) {
+long it_lp_cmd(iris_cptr_t cmd_ep_h, uint32_t label) {
     struct iris_msg m;
     iris_msg_zero(&m);
     m.label = label;
@@ -1912,12 +1912,12 @@ long it_lp_cmd(handle_id_t cmd_ep_h, uint32_t label) {
 /* Stage 7 Step 10: wait on the THREAD the child was started with, which the
  * child table kept.  A child the suite did not record has no thread to watch
  * and says so rather than falling back to the process form. */
-long it_lp_wait_exit(handle_id_t proc_h) {
+long it_lp_wait_exit(iris_cptr_t proc_h) {
     long tcb = it_child_tcb(proc_h);
     if (!tcb) return -1;
     long n = it_notify_create();
     if (n < 0) return -1;
-    handle_id_t n_h = (handle_id_t)n;
+    iris_cptr_t n_h = (iris_cptr_t)n;
     long ec = -1;
     if (it_invoke2(tcb, INV_TCB_WATCH, n, 1) == 0) {
         uint64_t bits = 0;
@@ -1945,8 +1945,8 @@ void test_t099(void) {
     for (int i = 0; ok && i < 3; i++) {
         long ep = it_ep_create_slot();
         long n  = it_notify_create_slot();
-        handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
-        handle_id_t proc_h = HANDLE_INVALID;
+        iris_cptr_t ep_h = (iris_cptr_t)ep, n_h = (iris_cptr_t)n;
+        iris_cptr_t proc_h = IRIS_CPTR_NULL;
         if (ep < 0 || n < 0 ||
             lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; }
         if (ok && it_lp_cmd_rslot(ep_h, T099_CHILD_SLOT) != 0) {
@@ -1971,8 +1971,8 @@ void test_t099(void) {
     if (ok) {
         long ep = it_ep_create_slot();
         long n2 = it_notify_create_slot();
-        handle_id_t ep_h = (handle_id_t)ep, n2_h = (handle_id_t)n2;
-        handle_id_t proc_h = HANDLE_INVALID;
+        iris_cptr_t ep_h = (iris_cptr_t)ep, n2_h = (iris_cptr_t)n2;
+        iris_cptr_t proc_h = IRIS_CPTR_NULL;
         if (ep < 0 || n2 < 0 ||
             lp_spawn_child_cn(1u, ep_h, &proc_h) < 0) { ok = 0; why = "spawn occ"; }
         if (ok && it_invoke2(n2, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), (long)T099_CHILD_SLOT), (long)RIGHT_WRITE) != 0) { ok = 0; why = "prefill"; }
@@ -1998,8 +1998,8 @@ void test_t099(void) {
     /* Out-of-range declaration (slot 300, T086 fixture value) → INVALID_ARG. */
     if (ok) {
         long ep = it_ep_create_slot();
-        handle_id_t ep_h = (handle_id_t)ep;
-        handle_id_t proc_h = HANDLE_INVALID;
+        iris_cptr_t ep_h = (iris_cptr_t)ep;
+        iris_cptr_t proc_h = IRIS_CPTR_NULL;
         if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) {
             ok = 0; why = "spawn inv";
         }
@@ -2033,7 +2033,7 @@ void test_t100(void) {
     if (!it_sched_ext(before)) { it_fail("T100", "sched ext"); return; }
     long e = it_ep_create();
     if (e < 0) { it_fail("T100", "ep create"); return; }
-    handle_id_t ep = (handle_id_t)e;
+    iris_cptr_t ep = (iris_cptr_t)e;
     int ok = 1;
     const char *why = "lookup rslot stress";
     long ids[4];

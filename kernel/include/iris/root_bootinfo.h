@@ -44,7 +44,7 @@
  */
 
 #define IRIS_ROOT_BOOTINFO_MAGIC   0x49524953524F4F54ULL  /* "IRISROOT" */
-#define IRIS_ROOT_BOOTINFO_VERSION 8u
+#define IRIS_ROOT_BOOTINFO_VERSION 9u
 
 /* Size of the region the kernel maps.  Two pages, and the reason is a rule
  * rather than a round number: the description must be able to cover every
@@ -56,13 +56,32 @@
 #define IRIS_ROOT_BOOTINFO_PAGES 2u
 #define IRIS_ROOT_BOOTINFO_BYTES (IRIS_ROOT_BOOTINFO_PAGES * 4096u)
 
+/*
+ * WHAT a region is, not just whether the kernel may put headers in it.
+ *
+ * `is_device` answers one question — may objects be carved here — and by
+ * Stage 10 there were four kinds of region answering it the same way: the
+ * framebuffer, the PCI hole, ACPI reclaimable memory and ACPI NVS.  The root
+ * task has to route each to a different consumer, and it was doing it by
+ * matching physical addresses against the framebuffer's base, which worked
+ * while there were two and would have silently handed `fb` a gigabyte of MMIO
+ * the moment there were three.
+ *
+ * The kernel KNOWS which is which.  Telling the root task costs one word and
+ * removes a guess, which is the whole trade.
+ */
+#define IRIS_UT_KIND_RAM         0u
+#define IRIS_UT_KIND_FRAMEBUFFER 1u
+#define IRIS_UT_KIND_MMIO        2u  /* the 32-bit PCI hole                  */
+#define IRIS_UT_KIND_ACPI        3u  /* firmware tables: reclaimable or NVS  */
+
 /* One untyped region the root task owns, and the slot it owns it in. */
 struct iris_bootinfo_untyped {
     uint64_t cptr;        /* CPtr of the KUntyped cap in the root CNode */
     uint64_t paddr;       /* physical base of the region */
     uint64_t size_bytes;  /* region size */
     uint32_t is_device;   /* 0 = RAM, 1 = device memory */
-    uint32_t reserved;    /* 0 */
+    uint32_t kind;        /* IRIS_UT_KIND_* */
 };
 
 struct iris_root_bootinfo {
@@ -96,6 +115,37 @@ struct iris_root_bootinfo {
     uint64_t cap_domain_control; /* Domain_Set */
     uint64_t cap_iospace_control;/* Stage 10-dma: what a DEVICE may reach */
 
+    /*
+     * v9: WHICH ABI this kernel implements (Stage 10-abi, iris/abi.h).
+     *
+     * Here rather than behind an invocation because it is a fact about the
+     * KERNEL and not about any capability — there is nothing to invoke it on,
+     * and a syscall number for it would have been a fifth numbered door in all
+     * but name.  BootInfo is already what the root task is handed for exactly
+     * the things it cannot ask anyone for.
+     *
+     * A reader compares these against the IRIS_ABI_VERSION_* it was COMPILED
+     * against: a different major means something that used to work no longer
+     * does, and a higher minor means the kernel has grown in ways this caller
+     * will not notice.  A LOWER minor than the caller was built against is the
+     * interesting case — the caller may use a label this kernel does not have,
+     * and finds out here rather than from a NOT_SUPPORTED it cannot explain.
+     */
+    uint32_t abi_major;
+    uint32_t abi_minor;
+
+    /*
+     * v9: where ACPI's root pointer is (Stage 10).
+     *
+     * The tables themselves arrive as device Untypeds in `untyped[]`, like the
+     * framebuffer and the PCI hole — but a region is not a starting point.
+     * Every ACPI table is found by following the RSDP, and the RSDP is found
+     * by SEARCHING firmware memory for a signature, which only the bootloader
+     * is in a position to have done.  Zero means this machine had none, which
+     * a reader must treat as "no ACPI" rather than "address zero".
+     */
+    uint64_t acpi_rsdp;
+
     /* The CSpace as it was handed over. */
     uint32_t cnode_slots;      /* slot count of the root CNode */
     uint32_t empty_slot_first; /* first slot the kernel left empty */
@@ -124,6 +174,12 @@ iris_error_t root_bootinfo_init(void *buf, uint32_t bytes,
 iris_error_t root_bootinfo_set_control_cap(void *buf, uint32_t bytes,
                                            uint32_t kind, uint64_t cptr);
 
+/* Record where ACPI's root pointer is, if the bootloader found one.  Separate
+ * from init because the boot path learns it from BootInfo, not from the build,
+ * and a machine with no ACPI is a machine this is never called for. */
+iris_error_t root_bootinfo_set_acpi_rsdp(void *buf, uint32_t bytes,
+                                         uint64_t rsdp_phys);
+
 /* Declare the slot range the kernel left empty, validated against the
  * cnode_slots recorded by init: first <= end <= cnode_slots. */
 iris_error_t root_bootinfo_set_empty_range(void *buf, uint32_t bytes,
@@ -134,7 +190,8 @@ iris_error_t root_bootinfo_set_empty_range(void *buf, uint32_t bytes,
  * task is not told about is a capability it cannot use. */
 iris_error_t root_bootinfo_add_untyped(void *buf, uint32_t bytes,
                                        uint64_t cptr, uint64_t paddr,
-                                       uint64_t size_bytes, int is_device);
+                                       uint64_t size_bytes, int is_device,
+                                       uint32_t kind);
 
 #endif /* __KERNEL__ */
 

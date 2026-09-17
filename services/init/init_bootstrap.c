@@ -28,10 +28,10 @@
 
 /* ── Early serial (pre-console.ep log fallback) ─────────────────────────── */
 
-static handle_id_t g_init_early_serial_h = HANDLE_INVALID;
+static iris_cptr_t g_init_early_serial_h = IRIS_CPTR_NULL;
 
 void init_early_serial_write(const char *s) {
-    if (g_init_early_serial_h == HANDLE_INVALID || !s) return;
+    if (g_init_early_serial_h == IRIS_CPTR_NULL || !s) return;
     while (*s) {
         long v;
         do {
@@ -50,12 +50,12 @@ void init_early_serial_write(const char *s) {
  * authority to spawn processes and power the machine off. */
 #define INIT_EARLY_SERIAL_SLOT 40u
 void init_early_serial_start(void) {
-    if (g_init_early_serial_h != HANDLE_INVALID) return;
+    if (g_init_early_serial_h != IRIS_CPTR_NULL) return;
     /* Stage 7 Step 14: base and count share arg1 (base | count << 16) so arg2
      * can name the budget the KIoPort object is charged to.  init pays out of
      * its own boot block; nothing is charged to a pool the kernel picked. */
     if (iris_invoke((long)IRIS_CPTR_IOPORT_CONTROL, INV_BOOT_CREATE_IOPORT, (long)(0x3F8u | (8u << 16)), (long)IRIS_CPTR_INIT_UNTYPED, (long)((uint64_t)INIT_EARLY_SERIAL_SLOT << 32)) != 0) return;
-    g_init_early_serial_h = (handle_id_t)INIT_EARLY_SERIAL_SLOT;
+    g_init_early_serial_h = (iris_cptr_t)INIT_EARLY_SERIAL_SLOT;
 }
 
 void init_early_serial_stop(void) {
@@ -114,22 +114,21 @@ static void init_imsg_zero(struct iris_msg *msg) {
 /*
  * Resolve a service name (e.g. "vfs.ep") through the svcmgr discovery endpoint:
  * EP_CALL(svcmgr_ep, IRIS_SVCMGR_EP_LOOKUP_NAME, name).  The reply carries the
- * endpoint cap via SYS_REPLY cap transfer.  Returns HANDLE_INVALID on any
+ * endpoint cap via SYS_REPLY cap transfer.  Returns IRIS_CPTR_NULL on any
  * failure (caller retries / fails fast).  Phase 13/Track I: this EP_LOOKUP_NAME
  * path replaces the retired legacy KChannel LOOKUP_NAME (init_lookup_name).
  *
  * A1.6: reply_slot != 0 declares a receive-slot for the looked-up cap — it
- * lands in init's CSpace and the return value is the CPtr (< 1024), directly
- * invocable through the dual resolvers.  reply_slot = 0 keeps the legacy
- * handle delivery; the supervisor lookups that feed SYS_PROC_CSPACE_MINT use
- * it deliberately (mint sources are handle-layer working set by design). */
-handle_id_t init_ep_lookup_name_slot(handle_id_t svcmgr_ep_h,
+ * lands in init's CSpace and the return value is the CPtr, directly invocable.
+ * reply_slot = 0 asks for the message WITHOUT the capability, which is what a
+ * caller that only wants to know whether the name resolves passes. */
+iris_cptr_t init_ep_lookup_name_slot(iris_cptr_t svcmgr_ep_h,
                                      const char *name,
                                      uint32_t reply_slot) {
     struct iris_msg msg;
     uint32_t n = 0;
 
-    if (svcmgr_ep_h == HANDLE_INVALID || !name) return HANDLE_INVALID;
+    if (svcmgr_ep_h == IRIS_CPTR_NULL || !name) return IRIS_CPTR_NULL;
     while (name[n] && n + 1u < VFS_EP_DATA_MAX) {
         g_init_buf[n] = (uint8_t)name[n];
         n++;
@@ -142,15 +141,15 @@ handle_id_t init_ep_lookup_name_slot(handle_id_t svcmgr_ep_h,
     msg.recv_slot = (long)reply_slot;   /* where the reply's capability lands */
 
     if (iris_msg_call((long)svcmgr_ep_h, &msg) != IRIS_OK)
-        return HANDLE_INVALID;
+        return IRIS_CPTR_NULL;
     if (msg.label != IRIS_EP_REPLY_OK)
-        return HANDLE_INVALID;
+        return IRIS_CPTR_NULL;
     if (msg.got_cap == (uint32_t)IRIS_MSG_NO_CAP)
-        return HANDLE_INVALID;
-    return (handle_id_t)msg.got_cap;   /* CPtr or handle — dual-invocable */
+        return IRIS_CPTR_NULL;
+    return (iris_cptr_t)msg.got_cap;   /* CPtr or handle — dual-invocable */
 }
 
-handle_id_t init_ep_lookup_name(handle_id_t svcmgr_ep_h, const char *name) {
+iris_cptr_t init_ep_lookup_name(iris_cptr_t svcmgr_ep_h, const char *name) {
     return init_ep_lookup_name_slot(svcmgr_ep_h, name, 0u);
 }
 
@@ -158,7 +157,7 @@ handle_id_t init_ep_lookup_name(handle_id_t svcmgr_ep_h, const char *name) {
  * One VFS endpoint round trip. The path (when non-NULL) is staged into
  * g_init_buf; reply bulk data lands in the same buffer.
  */
-static int init_vfs_ep_call(handle_id_t vfs_ep_h, struct iris_msg *msg,
+static int init_vfs_ep_call(iris_cptr_t vfs_ep_h, struct iris_msg *msg,
                             const char *path) {
     if (path) {
         uint32_t plen = 0;
@@ -173,7 +172,7 @@ static int init_vfs_ep_call(handle_id_t vfs_ep_h, struct iris_msg *msg,
 
 /* ── VFS EP LIST check (S5) ─────────────────────────────────────────────── */
 
-static int init_check_vfs_list_ep(handle_id_t vfs_ep_h) {
+static int init_check_vfs_list_ep(iris_cptr_t vfs_ep_h) {
     struct iris_msg msg;
 
     /* indices 0..2 — expect OK with a non-empty name */
@@ -200,7 +199,7 @@ static int init_check_vfs_list_ep(handle_id_t vfs_ep_h) {
     return 1;
 }
 
-int init_wait_vfs_list_ep(handle_id_t vfs_ep_h) {
+int init_wait_vfs_list_ep(iris_cptr_t vfs_ep_h) {
     for (uint32_t attempt = 0; attempt < INIT_RETRY_LIMIT; attempt++) {
         if (init_check_vfs_list_ep(vfs_ep_h)) return 1;
         init_retry_pause();
@@ -210,7 +209,7 @@ int init_wait_vfs_list_ep(handle_id_t vfs_ep_h) {
 
 /* ── VFS EP STAT / READ_AT check (S6) ───────────────────────────────────── */
 
-static int init_check_vfs_rw_ep(handle_id_t vfs_ep_h) {
+static int init_check_vfs_rw_ep(iris_cptr_t vfs_ep_h) {
     struct iris_msg msg;
     uint64_t size;
 
@@ -256,7 +255,7 @@ static int init_check_vfs_rw_ep(handle_id_t vfs_ep_h) {
     return 1;
 }
 
-int init_wait_vfs_rw_ep(handle_id_t vfs_ep_h) {
+int init_wait_vfs_rw_ep(iris_cptr_t vfs_ep_h) {
     for (uint32_t attempt = 0; attempt < INIT_RETRY_LIMIT; attempt++) {
         if (init_check_vfs_rw_ep(vfs_ep_h)) return 1;
         init_retry_pause();

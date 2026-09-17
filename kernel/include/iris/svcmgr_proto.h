@@ -4,7 +4,7 @@
 #ifndef __ASSEMBLER__
 #include <stdint.h>
 #include <iris/syscall.h>
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <iris/nc/rights.h>
 #endif
 
@@ -37,7 +37,7 @@
  *   offset  4: uint32_t sender_id → 0 = kernel, N = task_id
  *   offset  8: uint8_t  data[64]  → payload (see below)
  *   offset 72: uint32_t data_len  → payload length in bytes
- *   offset 76: handle_id_t attached_handle  → optional moved handle
+ *   offset 76: iris_cptr_t attached_handle  → optional moved handle
  *   offset 80: iris_rights_t attached_rights → rights delivered to receiver
  *
  * ── SVCMGR_MSG_SPAWN_SERVICE (retired compatibility) ─────────────
@@ -48,7 +48,7 @@
  *                                                 svcmgr resolves this to
  *                                                 entry point + nameservice
  *                                                 metadata in userland.
- *   data[SVCMGR_SPAWN_OFF_REG_CHAN]   handle_id_t pre-created channel handle
+ *   data[SVCMGR_SPAWN_OFF_REG_CHAN]   iris_cptr_t pre-created channel handle
  *                                                 already inserted into svcmgr's
  *                                                 handle table by the kernel.
  *                                                 svcmgr publishes it under
@@ -221,7 +221,7 @@
 
 /* Byte offsets within KChanMsg.data[64] */
 #define SVCMGR_SPAWN_OFF_SERVICE_ID 0  /* uint32_t:    service kind selector       */
-#define SVCMGR_SPAWN_OFF_REG_CHAN   4  /* handle_id_t: pre-created channel handle
+#define SVCMGR_SPAWN_OFF_REG_CHAN   4  /* iris_cptr_t: pre-created channel handle
                                         *   in svcmgr's table; published under the
                                         *   service name chosen by svcmgr.         */
 #define SVCMGR_SPAWN_OFF_IRQ        8  /* uint8_t:     hardware IRQ line to route

@@ -4,7 +4,7 @@
  * Phase 3.4 tests (BC-1..BC-10): Boot KUntyped in slots 16-255.
  *   [BC-1]  Insert at BOOT_CPTR_UNTYPED_START and resolve via CPtr.
  *   [BC-2]  CNode slot rights match handle-table rights (equal, not greater).
- *   [BC-3]  CPTR_NULL slot (0) remains empty after boot grants.
+ *   [BC-3]  IRIS_CPTR_NULL slot (0) remains empty after boot grants.
  *   [BC-4]  Multiple consecutive boot slots are all resolvable.
  *   [BC-5]  Failed mint (out-of-range slot) cleans refs; object stays alive.
  *   [BC-6]  Dual insert (handle + CNode): refcounts balanced; teardown clean.
@@ -14,7 +14,7 @@
  *   [BC-10] Slot just past BOOT_CPTR_UNTYPED_END (slot 256) is out-of-range for mint.
  *
  * Phase 3.5 tests (BB-1..BB-10): KBootstrapCap well-known slot 1.
- *   [BB-1]  BOOT_CPTR_BOOTSTRAP_CAP == 1 and != CPTR_NULL.
+ *   [BB-1]  BOOT_CPTR_BOOTSTRAP_CAP == 1 and != IRIS_CPTR_NULL.
  *   [BB-2]  Slots 2-15 remain empty after inserting KBootstrapCap in slot 1.
  *   [BB-3]  KBootstrapCap in slot 1 resolves via CPtr; type == KOBJ_BOOTSTRAP_CAP.
  *   [BB-4]  Rights in CSpace slot == legacy handle rights (not greater).
@@ -23,7 +23,7 @@
  *   [BB-7]  ACCESS_DENIED from slot 1 (read-only) blocks resolve for WRITE.
  *   [BB-8]  Legacy handle path resolves KBootstrapCap independently.
  *   [BB-9]  Boot KUntyped slots 16+ intact after KBootstrapCap in slot 1.
- *   [BB-10] CPTR_NULL (slot 0) stays empty after all boot grants.
+ *   [BB-10] IRIS_CPTR_NULL (slot 0) stays empty after all boot grants.
  */
 #include "framework.h"
 #include <iris/nc/kobject.h>
@@ -163,7 +163,7 @@ void test_boot_cspace(void) {
         bc_free_proc(p);
     }
 
-    /* [BC-3] CPTR_NULL slot (0) remains empty after boot grants. */
+    /* [BC-3] IRIS_CPTR_NULL slot (0) remains empty after boot grants. */
     {
         struct cs_fixture *p = bc_make_proc();
         ASSERT_NOT_NULL(p);
@@ -174,7 +174,7 @@ void test_boot_cspace(void) {
         ASSERT_EQ(bc_boot_publish(p, ut, 0u), IRIS_OK);
 
         struct KUntyped *out; iris_rights_t rout;
-        iris_error_t err = cspace_resolve_only_untyped(p->cspace_root, CPTR_NULL, RIGHT_NONE, &out, &rout);
+        iris_error_t err = cspace_resolve_only_untyped(p->cspace_root, IRIS_CPTR_NULL, RIGHT_NONE, &out, &rout);
         ASSERT_TRUE(err != IRIS_OK);
 
         bc_free_proc(p);
@@ -319,13 +319,13 @@ void test_boot_cspace(void) {
 
     /* ── Phase 3.5 tests (BB-1..BB-10) ──────────────────────────────────────── */
 
-    /* [BB-1] BOOT_CPTR_BOOTSTRAP_CAP == 1 and != CPTR_NULL.
+    /* [BB-1] BOOT_CPTR_BOOTSTRAP_CAP == 1 and != IRIS_CPTR_NULL.
      * Stage 5 Step 2 emptied that slot for good — the monolithic boot
      * capability it held cannot be constructed any more — but the number
      * stays reserved, which is what this pins. */
     {
         ASSERT_EQ((uint32_t)BOOT_CPTR_BOOTSTRAP_CAP, 1u);
-        ASSERT_NE((uint32_t)BOOT_CPTR_BOOTSTRAP_CAP, (uint32_t)CPTR_NULL);
+        ASSERT_NE((uint32_t)BOOT_CPTR_BOOTSTRAP_CAP, (uint32_t)IRIS_CPTR_NULL);
     }
 
     /* ── Stage 5 Step 3: a CSpace that names itself (BC-11..BC-13) ────────

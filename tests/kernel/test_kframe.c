@@ -14,9 +14,10 @@
  *   [FR-10] cspace_resolve_frame succeeds when slot holds a KOBJ_FRAME.
  *   [FR-11] cspace_resolve_frame returns IRIS_ERR_WRONG_TYPE for a non-frame slot.
  *   [FR-12] cspace_resolve_frame returns IRIS_ERR_ACCESS_DENIED with insufficient rights.
- *   [FR-13] cspace_resolve_cap with CPTR_NULL returns IRIS_ERR_INVALID_ARG.
- *   [FR-14] cspace_resolve_only_frame ACCESS_DENIED hard-stops; no handle fallback.
- *   [FR-15] cspace_resolve_only_frame falls back to handle table if CSpace is absent.
+ *   [FR-13] cspace_resolve_cap with IRIS_CPTR_NULL returns IRIS_ERR_INVALID_ARG.
+ *   [FR-14] cspace_resolve_only_frame ACCESS_DENIED hard-stops.
+ *   [FR-15] cspace_resolve_only_frame with no CSpace root refuses rather than
+ *           resolving: there is no second namespace to fall back to.
  *   [FR-16] kuntyped_bump_alloc_phys_page returns page-aligned address.
  *   [FR-17] kuntyped_bump_alloc_phys_page fails when insufficient space.
  *   [FR-18] kuntyped_bump_alloc_phys_page fails for unaligned size.
@@ -316,14 +317,14 @@ void test_kframe(void) {
         fr_free_proc(p);
     }
 
-    /* FR-13: CPTR_NULL returns INVALID_ARG */
+    /* FR-13: IRIS_CPTR_NULL returns INVALID_ARG */
     {
         struct cs_fixture *p = fr_make_proc();
         ASSERT_NOT_NULL(p);
         fr_setup_root(p);
         struct KFrame *out;
         iris_rights_t  r;
-        iris_error_t ie = cspace_resolve_frame(p->cspace_root, CPTR_NULL, RIGHT_READ, &out, &r);
+        iris_error_t ie = cspace_resolve_frame(p->cspace_root, IRIS_CPTR_NULL, RIGHT_READ, &out, &r);
         ASSERT_EQ((int)ie, (int)IRIS_ERR_INVALID_ARG);
         fr_free_proc(p);
     }

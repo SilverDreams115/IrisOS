@@ -14,10 +14,10 @@
 
 /* ── Serial output ──────────────────────────────────────────────────────── */
 
-handle_id_t g_serial_h = HANDLE_INVALID;
+iris_cptr_t g_serial_h = IRIS_CPTR_NULL;
 
 void it_serial_write(const char *s) {
-    if (g_serial_h == HANDLE_INVALID || !s) return;
+    if (g_serial_h == IRIS_CPTR_NULL || !s) return;
     while (*s) {
         long v;
         do {
@@ -68,7 +68,7 @@ uint32_t g_total = 0;
 static struct it_child g_it_children[IT_CHILD_MAX];
 static uint32_t g_it_child_next;
 
-static void it_child_record(handle_id_t proc_h, uint32_t leaf) {
+static void it_child_record(iris_cptr_t proc_h, uint32_t leaf) {
     /* A process CPtr is a slot, and a slot is reused: drop any stale entry
      * naming the same one first, or a dead child's thread would answer for a
      * live child that happened to land in its slot. */
@@ -97,8 +97,8 @@ static uint32_t g_it_child_pending;
  */
 static uint8_t g_it_child_keep_vs;
 void it_child_keep_vspace(void) { g_it_child_keep_vs = 1u; }
-void it_child_bind(handle_id_t proc_h) {
-    if (proc_h != HANDLE_INVALID && g_it_child_pending)
+void it_child_bind(iris_cptr_t proc_h) {
+    if (proc_h != IRIS_CPTR_NULL && g_it_child_pending)
         it_child_record(proc_h, g_it_child_pending);
     g_it_child_pending = 0;
     g_it_child_keep_vs = 0u;
@@ -155,7 +155,7 @@ long it_child_vs_dest(void) {
  *
  * The table survives for the VSPACE half, which is still a separate leaf.
  */
-long it_child_tcb(handle_id_t proc_h) {
+long it_child_tcb(iris_cptr_t proc_h) {
     return (long)proc_h;
 }
 /*
@@ -167,7 +167,7 @@ long it_child_tcb(handle_id_t proc_h) {
  * spawn; it only threw it away at the end.  Now it hands it over, and the
  * table remembers it beside the thread.
  */
-long it_child_vspace(handle_id_t proc_h) {
+long it_child_vspace(iris_cptr_t proc_h) {
     for (uint32_t k = 0; k < IT_CHILD_MAX; k++)
         if (g_it_children[k].proc == (uint32_t)proc_h && g_it_children[k].leaf)
             return (long)IT_CHILD_TCB_CPTR(g_it_children[k].leaf + IT_CHILD_MAX);
@@ -177,7 +177,7 @@ long it_child_vspace(handle_id_t proc_h) {
  * recycled — the discipline svc_loader's `keep_vspace_dest` documents: a
  * VSpace capability keeps every page table in that address space alive, and
  * those are children of a budget somebody wants back. */
-void it_child_drop_vspace(handle_id_t proc_h) {
+void it_child_drop_vspace(iris_cptr_t proc_h) {
     for (uint32_t k = 0; k < IT_CHILD_MAX; k++)
         if (g_it_children[k].proc == (uint32_t)proc_h && g_it_children[k].leaf)
             (void)it_invoke1((long)IT_CHILD_CN_SLOT, INV_CNODE_DELETE, (long)(g_it_children[k].leaf + IT_CHILD_MAX));
@@ -193,10 +193,10 @@ void it_child_drop_vspace(handle_id_t proc_h) {
  * SYS_PROCESS_CREATE has published a capability.
  *
  * A child not in the table has no thread the suite can name, and 0 is
- * CPTR_NULL, so this reports INVALID_ARG rather than pretending to kill.
+ * IRIS_CPTR_NULL, so this reports INVALID_ARG rather than pretending to kill.
  */
 long it_kill(long proc_cptr) {
-    return it_invoke0(it_child_tcb((handle_id_t)proc_cptr), INV_TCB_EXIT);
+    return it_invoke0(it_child_tcb((iris_cptr_t)proc_cptr), INV_TCB_EXIT);
 }
 
 /*
@@ -217,7 +217,7 @@ long it_tcb_alive(long tcb_cptr) {
     return (info.state == IT_TASK_TERMINATED || info.state == IT_TASK_DEAD) ? 0 : 1;
 }
 long it_alive(long proc_cptr) {
-    return it_tcb_alive(it_child_tcb((handle_id_t)proc_cptr));
+    return it_tcb_alive(it_child_tcb((iris_cptr_t)proc_cptr));
 }
 
 /* Fresh reply authority for target `i`: the object is one-shot, so a test that
@@ -657,7 +657,7 @@ static int it_root_slot_is_load_bearing(uint32_t s) {
     if (s == (uint32_t)IRIS_CPTR_TEST_UNTYPED) return 1;          /* 55 */
     if (s == 56u || s == 58u || s == 59u) return 1;               /* vspace, vfs */
     if (s == (uint32_t)IRIS_CPTR_DEVICE_UNTYPED) return 1;        /* 64 */
-    if (s == (uint32_t)IRIS_CPTR_MMIO_UNTYPED_TEST) return 1;     /* 62 */
+    if (s == (uint32_t)IRIS_CPTR_PCI_EP) return 1;                /* 62 */
     if (s == 66u) return 1;   /* IT_IPCBUF_CNODE_SLOT, asserted below */
     if (s == IT_OBJ_CNODE_SLOT) return 1;                         /* 80 */
     if (s == (uint32_t)IRIS_CPTR_FB_CONTROL) return 1;            /* 99 */
@@ -684,7 +684,7 @@ void it_slot_delete(uint32_t slot) {
 /* A transfer source is a slot-to-slot mint, which also installs the result as
  * an MDB child of the source.  The SYS_CNODE_MINT branch this used to carry
  * for handle sources is gone with the namespace. */
-long it_xfer_slot(handle_id_t src_h, uint32_t slot, uint32_t rights) {
+long it_xfer_slot(iris_cptr_t src_h, uint32_t slot, uint32_t rights) {
     it_slot_delete(slot);
     long r = it_invoke2((long)src_h, INV_CSPACE_MINT, (long)((uint64_t)slot << 32), (long)(rights | RIGHT_TRANSFER));
     return (r != 0) ? r : (long)slot;
@@ -714,7 +714,7 @@ long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights) {
  * it_cdt_derive— derive src_cptr into dest_slot with the requested rights.
  * it_cdt_alive — does this slot still name a live capability?
  * it_cdt_revoke— revoke the slot's descendants (>= 0 on success). */
-long it_cdt_root(handle_id_t src_h, uint32_t slot) {
+long it_cdt_root(iris_cptr_t src_h, uint32_t slot) {
     it_slot_delete(slot);
     long r = it_invoke2((long)src_h, INV_CSPACE_MINT, (long)((uint64_t)slot << 32), (long)RIGHT_SAME_RIGHTS);
     return (r != 0) ? r : (long)slot;
@@ -729,7 +729,7 @@ long it_cdt_derive(long src_cptr, uint32_t dest_slot, uint32_t rights) {
 /* Common fixture shape: a rights-reduced copy of a cap that currently lives in
  * a HANDLE.  Bridges the source into root_slot and derives into dest_slot;
  * returns the derived CPtr.  Both slots are the caller's to release. */
-long it_cdt_reduced(handle_id_t src_h, uint32_t root_slot,
+long it_cdt_reduced(iris_cptr_t src_h, uint32_t root_slot,
                            uint32_t dest_slot, uint32_t rights) {
     long r = it_cdt_root(src_h, root_slot);
     if (r < 0) return r;
@@ -748,7 +748,7 @@ long it_xfer_dup(long src_h, uint32_t rights) {
     uint32_t slot = IT_XFER_SLOT_A +
         (__atomic_fetch_add(&g_it_xfer_next, 1u, __ATOMIC_RELAXED)
          % IT_XFER_SLOT_SPAN);
-    return it_xfer_slot((handle_id_t)src_h, slot, rights);
+    return it_xfer_slot((iris_cptr_t)src_h, slot, rights);
 }
 
 /* Ledger A-29: the transfer is a COPY, so a sender that meant to give the
@@ -793,8 +793,8 @@ void it_fail(const char *id, const char *reason) {
  * The tag bit is the discriminator, not a magnitude: a CPtr is 31 bits wide
  * now and multi-level ones are far above any old threshold.  The handle branch
  * disappears with the handle namespace. */
-void it_close(handle_id_t *h) {
-    if (*h == HANDLE_INVALID) return;
+void it_close(iris_cptr_t *h) {
+    if (*h == IRIS_CPTR_NULL) return;
     if (((uint32_t)*h & 0xFFu) == IT_OBJ_CNODE_SLOT ||
         ((uint32_t)*h & 0xFFu) == IT_CHILD_CN_SLOT ||
         ((uint32_t)*h & 0xFFu) == IT_LOADER_WS_SLOT) {
@@ -812,5 +812,5 @@ void it_close(handle_id_t *h) {
          * fails, dozens of tests later. */
         it_slot_delete((uint32_t)*h);
     }
-    *h = HANDLE_INVALID;
+    *h = IRIS_CPTR_NULL;
 }

@@ -22,8 +22,8 @@ void test_t101(void) {
     if (!it_sched_ext(before)) { it_fail("T101", "sched ext"); return; }
     long ep = it_ep_create();
     long n  = it_notify_create();
-    handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
-    handle_id_t proc_h = HANDLE_INVALID;
+    iris_cptr_t ep_h = (iris_cptr_t)ep, n_h = (iris_cptr_t)n;
+    iris_cptr_t proc_h = IRIS_CPTR_NULL;
     int ok = 1;
     const char *why = "death cleanup";
 
@@ -55,7 +55,7 @@ void test_t101(void) {
 
                 ok = 0; why = "cap consumed";
             }
-            handle_id_t dh = (handle_id_t)d;
+            iris_cptr_t dh = (iris_cptr_t)d;
             it_close(&dh);
         }
     }
@@ -96,8 +96,8 @@ void test_t102(void) {
     for (int i = 0; ok && i < 2; i++) {
         long ep = it_ep_create();
         long n  = it_notify_create();
-        handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
-        handle_id_t proc_h = HANDLE_INVALID;
+        iris_cptr_t ep_h = (iris_cptr_t)ep, n_h = (iris_cptr_t)n;
+        iris_cptr_t proc_h = IRIS_CPTR_NULL;
         if (ep < 0 || n < 0 ||
             lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; }
         if (ok && it_lp_cmd_rslot(ep_h, 0u) != 0) { ok = 0; why = "cmd"; }
@@ -139,7 +139,7 @@ void test_t102(void) {
  * attached cap, the main thread cancels, and the source handle is probed
  * with SYS_HANDLE_TYPE afterwards. */
 
-static handle_id_t  g_t103_ep_h   = HANDLE_INVALID;
+static iris_cptr_t  g_t103_ep_h   = IRIS_CPTR_NULL;
 static long         g_t103_dup    = -1;
 static volatile int g_t103_done   = 0;
 static          int g_t103_result = 0;
@@ -173,8 +173,8 @@ void test_t103(void) {
 
     long ep = it_ep_create();
     long n  = it_notify_create();
-    g_t103_ep_h = (handle_id_t)ep;
-    handle_id_t n_h = (handle_id_t)n;
+    g_t103_ep_h = (iris_cptr_t)ep;
+    iris_cptr_t n_h = (iris_cptr_t)n;
     if (ep < 0 || n < 0) { it_fail("T103", "create"); return; }
 
     /* Phase S4 (Step 2): the staged SOURCE is a CSpace slot. */
@@ -226,7 +226,7 @@ void test_t103(void) {
     if (ok) it_pass("T103"); else it_fail("T103", why);
 }
 
-static handle_id_t  g_t104_ep_h   = HANDLE_INVALID;
+static iris_cptr_t  g_t104_ep_h   = IRIS_CPTR_NULL;
 static long         g_t104_dup    = -1;
 static volatile int g_t104_done   = 0;
 static          int g_t104_result = 0;
@@ -260,8 +260,8 @@ void test_t104(void) {
 
     long ep = it_ep_create();
     long n  = it_notify_create();
-    g_t104_ep_h = (handle_id_t)ep;
-    handle_id_t n_h = (handle_id_t)n;
+    g_t104_ep_h = (iris_cptr_t)ep;
+    iris_cptr_t n_h = (iris_cptr_t)n;
     if (ep < 0 || n < 0) { it_fail("T104", "create"); return; }
 
     /* Phase S4 (Step 2): the staged EP_CALL source is a CSpace slot. */
@@ -303,7 +303,7 @@ void test_t104(void) {
     if (ok) it_pass("T104"); else it_fail("T104", why);
 }
 
-static handle_id_t  g_t105_ep_h   = HANDLE_INVALID;
+static iris_cptr_t  g_t105_ep_h   = IRIS_CPTR_NULL;
 static volatile int g_t105_done   = 0;
 static          int g_t105_result = 0;
 static uint8_t      g_t105_stack[8192];
@@ -335,11 +335,11 @@ void test_t105(void) {
 
     long ep = it_ep_create();
     long n  = it_notify_create();
-    g_t105_ep_h = (handle_id_t)ep;
-    handle_id_t n_h = (handle_id_t)n;
+    g_t105_ep_h = (iris_cptr_t)ep;
+    iris_cptr_t n_h = (iris_cptr_t)n;
     if (ep < 0 || n < 0) { it_fail("T105", "create"); return; }
 
-    handle_id_t reply_h = HANDLE_INVALID;
+    iris_cptr_t reply_h = IRIS_CPTR_NULL;
     {
         uint64_t entry = (uint64_t)(uintptr_t)t105_caller;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t105_stack + sizeof(g_t105_stack))) & ~0xFULL;
@@ -359,7 +359,7 @@ void test_t105(void) {
             m.label != 0x105ULL || m.got_cap == IRIS_MSG_NO_CAP) {
             ok = 0; why = "recv call";
         } else {
-            reply_h = (handle_id_t)m.got_cap;
+            reply_h = (iris_cptr_t)m.got_cap;
         }
     }
 
@@ -395,7 +395,7 @@ void test_t105(void) {
 
     }
 
-    if (d >= 0) { handle_id_t dh = (handle_id_t)d; it_close(&dh); }
+    if (d >= 0) { iris_cptr_t dh = (iris_cptr_t)d; it_close(&dh); }
     it_close(&n_h);
     it_close(&g_t105_ep_h);
     it_slot_delete(95);
@@ -406,7 +406,7 @@ void test_t105(void) {
     if (ok) it_pass("T105"); else it_fail("T105", why);
 }
 
-static handle_id_t  g_t106_ep_h = HANDLE_INVALID;
+static iris_cptr_t  g_t106_ep_h = IRIS_CPTR_NULL;
 static long         g_t106_dup[2]    = { -1, -1 };
 static volatile int g_t106_done[2]   = { 0, 0 };
 static          int g_t106_result[2] = { 0, 0 };
@@ -444,8 +444,8 @@ void test_t106(void) {
 
     long ep = it_ep_create();
     long n  = it_notify_create();
-    g_t106_ep_h = (handle_id_t)ep;
-    handle_id_t n_h = (handle_id_t)n;
+    g_t106_ep_h = (iris_cptr_t)ep;
+    iris_cptr_t n_h = (iris_cptr_t)n;
     if (ep < 0 || n < 0) { it_fail("T106", "create"); return; }
 
     for (int i = 0; ok && i < 2; i++) {
@@ -551,8 +551,8 @@ void fz_note(const char *t, uint32_t seed, uint32_t iter) {
     it_serial_write("\n");
 }
 
-static handle_id_t       g_fz_ctl[2]  = { HANDLE_INVALID, HANDLE_INVALID };
-handle_id_t       g_fz_data_ep = HANDLE_INVALID;
+static iris_cptr_t       g_fz_ctl[2]  = { IRIS_CPTR_NULL, IRIS_CPTR_NULL };
+iris_cptr_t       g_fz_data_ep = IRIS_CPTR_NULL;
 static volatile long     g_fz_res[2];
 static volatile uint32_t g_fz_att[2];      /* where a delivered cap landed */
 static volatile uint32_t g_fz_attcap[2];   /* the reply object it was owed */
@@ -619,7 +619,7 @@ static int fz_workers_start(int n) {
         it_slot_delete(ctl);
         if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT,
                           ctl, 1u, 0) != 0) return 0;
-        g_fz_ctl[i] = (handle_id_t)ctl;
+        g_fz_ctl[i] = (iris_cptr_t)ctl;
         uint64_t entry = (uint64_t)(uintptr_t)entries[i];
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_fz_stk[i] + sizeof(g_fz_stk[i]))) & ~0xFULL;
         if (it_thread_create(entry, rsp, 0) < 0) return 0;
@@ -649,7 +649,7 @@ static int fz_wait(int idx) {
 
 static void fz_workers_stop(int n) {
     for (int i = 0; i < n; i++) {
-        if (g_fz_ctl[i] != HANDLE_INVALID) {
+        if (g_fz_ctl[i] != IRIS_CPTR_NULL) {
             (void)fz_cmd(i, FZ_OP_EXIT, 0, 0, 0);
             it_close(&g_fz_ctl[i]);
         }
@@ -677,8 +677,8 @@ void test_t107(void) {
     /* Stage 4: invoked as a CPtr; never materialised into a handle. */
     const long selfp = (it_invoke0((long)IRIS_CPTR_TEST_PROC, INV_CAP_IDENTIFY) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
-    handle_id_t n_h = (handle_id_t)n, ep2_h = (handle_id_t)ep2;
-    g_fz_data_ep = (handle_id_t)ep;
+    iris_cptr_t n_h = (iris_cptr_t)n, ep2_h = (iris_cptr_t)ep2;
+    g_fz_data_ep = (iris_cptr_t)ep;
     if (ep < 0 || n < 0 || ep2 < 0 || selfp < 0) { it_fail("T107", "create"); return; }
     if (!fz_workers_start(1)) { it_fail("T107", "worker"); return; }
 
@@ -917,7 +917,7 @@ void test_t108(void) {
     uint32_t it_n = 0;
 
     long n = it_notify_create();
-    handle_id_t n_h = (handle_id_t)n;
+    iris_cptr_t n_h = (iris_cptr_t)n;
     if (n < 0) { it_fail("T108", "create"); return; }
     /* One reusable declared slot: every cancellation must leave it EMPTY,
      * so the same slot serves every pick-3 round (that IS the assert). */
@@ -928,7 +928,7 @@ void test_t108(void) {
     for (it_n = 0; ok && it_n < T108_ROUNDS; it_n++) {
         long ep = it_ep_create();
         if (ep < 0) { ok = 0; why = "ep create"; break; }
-        g_fz_data_ep = (handle_id_t)ep;
+        g_fz_data_ep = (iris_cptr_t)ep;
         uint32_t pick = fz_rand() % 5u;
 
         if (pick == 0u || pick == 1u) {
@@ -949,7 +949,7 @@ void test_t108(void) {
             /* I5/I7: no delivery commit → the source cap survives. */
             if (ok && !it_slot_is_notif(d)) { ok = 0; why = "cap consumed"; }
 
-            { handle_id_t dh = (handle_id_t)d; it_close(&dh); }
+            { iris_cptr_t dh = (iris_cptr_t)d; it_close(&dh); }
 
         } else if (pick == 2u) {
             /* TWO staged waiters (send + call) canceled by one close: every
@@ -973,8 +973,8 @@ void test_t108(void) {
 
                 ok = 0; why = "cap consumed x2";
             }
-            { handle_id_t dh = (handle_id_t)da; it_close(&dh); }
-            { handle_id_t dh = (handle_id_t)db; it_close(&dh); }
+            { iris_cptr_t dh = (iris_cptr_t)da; it_close(&dh); }
+            { iris_cptr_t dh = (iris_cptr_t)db; it_close(&dh); }
 
         } else if (pick == 3u) {
             /* Receiver with a DECLARED slot canceled by close: wakes CLOSED,
@@ -1015,7 +1015,7 @@ void test_t108(void) {
         long ep = it_ep_create();
         if (ep < 0) { ok = 0; why = "final ep"; }
         else {
-            g_fz_data_ep = (handle_id_t)ep;
+            g_fz_data_ep = (iris_cptr_t)ep;
             if (!fz_cmd(0, FZ_OP_RECV, 0, 0, 0)) { ok = 0; why = "final cmd"; }
             if (ok) {
                 it_settle(2);        /* receiver re-blocks on data ep */
@@ -1063,8 +1063,8 @@ void test_t109(void) {
     /* Stage 4: invoked as a CPtr; never materialised into a handle. */
     const long selfp = (it_invoke0((long)IRIS_CPTR_TEST_PROC, INV_CAP_IDENTIFY) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
-    handle_id_t n_h = (handle_id_t)n;
-    g_fz_data_ep = (handle_id_t)ep;
+    iris_cptr_t n_h = (iris_cptr_t)n;
+    g_fz_data_ep = (iris_cptr_t)ep;
     if (ep < 0 || n < 0 || selfp < 0) { it_fail("T109", "create"); return; }
     /* Occupied reply-slot fixture: pre-minted once, occupied forever. */
     uint32_t occ = fz_slot_alloc();
@@ -1118,7 +1118,7 @@ void test_t109(void) {
             m.got_cap != 96u) {   /* Phase S1: our reply CPtr echoed */
             ok = 0; why = "recv call"; break;
         }
-        handle_id_t reply_h = (handle_id_t)m.got_cap;
+        iris_cptr_t reply_h = (iris_cptr_t)m.got_cap;
         exp_reply++;                       /* exactly one KReply per rendezvous */
 
         long d = -1;
@@ -1244,7 +1244,7 @@ void test_t110(void) {
     /* Stage 4: invoked as a CPtr; never materialised into a handle. */
     const long selfp = (it_invoke0((long)IRIS_CPTR_TEST_PROC, INV_CAP_IDENTIFY) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
-    handle_id_t ep_h = (handle_id_t)ep, nf_h = (handle_id_t)nf;
+    iris_cptr_t ep_h = (iris_cptr_t)ep, nf_h = (iris_cptr_t)nf;
     if (ep < 0 || nf < 0 || selfp < 0) { it_fail("T110", "create"); return; }
 
     /* Fixtures: one slot that must stay EMPTY across every NOT_FOUND round
@@ -1438,9 +1438,9 @@ static int t111_round(uint32_t kind, uint32_t *exp_slot, uint32_t *exp_hand,
     long ep = it_ep_create_slot();
     long n  = it_notify_create_slot();
     long e2 = (kind == 1u) ? it_ep_create_slot() : -1;
-    handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
-    handle_id_t e2_h = (kind == 1u) ? (handle_id_t)e2 : HANDLE_INVALID;
-    handle_id_t proc_h = HANDLE_INVALID;
+    iris_cptr_t ep_h = (iris_cptr_t)ep, n_h = (iris_cptr_t)n;
+    iris_cptr_t e2_h = (kind == 1u) ? (iris_cptr_t)e2 : IRIS_CPTR_NULL;
+    iris_cptr_t proc_h = IRIS_CPTR_NULL;
 
     if (ep < 0 || n < 0 || (kind == 1u && e2 < 0) ||
         lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; *why = "spawn"; }
@@ -1525,13 +1525,13 @@ static int t111_round(uint32_t kind, uint32_t *exp_slot, uint32_t *exp_hand,
 
                     ok = 0; *why = "cap consumed";
                 }
-                handle_id_t dh = (handle_id_t)d;
+                iris_cptr_t dh = (iris_cptr_t)d;
                 it_close(&dh);
             }
         }
     }
 
-    if (!ok && proc_h != HANDLE_INVALID)
+    if (!ok && proc_h != IRIS_CPTR_NULL)
         (void)it_kill((long)proc_h);
     it_close(&proc_h);
     it_close(&e2_h);
@@ -1585,8 +1585,8 @@ void test_t112(void) {
 
     for (i = 0; ok && i < T112_CYCLES; i++) {
         long ep = it_ep_create();
-        handle_id_t ep_h = (handle_id_t)ep;
-        handle_id_t proc_h = HANDLE_INVALID;
+        iris_cptr_t ep_h = (iris_cptr_t)ep;
+        iris_cptr_t proc_h = IRIS_CPTR_NULL;
         if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) {
             ok = 0; why = "spawn";
             it_close(&ep_h);
@@ -1690,9 +1690,9 @@ void test_t113(void) {
 
     long ep = it_ep_create();
     long n  = it_notify_create();      /* source cap for the 2nd reply */
-    handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
-    handle_id_t proc_h = HANDLE_INVALID;
-    handle_id_t reply_h = HANDLE_INVALID;
+    iris_cptr_t ep_h = (iris_cptr_t)ep, n_h = (iris_cptr_t)n;
+    iris_cptr_t proc_h = IRIS_CPTR_NULL;
+    iris_cptr_t reply_h = IRIS_CPTR_NULL;
 
     if (ep < 0 || n < 0 || lp_spawn_child(ep_h, &proc_h) < 0) {
         ok = 0; why = "spawn";
@@ -1711,7 +1711,7 @@ void test_t113(void) {
             m.got_cap == (uint32_t)IRIS_MSG_NO_CAP) {
             ok = 0; why = "recv call";
         } else {
-            reply_h = (handle_id_t)m.got_cap;
+            reply_h = (iris_cptr_t)m.got_cap;
         }
     }
 
@@ -1747,7 +1747,7 @@ void test_t113(void) {
 
                 ok = 0; why = "server cap consumed";
             }
-            handle_id_t dh = (handle_id_t)d; it_close(&dh);
+            iris_cptr_t dh = (iris_cptr_t)d; it_close(&dh);
         }
     }
 
@@ -1778,15 +1778,15 @@ void test_t114(void) {
     const char *why = "reap pressure";
     uint32_t i = 0;
 
-    handle_id_t ep[T114_LIVE];
-    handle_id_t pr[T114_LIVE];
-    for (uint32_t s = 0; s < T114_LIVE; s++) { ep[s] = HANDLE_INVALID; pr[s] = HANDLE_INVALID; }
+    iris_cptr_t ep[T114_LIVE];
+    iris_cptr_t pr[T114_LIVE];
+    for (uint32_t s = 0; s < T114_LIVE; s++) { ep[s] = IRIS_CPTR_NULL; pr[s] = IRIS_CPTR_NULL; }
 
     /* Prime: four concurrent children, each parked in its first EP_RECV. */
     for (uint32_t s = 0; ok && s < T114_LIVE; s++) {
         long e = it_ep_create();
         if (e < 0) { ok = 0; why = "prime ep"; break; }
-        ep[s] = (handle_id_t)e;
+        ep[s] = (iris_cptr_t)e;
         if (lp_spawn_child(ep[s], &pr[s]) < 0) { ok = 0; why = "prime spawn"; }
     }
 
@@ -1819,7 +1819,7 @@ void test_t114(void) {
         /* Immediate respawn into the freed slot — the reuse-before-reap race. */
         long e = it_ep_create();
         if (e < 0) { ok = 0; why = "churn ep NO_MEMORY"; break; }
-        ep[s] = (handle_id_t)e;
+        ep[s] = (iris_cptr_t)e;
         if (lp_spawn_child(ep[s], &pr[s]) < 0) {
             ok = 0; why = "churn spawn NO_MEMORY"; break;
         }
@@ -1827,7 +1827,7 @@ void test_t114(void) {
 
     /* Drain the survivors (natural exit). */
     for (uint32_t s = 0; s < T114_LIVE; s++) {
-        if (pr[s] != HANDLE_INVALID) {
+        if (pr[s] != IRIS_CPTR_NULL) {
             struct iris_msg m;
             iris_msg_zero(&m);
             m.label = 0x114;
@@ -1877,8 +1877,8 @@ void test_t115(void) {
     /* kind 0 = EP_RECV waiter, 1 = EP_SEND waiter, 2 = EP_CALL waiter. */
     for (uint32_t kind = 0; ok && kind < 3u; kind++) {
         long ep = it_ep_create();
-        handle_id_t ep_h = (handle_id_t)ep;
-        handle_id_t proc_h = HANDLE_INVALID;
+        iris_cptr_t ep_h = (iris_cptr_t)ep;
+        iris_cptr_t proc_h = IRIS_CPTR_NULL;
         if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; break; }
 
         uint32_t cmd = (kind == 0u) ? LP_CMD_RSLOT_RECV
@@ -1931,13 +1931,13 @@ void test_t116(void) {
     long ep  = it_ep_create_slot();   /* shared endpoint */
     long n   = it_notify_create_slot();      /* shared notification */
     long vmo = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096);   /* shared VMO */
-    handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n, vmo_h = (handle_id_t)vmo;
-    handle_id_t cmd_ep_h = HANDLE_INVALID, proc_h = HANDLE_INVALID;
+    iris_cptr_t ep_h = (iris_cptr_t)ep, n_h = (iris_cptr_t)n, vmo_h = (iris_cptr_t)vmo;
+    iris_cptr_t cmd_ep_h = IRIS_CPTR_NULL, proc_h = IRIS_CPTR_NULL;
 
     /* Command endpoint keeps the child parked; the shared caps go into its
      * CSpace / handle table below. */
     long cep = it_ep_create_slot();
-    cmd_ep_h = (handle_id_t)cep;
+    cmd_ep_h = (iris_cptr_t)cep;
     if (ep < 0 || n < 0 || vmo < 0 || cep < 0 ||
         lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; }
 
@@ -2006,15 +2006,15 @@ void test_t117(void) {
     const char *why = "death notify";
 
     long n = it_notify_create();
-    handle_id_t n_h = (handle_id_t)n;
-    handle_id_t ep[3]  = { HANDLE_INVALID, HANDLE_INVALID, HANDLE_INVALID };
-    handle_id_t pr[3]  = { HANDLE_INVALID, HANDLE_INVALID, HANDLE_INVALID };
+    iris_cptr_t n_h = (iris_cptr_t)n;
+    iris_cptr_t ep[3]  = { IRIS_CPTR_NULL, IRIS_CPTR_NULL, IRIS_CPTR_NULL };
+    iris_cptr_t pr[3]  = { IRIS_CPTR_NULL, IRIS_CPTR_NULL, IRIS_CPTR_NULL };
     if (n < 0) { it_fail("T117", "notif"); return; }
 
     for (uint32_t k = 0; ok && k < 3u; k++) {
         long e = it_ep_create();
         if (e < 0) { ok = 0; why = "ep"; break; }
-        ep[k] = (handle_id_t)e;
+        ep[k] = (iris_cptr_t)e;
         if (lp_spawn_child(ep[k], &pr[k]) < 0) { ok = 0; why = "spawn"; break; }
         /* Watch each child on its own bit of the shared notification. */
         if (it_invoke2(it_child_tcb((long)pr[k]), INV_TCB_WATCH, n, (long)(1u << k)) != 0) {
@@ -2065,7 +2065,7 @@ void test_t117(void) {
     /* A watch armed AFTER death fires immediately (already-dead emit path). */
     if (ok) {
         long n2 = it_notify_create();
-        handle_id_t n2_h = (handle_id_t)n2;
+        iris_cptr_t n2_h = (iris_cptr_t)n2;
         if (n2 < 0) { ok = 0; why = "notif2"; }
         else {
             if (it_invoke2(it_child_tcb((long)pr[0]), INV_TCB_WATCH, n2, 0x20) != 0) {
@@ -2113,8 +2113,8 @@ void test_t118(void) {
         /* (a) process self-exit */
         {
             long e = it_ep_create();
-            handle_id_t e_h = (handle_id_t)e;
-            handle_id_t p_h = HANDLE_INVALID;
+            iris_cptr_t e_h = (iris_cptr_t)e;
+            iris_cptr_t p_h = IRIS_CPTR_NULL;
             if (e < 0 || lp_spawn_child(e_h, &p_h) < 0) { ok = 0; why = "spawn exit"; }
             else {
                 struct iris_msg m;
@@ -2129,8 +2129,8 @@ void test_t118(void) {
         /* (b) process external-kill */
         if (ok) {
             long e = it_ep_create();
-            handle_id_t e_h = (handle_id_t)e;
-            handle_id_t p_h = HANDLE_INVALID;
+            iris_cptr_t e_h = (iris_cptr_t)e;
+            iris_cptr_t p_h = IRIS_CPTR_NULL;
             if (e < 0 || lp_spawn_child(e_h, &p_h) < 0) { ok = 0; why = "spawn kill"; }
             else {
                 it_settle(1);
@@ -2176,10 +2176,10 @@ void test_t118(void) {
 uint8_t           g_sh_stk[SH_NWORK][8192];
 volatile int      g_sh_done[SH_NWORK];
 volatile uint32_t g_sh_prog[SH_NWORK];   /* per-worker progress counter */
-handle_id_t       g_sh_ep = HANDLE_INVALID; /* shared block/release ep   */
+iris_cptr_t       g_sh_ep = IRIS_CPTR_NULL; /* shared block/release ep   */
 volatile uint32_t g_sh_mode;             /* selects the worker script    */
 volatile uint32_t g_sh_iters;            /* yields per worker (churn/spin)*/
-handle_id_t       g_sh_sc = HANDLE_INVALID; /* SC to bind (SH_MODE_SC)    */
+iris_cptr_t       g_sh_sc = IRIS_CPTR_NULL; /* SC to bind (SH_MODE_SC)    */
 
 static void sh_worker(uint32_t idx) {
     uint32_t mode  = g_sh_mode;
@@ -2284,7 +2284,7 @@ void test_t119(void) {
         g_sh_iters = 0u;
         long ep = it_ep_create();
         if (ep < 0) { ok = 0; why = "ep create"; break; }
-        g_sh_ep = (handle_id_t)ep;
+        g_sh_ep = (iris_cptr_t)ep;
 
         if (!sh_start(SH_NWORK)) { ok = 0; why = "thread create"; }
         /* let workers reach EP_RECV */
@@ -2296,8 +2296,8 @@ void test_t119(void) {
         /* (b) lifecycle_probe child externally killed while alive. */
         if (ok) {
             long ce = it_ep_create();
-            handle_id_t ce_h = (handle_id_t)ce;
-            handle_id_t p_h = HANDLE_INVALID;
+            iris_cptr_t ce_h = (iris_cptr_t)ce;
+            iris_cptr_t p_h = IRIS_CPTR_NULL;
             if (ce < 0 || lp_spawn_child(ce_h, &p_h) < 0) { ok = 0; why = "spawn"; }
             else {
                 it_settle(1);
@@ -2344,7 +2344,7 @@ void test_t120(void) {
     g_sh_iters = T120_ITERS;
     long ep = it_ep_create_slot();
     if (ep < 0) { it_fail("T120", "ep create"); return; }
-    g_sh_ep = (handle_id_t)ep;
+    g_sh_ep = (iris_cptr_t)ep;
 
     if (!sh_start(SH_NWORK)) { ok = 0; why = "thread create"; }
 

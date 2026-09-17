@@ -17,7 +17,7 @@
 #include "../common/iris_msg.h"
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
-void iris_test_main(handle_id_t rbx_unused) {
+void iris_test_main(iris_cptr_t rbx_unused) {
     /* Phase 13 (Track I): the spawn/authority cap arrives as the
      * IRIS_CPTR_PROC_CONTROL (slot 6) pre-start mint — no bootstrap KChannel.
      * SYS_CAP_CREATE_IOPORT resolves it by CPtr via the device-cap dual
@@ -44,7 +44,7 @@ void iris_test_main(handle_id_t rbx_unused) {
          * capability — printing test output no longer needs the authority to
          * spawn processes. */
         if (it_ioport_create((long)IRIS_CPTR_IOPORT_CONTROL, 0x3F8, 8, (long)IT_SERIAL_SLOT) == 0)
-            g_serial_h = (handle_id_t)IT_SERIAL_SLOT;
+            g_serial_h = (iris_cptr_t)IT_SERIAL_SLOT;
     }
 
     it_serial_write("[IRIS][TEST] start\n");
@@ -414,6 +414,8 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t351();
     test_t352();
     test_t353();
+    test_t354();
+    test_t355();
     test_t324();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */

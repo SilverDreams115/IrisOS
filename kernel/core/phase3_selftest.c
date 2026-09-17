@@ -3,7 +3,7 @@
 #include <iris/task.h>
 #include <iris/nc/error.h>
 #include <iris/nc/rights.h>
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <iris/nc/knotification.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kbootcap.h>

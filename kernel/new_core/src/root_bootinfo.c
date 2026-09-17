@@ -12,6 +12,7 @@
  */
 
 #include <iris/root_bootinfo.h>
+#include <iris/abi.h>
 #include <iris/boot_info.h>
 #include <iris/nc/kbootcap.h>
 #include <iris/nc/error.h>
@@ -54,6 +55,15 @@ iris_error_t root_bootinfo_init(void *buf, uint32_t bytes,
     bi->cap_proc_control   = 0u;
     bi->cap_initrd_control = 0u;
     bi->cap_fb_control     = 0u;
+    /* v9 (Stage 10-abi): which ABI this kernel implements.  Written here
+     * rather than by the boot path, because it is a property of the BUILD and
+     * a boot path that could forget it would hand out a zero that reads as
+     * "version 0.0" rather than as "nobody said". */
+    bi->abi_major        = IRIS_ABI_VERSION_MAJOR;
+    bi->abi_minor        = IRIS_ABI_VERSION_MINOR;
+    /* Filled in by the boot path, which is the only thing that knows; zero
+     * until then, and zero means "this machine had no ACPI". */
+    bi->acpi_rsdp        = 0u;
     bi->cnode_slots      = cnode_slots;
     /* No free slots claimed yet — the boot path knows which slots it left
      * empty only after it has stopped filling them. */
@@ -71,7 +81,7 @@ iris_error_t root_bootinfo_set_control_cap(void *buf, uint32_t bytes,
     if (bytes < RBI_HEADER_BYTES)                  return IRIS_ERR_INVALID_ARG;
     if (bi->magic != IRIS_ROOT_BOOTINFO_MAGIC)     return IRIS_ERR_INVALID_ARG;
     if (bi->version != IRIS_ROOT_BOOTINFO_VERSION) return IRIS_ERR_INVALID_ARG;
-    /* Slot 0 is CPTR_NULL: a capability nobody can name is not a grant. */
+    /* Slot 0 is IRIS_CPTR_NULL: a capability nobody can name is not a grant. */
     if (cptr == 0u)                                return IRIS_ERR_INVALID_ARG;
 
     switch (kind) {
@@ -87,6 +97,15 @@ iris_error_t root_bootinfo_set_control_cap(void *buf, uint32_t bytes,
     case IRIS_BOOTCAP_IOSPACE_CONTROL: bi->cap_iospace_control = cptr; break;
     default:                          return IRIS_ERR_INVALID_ARG;
     }
+    return IRIS_OK;
+}
+
+iris_error_t root_bootinfo_set_acpi_rsdp(void *buf, uint32_t bytes,
+                                         uint64_t rsdp_phys) {
+    struct iris_root_bootinfo *bi = (struct iris_root_bootinfo *)buf;
+    if (!bi || bytes < RBI_HEADER_BYTES) return IRIS_ERR_INVALID_ARG;
+    if (bi->version != IRIS_ROOT_BOOTINFO_VERSION) return IRIS_ERR_INVALID_ARG;
+    bi->acpi_rsdp = rsdp_phys;
     return IRIS_OK;
 }
 
@@ -111,7 +130,8 @@ iris_error_t root_bootinfo_set_empty_range(void *buf, uint32_t bytes,
 
 iris_error_t root_bootinfo_add_untyped(void *buf, uint32_t bytes,
                                        uint64_t cptr, uint64_t paddr,
-                                       uint64_t size_bytes, int is_device) {
+                                       uint64_t size_bytes, int is_device,
+                                       uint32_t kind) {
     struct iris_root_bootinfo *bi = (struct iris_root_bootinfo *)buf;
 
     if (!bi) return IRIS_ERR_INVALID_ARG;
@@ -131,7 +151,7 @@ iris_error_t root_bootinfo_add_untyped(void *buf, uint32_t bytes,
     e->paddr      = paddr;
     e->size_bytes = size_bytes;
     e->is_device  = is_device ? 1u : 0u;
-    e->reserved   = 0u;
+    e->kind       = kind;
 
     bi->untyped_count++;
     bi->total_bytes = (uint64_t)RBI_HEADER_BYTES +

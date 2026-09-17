@@ -1,6 +1,6 @@
 #pragma once
 #include <stdint.h>
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <iris/nc/rights.h>
 
 /* Number of entries in the ring-3 name→index catalog (must match the FIRST
@@ -43,13 +43,13 @@ long svc_initrd_count(uint64_t initrd_c);
  *   - *out_chan_h: receives parent end of bootstrap channel (RIGHT_READ|WRITE|DUP|XFER)
  *
  * On success returns 0; on failure returns a negative iris_error_t cast to long.
- * Both *out_proc_h and *out_chan_h are HANDLE_INVALID on failure.
+ * Both *out_proc_h and *out_chan_h are IRIS_CPTR_NULL on failure.
  *
  * The child process starts with RBX = handle_id of its own end of the
  * bootstrap channel, consistent with the entry.S bootstrap convention.
  */
 long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
-              handle_id_t *out_proc_h, handle_id_t *out_chan_h);
+              iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h);
 
 /*
  * Phase 8: pre-start CSpace mint table.
@@ -69,7 +69,7 @@ long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * without it, and nothing said so until a test three hundred cases later asked
  * for it and got ACCESS_DENIED.
  *
- * `src_h == HANDLE_INVALID` and a zero source are skipped, and say so.
+ * `src_h == IRIS_CPTR_NULL` and a zero source are skipped, and say so.
  */
 /* What happened to one entry.  Zero is success; a negative value is the
  * kernel's error (ALREADY_EXISTS means the destination slot was occupied,
@@ -79,7 +79,7 @@ long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
 #define SVC_MINT_PENDING  2    /* the loader never reached this entry */
 struct svc_mint {
     uint64_t      slot;    /* destination CPtr slot in the child root CNode */
-    handle_id_t   src_h;   /* source cap in the CALLER's handle table
+    iris_cptr_t   src_h;   /* source cap in the CALLER's handle table
                             * (legacy path: SYS_PROC_CSPACE_MINT) */
     uint64_t      src_cptr;/* Phase S4: source cap in the CALLER's CSpace.  When
                             * non-zero it WINS over src_h and the mint goes
@@ -154,12 +154,12 @@ struct svc_mint {
  * say, so it is an argument.
  */
 long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
-                        handle_id_t *out_proc_h, handle_id_t *out_chan_h,
+                        iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h,
                         struct svc_mint *mints, uint32_t mint_count,
                         uint64_t ws, uint64_t child_budget,
                         uint32_t own_budget_slot, uint64_t keep_cnode_dest,
                         uint64_t keep_tcb_dest, uint64_t keep_vspace_dest);
 
 long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
-                     handle_id_t *out_proc_h, handle_id_t *out_chan_h,
+                     iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h,
                      struct svc_mint *mints, uint32_t mint_count);

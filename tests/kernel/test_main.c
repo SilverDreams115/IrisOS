@@ -31,6 +31,7 @@ void test_syscall_retype(void);
 void test_syscall_tcb(void);
 void test_syscall_ipc(void);
 void test_syscall_dispatch(void);
+void test_abi(void);
 
 int main(void) {
     test_rights();
@@ -60,6 +61,7 @@ int main(void) {
     test_syscall_tcb();
     test_syscall_ipc();
     test_syscall_dispatch();
+    test_abi();
 
     printf("\nresult: %d passed, %d failed\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

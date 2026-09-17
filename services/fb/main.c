@@ -13,7 +13,7 @@
 #include <stdint.h>
 #include <iris/syscall.h>
 #include <iris/invoke.h>
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
 #include <iris/endpoint_proto.h>
@@ -77,7 +77,7 @@ static void fb_draw_rect(uint32_t *pixels, uint32_t stride,
     }
 }
 
-void fb_main_c(handle_id_t rbx_unused) {
+void fb_main_c(iris_cptr_t rbx_unused) {
     /* Phase 13 (Track I): the framebuffer capability arrives as a pre-start
      * mint — SYS_FRAMEBUFFER_VMO resolves it by CPtr.  No bootstrap KChannel:
      * svc_loader passes RBX = 0, so this argument is not a handle and closing

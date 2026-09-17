@@ -37,7 +37,7 @@
 #include "../common/iris_msg.h"
 #include <iris/syscall.h>
 #include <iris/invoke.h>
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <iris/ipc_msg.h>
 #include <iris/fault_proto.h>
 #include <iris/endpoint_proto.h>
@@ -293,8 +293,8 @@ static void lp_msg_zero(struct iris_msg *m) {
     for (uint32_t i = 0; i < (uint32_t)sizeof(*m); i++) b[i] = 0;
 }
 
-void lp_main(handle_id_t bootstrap_ch_h);
-void lp_main(handle_id_t bootstrap_ch_h) {
+void lp_main(iris_cptr_t bootstrap_ch_h);
+void lp_main(iris_cptr_t bootstrap_ch_h) {
     (void)bootstrap_ch_h;   /* RBX = 0 under the CPtr-mint bootstrap model */
 
     struct iris_msg msg;

@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include "iris_msg.h"
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <iris/console_ep_proto.h>
 #include <iris/ipc_msg.h>
 #include <iris/syscall.h>
@@ -19,9 +19,9 @@
  * staging buffer of at least IRIS_IPC_BUF_SIZE bytes (EP bulk payloads are
  * read from user memory).  Returns 0 on success, negative on first failure.
  */
-static inline long console_ep_write(handle_id_t ep_h, uint8_t *buf,
+static inline long console_ep_write(iris_cptr_t ep_h, uint8_t *buf,
                                     const char *s) {
-    if (ep_h == HANDLE_INVALID || !s || !buf) return -1;
+    if (ep_h == IRIS_CPTR_NULL || !s || !buf) return -1;
 
     uint32_t len = 0;
     while (s[len]) len++;
@@ -51,8 +51,8 @@ static inline long console_ep_write(handle_id_t ep_h, uint8_t *buf,
  * Returns after the console has drained all legacy KChannel writes queued
  * before this call (EP writes are already synchronous).
  */
-static inline long console_ep_sync(handle_id_t ep_h) {
-    if (ep_h == HANDLE_INVALID) return -1;
+static inline long console_ep_sync(iris_cptr_t ep_h) {
+    if (ep_h == IRIS_CPTR_NULL) return -1;
     struct iris_msg msg;
     uint8_t *raw = (uint8_t *)&msg;
     for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;

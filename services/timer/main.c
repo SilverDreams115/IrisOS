@@ -26,7 +26,7 @@
 #include "../common/iris_msg.h"
 #include <iris/syscall.h>
 #include <iris/invoke.h>
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <iris/nc/rights.h>
 #include <iris/ipc_msg.h>
 #include <iris/endpoint_proto.h>
@@ -119,8 +119,8 @@ static void tm_tick(void) {
     }
 }
 
-void timer_main(handle_id_t bootstrap_ch_h);
-void timer_main(handle_id_t bootstrap_ch_h) {
+void timer_main(iris_cptr_t bootstrap_ch_h);
+void timer_main(iris_cptr_t bootstrap_ch_h) {
     (void)bootstrap_ch_h;
 
     /*

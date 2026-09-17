@@ -1,13 +1,13 @@
 #include <stdint.h>
 #include <iris/syscall.h>
 #include <iris/invoke.h>
-#include <iris/nc/handle.h>
+#include <iris/nc/cptr.h>
 #include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
 #include <iris/endpoint_proto.h>
 #include <iris/boot_info.h>
-#include <iris/fb_info.h>
 #include <iris/root_bootinfo.h>
+#include <iris/abi.h>
 #include "../../services/common/svc_loader.h"
 
 static inline long ub_sys1(long nr, long a0) {
@@ -17,7 +17,7 @@ static inline long ub_sys1(long nr, long a0) {
 /* Stage 4: nothing userboot holds is a handle.  ub_close was the release
  * path for the kernel's dual-inserted bootstrap cap, which is CSpace-only
  * now. */
-static void ub_close(handle_id_t h) { (void)h; }
+static void ub_close(iris_cptr_t h) { (void)h; }
 
 /* Phase 28: bootstrap diagnostic.  A bootstrap-fatal condition (a broken initrd
  * catalog) must never manifest as a SILENT dead system.  userboot holds the
@@ -123,8 +123,8 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     const struct iris_root_bootinfo *bi =
         (const struct iris_root_bootinfo *)(uintptr_t)bootinfo_va;
 
-    handle_id_t init_proc_h = HANDLE_INVALID;
-    handle_id_t init_boot_h = HANDLE_INVALID;
+    iris_cptr_t init_proc_h = IRIS_CPTR_NULL;
+    iris_cptr_t init_boot_h = IRIS_CPTR_NULL;
     uint64_t    irq_control_c;
     uint64_t    ioport_control_c;
     uint64_t    debug_control_c;
@@ -148,6 +148,26 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         ub_boot_panic(BOOT_CPTR_IOPORT_CONTROL, UB_PANIC_IOPORT_SLOT,
                       "[USERBOOT] FATAL: BootInfo missing or unreadable; "
                       "halting boot\n");
+        goto fail;
+    }
+
+    /*
+     * Stage 10-abi: which ABI is this kernel?
+     *
+     * The root task is the only thing that can ask, and it is the only thing
+     * that has to: everything below it is started BY userboot and cannot be
+     * running on a kernel userboot is not.  A different MAJOR means something
+     * this binary was compiled to do no longer works, and continuing would
+     * mean discovering that one call at a time, as NOT_SUPPORTED from a method
+     * that used to exist — an error with no author.  A different minor is not
+     * an error in either direction: a higher one is a kernel that grew, and a
+     * lower one is reported so that a service using a newer label finds out
+     * here rather than from a refusal it cannot explain.
+     */
+    if (bi->abi_major != IRIS_ABI_VERSION_MAJOR) {
+        ub_boot_panic(BOOT_CPTR_IOPORT_CONTROL, UB_PANIC_IOPORT_SLOT,
+                      "[USERBOOT] FATAL: kernel ABI major differs from the one "
+                      "this root task was built against; halting boot\n");
         goto fail;
     }
 
@@ -293,7 +313,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * so retype (WRITE) and onward mint (DUPLICATE) both work.  Non-fatal:
          * if the grant is absent the mint fails, the slot stays empty and the
          * authority tests FAIL loudly rather than silently skipping. */
-        struct svc_mint init_mints[15] = { 0 };
+        struct svc_mint init_mints[17] = { 0 };
         init_mints[0].slot     = IRIS_CPTR_PROC_CONTROL;
         init_mints[0].src_cptr = proc_control_c;
         init_mints[0].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
@@ -396,52 +416,58 @@ void iris_userboot_main(uint64_t bootinfo_va) {
             init_mint_count = 13u;
         }
         /*
-         * Ledger D-9: the DEVICE untypeds, of which there are now two.
+         * Ledger D-9 / Stage 10: the DEVICE untypeds, routed by KIND.
          *
-         * Found by their flag rather than by position, because how many RAM
-         * blocks the drain produced is a property of the machine and this is
-         * not a fixed index into it.  init is where every other boot authority
-         * goes; whoever ends up driving hardware gets these from there.
+         * There are four classes now — the framebuffer, the PCI hole and the
+         * two ACPI regions — and each has a different consumer.  The kernel
+         * says which is which (`IRIS_UT_KIND_*`), so this is a lookup rather
+         * than a guess.
          *
-         * Which is which is decided by PADDR, not by order.  The framebuffer's
-         * region is the one that CONTAINS the framebuffer's physical base —
-         * that is the only thing that makes it the framebuffer's — and every
-         * other device region is the PCI hole, where a driver that enumerated
-         * the bus will find the window its device was assigned.  Taking "the
-         * first one with is_device set" worked while there was one and would
-         * have handed `fb` an arbitrary two gigabytes of MMIO the moment there
-         * were two, which is a bug that paints a black screen and says nothing.
+         * It was a guess twice.  First "the first one with is_device set",
+         * which was right while there was one and would have handed `fb` two
+         * gigabytes of MMIO the moment there were two.  Then "the one whose
+         * range contains the framebuffer's physical base", which was right
+         * while there were two and would have handed the MMIO slot an ACPI
+         * region the moment there were three — and there are three.  A fact
+         * the kernel already knows should not be re-derived by the reader.
          *
-         * A machine with no framebuffer leaves slot 64 empty and every device
-         * region goes to the MMIO slot; a machine with neither leaves both
-         * empty.  Neither is an error here: what is missing is a fact about
-         * the machine, and the services that need these say so themselves.
+         * A machine missing any of them leaves that slot empty.  That is not
+         * an error here: what is missing is a fact about the machine, and the
+         * services that need it say so themselves.
          */
         {
-            struct iris_fb_params fbp;
-            uint8_t *raw = (uint8_t *)&fbp;
-            for (uint32_t i = 0; i < (uint32_t)sizeof(fbp); i++) raw[i] = 0;
-            (void)iris_invoke2((long)fb_control_c, INV_BOOT_FRAMEBUFFER_INFO,
-                               (long)(uintptr_t)&fbp, 0);
-
-            int have_fb = 0, have_mmio = 0;
+            int have[4] = { 0, 0, 0, 0 };
             for (uint32_t i = 0; i < bi->untyped_count &&
-                                 init_mint_count < 15u; i++) {
+                                 init_mint_count < 17u; i++) {
                 if (!bi->untyped[i].is_device) continue;
-                uint64_t base = bi->untyped[i].paddr;
-                uint64_t end  = base + bi->untyped[i].size_bytes;
-                int is_fb = (fbp.size != 0u && fbp.phys >= base &&
-                             fbp.phys <  end);
-                if (is_fb) {
-                    if (have_fb) continue;
-                    have_fb = 1;
-                } else {
-                    if (have_mmio) continue;
-                    have_mmio = 1;
+                uint32_t kind = bi->untyped[i].kind;
+                uint64_t slot;
+                switch (kind) {
+                case IRIS_UT_KIND_FRAMEBUFFER: slot = IRIS_CPTR_DEVICE_UNTYPED; break;
+                case IRIS_UT_KIND_MMIO:        slot = IRIS_CPTR_MMIO_UNTYPED;   break;
+                case IRIS_UT_KIND_ACPI:
+                    /*
+                     * One slot, and this machine has FIVE ACPI regions — so
+                     * "the first" is not good enough: the one worth handing on
+                     * is the one the root pointer is IN, because every table
+                     * is found by following it and a region without it is a
+                     * region nobody can start from.
+                     *
+                     * The rest stay with the root task, which is the right
+                     * place for memory nobody has asked for.
+                     */
+                    if (bi->acpi_rsdp < bi->untyped[i].paddr ||
+                        bi->acpi_rsdp >= bi->untyped[i].paddr +
+                                         bi->untyped[i].size_bytes) continue;
+                    slot = IRIS_CPTR_ACPI_UNTYPED;
+                    break;
+                default: continue;
                 }
-                init_mints[init_mint_count].slot     = is_fb
-                                                       ? IRIS_CPTR_DEVICE_UNTYPED
-                                                       : IRIS_CPTR_MMIO_UNTYPED;
+                /* One slot per kind: a slot holds one capability. */
+                if (have[kind]) continue;
+                have[kind] = 1;
+
+                init_mints[init_mint_count].slot     = slot;
                 init_mints[init_mint_count].src_cptr = bi->untyped[i].cptr;
                 init_mints[init_mint_count].rights   = RIGHT_READ | RIGHT_WRITE |
                                                        RIGHT_DUPLICATE |
@@ -449,6 +475,36 @@ void iris_userboot_main(uint64_t bootinfo_va) {
                 init_mints[init_mint_count].badge    = 0;
                 init_mint_count++;
             }
+        }
+
+        /*
+         * Say where ACPI is, and that it is REACHABLE.
+         *
+         * Two separate claims, and the second is the one that was not true
+         * before Stage 10: the bootloader found a root pointer, and the
+         * capability that names the memory it points into has been handed to
+         * ring 3.  Checked by containment rather than by reading, because
+         * reading would consume part of a region somebody else is about to be
+         * given, and an Untyped's watermark does not go backwards.  The SUITE
+         * does the read, which is where spending the region is free.
+         */
+        {
+            uint64_t rsdp = bi->acpi_rsdp;
+            int reachable = 0;
+            for (uint32_t i = 0; rsdp && i < bi->untyped_count; i++) {
+                if (bi->untyped[i].kind != IRIS_UT_KIND_ACPI) continue;
+                uint64_t ab = bi->untyped[i].paddr;
+                if (rsdp >= ab && rsdp < ab + bi->untyped[i].size_bytes) {
+                    reachable = 1;
+                    break;
+                }
+            }
+            ub_boot_panic(BOOT_CPTR_IOPORT_CONTROL, UB_PANIC_IOPORT_SLOT,
+                          rsdp == 0u
+                            ? "[USERBOOT] ACPI: no root pointer on this machine\n"
+                          : reachable
+                            ? "[USERBOOT] ACPI: root pointer reachable from ring 3\n"
+                            : "[USERBOOT] ACPI: root pointer is in no region ring 3 holds\n");
         }
 
         long lr = svc_load_minted_ws(proc_control_c, initrd_control_c, "init",
