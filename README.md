@@ -482,6 +482,14 @@ working:
   and IPIs the other cores with the tick, so the machine has one clock by
   construction.  Threads are distributed round-robin at TCB configure and
   nothing migrates.  Full suite green on one processor and on four.
+- **DMA containment**: a device's reach is a capability.  The DMA remapping
+  units are found in ACPI, switched on at boot with **every device blocked**,
+  and a driver's supervisor gives a device an address space (`IOSpace`) bound
+  to its PCI source-id, builds its translation levels out of its own memory,
+  and maps exactly the frames that device may touch.  Unmapping or destroying
+  the space takes the reach back, from the unit's translation cache as well as
+  the tables.  Without this, user-space drivers are contained only on paper: a
+  driver holding an I/O port capability can program a device to write anywhere.
 - **IRQ delivery**: seL4-style deferred ACK — kernel masks + EOIs, signals a
   `KNotification`, the ring-3 handler reads hardware and calls `SYS_IRQ_ACK`.
 - **Hardening**: `-fstack-protector-strong` with RDTSC-seeded per-service

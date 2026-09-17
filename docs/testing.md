@@ -11,7 +11,7 @@ Four gates, and a green tree means all four — on **one processor and on four**
 | Host unit tests | `make test-unit` | 27414 assertions across 28 suites, 0 failed |
 | Purity gate | `make check-purity` | allowlist respected; the kernel-memory-reachable closure is 26 functions and only ever shrinks |
 | Lock-order gate | `make check-locks` | 18 ranked locks, no inversions — it holds SMP roadmap §9.1's hierarchy and follows calls three hops |
-| Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests` | `SUITE PASS 317/317` plus the P3/P41 markers |
+| Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests` | `SUITE PASS 319/319` plus the P3/P41 markers |
 
 ### The IOMMU dimension
 
@@ -24,9 +24,16 @@ way proves nothing about the other.
 IRIS_QEMU_IOMMU=1 make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests
 ```
 
-Both directions are gated: with a unit attached the kernel must FIND it, and
-without one it must still say so — a kernel that silently found nothing and a
-kernel that silently skipped looking read the same from outside.
+Both directions are gated: with a unit attached the kernel must FIND it and
+must CONTAIN with it (`DMA is contained`), and without one it must still say
+so — a kernel that silently found nothing and a kernel that silently skipped
+looking read the same from outside.
+
+**T351** and **T352** are the ring-3 half, and both run on either machine.  On
+one with no unit they assert the opposite claim: nothing translating, no
+containment reported, and an IOSpace REFUSED rather than handed out.  A
+containment gauge that reported success with no hardware to enforce it would be
+worse than no gauge.
 
 ### The core-count dimension
 
@@ -166,6 +173,7 @@ names itself rather than showing up as a boot hang:
 
 | Test | Pins |
 |---|---|
+| T351, T352 | Stage 10-dma.  T351: the remapping units found, usable and ENFORCING — `translating == units`, or, on a machine with none, nothing translating AND no containment claimed.  T352: the whole capability arc — retyping an IOSpace (anyone with an Untyped may), binding it to a device (only with IOSpaceControl), installing the three translation levels one at a time out of the holder's own memory, mapping a frame, refusing a second mapping at one address, unmapping, and then destroying the space with a mapping still live so the baseline proves every object came back.  Neither watches a device be refused — there is no DMA engine under IRIS's control here, which is §10.2 step 6 |
 | T347–T350 | SMP roadmap §9.3 step 5, the adversarial phase — four tests that AIM four processors at ONE object rather than merely running on several.  T347: four callers on four cores calling one server, each requiring its own answer, which is how a reply delivered to the wrong caller becomes visible at all.  T348: four cores minting and deleting from one capability while a fifth revokes it.  T349: four cores retyping into the SAME slot, where exactly one may win and the losers must lose cleanly — and the sub-untyped's budget must come all the way back after a RESET, which is the assertion about the ROLLBACK.  T350: four cores killing the same four threads, so one kill always races the thread's own core.  Between them they found four defects — a retype rollback that freed another core's memory, a reference released on the line above the call that used it, a teardown gate that was a plain byte tested unlocked, and a dispatch that overwrote a `Suspend` on a thread already dequeued (that one surfaced in T333, which suspends a thread and then reads its registers).  Each reports how many distinct cores its workers landed on, so a run that was taking turns rather than contending says so |
 | T346 | SMP roadmap §9.3 step 4: the other processors SCHEDULE.  On one processor, exactly one has ever dispatched and no tick was broadcast — that zero is not a formality, since the timer ISR calls the broadcast on every tick and a version that did not check would be firing IPIs into an empty destination mask a hundred times a second.  On more than one: every processor that is ONLINE has dispatched a thread (not "at least two" — a machine that brought four up and schedules on three has a quarter of its cores idle for ever and looks healthy from everywhere else), and the tick broadcast is still ADVANCING across real elapsed time, because a processor that stops being told the time never charges its thread's budget and never runs its slice down |
 | T345 | SMP roadmap §9.3 step 2, and it asks the machine how many processors it has rather than assuming: always, an unmap still issues its LOCAL `invlpg`; on one processor, zero shootdowns, which is the evidence the target scan skips the CALLING CPU — without that skip the first unmap would IPI itself and spin, with interrupts off, for an acknowledgement it cannot deliver; on several, shootdowns have HAPPENED, and reaching the assertion at all is the ack handshake working, since a core that did not answer would have hung the machine rather than failed a comparison |

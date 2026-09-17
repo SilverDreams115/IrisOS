@@ -95,6 +95,21 @@ it cannot touch any other line.  console holds no IRQ cap at all.
 
 ## Threat model — a compromised driver
 
+**The part this document used to leave implicit, and no longer has to.**
+Everything below bounds what a driver may TELL a device to do.  None of it
+bounds what the DEVICE does — and against a DMA-capable one the containment
+claim was fiction: the driver writes a physical address into the device and the
+device writes there, through no page table, past every check the kernel makes.
+
+Stage 10-dma closed that.  A device's reach is a capability now: the frames
+somebody mapped into its `IOSpace`, and nothing else.  Translation is enabled
+at boot with **every device blocked**, so a device that no capability names
+reaches nothing — the default is refusal, not identity.  A driver handed narrow
+port and IRQ capabilities is contained in fact and not only on paper, PROVIDED
+the machine has a remapping unit; on one that does not, the kernel says so
+(`DMA is unrestricted on this machine`) rather than reporting containment it
+cannot deliver.
+
 If `kbd` is fully compromised it can: read/write ports 0x60–0x64, wait on and
 ack IRQ1, and serve/receive on its own endpoint.  It CANNOT: reach any other
 port (cap range-bounded), route or ack any other IRQ (cap embeds line 1, and it
@@ -182,6 +197,13 @@ IRQ 5 (unused) as the dummy line.
   gauge).  A dedicated killable-router test would need a proc-ROUTE cap.
 - **MMIO beyond the framebuffer**: IRIS has no general MMIO-cap model yet; when
   one is added it must carry the same range-bounded, rights-checked contract.
+- **The DMA containment is not WATCHED to work**: no device under IRIS's
+  control issues DMA in the test environment, so T351 and T352 assert what the
+  kernel accepted, refused and wrote into the translation tables — not a bus
+  transaction that failed.  The unit's fault-status register is reported for
+  exactly this reason: a non-zero value would be a device that tried and was
+  refused, the one piece of direct evidence available here.  Closing this needs
+  a driver for a DMA-capable device.
 
 ## Adding a new driver without widening authority
 

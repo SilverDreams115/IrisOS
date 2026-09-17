@@ -72,7 +72,7 @@ against seL4 turned up, including one A9 defect it fixed.
 | 11-life — object lifetime (D-7) | ✅ SEMANTICS CLOSED — an object exists exactly while a capability names it, measured for every type (T322), over generated MDB shapes (T323) and through a CSpace cycle (T321).  The MECHANISM stays a refcount, registered as a permanent divergence; the one disagreement it produced (a donated scheduling context released twice) is fixed and T324 reads every pool slot each run to catch the next |
 | 13-form — the four FORM divergences (A-20's audit) | ✅ 3 of 4 CLOSED, the fourth decided.  **A-21** address-space identity is `ASIDControl`/`ASIDPool`; **A-22** a fault is an IPC message on an endpoint answered by a reply capability; **A-24** the kernel cannot block a thread on time — waiting is a ring-3 service — with **A-23** (`seL4_TCB_BindNotification`) as its enabler and **A-25** (`CancelBadgedSends`) closing the audit's last item.  The fourth, the ABI SHAPE, is a permanent deliberate divergence (charter §4) |
 | 9 — SMP | ✅ **All 5 steps done.**  §9.1 hierarchy and §9.2 catalog written and enforced (`make check-locks`); step 1 (the one-core kernel made SMP-correct), step 2 (TLB shootdown), step 3 (APs discovered and started), step 4 (they schedule — `online=4 dispatching=4`), step 5 (the adversarial phase — four tests aiming four cores at one object, which found four real defects: a rollback that freed another core's memory, a release-then-use, a teardown gate that was not atomic, and a dispatch that overwrote a Suspend).  Full suite green on `-smp 1` and `-smp 4`.  What remains is NOT mechanism: the model-based fuzzer is not yet aimed at N cores, and §9.4's limit stands — TCG interleaves, it does not reorder |
-| 10-dma — device authority must be containable | 🔶 **2 of 6 steps done.**  §10.0–§10.3 written; the kernel needs no PCI enumeration (the source-id travels on the capability, as it does in seL4).  Step 1 ✅ the DMAR is parsed and the units found; step 2 ✅ their capability registers are read and decoded, and a unit that is not what the later steps assume is refused by name.  Measured: 3-level tables only, and the page walk is NOT cache-coherent.  Nothing is mapped or enabled yet, so DMA is still unrestricted |
+| 10-dma — device authority must be containable | ✅ **All 6 steps done.**  The DMAR is parsed and the units probed; translation is ENABLED with every device blocked; `KIOSpace` and `KIOPageTable` are retyped objects and `IOSpaceControl` a BootInfo authority; a frame mapped into an IOSpace is what a device may reach, and unmapping or destroying the space takes it back — from the unit's translation cache as well as the table.  **T351** pins containment, **T352** the whole arc.  What it cannot prove is in §10.2 step 6: no device under IRIS's control issues DMA here, so nothing watches one be refused |
 | 10 — General-purpose platform | pending |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
@@ -2433,7 +2433,7 @@ up as one.  Saying so now is cheaper than discovering it in a ledger row later.
 **The deadlock direction is untestable until step 3.**  A lock-order inversion
 cannot happen on one core, so §9.1 is enforced by review until there are two.
 
-## Stage 10-dma — device authority must be containable  ← IN PROGRESS
+## Stage 10-dma — device authority must be containable  ← ALL 6 STEPS DONE
 
 This is a SECURITY hole in the capability model, not a platform feature, which
 is why it is pulled out of Stage 10's list and given a stage of its own.
@@ -2539,31 +2539,104 @@ specification):
 | SAGAW offers **3 levels only** (39-bit) | the IO page table is three levels on this hardware, not four.  A walker written for four and run on this would build a table the unit reads as garbage |
 | **ECAP.C is 0 — the page walk is NOT coherent** | every root, context and page-table line IRIS writes has to be flushed out of the CPU cache before the unit reads it.  A kernel that skipped that would install translations the hardware never sees, and the symptom is a device that still reaches everything — protection that is not there, reported as present |
 
-**Step 3 — the objects, and an empty default.**  `KIOSpace` and `KIOPageTable`
-as retypable objects; `IOSpaceControl` in BootInfo; the root and context tables
-built; translation ENABLED with every context entry blocked.  The step's claim
-is the §10.1 property: at the end of it a device can reach nothing, and the
-machine still boots.
+**Step 3 — translation ON, and everything blocked.**  ✅ **DONE.**  The root
+table is built and the unit switched into translating mode with NO entry
+present, so every DMA request from every device is refused by the hardware.
+That is §10.1's property standing on its own, before any object exists that
+could relax it.
 
-*The hazard to respect here*: the firmware's own devices DMA.  IRIS does no
-disk I/O after ExitBootServices — services are linked into the kernel image —
-so there should be nothing left that needs its DMA to work.  "Should" is why
-this is its own step with its own gate.
+An empty root table is also the cheapest possible default: one 4 KiB page per
+unit, no context tables, and a request from any bus faults on the root entry.
+Building 256 context tables to hold nothing would be the same answer at a
+thousand times the memory.
 
-**Step 4 — mapping.**  `IOPageTable_Map` to install a level, and mapping a
-frame into an IOSpace with rights.  The frame side reuses `KFrame` exactly;
-what is new is the second address space it can appear in.
+Three things made it harder than setting a bit, and each is a comment in
+`iommu.c` rather than a line of code somebody has to re-derive:
 
-**Step 5 — revocation, and the IOTLB.**  Deleting the frame capability, or
-revoking the IOSpace, removes the device's reach — and the hardware's cache has
-to be told, which is the DMA-side twin of the TLB shootdown in §9.3 step 2.  A
-revoke that leaves a stale IOTLB entry is a revoke that did not happen.
+| | |
+|---|---|
+| GCMD is WRITE-ONLY and one-shot | the register holds a command, not a state; the enabled bits are SHADOWED, because a read-modify-write on a register that cannot be read is a bug that works until the second command |
+| The page walk is not cache-coherent | a root table written by the CPU sits in the CPU's cache and the unit reads memory.  Without a flush the unit walks whatever was there before — not "translations that do not work" but translations the hardware never sees, presenting as a device that still reaches everything |
+| Both caches hold the firmware's leftovers | the context cache and the IOTLB are emptied, in order, through commands that must be waited on |
 
-**Step 6 — say what this cannot prove.**  There is no device in the test
-environment that actually issues DMA at a revoked address, so "the device
-cannot reach it" is checked by reading the translation tables rather than by
-watching a device fail.  That is a real limit and belongs in the same sentence
-as the claim, the way §9.4 sits beside §9.3.
+It is called LAST in boot, after the first user task is built.  The firmware's
+devices DMA, and this is what stops DMA nobody authorised; IRIS does none of
+its own after ExitBootServices, but "there is nothing left that needs it" is a
+claim about the boot sequence and is made where that sequence is finished.
+
+**Gated** by the smoke script (`DMA is contained` must appear when a unit was
+found) and by **T351**, which asserts the property from ring 3 and asserts the
+opposite one on a machine with no unit: nothing usable, nothing translating,
+and no containment CLAIMED.  A gauge that reported success with no hardware to
+enforce it would be worse than no gauge, because every later test reading it
+would pass for the wrong reason.
+
+**Step 4 — the objects, and mapping.**  ✅ **DONE.**  `KIOSpace` and
+`KIOPageTable` are retypable objects, `IOSpaceControl` is a BootInfo authority,
+and four invocations do the work: bind, map a level, map a frame, unmap.
+
+The split that matters: **retyping an IOSpace is paying for an object**, which
+anyone holding an Untyped may do, and it names no device.  **Binding it to a
+source-id is authority** — IOSPACE_CONTROL — because that is where "which
+hardware may reach what" is decided.  Same shape as retyping a scheduling
+context and then configuring it against SchedControl.
+
+The holder pays for every page-table level out of its own Untyped, which is
+why `MISSING_TABLE` is an answer the kernel gives rather than an allocation it
+makes.  A device's rights on a frame are what the caller asked for narrowed by
+what the caller HOLDS — a holder that could hand a device more than its own
+frame capability carries would be laundering authority through the one grantee
+that cannot be asked what it holds.
+
+**Two bounded pools with declared limits, refused by name**, because this runs
+on a syscall path and an allocator reachable from a capability invocation is
+what charter M1 and the purity gate exist to prevent: eight context tables
+(one per (unit, PCI bus) in use) and sixteen mappings per device.  "IRIS
+supports eight device buses" is a fact somebody can read rather than a limit
+somebody discovers.
+
+**One honest limitation, and it is the shape of the next piece of work.**  A
+DRHD without INCLUDE_PCI_ALL says which devices it covers through its device
+SCOPES, and IRIS records the scope count but not the paths — so it cannot match
+a source-id against them.  With exactly one remapping unit that does not matter
+and the code says why: a unit is the hardware every DMA request in its segment
+passes through, so attributing a device to the only unit that could translate
+it is not a guess.  With MORE than one and no INCLUDE_PCI_ALL it refuses, which
+is the only other honest answer — an IOSpace installed on the wrong unit is a
+capability promising containment the hardware never enforces.
+
+**Step 5 — revocation, and the IOTLB.**  ✅ **DONE.**  `IOSpace_Unmap` removes
+the entry, flushes the line and invalidates the unit's translation cache, in
+that order — the other order leaves a window in which the unit refills its
+cache from a table line the CPU has not written back, which is a revoke that
+undoes itself.
+
+Destroying the IOSpace does the same for everything at once: the context entry
+goes FIRST, so the device is blocked whatever the tables still say, and only
+then are the levels and the frames released.  Until the context entry is gone
+the device has a live translation into tables about to be handed back to an
+Untyped, and the order is the whole difference between a teardown and a
+use-after-free with a bus master on the other end.
+
+**T352** walks the whole arc and both endings: bind refused without the
+authority, rebinding refused, levels installed one at a time, a frame mapped,
+mapped twice refused, unmapped, unmapped twice refused — and then a frame
+mapped and the SPACE destroyed with the mapping live, where the baseline is
+what proves every object came back.
+
+**Step 6 — say what this cannot prove.**  ✅ **DONE**, and it is this
+paragraph.  There is no DMA engine under IRIS's control in the test
+environment, so nothing here watches a device be refused.  Every claim is about
+what the kernel ACCEPTED and REFUSED and about what the translation tables say
+— not about a bus transaction that failed.  The hardware's own fault status
+register is read and reported for exactly this reason: a non-zero value would
+be a device that DID try and was refused, which is the one piece of direct
+evidence this environment can produce, and it is reported rather than required
+because nothing here is in a position to make a device try.
+
+What would close that gap is a driver for a DMA-capable device under IRIS's
+control — which is Stage 10's work, not this stage's, and is named here so the
+distinction survives.
 
 ### 10.3 — What is NOT in this stage
 

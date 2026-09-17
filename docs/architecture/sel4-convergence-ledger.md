@@ -2273,8 +2273,9 @@ unparented because nothing is above it to be a child of, every delegation
 downward a child.  The note at the ceiling now states what makes those three
 acceptable and why a root anywhere else is not.
 
-**What is left after this**: SMP, IOMMU and formal verification.  None of the
-three is shape IRIS got wrong.
+**What is left after this**: formal verification, and the platform work of
+Stage 10.  SMP and the IOMMU were the other two on this list and are built.
+None of the three was shape IRIS got wrong.
 
 **SMP is done** (roadmap §9.1–§9.3, all five steps).  Four processors dispatch
 threads on a four-CPU machine and the full suite passes there and on one.  What
@@ -2340,6 +2341,37 @@ a RUNNING one.
 What remains is not mechanism: the model-based fuzzer is not yet aimed at N
 cores, and §9.4's limit stands — TCG interleaves, it does not reorder, so this
 method finds logic races and not a wrong `memory_order`.
+
+---
+
+**The IOMMU is built** (Stage 10-dma, all six steps), and it closes the one
+place where IRIS's central claim was fiction.  A driver holds an I/O port
+capability and an IRQ capability and nothing else, and what goes with that is
+containment — which against a DMA-capable device meant nothing at all: the
+driver writes a physical address into the device and the device writes there,
+past every check the kernel makes.
+
+A device's reach is a capability now: the frames somebody mapped for it,
+nameable, delegatable, revocable by the ordinary CDT.  Translation is enabled
+at boot with every device BLOCKED, so the default is refusal rather than
+identity or "unconfigured".
+
+**One prediction in this roadmap was wrong and is worth recording as wrong.**
+It said the stage needed PCI enumeration first.  It does not: installing a
+translation needs the device's source-id, and the kernel does not need to have
+DISCOVERED it — the source-id travels ON the capability, exactly as an I/O port
+range travels on an IOPORT_CONTROL derivation.  seL4's kernel enumerates no PCI
+either.  Enumeration is what ring 3 needs to make this USEFUL; it is not what
+the kernel needs to make it SAFE, and a bus scanner in the kernel would have
+bent charter P1/P2 for nothing.
+
+**And the limit, which belongs in the same breath as the claim**: nothing in
+the test environment watches a device be refused.  There is no DMA engine under
+IRIS's control, so every assertion is about what the kernel accepted, refused,
+and wrote into the translation tables.  The hardware's fault-status register is
+read and reported because a non-zero value would be the one piece of direct
+evidence available — and it is reported rather than required, because nothing
+here can make a device try.
 
 ## Non-regression guard
 

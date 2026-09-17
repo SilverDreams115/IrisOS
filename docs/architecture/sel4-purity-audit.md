@@ -8,7 +8,8 @@ and it found things the layer view could not.
 the measurements the tree takes of itself. Where the answer is a number, the
 number is the tree's, not an estimate.
 
-**Gates**: 317/317 runtime tests — on one processor and on four — 27414 host
+**Gates**: 319/319 runtime tests — on one processor and on four, with and
+without an IOMMU — 27408 host
 assertions, `check_purity` OK with the kernel-memory-reachable closure at 26
 functions and **zero ring-3 exemptions**, and `check_locks` OK over 18 ranked
 locks.
@@ -18,11 +19,13 @@ locks.
 > "absent" lists have shrunk to SMP, IOMMU and formal verification. Details
 > in Part 7.
 >
-> **SINCE THAT PASS — SMP is done.** Four processors dispatch threads and the
-> adversarial phase (§9.3 step 5) has run: four tests aiming four cores at one
-> object, which found four real defects. The "absent" list is IOMMU and formal
-> verification. The rows below that call IRIS single-core are marked where they
-> were wrong.
+> **SINCE THAT PASS — SMP and the IOMMU are done.** Four processors dispatch
+> threads and the adversarial phase (§9.3 step 5) found four real defects; a
+> device's DMA reach is now a capability and translation is enabled at boot
+> with every device blocked (Stage 10-dma).  What is left on the "absent" list
+> is formal verification, which the charter puts out of scope, and the platform
+> work of Stage 10.  Rows below that call IRIS single-core or IOMMU-less are
+> marked where they were wrong.
 
 > **What the second pass changed.** One real defect (charter A9, fixed and
 > regression-tested), one gap in the enforcement itself (the purity gate
@@ -299,12 +302,12 @@ All four were implemented in the third pass (Part 7). `Frame_GetAddress`,
 `TCB_SetMCPriority`, `PageTable_Unmap` and `CSpace_Rotate` exist, each with a
 runtime test.
 
-### 5.2 — Absent subsystems (1, and one partly built)
+### 5.2 — Absent subsystems (none; both are built)
 
 | Missing | State |
 |---|---|
 | **SMP** | ~~absent~~ — **built** (roadmap §9.3, all five steps). The processors are discovered from the MADT, started, and they SCHEDULE: `online=4 dispatching=4`, full suite green on one processor and on four. The adversarial phase found four defects, none of them in the code written for SMP — every one an existing correctness argument with "there is one processor" inside it. What is NOT done is aiming the model-based fuzzer at N cores, and §9.4's limit stands: TCG interleaves, it does not reorder. |
-| **IOMMU / IOSpace** | zero references. A device with DMA is trusted with memory, which is the one place IRIS's isolation is weaker than seL4-on-x86-with-VT-d. Needs PCI enumeration first, which IRIS also does not have. |
+| **IOMMU / IOSpace** | ~~absent~~ — **built** (Stage 10-dma).  A device's DMA reach is a capability, and translation is enabled at boot with every device blocked.  The claim that it "needs PCI enumeration first" was wrong and is retired: the source-id travels ON the capability, as it does in seL4, so no bus scanner belongs in the kernel. |
 
 The **domain scheduler** was the third item on this list and is now
 implemented — see Part 7.5.
@@ -544,10 +547,17 @@ If the question is *how close to 100% pure seL4*, the honest decomposition is:
   processor is chosen once, when a TCB is configured, and reported through
   `iris_tcb_info.home_cpu`.  Recorded as a gap rather than argued away: seL4
   has it, and a principal that wants to place its own threads cannot.
-- **Feature coverage: one subsystem short.** IOMMU is what seL4 has and IRIS
-  has not built. Domains were the third and are done; SMP was the second and
-  now schedules on every processor the machine has, with the adversarial phase
-  left.
+- **Feature coverage: complete for the subsystems, on the platform IRIS runs
+  on.** The IOMMU was the last one missing and is built (Stage 10-dma): a
+  device's reach is a capability — the frames somebody mapped for it, nameable,
+  delegatable, revocable — and a device no capability names reaches nothing,
+  enforced by the hardware from boot.  Domains and SMP were the other two.
+
+  What that sentence does NOT claim: that the containment has been watched to
+  work.  No device under IRIS's control issues DMA in the test environment, so
+  every assertion is about what the kernel accepted, refused and wrote into the
+  translation tables.  Closing that needs a driver for a DMA-capable device,
+  which is Stage 10's work.
 - **Verification: not started, and out of scope by charter.**
 
 The gap that remains is **work IRIS has not done**, not shape IRIS got wrong.
