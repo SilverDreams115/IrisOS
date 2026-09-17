@@ -500,7 +500,10 @@ working:
   asks it for its device and gets a frame over that device's register window
   and nothing else.  `blk` is an AHCI disk driver in ring 3 that finds its
   controller through `pci` by class code, contains the controller's DMA behind
-  a remapping unit when the machine has one, and reads sectors.  ACPI's tables
+  a remapping unit when the machine has one, and reads sectors.  `net` is an
+  e1000 driver that moves Ethernet frames and parses nothing — init sends an
+  ARP request and the gateway answers, which is what proves the card really
+  talks.  Three drivers, and none holds anything the others do.  ACPI's tables
   are device Untypeds, so ring 3 can read the firmware's description of the
   machine; the kernel reads three tables and will never read a fourth.
 - **A frozen ABI**: four syscall numbers and 77 contiguous invocation labels,

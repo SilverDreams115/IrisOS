@@ -2515,6 +2515,39 @@ loses it rather than watching its data change underneath.  Revoke-before-reuse
 is why the buffer can be one frame instead of one per request, and T355 asserts
 it by trying to use the stale one.
 
+**`net` — an e1000 driver in ring 3.**  Added after the disk, and the thing
+worth recording is that it needed the SAME FIVE capabilities: an endpoint, a
+reply object, an endpoint to the bus service, `IOSpaceControl`, and memory.
+Two drivers for completely unrelated hardware, one manifest — because "drive a
+PCI device with DMA" turned out to be a single shape once the parts had names.
+
+It is the clearest case in the tree for containment.  A disk controller reads a
+command table when it is told to; a NIC reads a RING of physical addresses
+CONTINUOUSLY and nothing tells it to stop, so a driver that got those addresses
+wrong would have the card scribbling asynchronously with no call to attribute
+it to.  The driver binds its IOSpace before it writes a single ring address.
+
+It parses nothing — no ARP, no IP, no checksums.  init builds the ARP request
+and reads the reply, because a driver that understood ARP would be policy
+inside a driver.  The round trip is the gate: a transmit-only check proves
+nothing, since the card reports a descriptor done whether or not anything was
+listening.
+
+**The ARP wait was bounded wrongly twice, and the second way is worth keeping.**
+First by a poll count of twenty thousand, which was generous on the success
+path and pushed the boot past the gate's deadline on the failure path — the one
+that runs on a machine with no network.  Then by two hundred and fifty, which
+fixed that and started missing real replies under an IOMMU, where every round
+trip costs more.  A COUNT cannot be both, because what it buys depends on how
+fast the machine is.  A TIME bound can, and means the same thing on a fast
+machine and a slow one.
+
+**And the legacy-root ceiling moved for a reason nobody changed.**  It was
+raised to 32 with a caveat that it is a fact about the MACHINE as well as the
+kernel; attaching a network card made it 33, because the firmware describes one
+more device and therefore publishes one more table region.  Nothing about the
+kernel changed.  T305 caught it, which is why it refuses rather than reports.
+
 **A defect class made impossible.**  Three slot collisions were found by
 running the system during this stage, one of which minted an endpoint over
 init's loader workspace and made every subsequent service load fail with

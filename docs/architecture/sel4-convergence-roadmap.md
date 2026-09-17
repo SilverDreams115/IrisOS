@@ -74,7 +74,7 @@ against seL4 turned up, including one A9 defect it fixed.
 | 9 — SMP | ✅ **All 5 steps done.**  §9.1 hierarchy and §9.2 catalog written and enforced (`make check-locks`); step 1 (the one-core kernel made SMP-correct), step 2 (TLB shootdown), step 3 (APs discovered and started), step 4 (they schedule — `online=4 dispatching=4`), step 5 (the adversarial phase — four tests aiming four cores at one object, which found four real defects: a rollback that freed another core's memory, a release-then-use, a teardown gate that was not atomic, and a dispatch that overwrote a Suspend).  Full suite green on `-smp 1` and `-smp 4`.  What remains is NOT mechanism: the model-based fuzzer is not yet aimed at N cores, and §9.4's limit stands — TCG interleaves, it does not reorder |
 | 10-dma — device authority must be containable | ✅ **All 6 steps done**, a device is watched being refused.  The DMAR is parsed and the units probed; translation is ENABLED with every device blocked; `KIOSpace` and `KIOPageTable` are retyped objects and `IOSpaceControl` a BootInfo authority; a frame mapped into an IOSpace is what a device may reach, and unmapping or destroying the space takes it back — from the unit's translation cache as well as the table.  **T351** pins containment, **T352** the whole arc, and **T353** is a ring-3 driver for a real bus master that is refused without a mapping, reaches exactly the frame it is granted, and is refused again when it is revoked — on a machine with no unit the same driver reaches memory nobody granted it.  The driver cost three pre-existing defects: an NX bit riding in every physical address `paging_virt_to_phys` returned, a port ABI with no width above a byte, and no way to map a BAR uncached |
 | 10-abi — freeze the ABI | ✅ **CLOSED.**  The surface is four syscall numbers and 77 contiguous invocation labels, declared in `iris/abi.h` and ASSERTED by `tests/kernel/test_abi.c` over every number the dispatcher can see — a description nothing checks is a description that goes stale, which is the lesson the stage was taught by its own opening paragraph.  BootInfo names the ABI and the root task refuses a major it was not built for.  The naming residue of the retired handle namespace is gone, and removing it found a capability argument being truncated to 32 bits |
-| 10 — General-purpose platform | ◐ **3 of 8 items delivered**: `pci` (the bus is a service and the only task that reaches configuration space), ACPI reachable from ring 3 as capabilities, and `blk` (an AHCI driver in ring 3 whose controller's DMA is contained).  Persistent FS, networking, POSIX and performance are not started; **real hardware cannot be done in this environment** — every gate runs under QEMU |
+| 10 — General-purpose platform | ◐ **4 of 8 items delivered** (one partially): `pci` (the bus is a service and the only task that reaches configuration space), ACPI reachable from ring 3 as capabilities, `blk` (an AHCI driver in ring 3 whose controller's DMA is contained), and `net` (an e1000 driver that moves frames — a driver, not a stack).  Persistent FS, POSIX and performance are not started, and networking stops at the driver; **real hardware cannot be done in this environment** — every gate runs under QEMU |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
 A9, A10** (authority); **O2–O6** (objects); **I1–I7** (IPC); **S1–S5**
@@ -2775,18 +2775,19 @@ Precondition: consolidated microkernel (0–9 as applicable), 10-dma, 10-abi —
 all met.
 
 This stage is a LIST rather than a claim, and the honest way to report it is
-item by item.  Three of the eight are delivered and gated; three are not
-started and are each their own body of work; one is optional; and one cannot be
-done in this environment at all.
+item by item.  Four of the eight are delivered and gated (one of them
+partially), three are not started, one is optional, and one cannot be done in
+this environment at all.
 
 | item | state |
 |---|---|
-| user-space drivers | ✅ **two of them**, and the second is useful rather than illustrative |
+| user-space drivers | ✅ **three of them** — a DMA engine, a disk and a network card — and none holds anything the others do |
 | PCI | ✅ `services/pci` — the bus is a service, and the only task that can reach configuration space |
 | ACPI | ✅ reachable from ring 3 as capabilities; **T354** reads the root pointer out of firmware memory |
 | storage | ✅ `services/blk` — an AHCI driver in ring 3; **T355** reads sector zero and checks the boot signature |
+| | |
 | persistent FS | ❌ not started.  `vfs` serves the initrd read-only; a persistent one needs a WRITE path through `blk` and a filesystem implementation on top |
-| networking | ❌ not started.  Needs a NIC on the machine, a driver, and at least ARP/IP/UDP — a subsystem the size of everything above put together |
+| networking | ◐ **a driver, not a stack.**  `services/net` is an e1000 driver in ring 3 that moves Ethernet frames and parses nothing; init sends an ARP request and QEMU's gateway answers it, which is the gate.  There is no IP, no UDP, no TCP and no sockets — a stack is its own body of work and belongs above this endpoint, not inside it |
 | POSIX personality | ❌ not started, and the roadmap already calls it optional |
 | performance | ❌ not measured.  There is no benchmark in the tree and no number to regress against |
 | real hardware | ⛔ **cannot be done from this environment.**  Every gate in this repository runs under QEMU.  What is established is that IRIS is correct against QEMU's implementation of x86-64, VT-d and AHCI; real errata, real timing and real firmware are not exercised, and nothing here should be read as if they were |
@@ -2815,6 +2816,16 @@ to know about the machine, it could learn only if the kernel had already
 decided to tell it.  Those regions are device Untypeds now and BootInfo carries
 the RSDP, because a region is not a starting point.
 
+**`net`, an e1000 driver in ring 3.**  The same five capabilities as the disk
+driver, which is the point worth noticing: two drivers for completely
+different hardware need exactly the same manifest, because "drive a PCI device
+with DMA" is one shape and this system has a name for each part of it.  It is
+also the clearest case in the tree for `IOSpaceControl` — a disk controller
+reads a command table when told to, but a NIC reads a RING of physical
+addresses continuously and nothing tells it to stop.  It moves frames and
+parses nothing; init builds the ARP request, because a driver that understood
+ARP would be policy inside a driver.
+
 **`blk`, an AHCI driver in ring 3.**  It asks `pci` for a SATA controller by
 CLASS code — a driver that matched vendor:device would drive one machine —
 maps BAR5 uncached, builds command structures in memory it owns, and issues
@@ -2826,11 +2837,13 @@ and the gate requires the right answer for the machine it is on.
 
 ### What is NOT claimed
 
-The device-driver stack is two drivers deep and neither has an interrupt: both
-poll.  `pci` walks bus 0 only — no PCI-to-PCI bridges, because this machine has
+The device-driver stack is three drivers deep and none has an interrupt: they
+all poll.  `pci` walks bus 0 only — no PCI-to-PCI bridges, because this machine has
 none and a bridge walk would be code no test covers.  `blk` drives the first
 port of the first controller and reads only; there is no write path, no
-queueing, and no second disk.  Each of those is named here rather than left for
+queueing, and no second disk.  `net` sends one frame at a time and waits for
+it, its receive ring is eight 256-byte buffers, and there is no protocol above
+Ethernet at all.  Each of those is named here rather than left for
 a reader to discover, because a platform's gaps are part of its description.
 
 ---

@@ -40,6 +40,14 @@ than by having started:
 | `[USERBOOT] ACPI: root pointer reachable from ring 3` | the firmware's tables are named by a capability ring 3 holds |
 | `[USER][INIT] pci: functions N windows M carve 0` | the bus service scanned, and carved a frame over **every** window in the region it owns.  `carve 0` is required: a service that found devices and carved nothing refuses every driver's claim, which from outside is indistinguishable from an empty machine |
 | `[USER][INIT] blk: disk 1 sid 0x.. dma contained\|open` | a ring-3 AHCI driver claimed a controller, brought a port up and **read a sector**.  `contained` is required with an IOMMU and `open` without one — either word on the wrong machine is a lie the gate catches |
+| `[USER][INIT] net: link 1 mac .. dma contained\|open` | a ring-3 e1000 driver brought a network card up |
+| `[USER][INIT] net: gateway answered, mac ..` | and a frame went out and one came back.  This is the line that means something: a transmit-only check proves nothing, because the card reports a descriptor done whether or not anything was listening.  An ARP round trip exercises the transmit path, the receive ring, the card's filter and a peer that is not this driver |
+
+The network card is attached with `-netdev user`, QEMU's own userspace stack,
+which answers ARP for the gateway it advertises at 10.0.2.2.  That address and
+the sender's 10.0.2.15 are part of the test setup: a request from outside that
+subnet gets no reply, which would look exactly like a driver that does not
+work.
 
 And three suite tests carry the end-to-end claims: **T353** a device refused
 and then granted, **T354** the ACPI root pointer read and checksummed out of
