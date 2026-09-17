@@ -33,7 +33,7 @@ void test_t121(void) {
         if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread create"; }
 
         /* let the worker reach its blocking syscall */
-        if (ok) for (int y = 0; y < 40; y++) it_sys0(SYS_YIELD);
+        if (ok) it_settle(1);
         /* close the endpoint's only handle → close op wakes the waiter CLOSED */
         it_close(&g_sh_ep);
         /* wait for the worker to observe the wake-up and record its result */
@@ -630,7 +630,7 @@ void test_t129(void) {
     uint64_t entry = (uint64_t)(uintptr_t)t129_worker;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_sh_stk[0] + sizeof(g_sh_stk[0]))) & ~0xFULL;
     if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread create"; }
-    if (ok) for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
+    if (ok) it_settle(1);
 
     /* Phase S4: derive a child through the native CDT and revoke it — the
      * OBJECT survives (the root slot still names it) and the blocked waiter

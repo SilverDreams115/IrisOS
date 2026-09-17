@@ -1,6 +1,14 @@
 /*
- * acpi.c — RSDP to MADT, and nothing else.  See iris/acpi.h for why the
- * "nothing else" is the design rather than an omission.
+ * acpi.c — RSDP to the two tables the kernel reads, and nothing else.  See
+ * iris/acpi.h for why the "nothing else" is the design rather than an
+ * omission.
+ *
+ * MADT (SMP roadmap §9.3): how many processors, and their LAPIC ids.
+ * DMAR (§10.2 step 1): where the DMA remapping units are.
+ *
+ * Both are read ONCE, at boot, into a static array.  Nothing here runs
+ * afterwards and nothing here touches hardware — finding a unit and using one
+ * are different steps, and they live in different files for that reason.
  */
 
 #include <iris/acpi.h>
@@ -127,8 +135,14 @@ static void madt_walk(const struct acpi_madt *madt) {
     }
 }
 
-/* Walk an RSDT (32-bit entries) or XSDT (64-bit) looking for "APIC". */
-static const struct acpi_madt *find_madt(uint64_t sdt_phys, int is_xsdt) {
+/* Walk an RSDT (32-bit entries) or XSDT (64-bit) looking for one signature.
+ *
+ * It was `find_madt`, hard-coded to "APIC", and the second caller is what made
+ * the signature a parameter.  Everything else about the walk — the checksums,
+ * the two entry widths — is the same question asked about a different four
+ * bytes. */
+static const struct acpi_sdt_header *find_table(uint64_t sdt_phys, int is_xsdt,
+                                                const char *sig) {
     if (!sdt_phys) return 0;
     const struct acpi_sdt_header *sdt = phys_ptr(sdt_phys);
     if (sdt->length < sizeof(*sdt)) return 0;
@@ -151,14 +165,58 @@ static const struct acpi_madt *find_madt(uint64_t sdt_phys, int is_xsdt) {
         }
         if (!phys) continue;
         const struct acpi_sdt_header *h = phys_ptr(phys);
-        if (h->signature[0] == 'A' && h->signature[1] == 'P' &&
-            h->signature[2] == 'I' && h->signature[3] == 'C') {
-            if (h->length >= sizeof(struct acpi_madt) &&
-                acpi_checksum_ok(h, h->length))
-                return (const struct acpi_madt *)h;
+        if (h->signature[0] == sig[0] && h->signature[1] == sig[1] &&
+            h->signature[2] == sig[2] && h->signature[3] == sig[3]) {
+            if (h->length >= sizeof(*h) && acpi_checksum_ok(h, h->length))
+                return h;
         }
     }
     return 0;
+}
+
+/*
+ * RSDP → the table with this signature, or NULL.
+ *
+ * The RSDP validation used to be inline in `acpi_parse_madt`; it is here
+ * because a second table needs exactly the same four checks and duplicating
+ * them is how the two would eventually disagree about which one is valid.
+ */
+static const struct acpi_sdt_header *acpi_find(uint64_t rsdp_phys, const char *sig) {
+    if (!rsdp_phys) return 0;
+
+    const struct acpi_rsdp *r = phys_ptr(rsdp_phys);
+    if (r->signature[0] != 'R' || r->signature[1] != 'S' ||
+        r->signature[2] != 'D' || r->signature[3] != ' ' ||
+        r->signature[4] != 'P' || r->signature[5] != 'T' ||
+        r->signature[6] != 'R' || r->signature[7] != ' ') return 0;
+    if (!acpi_checksum_ok(r, 20u)) return 0;
+
+    const struct acpi_sdt_header *h = 0;
+    /* Prefer the XSDT: it is the only one that can describe a table above
+     * 4 GiB, and a machine that has both is telling us the 64-bit one is
+     * authoritative. */
+    if (r->revision >= 2 && acpi_checksum_ok(r, r->length))
+        h = find_table(r->xsdt_address, 1, sig);
+    if (!h)
+        h = find_table((uint64_t)r->rsdt_address, 0, sig);
+    return h;
+}
+
+/*
+ * The walk, for the one other table the kernel reads.
+ *
+ * Exposed as bytes-and-a-length rather than as a struct: this file knows how
+ * to FIND a table and validate it, and the caller knows what its table means.
+ * Putting the DMAR's layout here too would make acpi.c the place every future
+ * table's interpretation accretes, which is the thing iris/acpi.h says it is
+ * not.
+ */
+const void *acpi_find_table(uint64_t rsdp_phys, const char *sig, uint32_t *out_len) {
+    if (out_len) *out_len = 0;
+    const struct acpi_sdt_header *h = acpi_find(rsdp_phys, sig);
+    if (!h) return 0;
+    if (out_len) *out_len = h->length;
+    return h;
 }
 
 uint32_t acpi_parse_madt(uint64_t rsdp_phys) {
@@ -170,27 +228,9 @@ uint32_t acpi_parse_madt(uint64_t rsdp_phys) {
         return 0;
     }
 
-    const struct acpi_rsdp *r = phys_ptr(rsdp_phys);
-    if (r->signature[0] != 'R' || r->signature[1] != 'S' ||
-        r->signature[2] != 'D' || r->signature[3] != ' ' ||
-        r->signature[4] != 'P' || r->signature[5] != 'T' ||
-        r->signature[6] != 'R' || r->signature[7] != ' ') {
-        klog_write("[IRIS][ACPI] RSDP signature mismatch\n");
-        return 0;
-    }
-    if (!acpi_checksum_ok(r, 20u)) {
-        klog_write("[IRIS][ACPI] RSDP checksum bad\n");
-        return 0;
-    }
-
-    const struct acpi_madt *madt = 0;
-    /* Prefer the XSDT: it is the only one that can describe a table above
-     * 4 GiB, and a machine that has both is telling us the 64-bit one is
-     * authoritative. */
-    if (r->revision >= 2 && acpi_checksum_ok(r, r->length))
-        madt = find_madt(r->xsdt_address, 1);
-    if (!madt)
-        madt = find_madt((uint64_t)r->rsdt_address, 0);
+    const struct acpi_sdt_header *h = acpi_find(rsdp_phys, "APIC");
+    const struct acpi_madt *madt =
+        (h && h->length >= sizeof(struct acpi_madt)) ? (const struct acpi_madt *)h : 0;
 
     if (!madt) {
         klog_write("[IRIS][ACPI] no MADT\n");

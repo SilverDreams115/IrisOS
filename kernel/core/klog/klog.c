@@ -65,6 +65,22 @@ void klog_write_dec(uint64_t n) {
     irq_spinlock_unlock(&klog_lock, saved);
 }
 
+void klog_write_hex(uint64_t n) {
+    char buf[17];
+    int  i = 0;
+    if (n == 0) { klog_write("0"); return; }
+    while (n && i < 16) {
+        uint8_t d = (uint8_t)(n & 0xFu);
+        buf[i++] = (char)(d < 10u ? (uint8_t)('0' + d) : (uint8_t)('a' + (d - 10u)));
+        n >>= 4;
+    }
+    char out[17];
+    int  k = 0;
+    while (i--) out[k++] = buf[i];
+    out[k] = 0;
+    klog_write(out);
+}
+
 const char *klog_get_buf(uint32_t *out_len) {
     uint64_t saved = irq_spinlock_lock(&klog_lock);
     uint32_t n = klog_len;

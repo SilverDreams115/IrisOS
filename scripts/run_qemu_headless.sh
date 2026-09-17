@@ -8,6 +8,15 @@ TIMEOUT_SECS="${IRIS_QEMU_TIMEOUT_SECS:-25}"
 EXPECT_SELFTESTS="${IRIS_QEMU_EXPECT_SELFTESTS:-0}"
 SMP="${IRIS_QEMU_SMP:-1}"
 
+# An Intel IOMMU on the machine, when asked for (Stage 10-dma).  Off by default
+# for the same reason -smp defaults to 1: the interesting runs are the ones
+# that differ from the ordinary one, and a gate that can only be run one way
+# proves nothing about the other.
+IOMMU_ARGS=()
+if [ "${IRIS_QEMU_IOMMU:-0}" != "0" ]; then
+  IOMMU_ARGS=(-device intel-iommu)
+fi
+
 # More processors, more wall clock — and it is QEMU that needs it, not IRIS.
 # TCG emulates every vCPU on one host thread apiece and multiplexes them, so a
 # four-processor guest runs the same work at roughly a third of the speed while
@@ -62,6 +71,7 @@ rm -f "$LOG_FILE"
 set +e
 timeout "${TIMEOUT_SECS}s" qemu-system-x86_64 \
   -machine q35 \
+  "${IOMMU_ARGS[@]}" \
   -cpu max \
   -smp "$SMP" \
   -m 512M \
@@ -123,6 +133,26 @@ if [ "$EXPECT_CPUS" -gt 1 ] && grep -Fq "[IRIS][TEST] T346 online=" "$LOG_FILE";
     echo "[headless] processors are online but not all of them schedule:"
     echo "           $t346_line"
     echo "           wanted online=${EXPECT_CPUS} dispatching=${EXPECT_CPUS}"
+    cat "$LOG_FILE"
+    exit 1
+  fi
+fi
+
+# The DMA remapping units, when the machine was given one (Stage 10-dma §10.2
+# step 1).  Two claims, and they fail apart: with an IOMMU attached the kernel
+# must FIND it, and without one it must say so rather than stay quiet — a
+# kernel that silently found nothing and a kernel that silently skipped looking
+# read the same from outside.
+if [ "${IRIS_QEMU_IOMMU:-0}" != "0" ]; then
+  if ! grep -Eq "^\[IRIS\]\[IOMMU\] remapping units: [1-9]" "$LOG_FILE"; then
+    echo "[headless] an IOMMU was attached and the kernel found no remapping unit:"
+    grep -F "[IRIS][IOMMU]" "$LOG_FILE" | sed 's/^/           /'
+    cat "$LOG_FILE"
+    exit 1
+  fi
+else
+  if ! grep -Fq "[IRIS][IOMMU]" "$LOG_FILE"; then
+    echo "[headless] the kernel said nothing about DMA remapping"
     cat "$LOG_FILE"
     exit 1
   fi

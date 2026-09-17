@@ -18,6 +18,10 @@
 
 void           klog_write(const char *s);
 void           klog_write_dec(uint64_t n);
+/* Hexadecimal, no "0x" prefix and no padding.  Added for the IOMMU's
+ * capability registers (Stage 10-dma §10.2 step 2): a 64-bit bitfield read as
+ * a decimal number is a number nobody can check against a specification. */
+void           klog_write_hex(uint64_t n);
 const char    *klog_get_buf(uint32_t *out_len);
 void           klog_clear(void);
 

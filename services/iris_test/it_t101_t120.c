@@ -2147,7 +2147,7 @@ void test_t118(void) {
                 ok = 0; why = "thread create";
             }
             /* let the thread run to exit and be reaped before the next round */
-            for (int y = 0; y < 50; y++) it_sys0(SYS_YIELD);
+            it_settle(1);
         }
     }
 
@@ -2288,7 +2288,7 @@ void test_t119(void) {
 
         if (!sh_start(SH_NWORK)) { ok = 0; why = "thread create"; }
         /* let workers reach EP_RECV */
-        if (ok) for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
+        if (ok) it_settle(1);
         if (ok && !sh_release(SH_NWORK)) { ok = 0; why = "release"; }
         if (ok && !sh_wait_all(SH_NWORK)) { ok = 0; why = "worker stuck"; }
         it_close(&g_sh_ep);

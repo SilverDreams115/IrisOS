@@ -14,6 +14,7 @@
 #include <iris/fb_info.h>
 #include <iris/irq_routing.h>
 #include <iris/acpi.h>
+#include <iris/iommu.h>
 #include <iris/smp.h>
 #include <iris/tlb.h>
 #include <iris/nc/kbootcap.h>
@@ -172,6 +173,24 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
      * before this call existed.
      */
     (void)acpi_parse_madt(saved_boot_info.acpi_rsdp);
+
+    /*
+     * And where the DMA remapping units are (Stage 10-dma §10.2 step 1).
+     *
+     * Read here because it comes off the same RSDP, from the same table set,
+     * which stops existing at ExitBootServices.  Then each unit's capability
+     * registers are read (step 2), which decides whether it is what the later
+     * steps assume — a translation built on a guess about the hardware is
+     * worse than no translation, because it looks like protection.
+     *
+     * Still nothing mapped and nothing ENABLED: that is step 3.
+     *
+     * A machine with no DMAR says so and runs exactly as it did before — with
+     * every DMA-capable device able to reach all of memory, which is the state
+     * this stage exists to end.
+     */
+    if (iommu_parse_dmar(saved_boot_info.acpi_rsdp))
+        (void)iommu_probe_units();
 
     /* Cross-CPU TLB invalidation (SMP roadmap §9.3 step 2).  Its lock is the
      * only state; the mechanism itself does nothing until a second CPU can be

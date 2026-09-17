@@ -841,7 +841,7 @@ void test_t255(void) {
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t255_stack + sizeof(g_t255_stack))) & ~0xFULL;
         if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread"; }
         else {
-            for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
+            it_settle(1);
             if (h >= 0) { it_slot_delete((uint32_t)h); h = -1; }
             it_slot_delete(S1_SLOT_A);      /* last cap → close fires */
             IT_AWAIT(g_t255_done, 4000);
@@ -913,7 +913,7 @@ void test_t256(void) {
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t256_stack + sizeof(g_t256_stack))) & ~0xFULL;
         if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread"; }
         else {
-            for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
+            it_settle(1);
             if (h >= 0) { it_slot_delete((uint32_t)h); h = -1; }
             it_slot_delete(S1_SLOT_A);
             IT_AWAIT(g_t256_done, 4000);
@@ -1015,7 +1015,7 @@ void test_t257(void) {
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t257_stack + sizeof(g_t257_stack))) & ~0xFULL;
         if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread 2"; }
         else {
-            for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);   /* caller queues */
+            it_settle(1);   /* caller queues */
             struct iris_msg m; iris_msg_zero(&m);
             if ((m.reply = 0, iris_msg_recv((long)S1_SLOT_A, &m)) !=
                 (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "implicit reply not retired (S22)"; }
@@ -1080,7 +1080,7 @@ void test_t258(void) {
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t258_stack + sizeof(g_t258_stack))) & ~0xFULL;
         if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread"; }
         else {
-            for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
+            it_settle(1);
             it_slot_delete(S1_SLOT_A);
             IT_AWAIT(g_t258_done, 4000);
             if (!g_t258_done) { ok = 0; why = "sender zombie (S25)"; }
