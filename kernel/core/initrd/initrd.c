@@ -74,6 +74,9 @@ extern const uint8_t _binary_services_pci_pci_elf_end[];
 
 extern const uint8_t _binary_services_blk_blk_elf_start[];
 extern const uint8_t _binary_services_blk_blk_elf_end[];
+
+extern const uint8_t _binary_services_net_net_elf_start[];
+extern const uint8_t _binary_services_net_net_elf_end[];
 extern const uint8_t _binary_services_pager_pager_elf_start[];
 extern const uint8_t _binary_services_pager_pager_elf_end[];
 
@@ -160,6 +163,11 @@ static const struct initrd_entry g_initrd[] = {
      * when the machine has one, and reads sectors. */
     { _binary_services_blk_blk_elf_start,
       _binary_services_blk_blk_elf_end  },
+    /* [19] net — the ring-3 e1000 NETWORK SERVICE (Stage 10).  It moves
+     * Ethernet frames and parses nothing; a driver that understood ARP would
+     * be policy inside a driver. */
+    { _binary_services_net_net_elf_start,
+      _binary_services_net_net_elf_end  },
 };
 
 #define INITRD_ENTRY_COUNT \

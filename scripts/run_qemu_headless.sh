@@ -37,6 +37,20 @@ fi
 # make a failure above it look like a containment success.
 EDU_ARGS=(-device edu,dma_mask=0xffffffffff)
 
+# A network card, and something on the other end of it.
+#
+# `-netdev user` is QEMU's own userspace network stack: it answers ARP for the
+# gateway it advertises at 10.0.2.2, which is the whole reason it is here.  A
+# driver that only transmits proves nothing — the frame may have gone nowhere —
+# and a loopback test proves the card talks to itself.  An ARP request that
+# comes back answered proves the transmit path, the receive path, the
+# descriptor rings and the card's receive filter, all at once, against a peer
+# that is not this driver.
+#
+# `-net none` is therefore dropped from the command line below: it and a
+# netdev are contradictory, and QEMU obeys the last word.
+NET_ARGS=(-device e1000,netdev=n0 -netdev user,id=n0)
+
 # A QEMU without it fails HERE, saying so.
 #
 # `-device edu` on a build that does not have the device makes QEMU exit before
@@ -121,6 +135,7 @@ timeout "${TIMEOUT_SECS}s" qemu-system-x86_64 \
   -machine q35 \
   "${IOMMU_ARGS[@]}" \
   "${EDU_ARGS[@]}" \
+  "${NET_ARGS[@]}" \
   -cpu max \
   -smp "$SMP" \
   -m 512M \
@@ -130,7 +145,6 @@ timeout "${TIMEOUT_SECS}s" qemu-system-x86_64 \
   -serial "file:$LOG_FILE" \
   -display none \
   -monitor none \
-  -net none \
   -no-reboot \
   -no-shutdown &
 qemu_wait_pid=$!
@@ -303,6 +317,38 @@ if ! grep -Eq "^\[IRIS\]\[ABI\] version [1-9][0-9]*\.[0-9]+ " "$LOG_FILE"; then
   grep -F "[IRIS][ABI]" "$LOG_FILE" | sed 's/^/           /'
   cat "$LOG_FILE"
   exit 1
+fi
+
+# Networking: a ring-3 e1000 driver moved a frame in both directions (Stage 10).
+#
+# Two lines, and the second is the one that means something.  `link 1` says the
+# driver brought a card up; it does not say a frame ever left the machine, and
+# a transmit-only check proves nothing because the card reports a descriptor
+# done whether or not anything was listening.  `gateway answered` is an ARP
+# round trip against QEMU's own network stack — the transmit path, the receive
+# ring, the card's receive filter and a PEER that is not this driver, all at
+# once.
+#
+# `dma contained` versus `dma open` is required per configuration for the
+# reason the disk's is: a NIC reads a RING of physical addresses continuously
+# and nothing tells it to stop, so it is the clearest case in the tree for the
+# remapping unit, and claiming containment on a machine with no unit would be
+# a lie.
+if ! grep -Eq "^\[USER\]\[INIT\] net: link 1 mac [0-9a-f]{12} dma (contained|open)$" "$LOG_FILE"; then
+  echo "[headless] no ring-3 driver brought a network card up:"
+  grep -F "net:" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+if ! grep -Fq "[USER][INIT] net: gateway answered" "$LOG_FILE"; then
+  echo "[headless] the network card is up but nothing came back over it:"
+  grep -F "net:" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+if [ "${IRIS_QEMU_IOMMU:-0}" != "0" ]; then
+  grep -Fq "net: link 1 mac" "$LOG_FILE" && ! grep -Eq "net: link 1 .* dma contained" "$LOG_FILE" && {
+    echo "[headless] the NIC is loose on a machine that can contain it"; cat "$LOG_FILE"; exit 1; }
 fi
 
 # Storage: a ring-3 AHCI driver brought a real disk up (Stage 10).

@@ -25,6 +25,8 @@
 #include "../timer/timer_proto.h"
 #include <iris/pci_ep_proto.h>
 #include <iris/blk_ep_proto.h>
+#include <iris/net_ep_proto.h>
+#include "../common/iris_map.h"
 #include "../common/iris_timer.h"
 #include <iris/endpoint_proto.h>
 #include "../common/svc_loader.h"
@@ -249,6 +251,252 @@ int init_spawn_pci(void) {
         init_log("[USER][INIT] pci: no answer\n");
         return 0;
     }
+}
+
+/* ── net spawn (Stage 10: a network card is a driver too) ───────────────── */
+
+/* Defined below: the boot check that asks whether the network actually works,
+ * rather than whether a card came up.  Declared here because the spawn calls
+ * it and the ARP it builds is long enough to want to be out of the way. */
+static int init_net_arp_probe(void);
+
+/*
+ * The e1000 network service.
+ *
+ * The same manifest as the disk service, and the same reason for each entry —
+ * which is the point worth noticing: two drivers for completely different
+ * hardware need exactly the same five capabilities, because "drive a PCI
+ * device with DMA" is one shape and this system has a name for each part of it.
+ *
+ * A network card is the clearest case for IOSPACE_CONTROL in the whole tree.
+ * A disk controller reads a command table when you tell it to; a NIC reads a
+ * RING of descriptors continuously, at addresses the driver wrote into two
+ * registers, and writes received packets into addresses it finds there.
+ * Nothing tells it to stop.  A driver that got those wrong would have the card
+ * scribbling asynchronously with no call to attribute it to.
+ *
+ * Returns 1 on success, 0 on failure.
+ */
+int init_spawn_net(void) {
+    iris_cptr_t nt_proc_h = IRIS_CPTR_NULL;
+    iris_cptr_t nt_boot_h = IRIS_CPTR_NULL;
+    long r;
+
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
+                         INIT_SLOT_NET_EP, 0) < 0) { init_log("[USER] net: ep\n"); return 0; }
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_REPLY,
+                         INIT_SLOT_NET_REPLY, 0) < 0) { init_log("[USER] net: reply\n"); return 0; }
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
+                         INIT_SLOT_NET_UT, 2 << 20) < 0) { init_log("[USER] net: ut\n"); return 0; }
+
+    {
+        struct svc_mint nt[5] = { 0 };
+        uint32_t n = 0;
+        nt[n].slot = NET_SLOT_CTRL_EP;   nt[n].src_cptr = INIT_SLOT_NET_EP;
+        nt[n].rights = RIGHT_READ;       nt[n].badge = 0; n++;
+        nt[n].slot = NET_SLOT_REPLY;     nt[n].src_cptr = INIT_SLOT_NET_REPLY;
+        nt[n].rights = RIGHT_READ | RIGHT_WRITE; nt[n].badge = 0; n++;
+        nt[n].slot = NET_SLOT_PCI_EP;    nt[n].src_cptr = INIT_SLOT_PCI_EP;
+        nt[n].rights = RIGHT_WRITE;      nt[n].badge = 0; n++;
+        nt[n].slot = NET_SLOT_IOSPACE_C; nt[n].src_cptr = IRIS_CPTR_IOSPACE_CONTROL;
+        nt[n].rights = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        nt[n].badge = 0; n++;
+        nt[n].slot = IRIS_CPTR_OWN_UNTYPED; nt[n].src_cptr = INIT_SLOT_NET_UT;
+        nt[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        nt[n].badge = 0; n++;
+
+        r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
+                               "net", &nt_proc_h, &nt_boot_h, nt, n,
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
+                               2u << 20,
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED,
+                               /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
+        init_report_mints("net", nt, n);
+    }
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_NET_REPLY);
+    init_close(&nt_proc_h);
+    init_close(&nt_boot_h);
+    if (r < 0) return 0;
+
+    {
+        struct iris_msg m;
+        { uint8_t *z = (uint8_t *)&m;
+          for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+        m.label = NET_OP_INFO;
+        if (iris_msg_call((long)INIT_SLOT_NET_EP, &m) == 0 &&
+            m.label == NET_REP_OK) {
+            static const char hx[] = "0123456789abcdef";
+            char b[72] = "[USER][INIT] net: link ";
+            uint32_t k = 0; while (b[k]) k++;
+            b[k++] = (char)('0' + (uint32_t)(m.words[0] & 1u));
+            b[k++] = ' '; b[k++] = 'm'; b[k++] = 'a'; b[k++] = 'c'; b[k++] = ' ';
+            for (int byte = 0; byte < 6; byte++) {
+                uint32_t v = (uint32_t)((m.words[1] >> (8 * byte)) & 0xFFu);
+                b[k++] = hx[(v >> 4) & 0xFu]; b[k++] = hx[v & 0xFu];
+            }
+            b[k++] = ' '; b[k++] = 'd'; b[k++] = 'm'; b[k++] = 'a'; b[k++] = ' ';
+            if (m.words[3]) { b[k++]='c'; b[k++]='o'; b[k++]='n'; b[k++]='t';
+                              b[k++]='a'; b[k++]='i'; b[k++]='n'; b[k++]='e';
+                              b[k++]='d'; }
+            else            { b[k++]='o'; b[k++]='p'; b[k++]='e'; b[k++]='n'; }
+            b[k++] = '\n'; b[k] = 0;
+            init_log(b);
+            if (!(m.words[0] & 1u)) return 0;
+            /* A card that is up is not a network that works. */
+            if (!init_net_arp_probe())
+                init_log("[USER][INIT] net: the gateway did not answer\n");
+            return 1;
+        }
+        init_log("[USER][INIT] net: no answer\n");
+        return 0;
+    }
+}
+
+/*
+ * Does the network actually WORK?
+ *
+ * `net: link 1` says the driver brought a card up.  It does not say a frame
+ * ever left the machine, and a transmit-only check proves nothing at all: the
+ * card reports a descriptor done whether or not anything was listening.  A
+ * loopback test is not much better — it proves the card talks to itself.
+ *
+ * So this sends an ARP request for the gateway and waits for the answer.  What
+ * comes back exercises the transmit path, the receive ring, the card's receive
+ * filter and a PEER that is not this driver, in one round trip; and it is the
+ * smallest thing that does.
+ *
+ * The ARP lives HERE rather than in the driver on purpose.  A driver that
+ * parsed ARP would be policy inside a driver — the thing this whole system is
+ * arranged to avoid — so `net` moves frames and a client understands them.
+ * init is that client for the same reason it is the one that checks the
+ * filesystem at boot: a supervisor's job includes knowing whether the things
+ * it started work.
+ *
+ * Returns 1 if the gateway answered.
+ */
+static int init_net_arp_probe(void) {
+    struct iris_msg m;
+    const uint64_t TX_VA = 0x80B0000000ULL, RX_VA = 0x80B1000000ULL;
+
+    /* The transmit buffer, as a capability we may write. */
+    { uint8_t *z = (uint8_t *)&m;
+      for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+    m.label     = NET_OP_TXBUF;
+    m.recv_slot = (long)INIT_SLOT_NET_TX;
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_NET_TX);
+    if (iris_msg_call((long)INIT_SLOT_NET_EP, &m) != 0 ||
+        m.label != NET_REP_OK || m.got_caps == 0u) return 0;
+    if (iris_map_frame(INIT_SLOT_NET_TX, IRIS_CPTR_OWN_VSPACE,
+                       g_init_untyped_c, INIT_SLOT_NET_PT,
+                       TX_VA, 4096u, 1ull) != 0) return 0;
+
+    /* Our own MAC, which the request has to carry as the sender. */
+    uint64_t mac = 0;
+    { uint8_t *z = (uint8_t *)&m;
+      for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+    m.label = NET_OP_INFO;
+    if (iris_msg_call((long)INIT_SLOT_NET_EP, &m) != 0 ||
+        m.label != NET_REP_OK) return 0;
+    mac = m.words[1];
+
+    /*
+     * An ARP request, 42 bytes, built by hand.
+     *
+     * 10.0.2.15 and 10.0.2.2 are what QEMU's userspace network offers: the
+     * address it hands out and the gateway it answers for.  A request from
+     * outside that subnet gets no reply, which would look exactly like a
+     * driver that does not work — so the addresses are part of the test setup
+     * and are named in the runner beside the `-netdev user` that provides
+     * them.
+     */
+    {
+        volatile uint8_t *f = (volatile uint8_t *)(uintptr_t)TX_VA;
+        for (uint32_t i = 0; i < 64u; i++) f[i] = 0;
+        for (uint32_t i = 0; i < 6u; i++) f[i] = 0xFFu;              /* broadcast */
+        for (uint32_t i = 0; i < 6u; i++) f[6 + i] = (uint8_t)(mac >> (8 * i));
+        f[12] = 0x08; f[13] = 0x06;                                  /* ARP */
+        f[14] = 0x00; f[15] = 0x01;                                  /* Ethernet */
+        f[16] = 0x08; f[17] = 0x00;                                  /* IPv4 */
+        f[18] = 6;    f[19] = 4;
+        f[20] = 0x00; f[21] = 0x01;                                  /* request */
+        for (uint32_t i = 0; i < 6u; i++) f[22 + i] = (uint8_t)(mac >> (8 * i));
+        f[28] = 10; f[29] = 0; f[30] = 2; f[31] = 15;                /* 10.0.2.15 */
+        f[38] = 10; f[39] = 0; f[40] = 2; f[41] = 2;                 /* 10.0.2.2  */
+    }
+
+    { uint8_t *z = (uint8_t *)&m;
+      for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+    m.label = NET_OP_SEND; m.words[0] = 42u; m.word_count = 1u;
+    if (iris_msg_call((long)INIT_SLOT_NET_EP, &m) != 0 ||
+        m.label != NET_REP_OK) return 0;
+
+    /*
+     * Wait for the answer, bounded in TIME.
+     *
+     * The first two drafts bounded it by a POLL COUNT, and both were wrong in
+     * the same way: a poll is an IPC round trip through the driver, so what a
+     * count buys depends entirely on how fast the machine is.  Twenty thousand
+     * was generous enough on the success path and pushed the boot past the
+     * gate's deadline on a machine with no network; two hundred and fifty
+     * fixed that and started missing REAL replies under an IOMMU, where every
+     * round trip costs more.  A count cannot be both.
+     *
+     * Time can.  Two seconds: far shorter than anything the gate's deadline
+     * cares about, and long enough for a peer whose stack runs in the
+     * EMULATOR's main loop rather than on the virtual wire — which is the
+     * detail a quarter of a second got wrong.  A guest spinning in yields
+     * gives that loop very little, so the reply can take hundreds of
+     * milliseconds of wall clock to appear even though nothing is far away.
+     *
+     * `SYS_CLOCK_GET` is one of the four syscalls that survived the ABI freeze
+     * (A-27: the counter is unprivileged on this architecture anyway).
+     */
+    long t0 = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
+    for (;;) {
+        long now = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
+        if (t0 > 0 && now > 0 && (uint64_t)(now - t0) > 2000000000ull) break;
+
+        { uint8_t *z = (uint8_t *)&m;
+          for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+        m.label     = NET_OP_RECV;
+        m.recv_slot = (long)INIT_SLOT_NET_RX;
+        (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_NET_RX);
+        if (iris_msg_call((long)INIT_SLOT_NET_EP, &m) != 0) return 0;
+        if (m.label != NET_REP_OK || m.words[0] == 0u) {
+            (void)iris_syscall4(SYS_YIELD, 0, 0, 0, 0);
+            continue;
+        }
+
+        uint64_t off = m.words[2];
+        if (iris_map_frame(INIT_SLOT_NET_RX, IRIS_CPTR_OWN_VSPACE,
+                           g_init_untyped_c, INIT_SLOT_NET_PT,
+                           RX_VA, 4096u, 0ull) != 0) return 0;
+
+        const volatile uint8_t *f = (const volatile uint8_t *)(uintptr_t)(RX_VA + off);
+        int is_arp_reply = (f[12] == 0x08 && f[13] == 0x06 &&
+                            f[20] == 0x00 && f[21] == 0x02);
+        int from_gateway = (f[28] == 10 && f[29] == 0 &&
+                            f[30] == 2  && f[31] == 2);
+        if (is_arp_reply && from_gateway) {
+            static const char hx[] = "0123456789abcdef";
+            char b[72] = "[USER][INIT] net: gateway answered, mac ";
+            uint32_t k = 0; while (b[k]) k++;
+            for (uint32_t i = 0; i < 6u; i++) {
+                uint8_t v = f[22 + i];
+                b[k++] = hx[(v >> 4) & 0xFu]; b[k++] = hx[v & 0xFu];
+            }
+            b[k++] = '\n'; b[k] = 0;
+            init_log(b);
+            (void)iris_invoke2((long)INIT_SLOT_NET_RX, INV_FRAME_UNMAP,
+                               (long)IRIS_CPTR_OWN_VSPACE, (long)RX_VA);
+            return 1;
+        }
+        /* Some other frame — QEMU's stack sends a few.  Unmap and keep
+         * waiting; the next RECV takes this buffer back anyway. */
+        (void)iris_invoke2((long)INIT_SLOT_NET_RX, INV_FRAME_UNMAP,
+                           (long)IRIS_CPTR_OWN_VSPACE, (long)RX_VA);
+    }
+    return 0;
 }
 
 /* ── blk spawn (Stage 10: storage is a driver, and the driver is in ring 3) ── */

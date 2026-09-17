@@ -193,6 +193,7 @@ static long sl_name_to_index(const char *name) {
     /* Stage 10: the bus service, appended for the same reason. */
     if (sl_streq(name, "pci"))      return 17;
     if (sl_streq(name, "blk"))      return 18;
+    if (sl_streq(name, "net"))      return 19;
     return -1;
 }
 

@@ -129,6 +129,17 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
 #define INIT_SLOT_BLK_EP       89u
 #define INIT_SLOT_BLK_REPLY    90u
 #define INIT_SLOT_BLK_UT       91u
+/* ...and the network service's. */
+#define INIT_SLOT_NET_EP       92u
+#define INIT_SLOT_NET_REPLY    93u
+#define INIT_SLOT_NET_UT       94u
+/* ...and the scratch the ARP boot check needs: a paging level and the two
+ * buffer capabilities the network service hands back.  100 and up, because
+ * 96..99 are IRIS_CPTR_IOSPACE_CONTROL / DOMAIN_CONTROL / SCHED_CONTROL /
+ * FB_CONTROL and init holds all four. */
+#define INIT_SLOT_NET_PT      100u
+#define INIT_SLOT_NET_TX      101u
+#define INIT_SLOT_NET_RX      102u
 #define INIT_SLOT_S8_TCB       59u
 /* Stage 7 Step 7: where a fault delivers the faulting thread's capability.
  * init arms the handler for ITSELF, so its own root CNode is the mailbox and
@@ -162,6 +173,7 @@ extern iris_cptr_t g_init_timer_ep_h;
 int init_spawn_timer(void);
 int init_spawn_pci(void);
 int init_spawn_blk(void);
+int init_spawn_net(void);
 
 /* Tiny process utilities (main.c). */
 void init_exit(long code);
@@ -235,6 +247,12 @@ INIT_SLOT_CHECK(INIT_SLOT_PCI_UT);
 INIT_SLOT_CHECK(INIT_SLOT_BLK_EP);
 INIT_SLOT_CHECK(INIT_SLOT_BLK_REPLY);
 INIT_SLOT_CHECK(INIT_SLOT_BLK_UT);
+INIT_SLOT_CHECK(INIT_SLOT_NET_EP);
+INIT_SLOT_CHECK(INIT_SLOT_NET_REPLY);
+INIT_SLOT_CHECK(INIT_SLOT_NET_UT);
+INIT_SLOT_CHECK(INIT_SLOT_NET_PT);
+INIT_SLOT_CHECK(INIT_SLOT_NET_TX);
+INIT_SLOT_CHECK(INIT_SLOT_NET_RX);
 INIT_SLOT_CHECK(INIT_SLOT_TIMER_EP);
 INIT_SLOT_CHECK(INIT_SLOT_TIMER_IRQCAP);
 INIT_SLOT_CHECK(INIT_SLOT_TIMER_NOTIF);

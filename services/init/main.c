@@ -239,6 +239,11 @@ void init_main(iris_cptr_t rbx_unused) {
     if (!init_spawn_blk())
         init_log("[USER] blk spawn FAILED\n");
 
+    /* Stage 10: the network card, which also needs the bus service.  A machine
+     * with no NIC is a machine — not fatal. */
+    if (!init_spawn_net())
+        init_log("[USER] net spawn FAILED\n");
+
     sm_h = init_spawn_svcmgr();
     if (sm_h == IRIS_CPTR_NULL) {
         init_log("[USER] svcmgr spawn FAILED\n");

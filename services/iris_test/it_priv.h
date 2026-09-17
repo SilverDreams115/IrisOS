@@ -2076,11 +2076,18 @@ struct it_utq_taskobj {
  * for exactly the reason a boot Untyped is: they exist before there is
  * anything for them to be a child of.
  *
- * So the ceiling is 32, and the five it went up by are the five regions the
- * boot log names.  A machine with a different firmware will have a different
- * number of them, which is worth saying plainly: this ceiling is a fact about
- * the MACHINE the gate runs on as well as about the kernel, and a run on other
+ * So the ceiling is 33, and the six it went up by are the six regions the boot
+ * log names.  A machine with a different firmware will have a different number
+ * of them, which is worth saying plainly: this ceiling is a fact about the
+ * MACHINE the gate runs on as well as about the kernel, and a run on other
  * hardware would have to re-derive it rather than assume it.
+ *
+ * That was not a hypothetical caveat for long.  It was written at 32, for five
+ * regions, and attaching a NETWORK CARD to the gate's machine made it six —
+ * the firmware describes one more device, so it publishes one more table
+ * region, so the kernel publishes one more Untyped, so there is one more
+ * unparented capability.  Nothing about the kernel changed.  The test caught
+ * it, which is the whole reason it is a refusal and not a report.
  *
  * This number going UP is not automatically fine, which is why the test
  * refuses rather than reporting.  What makes all of these fine is that each is
@@ -2088,7 +2095,7 @@ struct it_utq_taskobj {
  * to, so "unparented" is a fact about when it was made and not about an
  * ancestry that was lost.  A root appearing anywhere else is a defect, and the
  * ceiling is what makes the difference visible. */
-#define IT_MDB_LEGACY_ROOT_CEILING 32u
+#define IT_MDB_LEGACY_ROOT_CEILING 33u
 
 /* ── T309: a passive server serves a LOOP on donated time (Stage 8-mcs) ───
  *
