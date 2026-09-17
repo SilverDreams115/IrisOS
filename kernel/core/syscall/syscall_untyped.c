@@ -45,6 +45,8 @@
  * when written and silently false later.
  */
 #include "syscall_priv.h"
+#include <iris/nc/kiopagetable.h>
+#include <iris/nc/kiospace.h>
 #include <iris/nc/kasidpool.h>
 #include <iris/pmm.h>
 #include <iris/kslab.h>
@@ -104,6 +106,8 @@ _Static_assert(IRIS_KOBJ_FRAME         == (uint32_t)KOBJ_FRAME,         "KOBJ AB
 _Static_assert(IRIS_KOBJ_PAGE_TABLE    == (uint32_t)KOBJ_PAGE_TABLE,    "KOBJ ABI");
 _Static_assert(IRIS_KOBJ_ASID_POOL     == (uint32_t)KOBJ_ASID_POOL,     "KOBJ ABI");
 _Static_assert(IRIS_KOBJ_VSPACE        == (uint32_t)KOBJ_VSPACE,        "KOBJ ABI");
+_Static_assert(IRIS_KOBJ_IOSPACE       == (uint32_t)KOBJ_IOSPACE,       "KOBJ ABI");
+_Static_assert(IRIS_KOBJ_IO_PAGE_TABLE == (uint32_t)KOBJ_IO_PAGE_TABLE, "KOBJ ABI");
 _Static_assert(IRIS_KOBJ_TCB           == (uint32_t)KOBJ_TCB,           "KOBJ ABI");
 
 /*
@@ -204,6 +208,36 @@ static iris_error_t retype_sub_untyped(struct KUntyped *ut, uint64_t obj_arg,
  * Device memory is refused outright: a page table must be RAM the MMU can
  * read as a table.
  */
+/*
+ * An IO page table: the same shape as a CPU one, one address space over.
+ *
+ * A separate helper rather than a flag on the one above, because the two are
+ * walked by different hardware with different entry formats — and a capability
+ * that could be installed in either would be a capability whose meaning
+ * depends on where it lands.
+ */
+static iris_error_t retype_io_page_table(struct KUntyped *ut, uint64_t obj_arg,
+                                         struct KObject **out) {
+    if (obj_arg != 4096u) return IRIS_ERR_INVALID_ARG;
+    if (ut->is_device)    return IRIS_ERR_NOT_SUPPORTED;
+
+    void *hdr = kuntyped_alloc_child_top(ut, sizeof(struct KIOPageTable));
+    if (!hdr) return IRIS_ERR_NO_MEMORY;
+    uint64_t phys = kuntyped_bump_alloc_phys_page(ut, 4096u);
+    if (!phys) {
+        kuntyped_release_child(hdr, sizeof(struct KIOPageTable));
+        return IRIS_ERR_NO_MEMORY;
+    }
+    struct KIOPageTable *pt = kiopagetable_alloc_at(hdr, phys);
+    if (!pt) {
+        kuntyped_release_child(hdr, sizeof(struct KIOPageTable));
+        return IRIS_ERR_NO_MEMORY;
+    }
+    kiopagetable_zero(pt);
+    *out = &pt->base;
+    return IRIS_OK;
+}
+
 static iris_error_t retype_page_table(struct KUntyped *ut, uint64_t obj_arg,
                                       struct KObject **out) {
     if (obj_arg != 4096u) return IRIS_ERR_INVALID_ARG;
@@ -396,6 +430,16 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
             payload    = (uint32_t)kschedctx_bytes((uint32_t)obj_arg);
             new_rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
             break;
+        case KOBJ_IOSPACE:
+            /* Retyping pays for the object; it names no device until it is
+             * bound against IOSPACE_CONTROL.  `obj_arg` is not the source-id:
+             * a device is authority, and authority does not travel in the
+             * argument of an allocation. */
+            if (obj_arg != 0u)
+                { kuntyped_stat_retype_failure(); return syscall_err(IRIS_ERR_INVALID_ARG); }
+            payload    = sizeof(struct KIOSpace);
+            new_rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+            break;
         case KOBJ_TCB:
             /* Phase S2 Step 0: canonical TCB birth.  The object is INACTIVE
              * (configured = 0): observable, delegable, destroyable — but not
@@ -408,6 +452,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         case KOBJ_FRAME:
         case KOBJ_PAGE_TABLE:
         case KOBJ_VSPACE:
+        case KOBJ_IO_PAGE_TABLE:
             /* Physical-region types keep count == 1 in S1 (their sidecar
              * headers are not yet untyped-backed — ledger MIGRATING). */
             if (count != 1u)
@@ -498,11 +543,13 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     uint64_t carve_start = 0, carve_end = 0;
 
     if (obj_type == KOBJ_UNTYPED || obj_type == KOBJ_FRAME ||
-        obj_type == KOBJ_PAGE_TABLE || obj_type == KOBJ_VSPACE) {
+        obj_type == KOBJ_PAGE_TABLE || obj_type == KOBJ_VSPACE ||
+        obj_type == KOBJ_IO_PAGE_TABLE) {
         /* Single physical-region object (count == 1, validated above). */
         if      (obj_type == KOBJ_UNTYPED)    err = retype_sub_untyped(ut, obj_arg, &objs[0]);
         else if (obj_type == KOBJ_FRAME)      err = retype_frame(ut, obj_arg, &objs[0]);
         else if (obj_type == KOBJ_PAGE_TABLE) err = retype_page_table(ut, obj_arg, &objs[0]);
+        else if (obj_type == KOBJ_IO_PAGE_TABLE) err = retype_io_page_table(ut, obj_arg, &objs[0]);
         else                                  err = retype_vspace(ut, obj_arg, &objs[0]);
     } else {
         void *ptrs[KUNTYPED_RETYPE_MAX_COUNT];
@@ -536,6 +583,8 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                     (uint32_t)obj_arg)->base; break;
                     case KOBJ_TCB:
                         objs[i] = &ktcb_alloc_at(ptrs[i])->base;                  break;
+                    case KOBJ_IOSPACE:
+                        objs[i] = &kiospace_alloc_at(ptrs[i])->base;              break;
                     case KOBJ_ASID_POOL: {
                         uint16_t af = 0, ac = 0;
                         if (kasidpool_carve_range(&af, &ac) != IRIS_OK) {

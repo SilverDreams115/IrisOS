@@ -449,6 +449,13 @@ uint64_t sys_cspace_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* Domains: seL4's seL4_DomainSet_Set.  In syscall_tcb.c, because it resolves a
  * TCB and the resolver for that lives there. */
 uint64_t sys_domain_set(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+
+/* Stage 10-dma — what a DEVICE may reach. */
+uint64_t sys_iospace_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_iospace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_iospace_map_frame(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                               uint64_t arg3);
+uint64_t sys_iospace_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                           uint64_t arg3);
 uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2);

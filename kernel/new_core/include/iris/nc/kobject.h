@@ -46,6 +46,8 @@ typedef enum {
     KOBJ_FRAME,          /* Phase 5: physical memory frame capability — typed region from KUntyped */
     KOBJ_PAGE_TABLE,     /* Stage 6-pure: a paging level the USER retyped and maps explicitly */
     KOBJ_ASID_POOL,      /* A-21: a range of address-space identifiers, retyped */
+    KOBJ_IOSPACE,        /* Stage 10-dma: ONE device's DMA address space */
+    KOBJ_IO_PAGE_TABLE,  /* Stage 10-dma: one level of that address space's tables */
 } kobject_type_t;
 
 struct KObject;

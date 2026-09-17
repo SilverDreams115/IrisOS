@@ -532,7 +532,7 @@ void test_t250(void) {
 /* ── T251: canonical object model manifest ──────────────────────────────────
  * RETYPE2 accepts EXACTLY the canonical creatable set {NOTIFICATION,
  * ENDPOINT, CNODE, SCHED_CONTEXT, UNTYPED, REPLY, FRAME, TCB, PAGE_TABLE,
- * VSPACE, ASID_POOL} and refuses every other type code (0..31) with
+ * VSPACE, ASID_POOL, IOSPACE, IO_PAGE_TABLE} and refuses every other type code (0..31) with
  * NOT_SUPPORTED — an unregistered KOBJ_* can never be born.  Every created object reports its declared type through the
  * sanctioned bridge, and the migrated family has a retirement witness: the
  * legacy handle-first retype refuses it (S19/S20/S21). */
@@ -561,8 +561,15 @@ void test_t251(void) {
          * handed to SYS_PROCESS_CREATE.  Its region is the PML4 — one page,
          * like every other level of a walk. */
         { IRIS_KOBJ_VSPACE,        4096, IRIS_HANDLE_TYPE_VSPACE },
+        /* Stage 10-dma: a DEVICE's address space, and one level of it.  The
+         * space arrives naming no device — retyping it is paying for the
+         * object, and naming the hardware it belongs to takes IOSPACE_CONTROL.
+         * So it IS creatable by anyone holding an Untyped, which is why it
+         * belongs in this list rather than beside the ASID pool below. */
+        { IRIS_KOBJ_IOSPACE,         0,    IRIS_HANDLE_TYPE_IOSPACE },
+        { IRIS_KOBJ_IO_PAGE_TABLE, 4096, IRIS_HANDLE_TYPE_IO_PAGE_TABLE },
     };
-    for (uint32_t i = 0; ok && i < 10u; i++) {
+    for (uint32_t i = 0; ok && i < 12u; i++) {
         if (it_retype2_at(su, canon[i].t, S1_SLOT_A, 1u, canon[i].arg) != 0) {
             ok = 0; why = "canonical type not creatable"; break;
         }
@@ -587,7 +594,7 @@ void test_t251(void) {
     /* Everything else in 0..31 is refused — the manifest is CLOSED. */
     for (uint32_t t = 0; ok && t < 32u; t++) {
         int is_canon = (t == IRIS_KOBJ_ASID_POOL);
-        for (uint32_t i = 0; i < 10u; i++) if (canon[i].t == t) is_canon = 1;
+        for (uint32_t i = 0; i < 12u; i++) if (canon[i].t == t) is_canon = 1;
         if (is_canon) continue;
         if (it_retype2_at(su, t, S1_SLOT_A, 1u, 4096) != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "non-canonical type creatable";

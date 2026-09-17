@@ -460,6 +460,30 @@ void     smp_tick_others(void)               { }
 void     smp_reschedule_others(void)         { }
 void     smp_send_reschedule(uint32_t c)      { (void)c; }
 
+/*
+ * DMA remapping (Stage 10-dma).  A host test has no ACPI tables and no VT-d
+ * unit, so the machine it runs on has none — and answering "no unit, nothing
+ * usable, nothing translating" is that machine described rather than a
+ * placeholder.  It is also the answer that makes `iommu_dma_is_contained`
+ * false, which is the truth: on a machine with no IOMMU a device reaches all
+ * of memory.
+ */
+uint32_t iommu_unit_count(void)              { return 0u; }
+uint32_t iommu_usable_count(void)            { return 0u; }
+uint32_t iommu_enabled_count(void)           { return 0u; }
+uint32_t iommu_fault_status(uint32_t i)      { (void)i; return 0u; }
+int      iommu_dma_is_contained(void)        { return 0; }
+uint32_t iommu_unit_for_source(uint16_t s)   { (void)s; return 0xFFFFFFFFu; }
+uint32_t iommu_levels(uint32_t u)            { (void)u; return 0u; }
+uint16_t iommu_domain_claim(uint32_t u)      { (void)u; return 0u; }
+void     iommu_domain_release(uint32_t u, uint16_t d) { (void)u; (void)d; }
+int      iommu_context_set(uint32_t u, uint16_t s, uint16_t d,
+                           uint64_t p, uint32_t l)
+                                             { (void)u; (void)s; (void)d; (void)p; (void)l; return 0; }
+void     iommu_flush_tables(uint32_t u, const void *a, uint64_t n)
+                                             { (void)u; (void)a; (void)n; }
+void     iommu_invalidate_iotlb(uint32_t u)  { (void)u; }
+
 void     scheduler_sleep_current(uint64_t ticks) { (void)ticks; }
 
 /*

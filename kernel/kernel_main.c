@@ -295,6 +295,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                 { IRIS_BOOTCAP_SCHED_CONTROL,  BOOT_CPTR_SCHED_CONTROL },
                 { IRIS_BOOTCAP_ASID_CONTROL,   BOOT_CPTR_ASID_CONTROL },
                 { IRIS_BOOTCAP_DOMAIN_CONTROL, BOOT_CPTR_DOMAIN_CONTROL },
+                { IRIS_BOOTCAP_IOSPACE_CONTROL, BOOT_CPTR_IOSPACE_CONTROL },
             };
             for (uint32_t i = 0;
                  ut && i < sizeof(boot_controls) / sizeof(boot_controls[0]);
@@ -652,6 +653,23 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             if (bi_phys) pmm_free_contig(bi_phys, IRIS_ROOT_BOOTINFO_PAGES);
         }
     }
+
+    /*
+     * ── 8b. Contain DMA (Stage 10-dma §10.2 step 3) ─────────────────
+     *
+     * LAST, and after the first user task is built, deliberately.  From this
+     * call on, every DMA request from every device is refused by the hardware
+     * unless something maps a frame for it — and nothing can yet, so the
+     * answer is "refused" for all of them.
+     *
+     * Last because the firmware's devices do DMA and this is what stops DMA
+     * nobody authorised.  IRIS does none of its own after ExitBootServices —
+     * the services are linked into the kernel image, so there is no disk read
+     * left to break — but "there is nothing left that needs it" is a claim
+     * about the boot sequence, so it is made where the boot sequence is
+     * finished rather than in the middle of it.
+     */
+    (void)iommu_enable_blocking();
 
     /* ── 9. Scheduler start ─────────────────────────────────────── */
     klog_write("[IRIS][SCHED] running\n");

@@ -178,9 +178,15 @@
 #define INV_CSPACE_ROTATE                  66u
 #define INV_DOMAIN_SET                     67u
 
+/* ── Stage 10-dma: what a DEVICE may reach ─────────────────────────────── */
+#define INV_IOSPACE_BIND                   68u  /* name the device (authority) */
+#define INV_IOSPACE_MAP_TABLE              69u  /* install a translation level */
+#define INV_IOSPACE_MAP_FRAME              70u  /* the device may reach a frame */
+#define INV_IOSPACE_UNMAP                  71u  /* ...and no longer may */
+
 /* First unassigned.  A label is never reused, for the same reason a syscall
  * number never was: a stale caller must get a refusal, not somebody else's
  * method. */
-#define INV_LABEL_COUNT                    68u
+#define INV_LABEL_COUNT                    72u
 
 #endif /* IRIS_INVOKE_H */

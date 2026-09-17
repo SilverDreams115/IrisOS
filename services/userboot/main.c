@@ -292,7 +292,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * so retype (WRITE) and onward mint (DUPLICATE) both work.  Non-fatal:
          * if the grant is absent the mint fails, the slot stays empty and the
          * authority tests FAIL loudly rather than silently skipping. */
-        struct svc_mint init_mints[13] = { 0 };
+        struct svc_mint init_mints[14] = { 0 };
         init_mints[0].slot     = IRIS_CPTR_PROC_CONTROL;
         init_mints[0].src_cptr = proc_control_c;
         init_mints[0].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
@@ -377,14 +377,22 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         init_mints[10].src_cptr = bi->cap_domain_control;
         init_mints[10].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         init_mints[10].badge    = 0;
-        uint32_t init_mint_count = 11u;
+        /* And the authority over what a DEVICE may reach (Stage 10-dma).  It
+         * travels to init for the same reason SchedControl and DomainControl
+         * do: init is what starts the tasks that drive hardware, so it is what
+         * has to be able to bound what that hardware can touch. */
+        init_mints[11].slot     = IRIS_CPTR_IOSPACE_CONTROL;
+        init_mints[11].src_cptr = bi->cap_iospace_control;
+        init_mints[11].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        init_mints[11].badge    = 0;
+        uint32_t init_mint_count = 12u;
         if (bi->untyped_count > 1u) {
-            init_mints[11].slot     = IRIS_CPTR_INIT_UNTYPED2;
-            init_mints[11].src_cptr = bi->untyped[1].cptr;
-            init_mints[11].rights   = RIGHT_READ | RIGHT_WRITE |
+            init_mints[12].slot     = IRIS_CPTR_INIT_UNTYPED2;
+            init_mints[12].src_cptr = bi->untyped[1].cptr;
+            init_mints[12].rights   = RIGHT_READ | RIGHT_WRITE |
                                       RIGHT_DUPLICATE | RIGHT_TRANSFER;
-            init_mints[11].badge    = 0;
-            init_mint_count = 12u;
+            init_mints[12].badge    = 0;
+            init_mint_count = 13u;
         }
         /*
          * Ledger D-9: the DEVICE untyped, when the kernel published one.
@@ -395,7 +403,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * goes; whoever ends up driving the framebuffer gets it from there.
          */
         for (uint32_t i = 0; i < bi->untyped_count &&
-                             init_mint_count < 13u; i++) {
+                             init_mint_count < 14u; i++) {
             if (!bi->untyped[i].is_device) continue;
             init_mints[init_mint_count].slot     = IRIS_CPTR_DEVICE_UNTYPED;
             init_mints[init_mint_count].src_cptr = bi->untyped[i].cptr;

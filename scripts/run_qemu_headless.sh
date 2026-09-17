@@ -150,6 +150,16 @@ if [ "${IRIS_QEMU_IOMMU:-0}" != "0" ]; then
     cat "$LOG_FILE"
     exit 1
   fi
+  # ...and finding it is not containing it (Stage 10-dma §10.2 step 3).  A unit
+  # that was found and left switched off is a machine where every device still
+  # reaches all of memory, and it passes every other check in this script.
+  if ! grep -Fq "[IRIS][IOMMU] translating units:" "$LOG_FILE" ||
+     ! grep -Fq "DMA is contained" "$LOG_FILE"; then
+    echo "[headless] a remapping unit was found but DMA is not contained:"
+    grep -F "[IRIS][IOMMU]" "$LOG_FILE" | sed 's/^/           /'
+    cat "$LOG_FILE"
+    exit 1
+  fi
 else
   if ! grep -Fq "[IRIS][IOMMU]" "$LOG_FILE"; then
     echo "[headless] the kernel said nothing about DMA remapping"

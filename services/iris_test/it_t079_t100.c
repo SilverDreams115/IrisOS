@@ -1204,6 +1204,30 @@ int it_sched_ext4(uint32_t w4[5]) {
  * one processor and on a machine with four, instead of encoding a core count
  * it cannot know.
  */
+/*
+ * The DMA containment tier (Stage 10-dma §10.2 step 3).
+ *
+ *   [0] units       remapping units the DMAR named
+ *   [1] usable      ...that are what the kernel needs
+ *   [2] translating ...that are ENFORCING right now
+ *   [3] fault_status unit 0's fault status register
+ *
+ * `translating == units` is the claim: a device no capability names reaches
+ * nothing.  Anything less means some devices reach all of memory.
+ */
+int it_sched_ext7(uint32_t w7[4]) {
+    uint8_t buf[IRIS_SCHED_INFO_MAX_BYTES];
+    long r = it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO,
+                        (long)(uintptr_t)buf, (long)IRIS_SCHED_INFO_MAX_BYTES);
+    if (r != 0) return 0;
+    for (uint32_t i = 0; i < 4u; i++) {
+        uint32_t o = 208u + 4u * i;
+        w7[i] = (uint32_t)buf[o] | ((uint32_t)buf[o + 1u] << 8) |
+                ((uint32_t)buf[o + 2u] << 16) | ((uint32_t)buf[o + 3u] << 24);
+    }
+    return 1;
+}
+
 int it_sched_ext6(uint32_t w6[5]) {
     uint8_t buf[208];
     long r = it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 208);

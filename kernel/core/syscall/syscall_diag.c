@@ -2,6 +2,7 @@
 #include <iris/tlb.h>
 #include <iris/cpu_local.h>
 #include <iris/smp.h>
+#include <iris/iommu.h>
 
 
 
@@ -135,6 +136,19 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *                                          have not reached it
  *   offset 204: uint32_t _pad4
  * Extended-6 total: 208 bytes.
+ *
+ * Stage 10-dma §10.2 step 3 — additive DMA-containment tier, written ONLY when
+ * the caller passes buf_size >= 224:
+ *   offset 208: uint32_t iommu_units       — remapping units the DMAR named
+ *   offset 212: uint32_t iommu_usable      — ...that are what the kernel needs
+ *   offset 216: uint32_t iommu_translating — ...that are ENFORCING right now
+ *   offset 220: uint32_t iommu_fault_status— unit 0's fault status register
+ * Extended-7 total: 224 bytes.
+ *
+ * `translating` is the one that means something: a machine where it equals
+ * `units` is a machine where a device no capability names reaches nothing, and
+ * a machine where it is 0 is one where every device reaches everything.  The
+ * difference is not a performance number.
  */
 #define SCHED_INFO_BASE_BYTES 40u
 #define SCHED_INFO_EXT_BYTES  96u
@@ -143,10 +157,11 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 #define SCHED_INFO_EXT4_BYTES 160u
 #define SCHED_INFO_EXT5_BYTES 184u
 #define SCHED_INFO_EXT6_BYTES 208u
+#define SCHED_INFO_EXT7_BYTES 224u
 /* The clamp is part of the ABI, so the number lives in the protocol header and
  * this asserts the two have not drifted.  Adding a tier means changing both,
  * and the compiler is what makes that true rather than a comment. */
-_Static_assert(SCHED_INFO_EXT6_BYTES == IRIS_SCHED_INFO_MAX_BYTES,
+_Static_assert(SCHED_INFO_EXT7_BYTES == IRIS_SCHED_INFO_MAX_BYTES,
                "the largest sched-info tier and the size published to ring 3 "
                "must be the same number");
 
@@ -158,7 +173,8 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     if (arg1 < SCHED_INFO_BASE_BYTES) return syscall_err(IRIS_ERR_INVALID_ARG);
     uint32_t want;
-    if      (arg1 >= SCHED_INFO_EXT6_BYTES) want = SCHED_INFO_EXT6_BYTES;
+    if      (arg1 >= SCHED_INFO_EXT7_BYTES) want = SCHED_INFO_EXT7_BYTES;
+    else if (arg1 >= SCHED_INFO_EXT6_BYTES) want = SCHED_INFO_EXT6_BYTES;
     else if (arg1 >= SCHED_INFO_EXT5_BYTES) want = SCHED_INFO_EXT5_BYTES;
     else if (arg1 >= SCHED_INFO_EXT4_BYTES) want = SCHED_INFO_EXT4_BYTES;
     else if (arg1 >= SCHED_INFO_EXT3_BYTES) want = SCHED_INFO_EXT3_BYTES;
@@ -167,7 +183,7 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     else                                    want = SCHED_INFO_BASE_BYTES;
     if (!user_range_writable(arg0, want)) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    uint64_t buf[26];
+    uint64_t buf[28];
     buf[0] = sched_current_ticks();
     buf[1] = sched_wall_ticks();
     buf[2] = sched_context_switches();
@@ -276,6 +292,18 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         buf[23] = (uint64_t)c0 | ((uint64_t)c1 << 32);
         buf[24] = (uint64_t)c2 | ((uint64_t)c3 << 32);
         buf[25] = (uint64_t)sched_deaths_pending(); /* high half = _pad4 (0) */
+    }
+
+    if (want >= SCHED_INFO_EXT7_BYTES) {
+        /* DMA containment (offsets 208..220).  `translating` equal to `units`
+         * is the whole claim; anything less means some devices reach all of
+         * memory, and that must be readable rather than inferred. */
+        uint32_t d0 = iommu_unit_count();
+        uint32_t d1 = iommu_usable_count();
+        uint32_t d2 = iommu_enabled_count();
+        uint32_t d3 = iommu_fault_status(0);
+        buf[26] = (uint64_t)d0 | ((uint64_t)d1 << 32);
+        buf[27] = (uint64_t)d2 | ((uint64_t)d3 << 32);
     }
 
     if (!copy_to_user_checked(arg0, buf, want))

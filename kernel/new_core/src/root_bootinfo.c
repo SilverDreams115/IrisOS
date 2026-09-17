@@ -84,6 +84,7 @@ iris_error_t root_bootinfo_set_control_cap(void *buf, uint32_t bytes,
     case IRIS_BOOTCAP_SCHED_CONTROL:  bi->cap_sched_control  = cptr; break;
     case IRIS_BOOTCAP_ASID_CONTROL:   bi->cap_asid_control   = cptr; break;
     case IRIS_BOOTCAP_DOMAIN_CONTROL: bi->cap_domain_control = cptr; break;
+    case IRIS_BOOTCAP_IOSPACE_CONTROL: bi->cap_iospace_control = cptr; break;
     default:                          return IRIS_ERR_INVALID_ARG;
     }
     return IRIS_OK;

@@ -94,6 +94,7 @@ struct iris_root_bootinfo {
      * seL4_CapDomain.  Here for the reason every other authority is: the root
      * task cannot be given a time partition by anyone else. */
     uint64_t cap_domain_control; /* Domain_Set */
+    uint64_t cap_iospace_control;/* Stage 10-dma: what a DEVICE may reach */
 
     /* The CSpace as it was handed over. */
     uint32_t cnode_slots;      /* slot count of the root CNode */

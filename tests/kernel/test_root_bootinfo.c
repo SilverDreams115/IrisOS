@@ -253,6 +253,11 @@ void test_root_bootinfo(void) {
                       IRIS_BOOTCAP_ASID_CONTROL, 12u), IRIS_OK);
         ASSERT_EQ(root_bootinfo_set_control_cap(page, RBI_PAGE,
                       IRIS_BOOTCAP_DOMAIN_CONTROL, 13u), IRIS_OK);
+        /* And the fourth, added with Stage 10-dma.  Covered HERE the day it
+         * was added, which is the whole point of the note above: the domain
+         * authority's missing case was found by a boot that went FATAL. */
+        ASSERT_EQ(root_bootinfo_set_control_cap(page, RBI_PAGE,
+                      IRIS_BOOTCAP_IOSPACE_CONTROL, 14u), IRIS_OK);
 
         /* Each authority has its OWN field: a reader asking for one never
          * gets another, which is the whole point of the split. */
@@ -265,6 +270,7 @@ void test_root_bootinfo(void) {
         ASSERT_EQ(bi->cap_sched_control, 11u);
         ASSERT_EQ(bi->cap_asid_control, 12u);
         ASSERT_EQ(bi->cap_domain_control, 13u);
+        ASSERT_EQ(bi->cap_iospace_control, 14u);
 
         /* A kind the page has no field for, and a grant naming CPTR_NULL, are
          * refused rather than dropped silently. */

@@ -569,7 +569,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[22] = { 0 };
+        struct svc_mint it_mints[23] = { 0 };
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
@@ -709,6 +709,19 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         it_mints[21].src_cptr = IRIS_CPTR_DOMAIN_CONTROL;
         it_mints[21].rights = RIGHT_READ | RIGHT_DUPLICATE;
         it_mints[21].badge = 0;
+        /*
+         * And the authority over what a DEVICE may reach (Stage 10-dma), at a
+         * slot of the suite's own for the reason the one above has one.
+         *
+         * The suite is given it deliberately: Stage 10-dma's claim is that a
+         * device reaches only what somebody mapped for it, and a test that
+         * cannot bind an IOSpace can only check that the hardware is switched
+         * on — a statement about the kernel's boot, not its capability model.
+         */
+        it_mints[22].slot = IRIS_CPTR_IOSPACE_CONTROL_TEST;
+        it_mints[22].src_cptr = IRIS_CPTR_IOSPACE_CONTROL;
+        it_mints[22].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
+        it_mints[22].badge = 0;
         /* Ledger A-21: the suite builds address spaces (T079, T328) and has
          * to be able to name them.  It receives the POOL and not the CONTROL,
          * so T328 can also assert that carving a pool without ASIDControl is
@@ -734,14 +747,14 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * retired duplicate had to exist. */
         r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
                                "iris_test",
-                            &proc_h, &boot_h, it_mints, 22u,
+                            &proc_h, &boot_h, it_mints, 23u,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
                                16u << 20, /*own_budget_slot=*/0, /* has TEST_UNTYPED */
                                /* Stage 7 Step 9: keep the suite's CSpace root
                                 * long enough for the self-proc mint below. */
                                (uint64_t)INIT_SLOT_TEST_CNODE << 32,
                                (uint64_t)INIT_SLOT_TEST_TCB << 32, 0);
-        init_report_mints("iris_test", it_mints, 22u);
+        init_report_mints("iris_test", it_mints, 23u);
     }
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);

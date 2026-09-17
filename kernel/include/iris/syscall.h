@@ -759,7 +759,7 @@ static inline long iris_syscall0(long nr) {
  * smashed stack in the CALLER, one test after the one doing the probing.
  */
 #define SYS_SCHED_INFO 69
-#define IRIS_SCHED_INFO_MAX_BYTES 208u
+#define IRIS_SCHED_INFO_MAX_BYTES 224u
 
 /*
  * Nanosleep — modern/conforming (iris_error_t).
@@ -992,6 +992,15 @@ static inline long iris_syscall0(long nr) {
 #define IRIS_KOBJ_FRAME         15u
 #define IRIS_KOBJ_PAGE_TABLE    16u
 #define IRIS_KOBJ_ASID_POOL     17u  /* A-21: address-space identifiers */
+/*
+ * Stage 10-dma.  A device's reach becomes a capability: the frames it may
+ * target, named by whoever grants them, revocable.  An IOSpace is one device's
+ * DMA address space; an IO page table is one level of that space's translation
+ * tables, paid for out of the holder's own Untyped exactly as a CPU page table
+ * is.  That is what keeps the kernel out of an allocator on this path.
+ */
+#define IRIS_KOBJ_IOSPACE       18u
+#define IRIS_KOBJ_IO_PAGE_TABLE 19u
 /* How many identifiers one pool issues.  Part of the ABI because a holder has
  * to be able to size its own address-space budget without asking the kernel
  * how big its objects are. */
@@ -2246,6 +2255,8 @@ struct iris_tcb_info {
 #define IRIS_HANDLE_TYPE_FRAME          15u  /* Phase 5: KFrame  — physical memory frame */
 #define IRIS_HANDLE_TYPE_PAGE_TABLE     16u  /* Stage 6-pure: a retyped paging level */
 #define IRIS_HANDLE_TYPE_ASID_POOL      17u  /* A-21: a range of address-space ids */
+#define IRIS_HANDLE_TYPE_IOSPACE        18u  /* Stage 10-dma: a DEVICE's address space */
+#define IRIS_HANDLE_TYPE_IO_PAGE_TABLE  19u  /* Stage 10-dma: one level of one */
 
 #ifndef __ASSEMBLER__
 /* struct iris_resource_info DELETED (Stage 7-mem) with SYS_RESOURCE_INFO.

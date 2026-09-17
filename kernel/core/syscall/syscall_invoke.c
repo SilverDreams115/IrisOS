@@ -126,6 +126,12 @@ uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
     case INV_FRAME_SIZE:               return sys_frame_size(cptr, a1, a2);
     case INV_FRAME_GET_ADDRESS:        return sys_frame_get_address(cptr, a1, a2);
 
+    /* ── KOBJ_IOSPACE — what a DEVICE may reach (Stage 10-dma) ────────── */
+    case INV_IOSPACE_BIND:             return sys_iospace_bind(cptr, a1, a2);
+    case INV_IOSPACE_MAP_TABLE:        return sys_iospace_map_table(cptr, a1, a2);
+    case INV_IOSPACE_MAP_FRAME:        return sys_iospace_map_frame(cptr, a1, a2, a3);
+    case INV_IOSPACE_UNMAP:            return sys_iospace_unmap(cptr, a1, a2);
+
     /* ── KOBJ_PAGE_TABLE / KOBJ_ASID_POOL ─────────────────────────────── */
     case INV_PAGE_TABLE_MAP:           return sys_vspace_map_table(cptr, a1, a2);
     case INV_PAGE_TABLE_UNMAP:         return sys_vspace_unmap_table(cptr, a1, a2);

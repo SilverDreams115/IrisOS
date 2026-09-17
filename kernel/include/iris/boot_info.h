@@ -65,6 +65,12 @@
 /* Authority to place a thread in a scheduling DOMAIN — seL4's seL4_CapDomain.
  * Convention-only, like the three above. */
 #define BOOT_CPTR_DOMAIN_CONTROL 13u
+/* Authority to say which MEMORY a DEVICE may reach — seL4's IOSpace control
+ * (Stage 10-dma).  Convention-only, like the four above.  Separate from
+ * IOPORT_CONTROL and IRQ_CONTROL because it answers a different question:
+ * those say which registers a driver may touch and which line it may hear,
+ * this says what the hardware behind them may write to. */
+#define BOOT_CPTR_IOSPACE_CONTROL 14u
 #define BOOT_CPTR_RES_END         15u   /* inclusive; slots 1-15 are reserved */
 #define BOOT_CPTR_UNTYPED_START   16u   /* first boot KUntyped CPtr */
 #define BOOT_CPTR_UNTYPED_END    255u   /* last boot KUntyped CPtr (root CNode has 256 slots) */

@@ -2051,20 +2051,27 @@ struct it_utq_taskobj {
  * root — it is retyped from an Untyped and parented there, which is the whole
  * point of the split.
  *
- * The DOMAIN SCHEDULER adds the third, and the last one this pattern can
- * produce for a while: DomainControl, seL4's seL4_CapDomain, the authority to
- * place a thread in a time partition.  Same shape as the two above — one
- * capability, minted once at boot, in BootInfo, a root because there is
- * nothing above it to be a child of, and every delegation downward is a
- * child.
+ * The DOMAIN SCHEDULER adds the third: DomainControl, seL4's seL4_CapDomain,
+ * the authority to place a thread in a time partition.  Same shape as the two
+ * above — one capability, minted once at boot, in BootInfo, a root because
+ * there is nothing above it to be a child of, and every delegation downward is
+ * a child.
+ *
+ * DMA CONTAINMENT adds the fourth (Stage 10-dma): IOSpaceControl, the
+ * authority to say which MEMORY a DEVICE may reach.  It is a boot authority
+ * for the same reason the other three are, and it is worth noting what makes
+ * it a DIFFERENT authority rather than part of IOPORT_CONTROL: those say which
+ * registers a driver may touch and which line it may hear, and this says what
+ * the hardware behind them may write to.  A system that hands out the first
+ * two without the third has handed out all of memory.
  *
  * This number going UP is not automatically fine, which is why the test
- * refuses rather than reporting.  What makes these three fine is that each is
+ * refuses rather than reporting.  What makes these four fine is that each is
  * a BOOT AUTHORITY: it exists before any Untyped a capability could be
  * parented to, so "unparented" is a fact about when it was made and not about
  * an ancestry that was lost.  A root appearing anywhere else is a defect, and
  * the ceiling is what makes the difference visible. */
-#define IT_MDB_LEGACY_ROOT_CEILING 26u
+#define IT_MDB_LEGACY_ROOT_CEILING 27u
 
 /* ── T309: a passive server serves a LOOP on donated time (Stage 8-mcs) ───
  *
@@ -2722,6 +2729,11 @@ int it_sched_ext6(uint32_t w6[5]);
 #define IT_S6_TICK_IPIS   2u
 #define IT_S6_RESCHED_IPIS 3u
 #define IT_S6_DEATHS_PENDING 4u
+int it_sched_ext7(uint32_t w7[4]);
+#define IT_S7_UNITS       0u
+#define IT_S7_USABLE      1u
+#define IT_S7_TRANSLATING 2u
+#define IT_S7_FAULTS      3u
 int it_setup_self_vspace(void);
 long it_map_fixup(long nr, long a0, long a1, long a2, long a3);
 long it_map_fixup_inv(unsigned long label, long c, long a1, long a2, long a3);
@@ -3063,6 +3075,8 @@ void test_t347(void);
 void test_t348(void);
 void test_t349(void);
 void test_t350(void);
+void test_t351(void);
+void test_t352(void);
 void test_t324(void);
 void test_t319(void);
 void test_t296(void);

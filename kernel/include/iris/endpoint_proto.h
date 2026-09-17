@@ -456,6 +456,45 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * window (64..87), empty at suite start and named by no test. */
 #define IRIS_CPTR_DOMAIN_CONTROL_TEST ((uint64_t)87)
 /*
+ * Authority to say which MEMORY a DEVICE may reach (Stage 10-dma), and the
+ * slot the suite receives it at.
+ *
+ * 252, and it took two wrong answers to get there — which is worth recording,
+ * because the suite's root CNode is the most contended namespace in the system
+ * and "this slot looks free" has now been wrong twice in a row.
+ *
+ * 86 first: the S1 scratch window is 64..87 and 87 holds DomainControl, so 86
+ * looked symmetrical.  It is INSIDE that rotating window, and the mint came
+ * back ALREADY_EXISTS — reported by slot number by the loader, which is the
+ * only reason it was a two-minute problem instead of a capability that was
+ * quietly not there.
+ *
+ * 246 next: above the fuzz pool, below the transfer slots, named by no
+ * constant.  It is the DESTINATION of T253's capacity probe, which retypes
+ * eight CNodes into 246..253 expecting NO_MEMORY — and got ALREADY_EXISTS
+ * instead, so a test about a REGION's capacity started failing about a slot.
+ *
+ * 252 third: a root slot nothing NAMES.  It is inside 246..253, the window
+ * T253 retypes eight CNodes into, so the same test failed the same way.  (252
+ * and 253 also appear in the suite as LEAVES of its second-level object CNode,
+ * which is a different namespace entirely — a fourth way to be wrong about
+ * this that happened not to be the one that bit.)
+ *
+ * 54 is free in the suite's map and outside every range in it: below the S1
+ * scratch window (64..87), above the fixed low slots, and nowhere near the
+ * fuzz pool (100..239) or the high assignments (244..255).  The lesson, which
+ * is the reason this comment is four paragraphs long: in this CSpace a slot is
+ * free only if it is outside every declared RANGE as well as unnamed by every
+ * constant, and three of the four checks above failed on a range.
+ *
+ * The suite is given this one deliberately.  Stage 10-dma's claim is that a
+ * device reaches only what somebody mapped for it, and a test that cannot bind
+ * an IOSpace can only check that the hardware is switched on — which is a
+ * statement about the kernel's boot, not about its capability model.
+ */
+#define IRIS_CPTR_IOSPACE_CONTROL      ((uint64_t)96)
+#define IRIS_CPTR_IOSPACE_CONTROL_TEST ((uint64_t)54)
+/*
  * Ledger A-21: the two address-space-identifier authorities.
  *
  * ASID_CONTROL carves POOLS out of Untyped and travels only as far as a task

@@ -69,6 +69,28 @@
  */
 #define IRIS_BOOTCAP_DOMAIN_CONTROL (1u << 9)  /* Domain_Set */
 
+/*
+ * Authority to name a DEVICE at all — Stage 10-dma, seL4's `seL4_IOSpace`.
+ *
+ * Every other capability in IRIS bounds what a THREAD may reach.  This one
+ * bounds what a DEVICE may reach, which is the one thing an I/O port or IRQ
+ * capability cannot express: a driver holding those can program a DMA-capable
+ * device with any physical address, and the device writes there past every
+ * check the kernel makes.
+ *
+ * It is separate from IOPORT_CONTROL and IRQ_CONTROL because it answers a
+ * different question.  Those say which registers a driver may touch and which
+ * line it may hear; this says which MEMORY the device behind them may reach.
+ * A system that hands out the first two without this one has handed out all of
+ * memory, and the split is what makes that visible rather than implied.
+ *
+ * Minting an IOSpace from it takes a SOURCE-ID — the bus:device:function that
+ * rides on the device's DMA requests.  The kernel does not discover that; the
+ * holder does, and passes it, which is why no PCI enumeration lives in the
+ * kernel.
+ */
+#define IRIS_BOOTCAP_IOSPACE_CONTROL (1u << 10)  /* IOSpace_Create */
+
 struct KBootstrapCap {
     struct KObject base;
     uint32_t kind;             /* exactly one IRIS_BOOTCAP_* value */

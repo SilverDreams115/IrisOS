@@ -94,6 +94,7 @@ struct iris_iommu_unit {
     uint16_t iotlb_offset;    /* ECAP.IRO, already in bytes */
     uint16_t fault_offset;    /* CAP.FRO, already in bytes */
     uint8_t  fault_regs;      /* CAP.NFR + 1 */
+    uint8_t  translating;     /* §10.2 step 3: the unit is enforcing */
 };
 
 /*
@@ -146,5 +147,89 @@ uint32_t iommu_probe_units(void);
 
 /* How many units are usable — 0 until `iommu_probe_units` has run. */
 uint32_t iommu_usable_count(void);
+
+/*
+ * Turn translation ON, with nothing permitted (§10.2 step 3).
+ *
+ * Every usable unit is given a root table in which NO entry is present, and
+ * then switched into translating mode.  A DMA request from any device then
+ * faults on its root entry and is refused by the hardware — which is §10.1's
+ * property standing on its own, before any object exists that could relax it:
+ * a device whose source-id no capability names reaches nothing.
+ *
+ * An empty root table is also the cheapest default there is.  One 4 KiB page
+ * per unit, no context tables at all: a request from any bus stops at the root
+ * entry, so building 256 context tables to hold nothing would be the same
+ * answer at a thousand times the memory.
+ *
+ * Returns how many units are now translating.  A unit that cannot be switched
+ * is reported and left alone — the devices behind it keep their unrestricted
+ * reach, and that has to be said rather than inferred from a number.
+ *
+ * Call it LAST in boot.  The firmware's devices do DMA, and the whole point of
+ * this call is to stop DMA that nobody authorised.
+ */
+uint32_t iommu_enable_blocking(void);
+
+/* How many units are translating — 0 until `iommu_enable_blocking` has run. */
+uint32_t iommu_enabled_count(void);
+
+/*
+ * A unit's fault status register, or 0.
+ *
+ * The only evidence a test environment offers that the enforcement is real
+ * rather than a bit that was set and does nothing: a device refused while
+ * translating was on leaves a record here.  A non-zero value proves the unit
+ * is enforcing; a zero is consistent with nothing having tried.  Reported, not
+ * acted on — a fault is a fact about a device somebody else owns.
+ */
+uint32_t iommu_fault_status(uint32_t index);
+
+/*
+ * ── What the object layer asks of the hardware layer (§10.2 step 4) ────────
+ *
+ * The IOSpace and its page tables are capability objects and live in
+ * `new_core`; the remapping unit is hardware and lives here.  These four calls
+ * are the whole of the line between them.
+ */
+
+/* Which unit claims this source-id, or IOMMU_NO_UNIT.
+ *
+ * "Claims" is read from the DMAR, not assumed.  A unit with INCLUDE_PCI_ALL
+ * takes everything in its segment; one without takes only what its device
+ * scopes name.  A source-id nobody claims gets no IOSpace — a capability that
+ * promises containment nothing enforces is worse than a refusal. */
+#define IOMMU_NO_UNIT 0xFFFFFFFFu
+uint32_t iommu_unit_for_source(uint16_t source_id);
+
+/* How many page-table levels that unit's translation needs (3 or 4). */
+uint32_t iommu_levels(uint32_t unit);
+
+/* Claim a translation domain on a unit, or 0 if none is free.  Domain 0 is
+ * never handed out: the specification reserves it, and a bug that returns
+ * "no domain" as 0 would otherwise install one device's translations under
+ * another's. */
+uint16_t iommu_domain_claim(uint32_t unit);
+void     iommu_domain_release(uint32_t unit, uint16_t domain);
+
+/* Install (or remove) the context entry that points a device at a page table.
+ * `root_pt_phys` of 0 removes it, which is what makes the device blocked
+ * again.  Flushes what has to be flushed and invalidates what has to be
+ * invalidated; returns non-zero on success. */
+int iommu_context_set(uint32_t unit, uint16_t source_id, uint16_t domain,
+                      uint64_t root_pt_phys, uint32_t levels);
+
+/* Push a range out of the CPU's caches so a non-coherent unit can read it.
+ * A no-op on a unit whose page walk snoops. */
+void iommu_flush_tables(uint32_t unit, const void *addr, uint64_t len);
+
+/* Empty a unit's IOTLB.  Global, because the register interface's per-domain
+ * form buys nothing at the rate IRIS changes translations. */
+void iommu_invalidate_iotlb(uint32_t unit);
+
+/* Is DMA on this machine contained?  True only when every unit the DMAR named
+ * is translating.  A machine with no IOMMU answers false, which is the truth:
+ * a device there reaches all of memory. */
+int iommu_dma_is_contained(void);
 
 #endif /* IRIS_IOMMU_H */

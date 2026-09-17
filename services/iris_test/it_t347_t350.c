@@ -106,6 +106,24 @@
 #define ADV_LEAF_EP   254u
 #define ADV_LEAF_RP   255u
 
+/*
+ * T352's five objects, on the leaves the tests above have finished with.
+ *
+ * Reuse rather than five more leaves, and the reuse is safe because these run
+ * SEQUENTIALLY and each clears what it used: T348 releases 244..248 and T349
+ * releases 249..250 before T352 starts.  Stated here rather than assumed,
+ * because a leaf range shared by two tests that ever ran concurrently would be
+ * a failure in whichever one ran second.
+ *
+ * Off the suite's ROTATING pool for the reason T347's objects are: T324
+ * asserts a recorded ceiling on how often that pool recycles a live leaf, and
+ * a test holding five objects across a whole arc spends a budget T324 is
+ * measuring.  That is how this was found, for the second time.
+ */
+#define T352_LEAF_IO   (ADV_LEAF_BASE + 0u)   /* the IOSpace */
+#define T352_LEAF_L(i) (ADV_LEAF_BASE + 1u + (uint32_t)(i))  /* three levels */
+#define T352_LEAF_FR   (ADV_LEAF_BASE + 4u)   /* the frame */
+
 #define ADV_MAGIC 0x5A5Aull
 
 enum {
@@ -803,4 +821,247 @@ void test_t350(void) {
     /* Twice the workers: this test starts victims as well. */
     if (ok && !adv_baseline(&b, &a, ADV_WORKERS * 2u, &why)) ok = 0;
     if (ok) it_pass("T350"); else it_fail("T350", why);
+}
+
+/* ── T351: DMA is contained, or the kernel says plainly that it is not ───────
+ *
+ * Stage 10-dma §10.2 step 3.  A driver in IRIS holds an I/O port capability
+ * and an IRQ capability and nothing else, and the claim that goes with that is
+ * containment.  Against a DMA-capable device that claim is only true if a
+ * remapping unit is enforcing — otherwise the driver writes a physical address
+ * into the device and the device writes there, past every check the kernel
+ * makes.
+ *
+ * What is checked depends on the machine, and is read rather than assumed —
+ * the same binary runs with and without `IRIS_QEMU_IOMMU=1`:
+ *
+ * No remapping unit:
+ *  · nothing is usable and nothing is translating, and the kernel must not
+ *    CLAIM otherwise.  That is the whole assertion, and it is not a formality:
+ *    a containment gauge that reports success on a machine with no hardware to
+ *    enforce it is worse than no gauge, because every later test that reads it
+ *    would pass for the wrong reason.
+ *
+ * At least one:
+ *  · every unit the DMAR named is ENFORCING.  Not "at least one" — a machine
+ *    with two units where one translates has a whole class of devices reaching
+ *    all of memory, and it looks healthy from everywhere except this line;
+ *  · and every usable unit was among them, which is what says the kernel did
+ *    not quietly decide some hardware was too much trouble.
+ *
+ * What this test CANNOT do is watch a device be refused.  There is no DMA
+ * engine under IRIS's control in the test environment, so "the device cannot
+ * reach it" is established by the hardware accepting the enable and by the
+ * translation tables saying so — not by an attempt that failed.  The fault
+ * status register is reported for exactly that reason: a non-zero value would
+ * be a device that DID try and was refused, which is the one piece of direct
+ * evidence this environment can produce, and it is reported rather than
+ * required because nothing here is in a position to make a device try.
+ * Invariants: D1. */
+void test_t351(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "DMA containment";
+
+    uint32_t w7[4];
+    if (!it_sched_ext7(w7)) { it_fail("T351", "containment tier"); return; }
+
+    it_serial_write("[IRIS][TEST] T351 units=");
+    it_log_num(w7[IT_S7_UNITS]);
+    it_serial_write(" usable=");
+    it_log_num(w7[IT_S7_USABLE]);
+    it_serial_write(" translating=");
+    it_log_num(w7[IT_S7_TRANSLATING]);
+    it_serial_write(" faults=");
+    it_log_num(w7[IT_S7_FAULTS]);
+    it_serial_write("\n");
+
+    if (w7[IT_S7_UNITS] == 0u) {
+        if (w7[IT_S7_USABLE] != 0u) {
+            ok = 0; why = "a usable unit on a machine with no unit";
+        }
+        if (ok && w7[IT_S7_TRANSLATING] != 0u) {
+            ok = 0; why = "containment claimed with no hardware to enforce it";
+        }
+    } else {
+        if (w7[IT_S7_USABLE] > w7[IT_S7_UNITS]) {
+            ok = 0; why = "more usable units than units";
+        }
+        if (ok && w7[IT_S7_TRANSLATING] != w7[IT_S7_UNITS]) {
+            ok = 0; why = "a remapping unit is not enforcing";
+        }
+        if (ok && w7[IT_S7_TRANSLATING] != w7[IT_S7_USABLE]) {
+            ok = 0; why = "a usable unit was left switched off";
+        }
+    }
+
+    it_quiesce_reaper();
+    if (ok) it_pass("T351"); else it_fail("T351", why);
+}
+
+/* ── T352: a device reaches what somebody mapped, and nothing else ───────────
+ *
+ * Stage 10-dma §10.2 steps 4 and 5.  T351 says the hardware is switched on and
+ * blocking; this says the capability model on top of it does what it claims.
+ *
+ * The whole arc, in the order a driver's supervisor would do it:
+ *
+ *   · retype an IOSpace — paying for the object, which anyone holding an
+ *     Untyped may do.  It names no device yet, and mapping into it is refused
+ *     because there is nothing to map FOR;
+ *   · bind it to a source-id, which takes IOSPACE_CONTROL.  Without the
+ *     authority it is ACCESS_DENIED, and binding twice is ALREADY_EXISTS —
+ *     rebinding would move a live set of translations to a different device;
+ *   · install the translation levels, which the holder pays for the same way
+ *     it pays for a CPU page table.  The kernel allocates none of them, which
+ *     is why MISSING_TABLE is an answer and not an internal retry;
+ *   · map a frame, and the device may reach it;
+ *   · unmap it, and the device may not.
+ *
+ * On a machine with no remapping unit the arc stops at the bind, and the
+ * refusal is the assertion: an IOSpace that no hardware can enforce is not
+ * handed out.  That is the honest behaviour and it is worth a test of its own,
+ * because the tempting alternative — hand it out and hope — produces a
+ * capability that reports containment it does not have.
+ *
+ * What this test CANNOT do, and §10.2 step 6 says so in the roadmap: watch a
+ * device be refused.  There is no DMA engine under IRIS's control here, so
+ * every claim below is about what the kernel ACCEPTED and REFUSED, not about a
+ * bus transaction that failed.
+ * Invariants: D1, D2, M1. */
+#define T352_SOURCE_ID 0x0018u          /* 00:03.0, a plausible endpoint */
+#define T352_DMA       0x40000000ull    /* 1 GiB in: needs every level */
+
+void test_t352(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "device address space";
+
+    uint32_t w7[4];
+    if (!it_sched_ext7(w7)) { it_fail("T352", "containment tier"); return; }
+    int have_iommu = (w7[IT_S7_TRANSLATING] != 0u);
+
+    /* Anyone holding an Untyped may retype one: it names no hardware yet. */
+    (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)T352_LEAF_IO);
+    if (it_invoke((long)IRIS_CPTR_TEST_UNTYPED, INV_UNTYPED_RETYPE,
+                  (long)((uint64_t)IRIS_KOBJ_IOSPACE | (1ULL << 32)),
+                  (long)(((uint64_t)T352_LEAF_IO << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
+                  0) != 0) { it_fail("T352", "iospace retype"); return; }
+    long io = (long)IT_OBJ_CPTR(T352_LEAF_IO);
+
+    /* A real frame, made BEFORE the unbound check below.  The check has to be
+     * about the SPACE naming no device, and a null frame capability would be
+     * refused by the resolver first — a test that passes for the wrong reason
+     * and would go on passing if the unbound check were deleted. */
+    (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)T352_LEAF_FR);
+    if (it_invoke((long)IRIS_CPTR_TEST_UNTYPED, INV_UNTYPED_RETYPE,
+                  (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
+                  (long)(((uint64_t)T352_LEAF_FR << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
+                  4096) != 0) {
+        (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)T352_LEAF_IO);
+        it_fail("T352", "frame"); return;
+    }
+    long frame = (long)IT_OBJ_CPTR(T352_LEAF_FR);
+
+    /* Unbound: it names no device, so there is nothing to map for. */
+    if (ok && it_invoke(io, INV_IOSPACE_MAP_FRAME, frame, (long)T352_DMA,
+                        (long)RIGHT_READ) != (long)IRIS_ERR_NOT_SUPPORTED) {
+        ok = 0; why = "mapped into a space that names no device";
+    }
+
+    /* The authority is required, and a capability that is not it will not do. */
+    if (ok && it_invoke2(io, INV_IOSPACE_BIND, (long)IRIS_CPTR_TEST_UNTYPED,
+                         (long)T352_SOURCE_ID) != (long)IRIS_ERR_ACCESS_DENIED) {
+        ok = 0; why = "bound without IOSpaceControl";
+    }
+
+    long bound = ok ? it_invoke2(io, INV_IOSPACE_BIND,
+                                 (long)IRIS_CPTR_IOSPACE_CONTROL_TEST,
+                                 (long)T352_SOURCE_ID) : -1;
+
+    if (!have_iommu) {
+        /* No hardware can enforce it, so it is not handed out.  That is the
+         * whole assertion on this machine, and it is the one that keeps the
+         * containment claim honest. */
+        if (ok && bound != (long)IRIS_ERR_NOT_SUPPORTED) {
+            ok = 0; why = "bound a device no remapping unit can enforce";
+        }
+        it_serial_write("[IRIS][TEST] T352 no unit; bind refused\n");
+    } else {
+        if (ok && bound != 0) { ok = 0; why = "bind"; }
+
+        /* Rebinding would move a live set of translations to another device. */
+        if (ok && it_invoke2(io, INV_IOSPACE_BIND,
+                             (long)IRIS_CPTR_IOSPACE_CONTROL_TEST,
+                             (long)(T352_SOURCE_ID + 1u)) != (long)IRIS_ERR_ALREADY_EXISTS) {
+            ok = 0; why = "rebound a live space";
+        }
+
+        /* The walk is the holder's to build, one level at a time, and the
+         * kernel says which one is missing rather than making it. */
+        for (uint32_t i = 0; ok && i < 3u; i++) {
+            uint32_t leaf = T352_LEAF_L(i);
+            (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)leaf);
+            if (it_invoke((long)IRIS_CPTR_TEST_UNTYPED, INV_UNTYPED_RETYPE,
+                          (long)((uint64_t)IRIS_KOBJ_IO_PAGE_TABLE | (1ULL << 32)),
+                          (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
+                          4096) != 0) { ok = 0; why = "io page table retype"; break; }
+            if (it_invoke2(io, INV_IOSPACE_MAP_TABLE, (long)IT_OBJ_CPTR(leaf),
+                           (long)T352_DMA) != 0) { ok = 0; why = "map table"; break; }
+        }
+
+        /* The frame made above, mapped where the device would reach it. */
+        long fr = frame;
+        if (ok && it_invoke(io, INV_IOSPACE_MAP_FRAME, fr, (long)T352_DMA,
+                            (long)(RIGHT_READ | RIGHT_WRITE)) != 0) {
+            ok = 0; why = "map frame";
+        }
+        /* Twice at one address is refused: an overwrite would strand the first
+         * mapping's reference and leave a frame nothing will ever unmap. */
+        if (ok && it_invoke(io, INV_IOSPACE_MAP_FRAME, fr, (long)T352_DMA,
+                            (long)RIGHT_READ) != (long)IRIS_ERR_ALREADY_EXISTS) {
+            ok = 0; why = "mapped twice at one address";
+        }
+        /* And it comes back out. */
+        if (ok && it_invoke1(io, INV_IOSPACE_UNMAP, (long)T352_DMA) != 0) {
+            ok = 0; why = "unmap";
+        }
+        if (ok && it_invoke1(io, INV_IOSPACE_UNMAP, (long)T352_DMA)
+                  != (long)IRIS_ERR_NOT_FOUND) {
+            ok = 0; why = "unmapped twice";
+        }
+
+        /*
+         * And the other way a device's reach ends: the IOSpace is DESTROYED
+         * without anybody unmapping first (§10.2 step 5).
+         *
+         * This is the path a revocation takes — the last capability to the
+         * space goes, and the close hook has to remove the context entry
+         * before it releases anything, or a bus master is left pointed at
+         * tables being handed back to an Untyped.  Nothing here can watch
+         * that ordering; what it CAN check is that every object comes back,
+         * which the baseline at the end does: the levels, the frame, and the
+         * space itself.  A teardown that forgot the frame's reference would
+         * show up there as a frame that never returned.
+         */
+        if (ok && it_invoke(io, INV_IOSPACE_MAP_FRAME, fr, (long)T352_DMA,
+                            (long)RIGHT_READ) != 0) {
+            ok = 0; why = "remap for the teardown check";
+        }
+
+        it_serial_write("[IRIS][TEST] T352 bound source ");
+        it_log_num(T352_SOURCE_ID);
+        it_serial_write(" (decimal) levels 3 mapped+unmapped\n");
+
+    }
+
+    for (uint32_t i = 0; i < 3u; i++)
+        (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)T352_LEAF_L(i));
+    (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)T352_LEAF_FR);
+    (void)it_invoke1((long)IT_OBJ_CNODE_SLOT, INV_CNODE_DELETE, (long)T352_LEAF_IO);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !adv_baseline(&b, &a, 0u, &why)) ok = 0;
+    if (ok) it_pass("T352"); else it_fail("T352", why);
 }
