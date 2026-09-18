@@ -275,6 +275,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_abi.c \
     tests/kernel/test_klog.c \
     kernel/core/klog/klog.c \
+    kernel/drivers/fbcon/fbcon.c \
     services/vfs/vfs_ep.c \
     tests/kernel/test_vfs_ep.c \
     tests/kernel/test_main.c
