@@ -12,6 +12,7 @@
 #include <iris/paging.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <iris/usercopy.h>
 
 
 /*
@@ -119,11 +120,48 @@ out:
  * and reduce on mint; the host rights/cspace suites and iris_test T130/T154
  * cover that. */
 
+/*
+ * The exception table, fired on purpose.
+ *
+ * The path it protects is a race -- a concurrent unmap landing between a
+ * range check and the store that follows it -- and a race is not something a
+ * test can schedule.  What a test CAN do is aim the protected instruction at
+ * an address that is certain to fault and confirm that the kernel comes back
+ * from it instead of halting.
+ *
+ * The address is NON-CANONICAL, which is deterministic on every x86-64 and
+ * cannot be accidentally mapped by anything: bit 63 set with the high bits
+ * clear is a shape the hardware rejects outright.  The store therefore raises
+ * #GP, the fault path finds the instruction in the table, and execution
+ * resumes at the landing pad -- which reports the bytes it did not write.
+ *
+ * Reaching the line after this call at all IS the result: before the table
+ * existed, this would have printed nothing, because the machine would have
+ * stopped inside the store.
+ */
+static int phase3_exfixup_selftest(void) {
+    const uint64_t before = exfixup_taken_count();
+    static const uint8_t src[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    void *bad = (void *)0x8000000000000000ULL;      /* non-canonical */
+
+    unsigned long left = usercopy_store(bad, src, sizeof(src));
+
+    if (left != (unsigned long)sizeof(src)) return 0;   /* it must write none */
+    if (exfixup_taken_count() != before + 1u) return 0; /* and be counted once */
+    return 1;
+}
+
 int phase3_selftest_run(void) {
     if (!phase3_notification_selftest()) {
         serial_write("[IRIS][P3] WARN: notification selftest failed\n");
         return 0;
     }
+
+    if (!phase3_exfixup_selftest()) {
+        serial_write("[IRIS][P3] WARN: exception-table selftest failed\n");
+        return 0;
+    }
+    serial_write("[IRIS][P3] exception table: a kernel fault was survived\n");
 
     /* The marker names are kept: the headless gate greps for them, and what
      * they now attest is the lifecycle half — notification and process — after

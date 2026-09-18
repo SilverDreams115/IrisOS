@@ -10,6 +10,7 @@
 #include <iris/smp.h>
 #include <iris/nc/kfault.h>
 #include <stdint.h>
+#include <iris/usercopy.h>
 
 #define IDT_ENTRIES        256
 #define IDT_TYPE_INTERRUPT 0x8E
@@ -313,6 +314,35 @@ void isr_handler(struct full_frame *frame) {
         int always_fatal = (frame->vector == 2 ||
                             frame->vector == 8 ||
                             frame->vector == 18);
+
+        /*
+         * A kernel fault the kernel is PREPARED for.
+         *
+         * Everything below this point treats a ring-0 exception as the end of
+         * the machine, which is the right posture for a kernel that intends
+         * never to take one.  There is exactly one place where that intent
+         * cannot be guaranteed by construction: the store into user memory,
+         * whose mapping another CPU can retire between the check and the
+         * write.  That store is named in the exception table, and a fault on
+         * it means "this copy failed", not "this kernel is broken".
+         *
+         * Only #PF and #GP are eligible: #PF is the mapping going away, #GP is
+         * the same access under SMAP or a non-canonical address.  Any other
+         * exception on that instruction is not the case this is for, and
+         * falls through to the halt like everything else.
+         *
+         * Checked before `always_fatal` is consulted because none of those
+         * three can arise from a store, and after the ring-3 test would be too
+         * late -- this is a ring-0 fault by definition.
+         */
+        if (!from_ring3 && (frame->vector == 14 || frame->vector == 13)) {
+            uint64_t fixup = exfixup_lookup(frame->rip);
+            if (fixup) {
+                exfixup_stat_taken();
+                frame->rip = fixup;
+                return;
+            }
+        }
 
         if (from_ring3 && !always_fatal) {
             struct task *ct = task_current();

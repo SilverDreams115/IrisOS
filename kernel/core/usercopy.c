@@ -66,13 +66,68 @@ int user_range_writable(uint64_t ptr, uint32_t len) {
     return user_range_accessible(ptr, len, PAGE_WRITABLE);
 }
 
-int copy_to_user_checked(uint64_t dst_uptr, const void *src, uint32_t len) {
-    uint8_t *d = (uint8_t *)(uintptr_t)dst_uptr;
-    const uint8_t *s = (const uint8_t *)src;
+/*
+ * ── The exception table ────────────────────────────────────────────────────
+ *
+ * Validating a range and then writing it is two steps, and the mapping can go
+ * away between them.  Nothing serialises this against a concurrent
+ * `FRAME_UNMAP` on the same address space -- and a spawner holds VSpace
+ * capabilities for its children -- so on SMP the store can land after the PTE
+ * is retired and its TLB entry shot down.
+ *
+ * Before this table existed, that store faulted at CPL 0, and `idt.c` halts
+ * the machine on any fault that did not come from ring 3.  Ring 3 could stop
+ * the kernel.  Ledger A-37 recorded it as a divergence from seL4, which proves
+ * its kernel never faults; this is the mechanism that turns the promise into a
+ * property IRIS can actually hold.
+ *
+ * The check is NOT removed and the table is not a substitute for it.  The
+ * check is what refuses a bad address; the table is what survives a good
+ * address that stopped being one.  A fault here means the range was valid when
+ * it was looked at, so the answer is "this call failed", not "this caller was
+ * malicious".
+ */
+extern const uint64_t __ex_table_start[];
+extern const uint64_t __ex_table_end[];
 
+/*
+ * How many faults the table has absorbed.
+ *
+ * It is a COUNTER rather than a flag because the number is the only way to see
+ * this mechanism work at all: the path it protects is a race that a test
+ * cannot schedule, so what a test can do is fire the instruction at an address
+ * that is certain to fault and watch this go up.  A mechanism with no
+ * observable effect is a mechanism nobody can tell is broken.
+ */
+static _Atomic uint32_t exfixup_taken;
+
+void exfixup_stat_taken(void) {
+    __atomic_fetch_add(&exfixup_taken, 1u, __ATOMIC_RELAXED);
+}
+
+uint32_t exfixup_taken_count(void) {
+    return __atomic_load_n(&exfixup_taken, __ATOMIC_RELAXED);
+}
+
+uint64_t exfixup_lookup(uint64_t fault_rip) {
+    const uint64_t *e = __ex_table_start;
+    /* A linear scan over a table with one entry in it.  Sorting and bisecting
+     * would be arranging for a size this table does not have. */
+    for (; e + 1 < __ex_table_end; e += 2)
+        if (e[0] == fault_rip) return e[1];
+    return 0;
+}
+
+/* Implemented in usercopy_asm.S: one `rep movsb`, one exception-table entry,
+ * and %rcx left holding what it did not manage to write. */
+extern unsigned long usercopy_store(void *dst, const void *src, unsigned long len);
+
+int copy_to_user_checked(uint64_t dst_uptr, const void *src, uint32_t len) {
     if (!src || !user_range_writable(dst_uptr, len)) return 0;
     user_access_begin();
-    for (uint32_t i = 0; i < len; i++) d[i] = s[i];
+    unsigned long left = usercopy_store((void *)(uintptr_t)dst_uptr, src, len);
     user_access_end();
-    return 1;
+    /* A partial write is still a failure, and the caller is told so rather
+     * than being handed a half-filled buffer it has no way to measure. */
+    return left == 0ul;
 }

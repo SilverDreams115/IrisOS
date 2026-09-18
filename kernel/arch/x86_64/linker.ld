@@ -24,6 +24,18 @@ SECTIONS
   {
     __rodata_start = .;
     *(.rodata*)
+
+    /* The exception table: pairs of (faulting instruction, landing pad).
+     *
+     * It lives in rodata because it is read by the fault path and written by
+     * nobody, and it is bounded by symbols rather than by a count so that
+     * adding an entry is one .quad pair in the file that needs it and nothing
+     * else anywhere. */
+    . = ALIGN(8);
+    __ex_table_start = .;
+    KEEP(*(.ex_table))
+    __ex_table_end = .;
+
     __rodata_end = .;
   } :text
 

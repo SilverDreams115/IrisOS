@@ -468,6 +468,28 @@ if ! grep -Eq "^\[USER\]\[INIT\] ip: udp round trip ok, tftp data [0-9]+ bytes$"
   exit 1
 fi
 
+# The kernel survived a fault of its own (ledger A-37).
+#
+# `idt.c` halts on any exception that did not come from ring 3, which is the
+# right posture for a kernel that intends never to take one -- and there was
+# exactly one place where the intent could not be guaranteed: the store into
+# user memory, whose mapping another CPU can retire between the range check and
+# the write.  Ring 3 could therefore stop the kernel.
+#
+# The exception table closes it, and this line is the proof that the mechanism
+# WORKS rather than merely exists: the kernel aims that store at a non-canonical
+# address on purpose, takes the #GP, and comes back.  Before the table, this
+# marker could not have been printed, because the machine would have stopped
+# inside the store.
+if [ "${IRIS_QEMU_EXPECT_SELFTESTS:-0}" != "0" ]; then
+  if ! grep -Fq "[IRIS][P3] exception table: a kernel fault was survived" "$LOG_FILE"; then
+    echo "[headless] the kernel did not survive a fault it is supposed to survive:"
+    grep -F "[IRIS][P3]" "$LOG_FILE" | sed 's/^/           /'
+    cat "$LOG_FILE"
+    exit 1
+  fi
+fi
+
 # Storage: a ring-3 AHCI driver brought a real disk up (Stage 10).
 #
 # Three claims in one line, and they fail apart.  `disk N` is a COUNT of the

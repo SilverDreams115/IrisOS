@@ -171,9 +171,10 @@ UT-TOP-1..5 and T298.
 
 ## Structural divergences from seL4
 
-### A-37 — the kernel halts on a ring-0 fault, and one path can take one
+### A-37 — the kernel halts on a ring-0 fault, and one path could take one  ✅ CLOSED
 
-**UNREGISTERED UNTIL NOW, and found by audit rather than by a test.**
+**Found by audit rather than by a test, registered, and then closed in the
+same session.**
 
 `idt.c` routes every exception that did not come from ring 3 to
 `[IRIS][EXCEPTION] halting`.  There is no fixup table: the kernel has no way to
@@ -194,16 +195,45 @@ window on any input the kernel acts on" is true: the read path was deleted in
 A-33 and a message is registers now.  This is a different property — fault
 SAFETY on the write-back that remains — and the file does not claim it.
 
-The honest repair is a fixup table: mark the store instructions, and have the
-ring-0 fault path check whether the faulting RIP is in the table and return an
-error instead of halting.  That is how every kernel that copies to user memory
-does it, and it is the mechanism whose absence makes the current arrangement a
-promise rather than a property.
+**The repair, and why it is shaped this way.**
 
-Recorded here rather than fixed in the same change because it is a mechanism
-this kernel does not have yet, not a line to correct.  Evidence is structural
-— no fixup table, check-then-write, no shared lock — and no racing proof of
-concept was built.
+An exception table maps a FAULTING INSTRUCTION to the one that should run
+instead.  That is a statement about a specific machine instruction, so the
+instruction cannot be left to a compiler: a C loop of byte stores may be
+vectorised, unrolled, or emitted at several addresses, and a table with one
+entry would then cover one of them.  The store is therefore one `rep movsb` in
+`usercopy_asm.S` — one instruction, the whole copy, and on a fault the hardware
+leaves `%rcx` holding exactly how many bytes were not transferred, so the
+landing pad needs no bookkeeping of its own.
+
+The table lives in `.ex_table`, collected into rodata between
+`__ex_table_start` and `__ex_table_end` by the linker script, so adding an
+entry is one `.quad` pair in the file that needs it and nothing anywhere else.
+`idt.c` consults it before it decides to halt, for `#PF` and `#GP` only: the
+mapping going away, and the same access under SMAP or at a non-canonical
+address.  Any other exception on that instruction is not the case this is for
+and still halts.
+
+**The range check is NOT removed, and the table is not a substitute for it.**
+The check is what refuses a bad address; the table is what survives a good
+address that stopped being one. A fault there means "this call failed", not
+"this caller was malicious", so `copy_to_user_checked` returns failure and a
+partial write is reported as a failure too — the caller is not handed a
+half-filled buffer it has no way to measure.
+
+**How it is tested, given that the path it protects is a race.**  A race is not
+something a test can schedule.  So the kernel fires the protected instruction
+at a NON-CANONICAL address at boot — a shape the hardware rejects on every
+x86-64, which nothing can accidentally map — and checks three things: that the
+store wrote no bytes, that the fixup counter moved by exactly one, and,
+implicitly, that there is a line after the call at all.  That last one is the
+real assertion: before the table, this printed nothing, because the machine
+stopped inside the store.  The headless gate requires the marker.
+
+What this does NOT buy is seL4's guarantee.  seL4 proves its kernel never
+faults; IRIS now survives the one fault it knew it could take.  The difference
+is that the proof covers instructions nobody thought about, and this table
+covers the one somebody did.
  — recorded, not staged
 
 The table above tracks mechanisms with a retirement stage.  These seven are
