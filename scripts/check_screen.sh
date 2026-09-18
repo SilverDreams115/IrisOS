@@ -83,7 +83,10 @@ def top_line(path):
     """Decode row 0 only -- eight scanlines, which is all the marker line is."""
     try:
         w, h, d = ocr.read_ppm(path)
-    except Exception:
+    except BaseException:
+        # A screendump that is not there yet, half written, or empty because
+        # the display has produced nothing so far.  All of them mean the same
+        # thing to this loop: not yet, try again.
         return ""
     out = ""
     for cx in range(min(w // 8, 16)):

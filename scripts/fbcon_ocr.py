@@ -35,9 +35,18 @@ def load_font():
 
 
 def read_ppm(path):
+    """Parse a QEMU screendump.
+
+    Raises ValueError, not SystemExit.  A library function that exits the
+    process cannot be used by a caller that wants to RETRY -- and that is
+    exactly what the capture loop does, because the first screendump of a boot
+    can land before the display has anything in it.  SystemExit does not derive
+    from Exception, so it sailed through the loop's `except Exception` and
+    killed the run; CI found that on the first try.
+    """
     f = open(path, "rb")
     if f.readline().strip() != b"P6":
-        raise SystemExit("not a P6 ppm: " + path)
+        raise ValueError("not a P6 ppm: " + path)
     line = f.readline()
     while line.startswith(b"#"):
         line = f.readline()
@@ -55,7 +64,10 @@ def main():
         maxrows = int(sys.argv[sys.argv.index("--rows") + 1])
 
     font = load_font()
-    w, h, d = read_ppm(path)
+    try:
+        w, h, d = read_ppm(path)
+    except ValueError as e:
+        raise SystemExit(str(e))
     cols, rows = w // 8, h // 8
     if maxrows:
         rows = min(rows, maxrows)
