@@ -7,9 +7,10 @@ back exactly rather than approximately: every cell is either a glyph in the
 kernel's own font table or it is not text at all.  That is what makes the
 screen a gateable surface instead of something a human has to squint at.
 
-The font is parsed out of the kernel source, so this cannot drift from what
-the kernel actually paints -- a second copy of the table here is the one way
-this check could pass while the screen is wrong.
+The font is parsed out of <iris/font8x8.h>, the SAME header the kernel and
+the ring-3 console both paint from, so this cannot drift from what is on the
+screen -- a second copy of the table here is the one way this check could pass
+while the screen is wrong.
 
 Usage: fbcon_ocr.py <shot.ppm> [--rows N]
 """
@@ -18,7 +19,7 @@ import sys
 import os
 
 FONT_C = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                      "..", "kernel", "drivers", "fbcon", "fbcon.c")
+                      "..", "kernel", "include", "iris", "font8x8.h")
 
 
 def load_font():

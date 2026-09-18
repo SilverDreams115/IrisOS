@@ -37,7 +37,7 @@ WORK="${IRIS_SCREEN_WORK:-$PROJECT_ROOT/build/screen}"
 # CI runner, where firmware takes longer to hand over and the kernel's window
 # lands later.  A capture window tuned to the fast machine is a capture window
 # that fails on the slow one, and screendumps are cheap.
-FRAMES="${IRIS_SCREEN_FRAMES:-400}"
+FRAMES="${IRIS_SCREEN_FRAMES:-600}"
 # Dense, because a frame is now only KEPT when it qualifies: the cost of
 # sampling often is one screendump and eight decoded scanlines, not a file.
 INTERVAL="${IRIS_SCREEN_INTERVAL:-0.05}"
@@ -57,11 +57,18 @@ fi
 cp -f "$PROJECT_ROOT/build/OVMF_VARS.headless.fd" "$WORK/VARS.fd" 2>/dev/null || {
   echo "[screen] build/OVMF_VARS.headless.fd missing -- run 'make all' first"; exit 1; }
 
+# A disk with an IRIS partition on it, so the boot report this check looks for
+# is a report about SOMETHING.  Without one the machine correctly says it found
+# no partition of its own -- true, and not the sentence worth gating on.
+python3 "$PROJECT_ROOT/scripts/mkdisk.py" "$WORK/disk.img" 8 >/dev/null
+
 qemu-system-x86_64 \
   -machine q35 -cpu max -smp 1 -m 512M \
   -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
   -drive if=pflash,format=raw,file="$WORK/VARS.fd" \
   -drive format=raw,file=fat:rw:"$PROJECT_ROOT/build/efi_root" \
+  -drive "file=$WORK/disk.img,format=raw,if=none,id=irisdisk" \
+  -device ide-hd,drive=irisdisk,bus=ide.1 \
   -serial "file:$WORK/serial.log" \
   -display none \
   -qmp "unix:$WORK/qmp.sock,server,nowait" \
@@ -79,27 +86,35 @@ FONT = ocr.load_font()
 MARKERS = "KFSBPGg"
 
 
-def top_line(path):
-    """Decode row 0 only -- eight scanlines, which is all the marker line is."""
+def decode_rows(path, rows, cols=48):
+    """Decode the top few text rows.
+
+    Not the whole screen: this runs after every screendump, and the two things
+    it has to answer -- is the marker line complete, is the kernel banner still
+    there -- both live in the first dozen rows.
+    """
     try:
         w, h, d = ocr.read_ppm(path)
     except BaseException:
         # A screendump that is not there yet, half written, or empty because
         # the display has produced nothing so far.  All of them mean the same
         # thing to this loop: not yet, try again.
-        return ""
-    out = ""
-    for cx in range(min(w // 8, 16)):
-        cell = []
-        for gy in range(8):
-            bits = 0
-            for gx in range(8):
-                i = (gy * w + cx * 8 + gx) * 3
-                if i + 2 < len(d) and (d[i] > 100 or d[i + 1] > 100 or d[i + 2] > 100):
-                    bits |= 1 << gx
-            cell.append(bits)
-        out += FONT.get(tuple(cell), " " if not any(cell) else "?")
-    return out.rstrip()
+        return []
+    out = []
+    for cy in range(min(rows, h // 8)):
+        line = ""
+        for cx in range(min(w // 8, cols)):
+            cell = []
+            for gy in range(8):
+                bits = 0
+                for gx in range(8):
+                    i = ((cy * 8 + gy) * w + cx * 8 + gx) * 3
+                    if i + 2 < len(d) and (d[i] > 100 or d[i + 1] > 100 or d[i + 2] > 100):
+                        bits |= 1 << gx
+                cell.append(bits)
+            line += FONT.get(tuple(cell), " " if not any(cell) else "?")
+        out.append(line.rstrip())
+    return out
 
 
 sock = os.path.join(work, "qmp.sock")
@@ -127,64 +142,104 @@ f.readline()
 # capture costs eight scanlines, and a frame is kept only while that line is
 # complete.  The LAST kept frame is the richest, because the kernel is still
 # logging into it.
+# Keep exactly TWO frames, because two different things have to be proved and
+# they are never true at the same moment.
+#
+# The FIRST frame with a complete marker line still carries the kernel's banner:
+# that is the proof the kernel log reaches a screen at all.  The LAST frame is
+# what a person standing at the machine actually ends up looking at, and by then
+# the kernel's lines have scrolled away and the ring-3 boot report has arrived.
+#
+# Keeping every qualifying frame was fine when there were two of them.  Now that
+# the marker line survives into ring 3, every frame qualifies -- four hundred of
+# them, three megabytes each.
 probe = os.path.join(work, "probe.ppm")
+first = os.path.join(work, "f000-first.ppm")
+last  = os.path.join(work, "f999-last.ppm")
+serial = os.path.join(work, "serial.log")
+
+
+def boot_settled():
+    """Has init finished?
+
+    Read from the SERIAL log, which is a statement about the test harness and
+    not about the system.  QEMU always has a serial port; the claim this whole
+    check exists to make is that IRIS does not NEED one.  Using it here to know
+    when to stop looking is the harness knowing when the subject is done, and
+    it beats guessing a frame count -- the previous version guessed, stopped
+    four hundred frames in, and killed the machine before the boot report it
+    was looking for had been printed.
+    """
+    try:
+        with open(serial, "rb") as fh:
+            return b"init idle loop start" in fh.read()
+    except OSError:
+        return False
+
+
+# Two phases, because the two frames are found in completely different ways.
+#
+# The FIRST needs dense sampling: the kernel's banner is on screen from very
+# early, and the marker line completes moments later.  Once that frame is in
+# hand there is nothing more to hunt for -- the marker line survives into ring
+# 3 now, so every later frame qualifies too.
+#
+# The LAST needs PATIENCE, not density.  The boot has a test suite in it and
+# takes the better part of a minute, and sampling densely for that long means
+# either hundreds of screendumps or a frame budget that runs out before the
+# machine is finished -- which is what happened: the capture stopped four
+# hundred frames in, and killed the machine before the report it was looking
+# for had been printed.
+import shutil
+
 kept = 0
+settled_extra = 0
 for n in range(frames):
     f.write(json.dumps({"execute": "screendump",
                         "arguments": {"filename": probe}}) + "\n")
     f.flush()
     f.readline()
-    if top_line(probe).startswith(MARKERS):
-        os.replace(probe, os.path.join(work, "f%03d.ppm" % n))
+    rows = decode_rows(probe, 12)
+    if rows and rows[0].startswith(MARKERS):
         kept += 1
-    time.sleep(interval)
+        # Keep overwriting `first` while the KERNEL's banner is still up.  The
+        # very first qualifying frame is torn -- a line is being painted as the
+        # screenshot is taken, and half-drawn glyphs decode to nothing.  The
+        # LAST frame that still shows the banner is the one with the most
+        # kernel log on it, and it is the frame that goes when the console
+        # service clears the screen to start its own.
+        if any("IRIS KERNEL" in r for r in rows):
+            shutil.copyfile(probe, first)
+        os.replace(probe, last)
+    if boot_settled():
+        # One more frame after the last line is printed, then stop: what is on
+        # the screen NOW is what a person at this machine would be looking at.
+        settled_extra += 1
+        if settled_extra > 2:
+            break
+    # Dense until the first frame is found, unhurried afterwards.
+    time.sleep(interval if kept == 0 else 0.5)
 if kept == 0 and os.path.exists(probe):
-    # Keep the last one so a failure can show what WAS on the screen.
-    os.replace(probe, os.path.join(work, "f999.ppm"))
-print("[screen] %d frame(s) captured with a complete marker line" % kept)
+    os.replace(probe, last)
+print("[screen] %d frame(s) had a complete marker line; kept the first and the last" % kept)
 CAPTURE
 
 rc=$?
 kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
 if [ "$rc" != "0" ]; then echo "[screen] capture failed"; exit 1; fi
 
-# Pick a frame that shows a COMPLETE boot, not merely a busy one.
-#
-# The first version scored frames only by how many kernel log lines they
-# carried and then demanded the full marker line from whichever won.  Those are
-# two different questions, and on a slow machine they have two different
-# answers: a frame can be captured with plenty of log on it and the marker line
-# still being written.  CI found that, which is what CI is for.
-#
-# So markers first -- a frame whose top line is the whole sequence is a frame
-# where the kernel got at least as far as paging -- and among those, the one
-# carrying the most log.
-best=""; best_n=-1
-best_any=""; best_any_n=-1
-for shot in "$WORK"/f*.ppm; do
-  [ -f "$shot" ] || continue
-  python3 scripts/fbcon_ocr.py "$shot" --rows 48 > "$shot.txt" 2>/dev/null || continue
-  n=$(grep -c "IRIS" "$shot.txt" 2>/dev/null || true); n=${n:-0}
-  if [ "$n" -gt "$best_any_n" ]; then best_any_n="$n"; best_any="$shot.txt"; fi
-  head -1 "$shot.txt" | grep -q "^KFSBPGg" || continue
-  if [ "$n" -gt "$best_n" ]; then best_n="$n"; best="$shot.txt"; fi
-done
-
-if [ -z "$best" ] && [ -n "$best_any" ]; then
-  echo "[screen] no captured frame shows a complete marker line."
-  echo "         the best frame's top line was: $(head -1 "$best_any")"
-  echo "         (the markers are K F S B P G g, in that order, and a short"
-  echo "          line means the boot stopped where the sequence stops)"
-  cat "$best_any"
-  exit 1
-fi
-
-if [ -z "$best" ] || [ "$best_n" -le 0 ]; then
+# The two frames the capture kept, and what each is asked to prove.
+first_ppm="$WORK/f000-first.ppm"
+last_ppm="$WORK/f999-last.ppm"
+if [ ! -f "$first_ppm" ] || [ ! -f "$last_ppm" ]; then
   echo "[screen] the kernel never reached the framebuffer:"
-  echo "         no captured frame decoded to any kernel log line."
+  echo "         no captured frame decoded to a complete marker line."
   echo "         markers on serial: $(grep -ao 'KFSBPGg' "$WORK/serial.log" | head -1)"
   exit 1
 fi
+python3 scripts/fbcon_ocr.py "$first_ppm" --rows 48  > "$first_ppm.txt" 2>/dev/null
+python3 scripts/fbcon_ocr.py "$last_ppm"  --rows 120 > "$last_ppm.txt"  2>/dev/null
+best="$first_ppm.txt"
 
 fail() { echo "[screen] $1"; echo "--- what the screen said ---"; cat "$best"; exit 1; }
 
@@ -201,6 +256,31 @@ grep -Eq "free RAM: [0-9]+ MB" "$best" || fail "a logged number did not reach th
 # 4. the boot got as far as paging, which is the last thing the kernel says
 #    before it is doing real work
 grep -q "virtual memory active" "$best" || fail "the screen stops before paging"
+
+# ---- and the half that only ring 3 can answer -------------------------------
+#
+# Everything above is the KERNEL's log.  It proves the machine started; it says
+# nothing about whether the disk driver found a disk, or the filesystem
+# mounted, or a frame ever left the network card -- and on a machine with no
+# serial port those were exactly the answers that went nowhere.
+#
+# The console service paints them now, and init prints them once more as a
+# block at the very end, because a log that scrolls loses what matters by the
+# time anyone reads it.  This looks for that block on the LAST frame captured,
+# which is what a person standing at the machine would actually see.
+last="$last_ppm"
+if [ -n "$last" ]; then
+  if grep -q "IRIS on this machine" "$last.txt" 2>/dev/null; then
+    echo "[screen] and the ring-3 findings are on it too:"
+    grep -A 6 "IRIS on this machine" "$last.txt" | sed 's/^/         /'
+  else
+    echo "[screen] the kernel log reached the screen but the boot report did not."
+    echo "         a machine with no serial port would show that it STARTED and"
+    echo "         nothing about what it found, which is the half that matters."
+    tail -14 "$last.txt" 2>/dev/null | sed 's/^/         /'
+    exit 1
+  fi
+fi
 
 echo "[screen] the kernel log is readable on the framebuffer:"
 sed 's/^/         /' "$best" | head -12

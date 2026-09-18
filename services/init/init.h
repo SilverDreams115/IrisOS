@@ -187,6 +187,31 @@ int init_spawn_net(void);
 int init_spawn_fs(void);
 int init_spawn_ip(void);
 
+/*
+ * What this machine turned out to be.
+ *
+ * Each spawn already logs its findings, and on a machine with a serial port
+ * that was enough.  On one without, the log goes to the screen -- and the
+ * screen SCROLLS, so by the time a boot settles the findings have been pushed
+ * off by whatever the supervisor said last.  A person looking at that machine
+ * sees service-restart chatter and learns nothing about their disk.
+ *
+ * So the facts are recorded as they are discovered and printed once more, in a
+ * block, as the last thing before the idle loop.  It is the same information;
+ * what changes is that it is still there to be read.
+ */
+struct init_findings {
+    uint32_t pci_functions, pci_windows;
+    uint32_t blk_disks, blk_contained, blk_home;
+    uint64_t blk_window;
+    uint32_t fs_mounted, fs_generation, fs_formatted, fs_files, fs_foreign;
+    uint32_t net_link;
+    uint64_t net_mac;
+    uint32_t ip_ok, ip_bytes;
+};
+extern struct init_findings g_init_found;
+void init_report_findings(void);
+
 /* Tiny process utilities (main.c). */
 void init_exit(long code);
 void init_close(iris_cptr_t *h);

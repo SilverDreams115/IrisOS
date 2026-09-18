@@ -28,6 +28,8 @@
 #include <iris/net_ep_proto.h>
 #include <iris/fs_ep_proto.h>
 #include <iris/ip_ep_proto.h>
+
+struct init_findings g_init_found;
 #include "../common/iris_map.h"
 #include "../common/iris_timer.h"
 #include <iris/endpoint_proto.h>
@@ -230,6 +232,8 @@ int init_spawn_pci(void) {
         m.label = PCI_OP_COUNT;
         if (iris_msg_call((long)INIT_SLOT_PCI_EP, &m) == 0 &&
             m.label == PCI_REP_OK) {
+            g_init_found.pci_functions = (uint32_t)m.words[0];
+            g_init_found.pci_windows   = (uint32_t)m.words[1];
             char b[64] = "[USER][INIT] pci: functions ";
             uint32_t k = 0; while (b[k]) k++;
             uint32_t n2 = (uint32_t)m.words[0];
@@ -399,6 +403,8 @@ int init_spawn_ip(void) {
         }
 
         {
+            g_init_found.ip_ok = 1u;
+            g_init_found.ip_bytes = len - 4u;
             char b[80] = "[USER][INIT] ip: udp round trip ok, tftp data ";
             uint32_t k = 0; while (b[k]) k++;
             uint32_t n2 = len - 4u;
@@ -491,6 +497,7 @@ int init_spawn_fs(void) {
                  * left exactly as it was found, which on a real machine is
                  * somebody's data this system was one boot away from
                  * destroying. */
+                g_init_found.fs_foreign = 1u;
                 init_log("[USER][INIT] fs: foreign disk, refusing to format\n");
                 return 0;
             }
@@ -499,6 +506,10 @@ int init_spawn_fs(void) {
         }
         uint32_t gen = (uint32_t)m.words[1];
         uint32_t formatted = (uint32_t)m.words[3];
+        g_init_found.fs_mounted = 1u;
+        g_init_found.fs_generation = gen;
+        g_init_found.fs_formatted = formatted;
+        g_init_found.fs_files = (uint32_t)m.words[2];
 
         /* A file whose contents are this boot's generation, so the next boot
          * can tell whose bytes it is reading. */
@@ -646,6 +657,8 @@ int init_spawn_net(void) {
         if (iris_msg_call((long)INIT_SLOT_NET_EP, &m) == 0 &&
             m.label == NET_REP_OK) {
             static const char hx[] = "0123456789abcdef";
+            g_init_found.net_link = (uint32_t)(m.words[0] & 1u);
+            g_init_found.net_mac  = m.words[1];
             char b[72] = "[USER][INIT] net: link ";
             uint32_t k = 0; while (b[k]) k++;
             b[k++] = (char)('0' + (uint32_t)(m.words[0] & 1u));
@@ -904,6 +917,8 @@ int init_spawn_blk(void) {
              * `words[0] & 1` while it was a flag and went on printing it after
              * it became a count — so two disks read as "disk 0", which is the
              * same thing as none. */
+            g_init_found.blk_disks = (uint32_t)m.words[0];
+            g_init_found.blk_contained = (uint32_t)m.words[3];
             b[k++] = (char)('0' + (uint32_t)(m.words[0] % 10u));
             b[k++] = ' '; b[k++] = 's'; b[k++] = 'i'; b[k++] = 'd'; b[k++] = ' ';
             { uint32_t sid = (uint32_t)m.words[2];
@@ -937,6 +952,7 @@ int init_spawn_blk(void) {
               if (iris_msg_call((long)INIT_SLOT_BLK_EP, &pm) == 0 &&
                   pm.label == BLK_REP_OK)
                   wn = pm.words[0];
+              g_init_found.blk_window = wn;
               if (wn == 0u) b[k++] = '0';
               else {
                   char t[20]; uint32_t n = 0;
@@ -958,8 +974,10 @@ int init_spawn_blk(void) {
               hm.label = BLK_OP_HOME;
               hm.word_count = 0u;
               if (iris_msg_call((long)INIT_SLOT_BLK_EP, &hm) == 0 &&
-                  hm.label == BLK_REP_OK && hm.words[1] != 0u)
+                  hm.label == BLK_REP_OK && hm.words[1] != 0u) {
+                  g_init_found.blk_home = (uint32_t)hm.words[0] + 1u;  /* +1: 0 means "none" */
                   b[k++] = (char)('0' + (uint32_t)(hm.words[0] % 10u));
+              }
               else { b[k++] = 'n'; b[k++] = 'o'; b[k++] = 'n'; b[k++] = 'e'; } }
             b[k++] = '\n'; b[k] = 0;
             init_log(b);
@@ -1102,7 +1120,7 @@ int init_spawn_console(void) {
     }
 
     {
-        struct svc_mint con_mints[3] = { 0 };
+        struct svc_mint con_mints[5] = { 0 };
         uint32_t n = 0;
         con_mints[n].slot   = IRIS_CPTR_OWN_EP;
         con_mints[n].src_cptr = g_init_console_ep_h;
@@ -1121,6 +1139,29 @@ int init_spawn_console(void) {
             con_mints[n].badge  = 0;
             n++;
         }
+        /*
+         * The screen, so that a machine with no serial port is not a machine
+         * with no log.
+         *
+         * console is the service every ring-3 line already passes through, and
+         * until now the only place it could put one was the UART at 0x3F8 --
+         * which most real hardware does not have.  These two capabilities are
+         * the same pair `fb` was given: the authority to ASK where the
+         * framebuffer is, and the region itself as a device Untyped to retype
+         * a frame from.  Asking is also the handover, because the kernel stops
+         * painting its own boot log the moment somebody with this authority
+         * asks where the screen is.
+         */
+        con_mints[n].slot     = IRIS_CPTR_FB_CONTROL;
+        con_mints[n].src_cptr = IRIS_CPTR_FB_CONTROL;
+        con_mints[n].rights   = RIGHT_READ;
+        con_mints[n].badge    = 0;
+        n++;
+        con_mints[n].slot     = IRIS_CPTR_DEVICE_UNTYPED;
+        con_mints[n].src_cptr = IRIS_CPTR_DEVICE_UNTYPED;
+        con_mints[n].rights   = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
+        con_mints[n].badge    = 0;
+        n++;
         r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
                                "console", &con_proc_h, &con_boot_h,
                                con_mints, n,
@@ -1712,4 +1753,102 @@ out:
     (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_WATCH_NOTIF);
     /* Step 4: nothing to close — the loader authority was our own CSpace slot,
      * not a duplicate this function owned and had to release. */
+}
+
+/* ---- the boot report ------------------------------------------------------
+ *
+ * Printed once, last, as a block.  See `struct init_findings` for why a log
+ * that already said all of this is not enough on a machine whose only output
+ * is a screen that scrolls.
+ *
+ * Deliberately narrow and deliberately dense: it is meant to be READ off a
+ * monitor, or photographed, by somebody standing at a machine that has no
+ * serial port and no keyboard driver they can use yet.
+ */
+static void rep_num(char *b, uint32_t *k, uint64_t v) {
+    if (v == 0u) { b[(*k)++] = '0'; return; }
+    char t[20]; uint32_t n = 0;
+    while (v > 0u && n < 20u) { t[n++] = (char)('0' + (uint32_t)(v % 10u)); v /= 10u; }
+    while (n > 0u) b[(*k)++] = t[--n];
+}
+static void rep_str(char *b, uint32_t *k, const char *s) {
+    while (*s) b[(*k)++] = *s++;
+}
+
+void init_report_findings(void) {
+    char b[128];
+    uint32_t k;
+
+    /* A form feed first: the console starts a clean page, so this block is
+     * read whole instead of straddling the point where the screen wrapped. */
+    init_log("\f[USER][INIT] ==== IRIS on this machine ====\n");
+
+    k = 0; rep_str(b, &k, "[USER][INIT]  pci   functions ");
+    rep_num(b, &k, g_init_found.pci_functions);
+    rep_str(b, &k, "  windows "); rep_num(b, &k, g_init_found.pci_windows);
+    b[k++] = '\n'; b[k] = 0; init_log(b);
+
+    k = 0; rep_str(b, &k, "[USER][INIT]  disk  found ");
+    rep_num(b, &k, g_init_found.blk_disks);
+    rep_str(b, &k, g_init_found.blk_contained ? "  dma contained" : "  dma open");
+    rep_str(b, &k, "  window "); rep_num(b, &k, g_init_found.blk_window);
+    if (g_init_found.blk_home) {
+        rep_str(b, &k, "  home "); rep_num(b, &k, g_init_found.blk_home - 1u);
+    } else {
+        rep_str(b, &k, "  NO IRIS PARTITION");
+    }
+    b[k++] = '\n'; b[k] = 0; init_log(b);
+
+    /* Ask again rather than report what mount saw: the count was taken before
+     * this task wrote its own file, so the cached number is always one short of
+     * the truth it is meant to state. */
+    if (g_init_found.fs_mounted) {
+        struct iris_msg sm;
+        { uint8_t *z = (uint8_t *)&sm;
+          for (uint32_t i = 0; i < (uint32_t)sizeof(sm); i++) z[i] = 0; }
+        sm.label = FS_OP_STAT;
+        if (iris_msg_call((long)INIT_SLOT_FS_EP, &sm) == 0 && sm.label == FS_REP_OK)
+            g_init_found.fs_files = (uint32_t)sm.words[2];
+    }
+
+    k = 0; rep_str(b, &k, "[USER][INIT]  fs    ");
+    if (g_init_found.fs_foreign) {
+        rep_str(b, &k, "REFUSED a disk that is not ours");
+    } else if (g_init_found.fs_mounted) {
+        rep_str(b, &k, "mounted  generation ");
+        rep_num(b, &k, g_init_found.fs_generation);
+        rep_str(b, &k, g_init_found.fs_formatted ? "  (formatted now)" : "  (already there)");
+        rep_str(b, &k, "  files "); rep_num(b, &k, g_init_found.fs_files);
+    } else {
+        rep_str(b, &k, "not mounted");
+    }
+    b[k++] = '\n'; b[k] = 0; init_log(b);
+
+    k = 0; rep_str(b, &k, "[USER][INIT]  net   ");
+    if (g_init_found.net_link) {
+        rep_str(b, &k, "up  mac ");
+        /* Octet 0 first: the driver packs the address little-endian, which is
+         * the order the `net:` line above already prints.  Walking it downward
+         * produced a MAC with its bytes reversed -- a plausible-looking number
+         * that is not this machine's address. */
+        { static const char hx[] = "0123456789abcdef";
+          for (int byte = 0; byte < 6; byte++) {
+              uint32_t v = (uint32_t)((g_init_found.net_mac >> (8 * byte)) & 0xFFu);
+              b[k++] = hx[(v >> 4) & 0xFu]; b[k++] = hx[v & 0xFu];
+          } }
+    } else {
+        rep_str(b, &k, "no card");
+    }
+    b[k++] = '\n'; b[k] = 0; init_log(b);
+
+    k = 0; rep_str(b, &k, "[USER][INIT]  ip    ");
+    if (g_init_found.ip_ok) {
+        rep_str(b, &k, "udp round trip ok, "); rep_num(b, &k, g_init_found.ip_bytes);
+        rep_str(b, &k, " bytes from a real server");
+    } else {
+        rep_str(b, &k, "no answer");
+    }
+    b[k++] = '\n'; b[k] = 0; init_log(b);
+
+    init_log("[USER][INIT] ===============================\n");
 }

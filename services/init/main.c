@@ -137,6 +137,9 @@ void init_close(iris_cptr_t *h) {
  * keystroke consumer (kbd.ep pull).  init's final state is a quiet idle loop so
  * the process never exits (which would tear it down). */
 static void init_idle_loop(void) {
+    /* Last, so it is what remains on a screen that scrolls. */
+    init_report_findings();
+
     init_log("[USER] init idle loop start\n");
     /*
      * Ledger A-24: idling is not a request about TIME.
@@ -194,7 +197,17 @@ void init_main(iris_cptr_t rbx_unused) {
     }
 
     /* Spawn fb first (fire-and-forget): it claims the framebuffer and exits. */
-    init_spawn_fb();
+    /*
+     * `fb` is NOT spawned any more.
+     *
+     * It painted rainbow stripes and exited, which proved a ring-3 service
+     * could reach the framebuffer -- the thing Stage 5 needed to show.  The
+     * console service now paints the ring-3 LOG on that screen, which proves
+     * the same thing and is worth reading, and two writers on one framebuffer
+     * produce a screen that describes neither.  The service stays in the tree
+     * and in the initrd; what changed is that nothing starts it at boot.
+     */
+    /* init_spawn_fb(); */
 
     /* Spawn console: endpoint-only, CPtr-provisioned (Phase 13/Track I). */
     if (!init_spawn_console()) {

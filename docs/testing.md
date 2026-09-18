@@ -88,10 +88,34 @@ to drift from.
 | `free RAM: N MB` | a NUMBER reached the screen.  Numbers take a different path into the log than strings do, and that path was missed the first time — `free RAM:  MB` is a line that passes a banner check and tells you nothing |
 | `virtual memory active` | the boot got as far as paging |
 
-The kernel owns the screen only until ring 3 claims it, which here is under a
-second, so the window is found by sampling: the script takes a burst of
-screenshots over QMP and checks the richest one.  There is no marker to wait
-for, because the whole premise is that the serial port may not exist.
+The check reads TWO frames, because two different things have to be proved and
+they are never true at the same moment.
+
+The **first** is the last frame that still shows the kernel's banner: proof
+that the kernel log reaches a screen at all.  The **last** is what a person
+standing at the machine ends up looking at, and by then the kernel's lines have
+scrolled away and the ring-3 boot report has arrived:
+
+| what the last frame must carry | why |
+|---|---|
+| `==== IRIS on this machine ====` and the five lines under it | the kernel log only proves the machine STARTED.  Whether the disk driver found a disk, whether the filesystem mounted, whether a frame left the network card — those answers come from ring 3, and on a machine with no serial port they went nowhere at all |
+
+The ring-3 half works because the `console` service paints too.  It is the
+service every `[USER]` line already passes through, and its only output used to
+be the UART at 0x3F8.  It now draws the same glyphs the kernel does, from the
+same `<iris/font8x8.h>`, because a second copy of that table is the one way the
+two halves of one screen could start disagreeing.  Asking where the framebuffer
+is IS the handover: the kernel stops painting the moment somebody with
+`FB_CONTROL` asks.
+
+The top line never scrolls and neither writer clears it, so the boot markers
+survive into ring 3.  What is on that line when a machine stops is the
+diagnosis.
+
+And init prints its findings once more, as a block, as the last thing before
+the idle loop.  Each service already logged them — but a log that scrolls has
+lost what matters by the time anyone reads it, and what a person sees on a
+settled machine would otherwise be whatever the supervisor said last.
 
 ### Persistence takes two boots
 
