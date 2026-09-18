@@ -580,6 +580,17 @@ void blk_main(iris_cptr_t bootstrap_ch_h) {
             rep.words[2]   = g_source_id;
             rep.words[3]   = g_contained;
             rep.word_count = 4u;
+        } else if (m.label == BLK_OP_HOME) {
+            /* The first disk carrying a partition of ours.  Answered from the
+             * windows found at bring-up, so it costs nothing to ask. */
+            uint32_t found = 0u, which = 0u;
+            for (uint32_t d = 0; d < g_ready && d < BLK_MAX_PORTS; d++) {
+                if (g_win_count[d] != 0u) { found = 1u; which = d; break; }
+            }
+            rep.label      = BLK_REP_OK;
+            rep.words[0]   = which;
+            rep.words[1]   = found;
+            rep.word_count = 2u;
         } else if (m.label == BLK_OP_PART) {
             /* Zero sectors is a real answer: the disk is there and carries no
              * partition of ours, so nothing on it may be addressed.  That is a

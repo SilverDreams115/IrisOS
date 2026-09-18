@@ -511,7 +511,7 @@ fi
 # the IRIS partition and nothing else.  A window of zero is a disk that is
 # present and carries no partition of ours -- correct behaviour on a stranger's
 # drive, and a failure on the image this runner just built.
-if ! grep -Eq "^\[USER\]\[INIT\] blk: disk [1-9] sid 0x[0-9a-f]+ dma (contained|open) window [1-9][0-9]*$" "$LOG_FILE"; then
+if ! grep -Eq "^\[USER\]\[INIT\] blk: disk [1-9] sid 0x[0-9a-f]+ dma (contained|open) window [1-9][0-9]* home [0-9]+$" "$LOG_FILE"; then
   echo "[headless] no ring-3 driver brought a disk up:"
   grep -F "blk:" "$LOG_FILE" | sed 's/^/           /'
   cat "$LOG_FILE"

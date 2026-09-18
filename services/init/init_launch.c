@@ -943,6 +943,24 @@ int init_spawn_blk(void) {
                   while (wn > 0u && n < 20u) { t[n++] = (char)('0' + (uint32_t)(wn % 10u)); wn /= 10u; }
                   while (n > 0u) b[k++] = t[--n];
               } }
+            /*
+             * And WHICH disk is IRIS's, asked by identity rather than assumed
+             * by index.  Under QEMU the answer is always 1 and matches the old
+             * hardcoded constant, so the number is printed to make the lookup
+             * observable: a mechanism whose right answer is indistinguishable
+             * from its fallback is one nobody can tell has stopped working.
+             */
+            b[k++] = ' '; b[k++] = 'h'; b[k++] = 'o'; b[k++] = 'm';
+            b[k++] = 'e'; b[k++] = ' ';
+            { struct iris_msg hm;
+              { uint8_t *z = (uint8_t *)&hm;
+                for (uint32_t i = 0; i < (uint32_t)sizeof(hm); i++) z[i] = 0; }
+              hm.label = BLK_OP_HOME;
+              hm.word_count = 0u;
+              if (iris_msg_call((long)INIT_SLOT_BLK_EP, &hm) == 0 &&
+                  hm.label == BLK_REP_OK && hm.words[1] != 0u)
+                  b[k++] = (char)('0' + (uint32_t)(hm.words[0] % 10u));
+              else { b[k++] = 'n'; b[k++] = 'o'; b[k++] = 'n'; b[k++] = 'e'; } }
             b[k++] = '\n'; b[k] = 0;
             init_log(b);
             return (m.words[0] != 0u) ? 1 : 0;

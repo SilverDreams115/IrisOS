@@ -125,6 +125,25 @@
  */
 #define BLK_OP_PART   0x7105u
 
+/*
+ * WHICH disk carries an IRIS partition.
+ *   Reply: words[0] = the disk index, words[1] = 1 if one was found, else 0
+ *
+ * A client that wants IRIS's own storage has to ask this rather than assume an
+ * index, and the difference is not cosmetic.  Under QEMU the answer is always
+ * 1, because the runner builds the machine: disk 0 is the boot image and disk 1
+ * is the one it made.  On real hardware the order is whatever the AHCI ports
+ * enumerate in, so a hardcoded 1 is a coin flip between a machine's two SATA
+ * drives -- and the one it lands on may be somebody's data, where the right
+ * behaviour (refuse everything) is indistinguishable from a broken system.
+ *
+ * It is the same rule the disk driver already follows one layer down: `blk`
+ * finds its controller by CLASS CODE rather than by vendor:device, because a
+ * driver that matched an identifier would drive one machine.  Position is not
+ * identity.
+ */
+#define BLK_OP_HOME   0x7106u
+
 #define BLK_REP_OK    0x7180u
 #define BLK_REP_ERR   0x7181u
 

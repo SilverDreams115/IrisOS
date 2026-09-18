@@ -74,6 +74,18 @@
 
 /* The disk this filesystem lives on, as the block service numbers them.
  * Port 0 is the disk the machine booted from and is not ours to write. */
+/*
+ * The disk this filesystem lives on is ASKED FOR, not assumed.
+ *
+ * This was `1`, which is right on the machine the tests build -- disk 0 is the
+ * boot image and disk 1 is the one the runner made -- and a coin flip on a real
+ * one, where the index is whatever order the AHCI ports enumerate in.  `fs`
+ * asks `blk` which disk carries an IRIS partition (BLK_OP_HOME) and uses that.
+ *
+ * The constant stays as the FALLBACK for the case where nothing answers, so a
+ * machine with no IRIS partition behaves as it did: every read refused by the
+ * layer below, and `fs` reporting that it is not mounted.
+ */
 #define FS_DISK_PORT  1u
 
 /* ── slot map, as the fs service receives it ────────────────────────────── */

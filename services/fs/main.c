@@ -65,6 +65,7 @@ struct fs_dirent {
 
 static uint32_t g_mounted, g_generation, g_files, g_formatted;
 static uint32_t g_foreign;   /* a disk that exists and is not ours */
+static uint32_t g_disk = FS_DISK_PORT;   /* asked for at startup */
 
 static uint32_t fs_count_files(void);
 
@@ -112,7 +113,7 @@ static long fs_map_blkbuf(uint64_t flags) {
 static int fs_read_sector(uint64_t lba) {
     struct iris_msg r;
     fs_release_blkbuf();
-    if (fs_blk(BLK_OP_READ, lba, 1u, FS_DISK_PORT, (long)FS_SLOT_BLKBUF, &r) != 0)
+    if (fs_blk(BLK_OP_READ, lba, 1u, g_disk, (long)FS_SLOT_BLKBUF, &r) != 0)
         return 0;
     if (r.got_caps == 0u) return 0;
     return fs_map_blkbuf(0ull) == 0;    /* read-only: we only copy out of it */
@@ -129,7 +130,7 @@ static int fs_write_begin(void) {
 }
 static int fs_write_end(uint64_t lba) {
     struct iris_msg r;
-    return fs_blk(BLK_OP_WRITE, lba, 1u, FS_DISK_PORT, 0, &r) == 0;
+    return fs_blk(BLK_OP_WRITE, lba, 1u, g_disk, 0, &r) == 0;
 }
 
 static void fs_zero_blk(void) {
@@ -282,6 +283,17 @@ void fs_main(iris_cptr_t bootstrap_ch_h) {
         (void)iris_map_frame(FS_SLOT_DATA, IRIS_CPTR_OWN_VSPACE,
                              IRIS_CPTR_OWN_UNTYPED, FS_SLOT_PT,
                              FS_VA_DATA, 4096u, 1ull);
+
+    /*
+     * Which disk is ours.  Asked before anything is read, because reading the
+     * wrong one is how a filesystem ends up reporting that a stranger's drive
+     * is unmounted -- true, useless, and indistinguishable from a bug.
+     */
+    {
+        struct iris_msg r;
+        if (fs_blk(BLK_OP_HOME, 0, 0, 0, 0, &r) == 0 && r.words[1] != 0u)
+            g_disk = (uint32_t)r.words[0];
+    }
 
     fs_mount();
 

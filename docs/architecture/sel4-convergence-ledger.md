@@ -2755,6 +2755,25 @@ machine where the assumption happened to hold.  A test environment that is
 uniform is a test environment that cannot tell you which of your reasons are
 reasons and which are coincidences.
 
+**Position is not identity, and a hardcoded disk index proved it.**  `fs`
+addressed `FS_DISK_PORT 1` — correct on the machine the tests build, where disk
+0 is the boot image and disk 1 is the one the runner made, and a coin flip on
+real hardware, where the index is whatever order the AHCI ports enumerate in.
+A machine with two SATA drives would have had `fs` inspecting whichever one
+came second, and the right behaviour there (refuse everything) is
+indistinguishable from a broken system.
+
+`blk` answers `BLK_OP_HOME` — which disk carries an IRIS partition — and `fs`
+asks before it reads anything.  It is the rule the driver below it already
+follows: `blk` finds its controller by CLASS CODE rather than by
+vendor:device, because a driver that matched an identifier would drive one
+machine.
+
+The index is printed on the `blk:` line even though under QEMU the lookup and
+the old constant always agree.  That is the point: a mechanism whose right
+answer is indistinguishable from its fallback is one nobody can tell has
+stopped working.
+
 **`fs` — a filesystem that survives the power going off.**  It holds the least
 of any service here: an endpoint, a reply object, an endpoint to the block
 service, and memory.  No disk, no controller, no device Untyped, no DMA
