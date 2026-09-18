@@ -47,50 +47,30 @@ if ! grep -Fq "$want2" "$LOG-2.log"; then
   exit 1
 fi
 
-python3 - "$IMG" <<'PY'
-import struct, sys
-d = open(sys.argv[1], 'rb').read()
-magic, version, generation = struct.unpack('<QII', d[:16])
-name = d[512:528].rstrip(b'\0').decode('ascii', 'replace')
-size = struct.unpack('<I', d[528:532])[0]
-body = d[16 * 512:16 * 512 + 8]
+# A pristine copy, built the same way, to compare against.  Without it the
+# claim "IRIS stayed inside its partition" rests on IRIS's own word.
+PRISTINE="$PROJECT_ROOT/build/pristine-disk.img"
+python3 "$PROJECT_ROOT/scripts/mkdisk.py" "$PRISTINE" 8 >/dev/null
 
-problems = []
-if magic != 0x53464953495253:      problems.append('superblock magic is %#x' % magic)
-if version != 1:                   problems.append('version is %d' % version)
-if generation != 2:                problems.append('generation is %d, not 2' % generation)
-if name != 'boot.log':             problems.append('directory entry is %r' % name)
-if size != 8:                      problems.append('file size is %d' % size)
-# "IRIS" then the generation the SECOND boot wrote.
-if body != b'IRIS' + struct.pack('<I', 2):
-    problems.append('file contents are %s' % body.hex())
-
-if problems:
-    print('[persist] the host cannot read what IRIS wrote:')
-    for p in problems:
-        print('           - ' + p)
-    raise SystemExit(1)
-print('[persist] the host reads generation %d and %r (%d bytes) written by IRIS'
-      % (generation, name, size))
-PY
+python3 "$PROJECT_ROOT/scripts/checkfs.py" "$IMG" "$PRISTINE" 2 || exit 1
 
 echo "[persist] a filesystem written by IRIS survived the machine being off"
 
-# ── Phase 3: a disk that is not ours is left exactly as we found it ──────────
+# ── Phase 3: a disk with nothing of ours on it is not touched ───────────────
 #
 # This is the check that protects data rather than proving a feature, and it
-# exists because the opposite behaviour shipped.  `fs` formatted any disk that
-# carried no IRIS superblock, and the comment beside that code gave the reason:
-# disk 1 is IRIS's own, because the block service numbers the boot disk 0.
+# exists because the opposite behaviour shipped twice over.  `blk` handed an
+# absolute LBA straight to a WRITE DMA EXT, and `fs` wrote its superblock to
+# LBA 0 -- which on a raw image is the start of the image and on a real drive
+# is the PARTITION TABLE of the whole disk.  The reasoning written beside that
+# code was that disk 1 is IRIS's own, because the block service numbers the
+# boot disk 0: true of this script, which makes the image, and false of a
+# machine, where disk 1 is whatever SATA device enumerates second.
 #
-# That is true of THIS SCRIPT, which makes the image, and false of a real
-# machine, where disk 1 is whatever SATA device enumerates second -- somebody's
-# data, one boot away from being overwritten by a service nobody asked.
-#
-# So: an image with a boot signature and recognisable payloads and NO
-# permission token.  IRIS must refuse it, and the bytes must come back
-# unchanged -- compared from the HOST, because "I did not write anything" is
-# exactly the claim a broken implementation would also make about itself.
+# So: an image with a boot signature, recognisable payloads, and no IRIS
+# partition.  IRIS must find nothing it may address, and the bytes must come
+# back unchanged -- compared from the host, because "I did not write anything"
+# is exactly the claim a broken implementation would also make about itself.
 FOREIGN="$PROJECT_ROOT/build/foreign-disk.img"
 before="$(python3 "$PROJECT_ROOT/scripts/mkforeign.py" "$FOREIGN" 8)"
 
@@ -99,17 +79,27 @@ IRIS_QEMU_LOG="$LOG-foreign.log" \
 IRIS_DISK_IMG="$FOREIGN" \
   bash "$PROJECT_ROOT/scripts/run_qemu_headless.sh" >/dev/null 2>&1 || true
 
+# Both layers are required to say no, because they say no to different things
+# and either alone would be a system with one accident left in it.  `window 0`
+# is the block service refusing to write anywhere on a disk it has no partition
+# on; the filesystem line is `fs` refusing to format what it found there.
+if ! grep -Eq "blk: disk [0-9]+ .* window 0" "$LOG-foreign.log"; then
+  echo "[persist] the block service did not report an empty window:"
+  grep -E "blk:|fs:" "$LOG-foreign.log" 2>/dev/null || echo "         (it said nothing at all)"
+  exit 1
+fi
 if ! grep -Fq "fs: foreign disk, refusing to format" "$LOG-foreign.log"; then
-  echo "[persist] IRIS did not refuse a disk it has no business formatting:"
-  grep -F "fs:" "$LOG-foreign.log" 2>/dev/null || echo "         (it said nothing about fs at all)"
+  echo "[persist] the filesystem did not refuse a disk that is not ours:"
+  grep -E "blk:|fs:" "$LOG-foreign.log" 2>/dev/null || echo "         (it said nothing at all)"
   exit 1
 fi
 
 after="$(python3 "$PROJECT_ROOT/scripts/sha256.py" "$FOREIGN")"
 if [ "$before" != "$after" ]; then
-  echo "[persist] a disk IRIS said it refused came back CHANGED"
+  echo "[persist] a disk IRIS has no partition on came back CHANGED"
   echo "          before $before"
   echo "          after  $after"
   exit 1
 fi
-echo "[persist] a foreign disk was refused and came back byte-for-byte unchanged"
+echo "[persist] a disk with no IRIS partition: both layers refused, and it came"
+echo "[persist] back byte-for-byte unchanged"

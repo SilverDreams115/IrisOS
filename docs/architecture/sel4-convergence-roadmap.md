@@ -2897,13 +2897,16 @@ nothing at all on a machine with no serial port, which is most of them.
 decodes it back to text with the kernel's own font to prove it is legible.  The
 boot markers sit on a line that never scrolls, so a boot that stops says where.
 
-**Formatting a disk is an authority, not a default.**  `fs` formatted any disk
-without an IRIS superblock, reasoning that disk 1 is IRIS's own because the
-block service numbers the boot disk 0.  That is a fact about the test runner,
-not about hardware, where disk 1 is whatever SATA device enumerates second.  A
-disk is formatted only if it carries a token a host deliberately wrote; any
-other disk is refused and left untouched, and `make smoke-persist` proves the
-bytes come back unchanged.
+**A disk is addressed through a partition, not absolutely.**  `blk` put a
+client's LBA straight into a `WRITE DMA EXT`, and `fs` wrote its superblock to
+LBA 0 — the start of a test image, and the partition table of a real drive.
+Every LBA is now relative to a window, the window is the GPT partition typed
+`IRISFS-PARTITION`, and there is no way left to express an address outside it;
+a disk with no such partition gets no window and every transfer to it is
+refused.  Formatting is separately an authority, granted by a token a host
+deliberately wrote.  The test image is a real GPT disk with a decoy partition,
+and `make smoke-persist` proves every byte outside IRIS's own — the GPT, its
+backup, the decoy — comes back unchanged.
 
 **A missing serial port cannot wedge the boot.**  `console` spun forever
 waiting for a UART transmit register to drain.  A floating bus reads 0xFF and

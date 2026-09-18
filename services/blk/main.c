@@ -104,6 +104,17 @@ static void     ab_wr(uint32_t off, uint32_t v){ *abar_reg(off) = v; }
 /* ── what the driver found and built ─────────────────────────────────────── */
 static uint32_t g_ready;          /* how many ports have a working disk */
 static uint32_t g_port[BLK_MAX_PORTS];   /* the AHCI port number of each */
+
+/*
+ * The window each disk is allowed to be addressed through: the IRIS partition
+ * found in its GPT, as an absolute start and a length in sectors.
+ *
+ * A count of zero means no window, and no window means every client transfer
+ * to that disk is refused.  See `iris/blk_ep_proto.h` for why the default for
+ * a disk nobody granted is nothing rather than the whole thing.
+ */
+static uint64_t g_win_base[BLK_MAX_PORTS];
+static uint64_t g_win_count[BLK_MAX_PORTS];
 static uint16_t g_source_id;
 static uint32_t g_contained;      /* the controller's DMA is behind a unit */
 static uint64_t g_cmd_phys, g_data_phys, g_wr_phys;
@@ -366,6 +377,109 @@ static int blk_flush(uint32_t idx) {
     return (ab_rd(tfd) & TFD_ERR) ? 0 : 1;
 }
 
+/* ── the partition ───────────────────────────────────────────────────────── */
+
+/* Little-endian reads out of the read buffer, which is where a sector lands. */
+static uint64_t ld64(const volatile uint8_t *p) {
+    uint64_t v = 0;
+    for (uint32_t i = 0; i < 8u; i++) v |= (uint64_t)p[i] << (8u * i);
+    return v;
+}
+static uint32_t ld32(const volatile uint8_t *p) {
+    uint32_t v = 0;
+    for (uint32_t i = 0; i < 4u; i++) v |= (uint32_t)p[i] << (8u * i);
+    return v;
+}
+
+/*
+ * Find this disk's IRIS partition and make it the only thing addressable.
+ *
+ * GPT: a header at LBA 1 whose signature is "EFI PART", naming an array of
+ * 128-byte entries.  An entry's first sixteen bytes are its TYPE, and the one
+ * this service is looking for is the ASCII in `BLK_PART_TYPE`.
+ *
+ * Only the first 32 entries are examined, which is one bufferful.  A disk
+ * whose IRIS partition is the thirty-third gets no window and is refused,
+ * which is the safe direction to be wrong in: the failure is "IRIS did not
+ * find its partition", not "IRIS wrote somewhere it should not have".
+ */
+static void blk_find_partition(uint32_t idx) {
+    static const char want[] = BLK_PART_TYPE;
+    g_win_base[idx] = 0; g_win_count[idx] = 0;
+
+    if (!blk_xfer(idx, 1, 1, 0)) return;            /* the GPT header */
+    const volatile uint8_t *h = (const volatile uint8_t *)(uintptr_t)BLK_VA_DATA;
+    {
+        static const char sig[] = "EFI PART";
+        for (uint32_t i = 0; i < 8u; i++)
+            if (h[i] != (uint8_t)sig[i]) return;    /* not a GPT disk */
+    }
+    uint64_t ent_lba   = ld64(h + 72);
+    uint32_t ent_count = ld32(h + 80);
+    uint32_t ent_size  = ld32(h + 84);
+    if (ent_size != 128u || ent_count == 0u) return;
+    if (ent_count > 32u) ent_count = 32u;
+
+    /* 8 sectors is one frame and holds 32 entries, so one read covers them. */
+    if (!blk_xfer(idx, ent_lba, 8u, 0)) return;
+    const volatile uint8_t *e = (const volatile uint8_t *)(uintptr_t)BLK_VA_DATA;
+    for (uint32_t i = 0; i < ent_count; i++) {
+        const volatile uint8_t *ent = e + (uint64_t)i * 128u;
+        int match = 1;
+        for (uint32_t b = 0; b < 16u; b++)
+            if (ent[b] != (uint8_t)want[b]) { match = 0; break; }
+        if (!match) continue;
+        uint64_t first = ld64(ent + 32);
+        uint64_t last  = ld64(ent + 40);            /* inclusive */
+        if (last < first) return;
+        /* Never the first sector of the DISK: an entry claiming LBA 0 is a
+         * malformed table, and honouring it would put the partition table
+         * inside the window this service is meant to keep everything out of. */
+        if (first == 0u) return;
+        g_win_base[idx]  = first;
+        g_win_count[idx] = last - first + 1u;
+        return;
+    }
+}
+
+/*
+ * A client transfer.
+ *
+ * ── The rule, and why reads and writes differ ──────────────────────────────
+ *
+ * A WRITE only ever happens inside an IRIS partition.  There is no disk and no
+ * argument that relaxes that: no partition of ours means no writing, and
+ * inside one the address is relative, so a client has no way to name a sector
+ * outside it.  That is the property that matters, because it is the one whose
+ * absence destroys somebody's data.
+ *
+ * A READ on a disk with no IRIS partition is allowed, and absolute.  It has to
+ * be: finding the partition means reading the GPT, and proving a port works at
+ * all means reading a sector off it — a driver that cannot read an unknown
+ * disk cannot discover anything about it.  Once a partition IS found, reads
+ * are bounded like writes.
+ *
+ * This is stated rather than hidden: on a machine whose disks hold somebody
+ * else's data, this system can read sectors of a disk it has no partition on.
+ * It cannot write one, and there is no path from this service to the network.
+ *
+ * Out-of-window transfers are REFUSED, not clamped.  Clamping would turn
+ * "write 8 sectors at the end" into a shorter write that reported success,
+ * which is a silently truncated file; refusing is an answer a caller can act
+ * on.
+ */
+static int blk_xfer_win(uint32_t idx, uint64_t rel, uint32_t sectors, int write) {
+    if (idx >= BLK_MAX_PORTS || idx >= g_ready) return 0;
+    if (sectors == 0u) return 0;
+    if (g_win_count[idx] == 0u) {
+        if (write) return 0;                  /* never, on a disk not ours */
+        return blk_xfer(idx, rel, sectors, 0);
+    }
+    if (rel >= g_win_count[idx]) return 0;
+    if ((uint64_t)sectors > g_win_count[idx] - rel) return 0;
+    return blk_xfer(idx, g_win_base[idx] + rel, sectors, write);
+}
+
 /* ── startup ─────────────────────────────────────────────────────────────── */
 
 static void blk_bring_up(void) {
@@ -435,6 +549,8 @@ static void blk_bring_up(void) {
          * that means the same thing. */
         g_ready = idx + 1u;
         if (!blk_xfer(idx, 0, 1, 0)) { g_ready = idx; continue; }
+        /* And find out what, if anything, this service may address on it. */
+        blk_find_partition(idx);
         g_generation = 1u;
     }
 }
@@ -464,6 +580,16 @@ void blk_main(iris_cptr_t bootstrap_ch_h) {
             rep.words[2]   = g_source_id;
             rep.words[3]   = g_contained;
             rep.word_count = 4u;
+        } else if (m.label == BLK_OP_PART) {
+            /* Zero sectors is a real answer: the disk is there and carries no
+             * partition of ours, so nothing on it may be addressed.  That is a
+             * different fact from "no disk" and the caller has to tell them
+             * apart. */
+            uint32_t d = (uint32_t)m.words[0];
+            rep.label      = BLK_REP_OK;
+            rep.words[0]   = (d < BLK_MAX_PORTS && d < g_ready) ? g_win_count[d] : 0u;
+            rep.words[1]   = (d < BLK_MAX_PORTS && d < g_ready) ? g_win_base[d]  : 0u;
+            rep.word_count = 2u;
         } else if (m.label == BLK_OP_WRBUF && g_ready) {
             rep.label      = BLK_REP_OK;
             rep.words[0]   = 4096u;
@@ -477,7 +603,7 @@ void blk_main(iris_cptr_t bootstrap_ch_h) {
             uint32_t sectors = (uint32_t)m.words[1];
             uint32_t wport = (uint32_t)m.words[2];
             if (sectors >= 1u && sectors <= BLK_MAX_SECTORS &&
-                blk_xfer(wport, m.words[0], sectors, 1) &&
+                blk_xfer_win(wport, m.words[0], sectors, 1) &&
                 blk_flush(wport)) {
                 rep.label      = BLK_REP_OK;
                 rep.words[0]   = sectors * BLK_SECTOR_BYTES;
@@ -494,7 +620,7 @@ void blk_main(iris_cptr_t bootstrap_ch_h) {
                  * it is why this can be one frame instead of one per request.
                  */
                 (void)iris_invoke0((long)BLK_SLOT_DATA, INV_CSPACE_REVOKE);
-                if (blk_xfer((uint32_t)m.words[2], m.words[0], sectors, 0)) {
+                if (blk_xfer_win((uint32_t)m.words[2], m.words[0], sectors, 0)) {
                     g_generation++;
                     rep.label      = BLK_REP_OK;
                     rep.words[0]   = sectors * BLK_SECTOR_BYTES;

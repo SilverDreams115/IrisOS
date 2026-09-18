@@ -40,7 +40,7 @@ than by having started:
 | `[IRIS][ABI] version 1.0 - 4 syscall numbers, 77 invocation labels` | the kernel says which ABI it implements; the root task halts the boot on a major it was not built against |
 | `[USERBOOT] ACPI: root pointer reachable from ring 3` | the firmware's tables are named by a capability ring 3 holds |
 | `[USER][INIT] pci: functions N windows M carve 0` | the bus service scanned, and carved a frame over **every** window in the region it owns.  `carve 0` is required: a service that found devices and carved nothing refuses every driver's claim, which from outside is indistinguishable from an empty machine |
-| `[USER][INIT] blk: disk 1 sid 0x.. dma contained\|open` | a ring-3 AHCI driver claimed a controller, brought a port up and **read a sector**.  `contained` is required with an IOMMU and `open` without one — either word on the wrong machine is a lie the gate catches |
+| `[USER][INIT] blk: disk 1 sid 0x.. dma contained\|open window N` | a ring-3 AHCI driver claimed a controller, brought a port up and **read a sector**.  `contained` is required with an IOMMU and `open` without one — either word on the wrong machine is a lie the gate catches.  `window N` is how many sectors anything may address on the data disk, which is the IRIS partition and nothing else; it is required NON-ZERO here, and a zero is correct behaviour on a stranger's drive |
 | `[USER][INIT] net: link 1 mac .. dma contained\|open` | a ring-3 e1000 driver brought a network card up |
 | `[USER][INIT] fs: mounted gen N ... file 1` | a filesystem on a disk IRIS owns; `gen` is how many boots have mounted it, read from the medium and written back, and `file 1` is a file written and read back through the filesystem, the block driver and the controller |
 | `[USER][INIT] net: gateway answered, mac ..` | and a frame went out and one came back.  This is the line that means something: a transmit-only check proves nothing, because the card reports a descriptor done whether or not anything was listening.  An ARP round trip exercises the transmit path, the receive ring, the card's filter and a peer that is not this driver |
@@ -102,19 +102,36 @@ the HOST.  That last step is the one that matters: the first two are IRIS
 reading back its own writes, which a filesystem that merely remembered things
 in RAM would also pass.
 
-A third boot follows, and it protects DATA rather than proving a feature.
-`fs` used to format any disk that carried no IRIS superblock, on the reasoning
-written beside the code: disk 1 is IRIS's own, because the block service
-numbers the boot disk 0.  That is true of the script that makes the image and
-false of a real machine, where disk 1 is whatever SATA device enumerates second
-— somebody's data, one boot away from being overwritten by a service nobody
-asked.  Formatting is an authority now, granted by a token a HOST writes into
-sector 0 for a disk it is willing to lose.  So the third boot hands IRIS an
-image with a boot signature, recognisable payloads and no token, and requires
-two things: that IRIS says `fs: foreign disk, refusing to format`, and that the
-image comes back byte-for-byte unchanged — compared from the host, because "I
-did not write anything" is exactly the claim a broken implementation would also
-make about itself.
+The image is a real GPT disk with TWO partitions, and that is what makes the
+check mean anything.  A raw image cannot test "stay inside your partition",
+because there is nowhere else to go — so the image carries a DECOY partition
+full of recognisable bytes alongside the IRIS one, and the host compares the
+result against a pristine copy built the same way.  What it requires is not
+only that the filesystem is where it should be, but that **every byte outside
+the IRIS partition is unchanged**: the GPT, its backup, and the decoy.
+
+A third boot follows, and it protects DATA rather than proving a feature.  This
+system used to address disks absolutely: `blk` handed a client's LBA straight
+to a `WRITE DMA EXT`, and `fs` wrote its superblock to LBA 0 — the start of a
+raw image, and the PARTITION TABLE of a real drive.  The reasoning written
+beside that code was that disk 1 is IRIS's own, because the block service
+numbers the boot disk 0: true of the script that makes the image, false of a
+machine, where disk 1 is whatever SATA device enumerates second.
+
+Now every LBA in the block protocol is relative to a window, the window is the
+GPT partition typed `IRISFS-PARTITION`, and there is no way to express an
+address outside it.  Writes and reads differ on purpose: a WRITE only ever
+happens inside an IRIS partition, and a READ on a disk with no such partition
+is allowed, because finding a partition means reading the GPT and proving a
+port works means reading a sector off it.
+
+So the third boot hands IRIS a disk with a boot signature, recognisable
+payloads and no IRIS partition, and requires three things: `window 0` from the
+block service, `fs: foreign disk, refusing to format` from the filesystem —
+both layers, because they refuse different things and either alone leaves one
+accident in the system — and an image that comes back byte-for-byte unchanged,
+compared from the host, because "I did not write anything" is exactly the claim
+a broken implementation would also make about itself.
 
 ### Numbers
 

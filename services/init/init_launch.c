@@ -918,6 +918,31 @@ int init_spawn_blk(void) {
                               b[k++]='a'; b[k++]='i'; b[k++]='n'; b[k++]='e';
                               b[k++]='d'; }
             else            { b[k++]='o'; b[k++]='p'; b[k++]='e'; b[k++]='n'; }
+            /*
+             * And the WINDOW: how many sectors of the data disk this driver
+             * will let anything address, which is the IRIS partition and
+             * nothing else.  Zero means the disk is there and carries no
+             * partition of ours, which is a different fact from "no disk" and
+             * the one that says nothing on it can be written.
+             */
+            b[k++] = ' '; b[k++] = 'w'; b[k++] = 'i'; b[k++] = 'n';
+            b[k++] = 'd'; b[k++] = 'o'; b[k++] = 'w'; b[k++] = ' ';
+            { uint64_t wn = 0;
+              struct iris_msg pm;
+              { uint8_t *z = (uint8_t *)&pm;
+                for (uint32_t i = 0; i < (uint32_t)sizeof(pm); i++) z[i] = 0; }
+              pm.label = BLK_OP_PART;
+              pm.words[0] = 1u;            /* the data disk */
+              pm.word_count = 1u;
+              if (iris_msg_call((long)INIT_SLOT_BLK_EP, &pm) == 0 &&
+                  pm.label == BLK_REP_OK)
+                  wn = pm.words[0];
+              if (wn == 0u) b[k++] = '0';
+              else {
+                  char t[20]; uint32_t n = 0;
+                  while (wn > 0u && n < 20u) { t[n++] = (char)('0' + (uint32_t)(wn % 10u)); wn /= 10u; }
+                  while (n > 0u) b[k++] = t[--n];
+              } }
             b[k++] = '\n'; b[k] = 0;
             init_log(b);
             return (m.words[0] != 0u) ? 1 : 0;

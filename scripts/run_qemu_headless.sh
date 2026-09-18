@@ -79,15 +79,17 @@ IRIS_DISK="${IRIS_DISK_IMG:-$PROJECT_ROOT/build/iris-disk.img}"
 if [ ! -f "$IRIS_DISK" ]; then
   # 8 MiB of zeroes.  The filesystem formats it on first boot; a zeroed image
   # is how it tells "never formatted" from "formatted and empty".
-  dd if=/dev/zero of="$IRIS_DISK" bs=1M count=8 status=none
-  # The permission to destroy this disk, written by whoever made it.
+  # A GPT disk with TWO partitions, which is the only kind that can test the
+  # thing that matters.
   #
-  # `fs` refuses to format a disk that carries neither an IRIS filesystem nor
-  # this token, because the reasoning it used before -- "disk 1 is ours" -- is
-  # true of this script and false of a real machine, where disk 1 is whatever
-  # SATA device enumerates second.  The token is how a HOST says "this one is
-  # disposable", and a test image is exactly that.  See iris/fs_ep_proto.h.
-  printf 'S-FMT-OK' | dd of="$IRIS_DISK" bs=1 seek=496 conv=notrunc status=none
+  # A raw image proves nothing about staying inside a partition, because there
+  # is nowhere else to go -- and "stay inside your partition" is exactly the
+  # property that separates a test rig from a machine whose second SATA disk
+  # holds somebody's data.  So the image carries a decoy partition full of
+  # recognisable bytes, and an IRIS-typed one with the format-permission token
+  # in its first sector.  `check_persistence.sh` then asks a question with a
+  # real answer: did anything outside the IRIS partition change?
+  python3 "$PROJECT_ROOT/scripts/mkdisk.py" "$IRIS_DISK" 8 >/dev/null
 fi
 DISK_ARGS=(-drive "file=$IRIS_DISK,format=raw,if=none,id=irisdisk"
            -device ide-hd,drive=irisdisk,bus=ide.1)
@@ -482,7 +484,12 @@ fi
 # The two arms are checked separately below, because "contained" on a machine
 # with no unit and "open" on a machine with one are both lies and neither would
 # be caught by looking for the line alone.
-if ! grep -Eq "^\[USER\]\[INIT\] blk: disk [1-9] sid 0x[0-9a-f]+ dma (contained|open)$" "$LOG_FILE"; then
+# `window N` is required to be NON-ZERO here, and that is the containment:
+# it is the number of sectors the driver will let anything address, which is
+# the IRIS partition and nothing else.  A window of zero is a disk that is
+# present and carries no partition of ours -- correct behaviour on a stranger's
+# drive, and a failure on the image this runner just built.
+if ! grep -Eq "^\[USER\]\[INIT\] blk: disk [1-9] sid 0x[0-9a-f]+ dma (contained|open) window [1-9][0-9]*$" "$LOG_FILE"; then
   echo "[headless] no ring-3 driver brought a disk up:"
   grep -F "blk:" "$LOG_FILE" | sed 's/^/           /'
   cat "$LOG_FILE"

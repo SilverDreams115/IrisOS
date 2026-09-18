@@ -2624,21 +2624,65 @@ the font parsed out of the kernel's own source — there is no second copy to
 drift from, and the check cannot pass against a screen that says something
 else.
 
-**And a service was one boot away from destroying somebody's data.**  `fs`
-formatted any disk that carried no IRIS superblock.  The comment beside that
-code gave the reason and, read on a real machine, gave the bug with it: *this
-disk is IRIS's own, because the block service numbers the boot disk 0 and this
-one 1*.  True of the test runner, which makes the image.  False of hardware,
-where disk 1 is whatever SATA device enumerates second.
+**And a service was one boot away from destroying somebody's disk.**  `blk`
+took a client's LBA and put it straight into a `WRITE DMA EXT` — absolute, with
+no offset and no bound — and `fs` wrote its superblock to LBA 0.  On a raw test
+image that is the start of the image.  On a real drive it is the PARTITION
+TABLE of the whole disk, and overwriting it destroys the addressing for every
+partition on it, including the ones holding data.  No amount of care in the
+filesystem above could have prevented that, because the filesystem was not the
+thing choosing the address.
 
-Formatting is an AUTHORITY now, and like every other authority here it is
-granted rather than assumed: a token at a fixed offset in sector 0, which only
-whoever prepares a disk can write, for a disk it is willing to lose.  A disk
-with neither a superblock nor the token is refused — not formatted, not
-mounted, reported as foreign and left exactly as found.  The check is in
-`check_persistence.sh` and it compares the image from the HOST before and
-after, because "I did not write anything" is exactly what a broken
-implementation would also say about itself.
+The comment beside the code gave the reason and, read on a machine, gave the
+bug with it: *this disk is IRIS's own, because the block service numbers the
+boot disk 0 and this one 1*.  True of the test runner, which makes the image.
+False of hardware, where disk 1 is whatever SATA device enumerates second.
+
+Two things changed, and the ORDER of them is the point.
+
+Every LBA in the block protocol is now RELATIVE to a window, and the window is
+the GPT partition typed `IRISFS-PARTITION`.  There is no way left to express an
+absolute address, so containment is by construction rather than by checking: a
+client that wants to write outside its partition has no word to put the address
+in.
+
+Reads and writes are deliberately NOT symmetric, and the asymmetry is the
+honest part.  A write only ever happens inside an IRIS partition — no disk and
+no argument relaxes that, because that is the property whose absence destroys
+somebody's data.  A read on a disk with no IRIS partition is allowed and
+absolute, because it has to be: finding the partition means reading the GPT,
+and proving a port works at all means reading a sector off it.  A driver that
+cannot read an unknown disk cannot discover anything about one.
+
+So the claim is exactly this, and no more: on a machine whose disks hold
+somebody else's data, IRIS can READ sectors of a disk it has no partition on.
+It cannot write one.  It is worth stating rather than rounding, because the
+first version of this bounded both and broke the two tests that read the boot
+disk to prove the driver works — which is how the distinction got noticed.
+
+Formatting is separately an AUTHORITY, granted like every other one here: a
+token at a fixed offset in the partition's first sector, written by whoever
+prepares a disk they are willing to lose.
+
+The type is the sixteen bytes of ASCII `IRISFS-PARTITION` rather than a
+generated GUID, deliberately: a real type GUID is never printable ASCII, so it
+cannot collide with one, and it is legible in a hex dump — which is what
+matters when the question is whether this system touched somebody's drive.
+
+**The test had to change before it could test anything.**  A raw image cannot
+check "stay inside your partition", because there is nowhere else to go.  The
+runner builds a GPT disk with a DECOY partition full of recognisable bytes, and
+`check_persistence.sh` compares the result against a pristine copy built the
+same way: the filesystem must be in the IRIS partition, and every byte outside
+it — the GPT, its backup, the decoy — must be identical.
+
+Two things fell out of building it.  `fdisk` validates the generated image,
+which is worth more than any assertion here could be: an independent
+implementation agrees the table is well formed.  And the window was first
+returned as a fifth word on `BLK_OP_INFO`, which wrote past `words[4]` — an
+IPC message carries exactly `IRIS_MSG_WORDS` of them and INFO already used all
+four.  The out-of-bounds write was caught only because the value came back as 4
+instead of 8159; it has its own operation now.
 
 This one is worth keeping for what it says about the rest of the tree: it
 passed every gate for as long as it existed, because every gate ran on a

@@ -110,12 +110,56 @@
  */
 #define BLK_OP_WRITE  0x7104u
 
+/*
+ * The window a disk may be addressed through.
+ *   words[0] = disk index
+ * Reply:
+ *   words[0] = how many sectors, 0 if this disk carries no IRIS partition
+ *   words[1] = the absolute LBA it starts at, for reporting only -- no
+ *              operation here takes an absolute address
+ *
+ * It is its own operation rather than another field on INFO because an IPC
+ * message carries exactly IRIS_MSG_WORDS words and INFO already uses all of
+ * them.  Appending a fifth was tried and wrote past the array: the value came
+ * back as 4 instead of 8159, which is the only reason it was noticed.
+ */
+#define BLK_OP_PART   0x7105u
+
 #define BLK_REP_OK    0x7180u
 #define BLK_REP_ERR   0x7181u
 
 /* One page of data per request: the PRDT this driver builds has one entry and
  * the buffer is one frame.  Stated in the protocol because a caller has to
  * size its expectations, not discover them. */
+/*
+ * ── The partition, and why a client cannot address around it ───────────────
+ *
+ * Every LBA in this protocol is RELATIVE to the partition the service found,
+ * and there is no way to express an absolute one.  That is the containment,
+ * and it is by construction rather than by checking: a client that wants to
+ * write outside its partition has no word to put the address in.
+ *
+ * It replaces a much worse arrangement.  `blk` took an absolute LBA and put it
+ * straight into a `WRITE DMA EXT`, and `fs` wrote its superblock to LBA 0 --
+ * which on a raw test image is the start of the image and on a real disk is
+ * the PARTITION TABLE of the whole drive.  Pointing this system at a machine's
+ * second SATA disk would have destroyed the addressing for every partition on
+ * it, including the ones holding data, and no amount of care in the filesystem
+ * above could have prevented it.
+ *
+ * The partition is found by its TYPE, in the GPT, and the type is the sixteen
+ * bytes of ASCII "IRISFS-PARTITION".  A real type GUID is never printable
+ * ASCII, so this cannot collide with one, and it is legible in a hex dump of a
+ * disk -- which matters when the question is "did this thing touch my drive".
+ * It is a deliberate choice rather than a generated identifier for exactly
+ * that reason.
+ *
+ * A disk with no such partition gets NO window, and every read and write to it
+ * is refused.  Not "mounted read-only", not "the whole disk by default":
+ * refused.  The default for a disk nobody granted is nothing.
+ */
+#define BLK_PART_TYPE "IRISFS-PARTITION"   /* 16 bytes, on the wire as-is */
+
 #define BLK_SECTOR_BYTES 512u
 #define BLK_MAX_SECTORS  8u      /* 8 * 512 = one 4 KiB frame */
 

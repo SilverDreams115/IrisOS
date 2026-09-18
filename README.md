@@ -523,9 +523,10 @@ working:
   filesystem on a disk IRIS owns and holds no hardware at all — not a
   controller, not a device Untyped — and `make smoke-persist` proves what it
   writes survives the machine being off by booting twice and then reading the
-  image from the host.  It formats a disk only when a host deliberately marked
-  that disk disposable: on a real machine "the second SATA device" is somebody's
-  data, and the same check proves a disk IRIS refuses comes back byte-for-byte
+  image from the host.  Every disk address is relative to a GPT partition of
+  IRIS's own type, so there is no way to express one outside it — on a real
+  machine "the second SATA device" is somebody's data, and the same check
+  proves the GPT, its backup and a decoy partition all come back byte-for-byte
   unchanged.  ACPI's tables
   are device Untypeds, so ring 3 can read the firmware's description of the
   machine; the kernel reads three tables and will never read a fourth.
