@@ -183,4 +183,44 @@ void test_kuntyped(void) {
                   (long)IRIS_ERR_ALREADY_EXISTS);
         ASSERT_TRUE(dev->hdr_budget == ram);
     }
+
+    /* ── OF-1..OF-4: a size the caller chooses must not wrap the room test ──
+     *
+     * The retype syscall asks only that a frame's size be at least 4096 and
+     * page-aligned, so 0xFFFFFFFFFFFFF000 is a legal request.  The room test
+     * used to be an ADDITION -- `aligned_start + size + used_top > total_size`
+     * -- which wraps on a size like that, passes, and then assigns `used` a
+     * value BELOW where it started.
+     *
+     * A watermark that goes backwards is the one thing this allocator cannot
+     * survive: it hands out its region in order and never revisits it, so the
+     * very next retype returned the same physical page as a live frame.  Two
+     * capabilities over one piece of memory, reachable by any task holding an
+     * Untyped.
+     */
+    {
+        const uint64_t RSZ = 64u * 1024u;
+        void *rbuf = malloc(RSZ);
+        ASSERT_NOT_NULL(rbuf);
+        struct KUntyped *ov = kuntyped_create((uint64_t)(uintptr_t)rbuf, RSZ, 0);
+        ASSERT_NOT_NULL(ov);
+
+        uint64_t first = kuntyped_bump_alloc_phys_page(ov, 4096u);
+        ASSERT_TRUE(first != 0u);
+        uint64_t mark = ov->used;
+
+        /* OF-1: the request is refused rather than wrapped. */
+        ASSERT_EQ(kuntyped_bump_alloc_phys_page(ov, 0xFFFFFFFFFFFFF000ULL), 0u);
+        /* OF-2: and it did not move the watermark on its way out. */
+        ASSERT_EQ(ov->used, mark);
+
+        /* OF-3: the next page is a NEW one, not the one already handed out. */
+        uint64_t second = kuntyped_bump_alloc_phys_page(ov, 4096u);
+        ASSERT_TRUE(second != 0u);
+        ASSERT_TRUE(second > first);
+
+        /* OF-4: a size that merely exceeds the region is refused too, which is
+         * the ordinary case the wrapping one was hiding. */
+        ASSERT_EQ(kuntyped_bump_alloc_phys_page(ov, RSZ + 4096u), 0u);
+    }
 }

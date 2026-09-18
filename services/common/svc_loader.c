@@ -20,6 +20,15 @@
 #include <iris/nc/error.h>
 #include <iris/paging.h>
 
+/* The stack this loader maps, and where it starts.
+ *
+ * One guard page below it is deliberately left out of both, so a stack
+ * overflow faults instead of walking into whatever the service mapped next.
+ * See step 14. */
+#define SVC_STACK_MAPPED   (USER_STACK_SIZE - 4096ULL * USER_STACK_GUARD_PAGES)
+#define SVC_STACK_MAP_BASE (USER_STACK_BASE + 4096ULL * USER_STACK_GUARD_PAGES)
+
+
 /* ── Freestanding syscall helpers ─────────────────────────────────── */
 
 /* Release a capability: delete its slot.  Stage 4 removed the handle branch —
@@ -759,8 +768,22 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * way to reach a child's address space at spawn time — the spawner
          * made it, so it never stopped holding it. */
 
-        /* 14. Create user stack sparse VMO (charged to the child) and map it in. */
-        r = iris_invoke(pool_c, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)), sl_ws_dest(ws, SL_WS_STACK), (long)USER_STACK_SIZE);
+        /*
+         * 14. Create the user stack and map it in, leaving the guard page
+         * BELOW it unmapped.
+         *
+         * `USER_STACK_GUARD_PAGES` has said "bottom page unmapped: overflow →
+         * fault" since it was written, and `task_lifecycle.c` honours it.  This
+         * loader did not: it retyped the full `USER_STACK_SIZE` and mapped it
+         * at `USER_STACK_BASE`, so the page the constant reserves was mapped
+         * and writable.  Every service spawned since Stage 7 comes through
+         * here, which means no service had the guard its own header promised —
+         * and what sits directly below the stack is `USER_VMO_TOP`, so an
+         * overflow walked into the service's own mappings silently instead of
+         * faulting.  `vfs_server_main_c` spends 13984 of these bytes in a
+         * single frame, which is close enough to matter.
+         */
+        r = iris_invoke(pool_c, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)), sl_ws_dest(ws, SL_WS_STACK), (long)SVC_STACK_MAPPED);
         if (r < 0) goto out;
         stack_vmo_h = (iris_cptr_t)sl_ws_cptr(ws, SL_WS_STACK);
 
@@ -768,11 +791,11 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * loader retyped and still holds — not its process. */
         r = iris_vspace_map(INV_FRAME_MAP,
                             (long)stack_vmo_h, child_vs,
-                            (long)USER_STACK_BASE, 1 /*WRITABLE*/,
+                            (long)SVC_STACK_MAP_BASE, 1 /*WRITABLE*/,
                             child_vs, pool_c,
                             sl_ws_dest(ws, SL_WS_PTSCRATCH_CH),
                             (long)sl_ws_cptr(ws, SL_WS_PTSCRATCH_CH),
-                            USER_STACK_BASE);
+                            SVC_STACK_MAP_BASE);
         if (r < 0) goto out;
 
         /* 15. Map each segment sparse VMO into child with correct W^X flags. */

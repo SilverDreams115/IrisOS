@@ -28,10 +28,16 @@
  *   kframe_obj_destroy() panics if mapped_count > 0 at destruction time.
  *   This eliminates silent stale PTEs that Phase 5 allowed.
  *
- * TLB (SMP roadmap §9.3 step 2 — shootdown is NOT implemented; one core):
+ * TLB:
  *   Map: no flush needed (new PTE; no stale entry).
- *   Unmap: invlpg issued inside paging_unmap_in().
- *   SMP TLB shootdown deferred to Phase 6.
+ *   Unmap: invlpg locally inside paging_unmap_in(), and an IPI to every other
+ *   CPU running inside the same address space — kframe.c calls
+ *   tlb_shootdown_page() on the unmap path.
+ *
+ *   This block said "shootdown is NOT implemented; one core ... deferred to
+ *   Phase 6" for as long as it had been implemented, which is Stage 9 step 2.
+ *   A comment that describes work as pending is worse than no comment: it is
+ *   read as a statement about the system by the next person to touch it.
  */
 #include "syscall_priv.h"
 #include <iris/nc/kframe.h>

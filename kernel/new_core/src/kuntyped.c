@@ -141,11 +141,19 @@ void kuntyped_destroy_ref(struct KUntyped *u) {
 
 /* Advance bump pointer by aligned(bytes); return byte offset or (uint64_t)-1. */
 static uint64_t kuntyped_bump(struct KUntyped *u, uint64_t bytes) {
+    /* Rounding up can wrap, and a wrapped `aligned` of zero would hand back an
+     * offset for a request of `bytes`, which the caller then writes through.
+     * Every caller here passes a sizeof(), so this is not reachable today --
+     * it is checked because the sibling allocator's version of this arithmetic
+     * WAS reachable and did exactly that. */
+    if (bytes > (uint64_t)-1 - (KUNTYPED_ALIGN - 1u)) return (uint64_t)-1;
     uint64_t aligned = (bytes + KUNTYPED_ALIGN - 1u) & ~(uint64_t)(KUNTYPED_ALIGN - 1u);
     uint64_t flags   = irq_spinlock_lock(&u->lock);
-    /* Stage 6 Step 1: the two ends meet exactly once. */
-    if (u->used + aligned + u->used_top > u->total_size ||
-        u->used + aligned < u->used) {
+    /* Stage 6 Step 1: the two ends meet exactly once.  Subtraction, for the
+     * reason spelled out in kuntyped_bump_alloc_phys_page. */
+    if (u->used > u->total_size ||
+        u->used_top > u->total_size - u->used ||
+        aligned > u->total_size - u->used - u->used_top) {
         irq_spinlock_unlock(&u->lock, flags);
         return (uint64_t)-1;
     }
@@ -212,12 +220,20 @@ void *kuntyped_alloc_child_top(struct KUntyped *u, uint64_t obj_bytes) {
      * decided that is safe.  Device Untypeds produce physical regions only. */
     if (u->is_device) return 0;
 
+    /* Round-up first: `need < aligned` below catches a wrap in the ADDITION
+     * and not one in the rounding, which turns a huge request into a 64-byte
+     * block the caller then writes past. */
+    if (obj_bytes > (uint64_t)-1 - (KUNTYPED_ALIGN - 1u)) return 0;
     uint64_t aligned = (obj_bytes + KUNTYPED_ALIGN - 1u) & ~(uint64_t)(KUNTYPED_ALIGN - 1u);
     uint64_t need    = KUNTYPED_ALIGN + aligned;
     if (need < aligned) return 0;                      /* overflow */
 
     uint64_t flags = irq_spinlock_lock(&u->lock);
-    if (u->used + u->used_top + need > u->total_size) {
+    /* Subtraction, for the reason spelled out in kuntyped_bump_alloc_phys_page:
+     * an addition here is a room test that a large enough request passes. */
+    if (u->used > u->total_size ||
+        u->used_top > u->total_size - u->used ||
+        need > u->total_size - u->used - u->used_top) {
         irq_spinlock_unlock(&u->lock, flags);
         return 0;
     }
@@ -435,9 +451,35 @@ uint64_t kuntyped_bump_alloc_phys_page(struct KUntyped *u, uint64_t size) {
     uint64_t abs_start     = u->phys_base + u->used;
     uint64_t aligned_abs   = (abs_start + 0xFFFULL) & ~0xFFFULL;
     uint64_t aligned_start = aligned_abs - u->phys_base;
-    if (aligned_abs < abs_start ||
-        aligned_start + size + u->used_top > u->total_size ||
-        aligned_start < u->used) {
+    /*
+     * The room test is written as SUBTRACTION, and that is the whole of it.
+     *
+     * It used to read `aligned_start + size + used_top > total_size`, which is
+     * an addition on a size the CALLER chooses.  The retype syscall requires
+     * only that a frame's size be at least 4096 and page-aligned, so
+     * 0xFFFFFFFFFFFFF000 is a legal request -- and `aligned_start + size` then
+     * wraps to something small, the test passes, and `used` is assigned a
+     * value BELOW where it started.
+     *
+     * A watermark that goes backwards is the one thing this allocator cannot
+     * survive.  It hands out its region in order and never revisits it, so the
+     * next retype returned the SAME physical page as a live frame: two
+     * capabilities over one piece of memory, which is the hazard every other
+     * rule here exists to prevent, reachable by any task holding an Untyped.
+     *
+     * Subtraction cannot wrap the wrong way, because every term is checked
+     * against what is left before it is taken away.
+     */
+    if (aligned_abs < abs_start || aligned_start < u->used) {
+        irq_spinlock_unlock(&u->lock, irqfl);
+        return 0;
+    }
+    if (aligned_start > u->total_size) {
+        irq_spinlock_unlock(&u->lock, irqfl);
+        return 0;
+    }
+    uint64_t room = u->total_size - aligned_start;
+    if (u->used_top > room || size > room - u->used_top) {
         irq_spinlock_unlock(&u->lock, irqfl);
         return 0;
     }

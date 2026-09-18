@@ -169,7 +169,42 @@ allowlist movement yet, because `kframe.c` still allocates headers for frames
 that have no Untyped to charge (VMO pages, bootstrap frames).  Tests:
 UT-TOP-1..5 and T298.
 
-## Structural divergences from seL4 — recorded, not staged
+## Structural divergences from seL4
+
+### A-37 — the kernel halts on a ring-0 fault, and one path can take one
+
+**UNREGISTERED UNTIL NOW, and found by audit rather than by a test.**
+
+`idt.c` routes every exception that did not come from ring 3 to
+`[IRIS][EXCEPTION] halting`.  There is no fixup table: the kernel has no way to
+survive a fault of its own, which is a deliberate and reasonable posture for a
+kernel that intends never to take one.
+
+seL4 intends the same thing and can PROVE it.  IRIS cannot, and there is at
+least one path where the proof would fail.  `copy_to_user_checked` walks the
+destination range, then writes it.  Nothing serialises that against a
+concurrent `FRAME_UNMAP` on the same address space, and a spawner holds VSpace
+capabilities for its children — so on SMP a racing unmap can retire the PTE and
+shoot down the TLB entry between the walk and the store, and the store then
+faults at CPL 0 and halts the machine.  That is a denial of service available
+to ring 3.
+
+What is NOT wrong is `usercopy.c`'s own header claim.  "There is no TOCTOU
+window on any input the kernel acts on" is true: the read path was deleted in
+A-33 and a message is registers now.  This is a different property — fault
+SAFETY on the write-back that remains — and the file does not claim it.
+
+The honest repair is a fixup table: mark the store instructions, and have the
+ring-0 fault path check whether the faulting RIP is in the table and return an
+error instead of halting.  That is how every kernel that copies to user memory
+does it, and it is the mechanism whose absence makes the current arrangement a
+promise rather than a property.
+
+Recorded here rather than fixed in the same change because it is a mechanism
+this kernel does not have yet, not a line to correct.  Evidence is structural
+— no fixup table, check-then-write, no shared lock — and no racing proof of
+concept was built.
+ — recorded, not staged
 
 The table above tracks mechanisms with a retirement stage.  These seven are
 different: they are ways IRIS's KERNEL is built that differ from seL4's, found
