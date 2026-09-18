@@ -1,4 +1,5 @@
 #include <iris/klog.h>
+#include <iris/fbcon.h>
 #include <iris/nc/spinlock.h>
 #include <stdint.h>
 
@@ -24,6 +25,23 @@ static inline void klog_dbg_putc(char c) {
 void klog_write(const char *s) {
     if (!s) return;
     uint64_t saved = irq_spinlock_lock(&klog_lock);
+    /*
+     * The screen, until ring 3 takes it.
+     *
+     * This is not a second copy of the ring: the ring is drained by a service
+     * that does not exist yet for most of what gets logged here, and on a
+     * machine with no serial port that made the whole of early boot
+     * unobservable.  `fbcon_write` is a no-op once userspace owns the
+     * framebuffer, so this costs nothing after boot.
+     *
+     * INSIDE the lock, because `fbcon` has a cursor and more than one core
+     * calls this.  Two cores painting one screen interleave into a screen
+     * that describes neither, and the lock that already serialises the ring
+     * is the one that has to cover it -- fbcon owns no lock of its own
+     * precisely so that it cannot introduce a second rank into an order this
+     * tree checks (`make check-locks`).
+     */
+    fbcon_write(s);
     while (*s) {
 #ifdef IRIS_KLOG_SERIAL_MIRROR
         if (*s == '\n') klog_dbg_putc('\r');
@@ -51,6 +69,12 @@ void klog_write_dec(uint64_t n) {
     const char *p = tmp + i;
 
     uint64_t saved = irq_spinlock_lock(&klog_lock);
+    /* The screen, for the same reason klog_write mirrors, and inside the same
+     * lock: this writer bypasses klog_write and pushes bytes into the ring
+     * directly, so without it a logged NUMBER was the one thing that did not
+     * reach the screen — and "free RAM:  MB" is a line that passes a banner
+     * check and tells you nothing. */
+    for (uint32_t j = 0; j < len; j++) fbcon_putc(p[j]);
     for (uint32_t j = 0; j < len; j++) {
 #ifdef IRIS_KLOG_SERIAL_MIRROR
         klog_dbg_putc(p[j]);

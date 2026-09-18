@@ -97,12 +97,36 @@ jobs:
       - name: Run headless runtime smoke
         run: IRIS_QEMU_TIMEOUT_SECS=60 make smoke-runtime
 
+      # The one check that does not read the serial port, because what it
+      # checks is that the serial port is not needed: the kernel log has to be
+      # legible on the framebuffer, which is all a real machine usually has.
+      - name: Check the boot log reaches the screen
+        run: make smoke-screen
+
+      # Two boots over one image, and then a disk this system has no business
+      # touching.  The second half is a DATA-SAFETY check, not a feature check:
+      # `fs` used to format any disk without an IRIS superblock, which is
+      # correct for an image a test made and catastrophic for the second SATA
+      # device in a real machine.
+      - name: Check persistence, and that a foreign disk is left alone
+        run: IRIS_QEMU_TIMEOUT_SECS=180 make smoke-persist
+
       - name: Upload runtime serial log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: iris-runtime-log
           path: build/qemu-headless.log
+
+      - name: Upload what the screen said
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iris-screen
+          path: |
+            build/screen/*.txt
+            build/screen/serial.log
+          if-no-files-found: ignore
 
   runtime-smoke-selftests:
     runs-on: ubuntu-24.04

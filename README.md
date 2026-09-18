@@ -523,9 +523,17 @@ working:
   filesystem on a disk IRIS owns and holds no hardware at all — not a
   controller, not a device Untyped — and `make smoke-persist` proves what it
   writes survives the machine being off by booting twice and then reading the
-  image from the host.  ACPI's tables
+  image from the host.  It formats a disk only when a host deliberately marked
+  that disk disposable: on a real machine "the second SATA device" is somebody's
+  data, and the same check proves a disk IRIS refuses comes back byte-for-byte
+  unchanged.  ACPI's tables
   are device Untypeds, so ring 3 can read the firmware's description of the
   machine; the kernel reads three tables and will never read a fourth.
+- **A boot you can read without a serial port**: every gate here reads
+  `-serial`, which most real machines do not have — so the kernel log is also
+  painted on the framebuffer, with boot markers on a line that never scrolls so
+  a boot that stops says where.  `make smoke-screen` decodes the screen back to
+  text using the kernel's own font, so it is a check rather than a screenshot.
 - **A frozen ABI**: four syscall numbers and 77 contiguous invocation labels,
   declared in one header and asserted by a test over every number the
   dispatcher can see.  BootInfo names the version and the root task refuses to

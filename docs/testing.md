@@ -60,6 +60,38 @@ slirp runs in QEMU's main loop, so a reply is not scheduled against guest time
 at all, and a bound in poll counts was wrong in both directions before it
 became a bound in real time.
 
+### The screen, for a machine with no serial port
+
+`make smoke-screen` is the only check here that does not read the serial port,
+because what it checks is that the serial port is not NEEDED.
+
+Every other gate in this repository reads `-serial file:`.  That is reasonable
+under QEMU and useless on the hardware this system is eventually meant to run
+on, where most machines have no serial port at all — and on such a machine
+every diagnostic the kernel emits before ring 3 exists was going to a port that
+is not there.  A boot that died anywhere in that stretch left a black screen
+and no record of how far it got.
+
+`fbcon` paints the kernel log onto the framebuffer instead, and the check is a
+real one rather than a screenshot somebody squints at: the console draws an 8x8
+bitmap font, so the screen can be READ BACK exactly.  `scripts/fbcon_ocr.py`
+parses the font out of `kernel/drivers/fbcon/fbcon.c` and decodes each cell,
+which means the check cannot pass against a screen that says something else —
+and cannot drift from the kernel, because there is no second copy of the font
+to drift from.
+
+| what it requires | why |
+|---|---|
+| `KFSBPGg` on the top line, whole | the boot markers, on a line that never scrolls.  A PREFIX of them is a boot that stopped, and saying where is the entire point |
+| `IRIS KERNEL` | the kernel identified itself |
+| `free RAM: N MB` | a NUMBER reached the screen.  Numbers take a different path into the log than strings do, and that path was missed the first time — `free RAM:  MB` is a line that passes a banner check and tells you nothing |
+| `virtual memory active` | the boot got as far as paging |
+
+The kernel owns the screen only until ring 3 claims it, which here is under a
+second, so the window is found by sampling: the script takes a burst of
+screenshots over QMP and checks the richest one.  There is no marker to wait
+for, because the whole premise is that the serial port may not exist.
+
 ### Persistence takes two boots
 
 `make smoke-persist` is the only check here that cannot be done in one run,
@@ -69,6 +101,20 @@ again (it must find the filesystem and report 2), and then reads the image from
 the HOST.  That last step is the one that matters: the first two are IRIS
 reading back its own writes, which a filesystem that merely remembered things
 in RAM would also pass.
+
+A third boot follows, and it protects DATA rather than proving a feature.
+`fs` used to format any disk that carried no IRIS superblock, on the reasoning
+written beside the code: disk 1 is IRIS's own, because the block service
+numbers the boot disk 0.  That is true of the script that makes the image and
+false of a real machine, where disk 1 is whatever SATA device enumerates second
+— somebody's data, one boot away from being overwritten by a service nobody
+asked.  Formatting is an authority now, granted by a token a HOST writes into
+sector 0 for a disk it is willing to lose.  So the third boot hands IRIS an
+image with a boot signature, recognisable payloads and no token, and requires
+two things: that IRIS says `fs: foreign disk, refusing to format`, and that the
+image comes back byte-for-byte unchanged — compared from the host, because "I
+did not write anything" is exactly the claim a broken implementation would also
+make about itself.
 
 ### Numbers
 

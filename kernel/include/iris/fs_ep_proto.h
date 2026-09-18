@@ -43,6 +43,32 @@
 #define FS_MAX_FILES  16u
 #define FS_SECTOR     512u
 #define FS_DIR_LBA    1u
+
+/*
+ * ── The permission to destroy a disk ───────────────────────────────────────
+ *
+ * Mounting a disk that carries no IRIS superblock used to mean FORMATTING it,
+ * and the reasoning written beside that code was: this disk is IRIS's own,
+ * because the block service numbers the boot disk 0 and this one 1.
+ *
+ * That is true of the machine this was developed on and false of every other
+ * one.  Under QEMU disk 1 is an image the test runner made.  On real hardware
+ * disk 1 is whatever SATA device enumerates second — which is somebody's data,
+ * and this service would have overwritten it on first boot without asking.
+ *
+ * So formatting is an AUTHORITY now, and like every other authority in this
+ * system it has to be granted rather than assumed.  The grant is this token,
+ * at a fixed offset in sector 0, and only whoever prepares a disk can write it
+ * — which is the host, deliberately, for a disk it is willing to lose.  A disk
+ * with neither a superblock nor the token is REFUSED: not formatted, not
+ * mounted, reported as foreign and left exactly as it was found.
+ *
+ * It sits at the end of the sector so that a blank image, a partition table or
+ * another filesystem's superblock cannot collide with it by accident, and it
+ * is checked as a whole value rather than a prefix.
+ */
+#define FS_SCRATCH_OFF   496u
+#define FS_SCRATCH_TOKEN 0x4B4F2D544D462D53ULL   /* "S-FMT-OK" */
 #define FS_DATA_LBA   16u
 #define FS_NAME_BYTES 16u
 

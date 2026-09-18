@@ -80,6 +80,14 @@ if [ ! -f "$IRIS_DISK" ]; then
   # 8 MiB of zeroes.  The filesystem formats it on first boot; a zeroed image
   # is how it tells "never formatted" from "formatted and empty".
   dd if=/dev/zero of="$IRIS_DISK" bs=1M count=8 status=none
+  # The permission to destroy this disk, written by whoever made it.
+  #
+  # `fs` refuses to format a disk that carries neither an IRIS filesystem nor
+  # this token, because the reasoning it used before -- "disk 1 is ours" -- is
+  # true of this script and false of a real machine, where disk 1 is whatever
+  # SATA device enumerates second.  The token is how a HOST says "this one is
+  # disposable", and a test image is exactly that.  See iris/fs_ep_proto.h.
+  printf 'S-FMT-OK' | dd of="$IRIS_DISK" bs=1 seek=496 conv=notrunc status=none
 fi
 DISK_ARGS=(-drive "file=$IRIS_DISK,format=raw,if=none,id=irisdisk"
            -device ide-hd,drive=irisdisk,bus=ide.1)

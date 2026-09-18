@@ -2795,7 +2795,7 @@ that survives because nobody re-adds it.)
 | networking | ✅ **a driver and a stack, as two services.**  `services/net` is an e1000 driver in ring 3 that moves Ethernet frames and parses nothing; `services/ip` is ARP, IPv4 and UDP ABOVE it, holding an endpoint to the driver and no hardware authority of its own.  The gate is a TFTP read completed against QEMU's gateway — a peer that is not this machine accepted the ARP, the IPv4 checksum and the UDP pseudo-header checksum, and answered.  There is no TCP, no fragment reassembly and no sockets, which is stated below rather than rounded |
 | POSIX personality | ⊘ **declined, and recorded as a deliberate divergence** in charter §6.  It needs no kernel change — that is the point of the capability model — and all of it is policy.  The sharper objection: POSIX's ambient authority is the thing thirteen stages removed |
 | performance | ✅ **T356** measures an invocation, an IPC round trip and a disk read, prints the numbers, and fails on order-of-magnitude regressions.  They are TCG figures and are not presented as hardware ones |
-| real hardware | ⛔ **cannot be done from this environment.**  Every gate in this repository runs under QEMU.  What is established is that IRIS is correct against QEMU's implementation of x86-64, VT-d and AHCI; real errata, real timing and real firmware are not exercised, and nothing here should be read as if they were |
+| real hardware | ⛔ **cannot be done from this environment.**  Every gate in this repository runs under QEMU.  What is established is that IRIS is correct against QEMU's implementation of x86-64, VT-d and AHCI; real errata, real timing and real firmware are not exercised, and nothing here should be read as if they were.  What HAS been done is to make the first attempt yield a diagnosis instead of a black screen — see *Preparing for a machine this repository cannot test on*, below |
 
 ### What the delivered items are
 
@@ -2881,6 +2881,39 @@ takes physical addresses FROM ITS DRIVER: on a machine with a remapping unit it
 binds an IOSpace to its controller and maps only its own two buffers, and on a
 machine without one the controller reaches all of memory.  It reports which,
 and the gate requires the right answer for the machine it is on.
+
+### Preparing for a machine this repository cannot test on
+
+Real hardware stays ⛔, and none of the following changes that.  What it
+changes is the cost of the first attempt: a boot that fails on an unknown
+machine should produce a diagnosis rather than a black screen, and a boot that
+succeeds should not destroy anything.  All three items below are gated under
+QEMU like everything else.
+
+**The screen is a diagnostic surface now.**  Every gate here reads the serial
+port and every kernel diagnostic goes to 0x3F8 — reasonable under emulation,
+nothing at all on a machine with no serial port, which is most of them.
+`fbcon` paints the kernel log onto the framebuffer, and `make smoke-screen`
+decodes it back to text with the kernel's own font to prove it is legible.  The
+boot markers sit on a line that never scrolls, so a boot that stops says where.
+
+**Formatting a disk is an authority, not a default.**  `fs` formatted any disk
+without an IRIS superblock, reasoning that disk 1 is IRIS's own because the
+block service numbers the boot disk 0.  That is a fact about the test runner,
+not about hardware, where disk 1 is whatever SATA device enumerates second.  A
+disk is formatted only if it carries a token a host deliberately wrote; any
+other disk is refused and left untouched, and `make smoke-persist` proves the
+bytes come back unchanged.
+
+**A missing serial port cannot wedge the boot.**  `console` spun forever
+waiting for a UART transmit register to drain.  A floating bus reads 0xFF and
+escapes that loop by luck; a port that decodes and never drains does not.  The
+wait is bounded and a byte is dropped rather than waited on, because a log that
+loses a character is a diagnostic and a log that hangs is an outage.
+
+What is still untouched, and would be the next thing to break on a real
+machine: nobody has interrupts, `pci` walks bus 0 only, and `blk` assumes the
+first SATA controller answers the way QEMU's does.
 
 ### What is NOT claimed
 

@@ -2,6 +2,7 @@
 #include <iris/nc/kasidpool.h>
 #include <iris/nc/kframe.h>
 #include <iris/nc/kvspace.h>
+#include <iris/fbcon.h>
 #include <stddef.h>
 
 
@@ -391,6 +392,22 @@ uint64_t sys_framebuffer_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!copy_to_user_checked(arg1, &g_iris_fb_params,
                               (uint32_t)sizeof(g_iris_fb_params)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    /*
+     * The kernel stops painting here.
+     *
+     * `fbcon` writes the boot log to the screen because most machines have no
+     * serial port, and two writers on one screen produce a screen that
+     * describes neither.  This is the honest place to hand it over: the call
+     * is a query, but the only task that can make it is the one holding
+     * FB_CONTROL, and the only reason to ask where the screen is and how wide
+     * it is, is to paint on it.
+     *
+     * It is not a perfect signal and it does not need to be.  Getting it wrong
+     * in one direction costs a kernel log that stops early on a screen nobody
+     * was going to read anyway; panic reclaims the screen regardless.
+     */
+    fbcon_yield();
     return syscall_ok_u64(0);
 }
 

@@ -64,6 +64,7 @@ struct fs_dirent {
 };
 
 static uint32_t g_mounted, g_generation, g_files, g_formatted;
+static uint32_t g_foreign;   /* a disk that exists and is not ours */
 
 static uint32_t fs_count_files(void);
 
@@ -157,15 +158,46 @@ static void fs_mount(void) {
     }
 
     if (sb.magic != FS_MAGIC0 || sb.version != FS_VERSION) {
-        /* A blank or foreign image.  Formatting it is the right answer only
-         * because this disk is IRIS's own — the block service numbers the boot
-         * disk 0 and this one 1, and nothing here would write to 0. */
+        /*
+         * No IRIS filesystem here.  Whether that means "format it" depends on
+         * something this service cannot work out for itself, so it does not
+         * guess: it looks for the token that says the disk is disposable.
+         *
+         * The old reasoning was that disk 1 is IRIS's own because the block
+         * service numbers the boot disk 0.  That holds under QEMU, where disk
+         * 1 is an image the runner made, and fails on real hardware, where
+         * disk 1 is whatever SATA device enumerates second — somebody's data,
+         * about to be overwritten on first boot by a service that was never
+         * asked.  See `iris/fs_ep_proto.h`.
+         */
+        uint64_t token = 0;
+        {
+            const volatile uint8_t *src =
+                (const volatile uint8_t *)(uintptr_t)(FS_VA_BLK + FS_SCRATCH_OFF);
+            for (uint32_t i = 0; i < 8u; i++)
+                token |= (uint64_t)src[i] << (8u * i);
+        }
+        if (token != FS_SCRATCH_TOKEN) {
+            /* Foreign. Left exactly as found: not formatted, not mounted. */
+            g_mounted = 0u; g_generation = 0u; g_files = 0u; g_formatted = 0u;
+            g_foreign = 1u;
+            return;
+        }
         if (!fs_write_begin()) return;
         fs_zero_blk();
         {
             volatile struct fs_super *d = (volatile struct fs_super *)(uintptr_t)FS_VA_BLK;
             d->magic = FS_MAGIC0; d->version = FS_VERSION;
             d->generation = 1u;   d->reserved[0] = 0u; d->reserved[1] = 0u;
+        }
+        /* Carry the token across the format.  `fs_zero_blk` cleared the
+         * sector, and a disk that lost its permission to be reformatted is a
+         * disk that cannot be re-prepared without the host writing it again. */
+        {
+            volatile uint8_t *dst =
+                (volatile uint8_t *)(uintptr_t)(FS_VA_BLK + FS_SCRATCH_OFF);
+            for (uint32_t i = 0; i < 8u; i++)
+                dst[i] = (uint8_t)(FS_SCRATCH_TOKEN >> (8u * i));
         }
         if (!fs_write_end(0)) return;
 
@@ -186,6 +218,14 @@ static void fs_mount(void) {
         volatile uint8_t *dst = (volatile uint8_t *)(uintptr_t)FS_VA_BLK;
         const uint8_t *src = (const uint8_t *)&sb;
         for (uint32_t i = 0; i < (uint32_t)sizeof(sb); i++) dst[i] = src[i];
+    }
+    /* And here too: this path also rewrites sector 0 from a zeroed buffer, so
+     * leaving the token out would quietly revoke it on the second boot. */
+    {
+        volatile uint8_t *dst =
+            (volatile uint8_t *)(uintptr_t)(FS_VA_BLK + FS_SCRATCH_OFF);
+        for (uint32_t i = 0; i < 8u; i++)
+            dst[i] = (uint8_t)(FS_SCRATCH_TOKEN >> (8u * i));
     }
     if (!fs_write_end(0)) return;
 
@@ -261,7 +301,12 @@ void fs_main(iris_cptr_t bootstrap_ch_h) {
             rep.words[1]   = g_generation;
             rep.words[2]   = g_files;
             rep.words[3]   = g_formatted;
-            rep.word_count = 4u;
+            /* A disk that is there and is not ours is a DIFFERENT answer from
+             * no disk at all, and the caller has to be able to tell them
+             * apart: one means "prepare a disk", the other means "this machine
+             * has no disk this service can drive". */
+            rep.words[4]   = g_foreign;
+            rep.word_count = 5u;
         } else if (m.label == FS_OP_BUF && g_mounted) {
             rep.label      = FS_REP_OK;
             rep.words[0]   = FS_SECTOR;

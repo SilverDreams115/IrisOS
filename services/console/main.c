@@ -25,15 +25,38 @@
 #include <iris/nc/error.h>
 #include "../common/iris_ipc_buffer.h"
 
-/* Poll the UART Line Status Register (offset 5) until bit 5 (THRE) is set,
- * then write one byte to the Transmit Holding Register (offset 0). */
+/*
+ * Poll the UART Line Status Register (offset 5) until bit 5 (THRE) is set,
+ * then write one byte to the Transmit Holding Register (offset 0).
+ *
+ * ── Why the wait is bounded ────────────────────────────────────────────────
+ *
+ * It was `do { } while (!THRE)`, which is correct against a UART that is
+ * there and fatal against one that is not.  Under QEMU there is always a
+ * working 16550 at 0x3F8; on a real machine there may be nothing, or a port
+ * that decodes and never drains.  A floating ISA bus reads back 0xFF, and
+ * 0xFF happens to have bit 5 set, so the common case of "no serial port at
+ * all" escapes the loop by luck rather than by design -- and the case that
+ * does not escape wedges this service forever, which wedges every task
+ * waiting on it, which is the whole boot.
+ *
+ * The bound is generous: a 16550 at 115200 baud empties its holding register
+ * in under a hundred microseconds, so a spin this long means the port is not
+ * coming back.  A byte is then DROPPED rather than waited on, because a log
+ * that loses a character is a diagnostic and a log that hangs is an outage.
+ */
+#define CON_UART_SPIN 200000u
+
 static void con_uart_write_byte(iris_cptr_t ioport_h, uint8_t byte) {
     long v;
-    /* Wait for THRE (bit 5 of LSR at offset 5). */
-    do {
+    for (uint32_t spin = 0; spin < CON_UART_SPIN; spin++) {
         v = iris_invoke1((long)ioport_h, INV_IOPORT_IN, 5);
-    } while (v < 0 || !((uint8_t)v & 0x20u));
-    (void)iris_invoke2((long)ioport_h, INV_IOPORT_OUT, 0, (long)byte);
+        if (v >= 0 && ((uint8_t)v & 0x20u)) {
+            (void)iris_invoke2((long)ioport_h, INV_IOPORT_OUT, 0, (long)byte);
+            return;
+        }
+    }
+    /* Gone.  Say nothing and keep serving: there is nowhere to report it to. */
 }
 
 /* Phase 13 (Track I): the legacy KChannel write path (con_serve_chan_msg /

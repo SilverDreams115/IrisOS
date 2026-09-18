@@ -485,6 +485,15 @@ int init_spawn_fs(void) {
         m.label = FS_OP_STAT;
         if (iris_msg_call((long)INIT_SLOT_FS_EP, &m) != 0 ||
             m.label != FS_REP_OK || m.words[0] == 0u) {
+            if (m.words[4]) {
+                /* Refused, not failed.  See `iris/fs_ep_proto.h`: a disk with
+                 * no IRIS filesystem and no token saying it is disposable is
+                 * left exactly as it was found, which on a real machine is
+                 * somebody's data this system was one boot away from
+                 * destroying. */
+                init_log("[USER][INIT] fs: foreign disk, refusing to format\n");
+                return 0;
+            }
             init_log("[USER][INIT] fs: not mounted\n");
             return 0;
         }

@@ -34,18 +34,58 @@
 #include <iris/phase3_selftest.h>
 #endif
 
+#include <iris/fbcon.h>
+
 static struct iris_boot_info saved_boot_info;
 
 struct iris_fb_params g_iris_fb_params;
 int                   g_iris_fb_params_valid = 0;
 
+/*
+ * A boot marker: one byte to COM1 and one glyph on the screen.
+ *
+ * The serial half has been here since the beginning and is what every debug
+ * session in this tree has leaned on.  The screen half exists because MOST
+ * MACHINES HAVE NO SERIAL PORT, and on those the entire sequence below was
+ * being written to a port that is not there — a boot that died anywhere in it
+ * left a black screen and no record of how far it got.
+ *
+ * The markers are a fixed alphabet, in order, on one line that never scrolls:
+ * K reached kernel_main, S serial up, F screen up, B boot protocol validated,
+ * P physical memory, G paging on, g paging done.  What is on the screen when
+ * a boot stops IS the diagnosis.
+ */
 static inline void _early_putc(char c) {
     __asm__ volatile("outb %0, %1" : : "a"((uint8_t)c), "Nd"((uint16_t)0x3F8));
+    fbcon_mark(c);
 }
 
 void iris_kernel_main(struct iris_boot_info *boot_info) {
 
     _early_putc('K'); /* raw serial: reached kernel_main */
+
+    /*
+     * The screen, before anything that can fail.
+     *
+     * The magic is checked here as well as at step 2 because this runs BEFORE
+     * that check and dereferences the same pointer: painting from a boot
+     * protocol that was not validated would be writing to an address a broken
+     * loader chose.  Step 2 keeps its own check and its own fatal path — this
+     * one only decides whether there is a screen to report it on.
+     */
+    if (boot_info && boot_info->magic == IRIS_BOOTINFO_MAGIC) {
+        struct iris_fb_params early_fb;
+        early_fb.phys   = boot_info->framebuffer.base;
+        early_fb.size   = boot_info->framebuffer.size;
+        early_fb.width  = boot_info->framebuffer.width;
+        early_fb.height = boot_info->framebuffer.height;
+        early_fb.stride = boot_info->framebuffer.pixels_per_scanline;
+        early_fb.bpp    = 4u;
+        if (fbcon_init(&early_fb)) {
+            fbcon_mark('K');       /* the marker the screen was not up for */
+            _early_putc('F');      /* raw serial: screen up */
+        }
+    }
 
     /* ── 1. Serial + banner ─────────────────────────────────────── */
     serial_init();

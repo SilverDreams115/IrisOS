@@ -2590,6 +2590,62 @@ reply for some other host ended a wait for a datagram and the caller read back
 a length of zero as if the request had timed out.  The two are different
 questions and the dispatcher now asks which one is open.
 
+**The screen became a diagnostic surface, because the serial port is a QEMU
+assumption.**  Every gate in this tree reads `-serial file:`, and every
+diagnostic this kernel emits before ring 3 exists goes to port 0x3F8.  Both are
+fine under emulation and both are nothing on the hardware this system is meant
+to reach, where most machines have no serial port: a boot that died before
+userspace left a black screen and no record.
+
+`fbcon` paints the kernel log onto the framebuffer.  It is deliberately not a
+driver in the sense the charter uses — it claims nothing, allocates nothing and
+holds no capability, it writes pixels to an address the firmware chose and
+`paging_init` already identity maps, which is why one pointer is valid both
+before paging exists and after.  It is the same exception the kernel's serial
+path already was, on a second device, and for the same reason: a diagnostic
+that needs a working userspace cannot report a userspace that never started.
+
+The screen has one owner, so the kernel goes quiet when ring 3 asks where the
+framebuffer is, and panic takes it back — a kernel that is stopping has no
+userspace left to be polite to.  Three things fell out of building it.  White
+on black is not an aesthetic choice: the pixel FORMAT is recorded nowhere in
+this boot protocol, which carries only geometry, and white and black are the
+two values that mean the same thing whether the firmware reports RGBA or BGRA.
+Logged NUMBERS were invisible at first, because `klog_write_dec` pushes bytes
+into the ring directly rather than through `klog_write` — `free RAM:  MB` is a
+line that passes a banner check and says nothing.  And the mirror had to move
+INSIDE the klog lock, because more than one core logs and fbcon has a cursor;
+it owns no lock of its own so that it cannot add a rank to an order this tree
+checks.
+
+The gate is not a screenshot somebody looks at.  The console draws an 8x8
+bitmap font, so `scripts/fbcon_ocr.py` decodes the screen back to text using
+the font parsed out of the kernel's own source — there is no second copy to
+drift from, and the check cannot pass against a screen that says something
+else.
+
+**And a service was one boot away from destroying somebody's data.**  `fs`
+formatted any disk that carried no IRIS superblock.  The comment beside that
+code gave the reason and, read on a real machine, gave the bug with it: *this
+disk is IRIS's own, because the block service numbers the boot disk 0 and this
+one 1*.  True of the test runner, which makes the image.  False of hardware,
+where disk 1 is whatever SATA device enumerates second.
+
+Formatting is an AUTHORITY now, and like every other authority here it is
+granted rather than assumed: a token at a fixed offset in sector 0, which only
+whoever prepares a disk can write, for a disk it is willing to lose.  A disk
+with neither a superblock nor the token is refused — not formatted, not
+mounted, reported as foreign and left exactly as found.  The check is in
+`check_persistence.sh` and it compares the image from the HOST before and
+after, because "I did not write anything" is exactly what a broken
+implementation would also say about itself.
+
+This one is worth keeping for what it says about the rest of the tree: it
+passed every gate for as long as it existed, because every gate ran on a
+machine where the assumption happened to hold.  A test environment that is
+uniform is a test environment that cannot tell you which of your reasons are
+reasons and which are coincidences.
+
 **`fs` — a filesystem that survives the power going off.**  It holds the least
 of any service here: an endpoint, a reply object, an endpoint to the block
 service, and memory.  No disk, no controller, no device Untyped, no DMA
