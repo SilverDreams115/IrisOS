@@ -707,6 +707,14 @@ groundwork), a dynamic linker, a POSIX layer (declined on the record, charter
 §6), TCP or sockets above the UDP stack, or hardware support beyond QEMU
 x86-64.
 
+IRIS has booted one real x86-64 desktop, on 2026-09-25: the kernel came up, the
+screen carried the log (that machine has no serial port), the bus service
+enumerated it across its PCI bridges, the disk driver found both SATA drives,
+and the filesystem formatted a partition of its own and wrote a report into it
+that was read back afterwards from the other operating system.  That is one
+machine observed once, not hardware support — every automated gate here still
+runs under QEMU, and that machine's network card is not an e1000.
+
 ## Positioning
 
 IRIS is a **pure capability-based microkernel of its own implementation, in
