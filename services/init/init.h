@@ -205,7 +205,7 @@ struct init_findings {
     uint32_t blk_disks, blk_contained, blk_home;
     uint64_t blk_window;
     uint32_t fs_mounted, fs_generation, fs_formatted, fs_files, fs_foreign;
-    uint32_t net_link;
+    uint32_t net_link, net_seen, net_vd;
     uint64_t net_mac;
     uint32_t ip_ok, ip_bytes;
 };

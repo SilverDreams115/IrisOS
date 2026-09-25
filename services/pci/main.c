@@ -140,7 +140,31 @@ static uint64_t g_carve_mark, g_carve_end;
  * a few microseconds in which writes meant for the framebuffer land somewhere
  * else.  It costs two extra config writes per function.
  */
-static void bar_measure(struct pci_fn *f) {
+/*
+ * Measure the memory BARs of a function -- and ONLY of a function that has
+ * six of them.
+ *
+ * `hdr_type` is the header type, masked of its multifunction bit.  Type 0 is
+ * an ordinary device with BARs at 0x10..0x24.  Type 1 is a PCI-to-PCI BRIDGE,
+ * which has exactly TWO, and whose 0x18..0x24 are its primary/secondary/
+ * subordinate BUS NUMBERS and its memory and prefetchable windows.
+ *
+ * Sizing a BAR means writing all-ones to it and reading back which bits stuck.
+ * Doing that to 0x18 on a bridge writes garbage into the bus numbers that
+ * every configuration cycle beyond it is routed by -- for the moment before
+ * they are written back, the machine behind that bridge is unreachable, and
+ * whether it comes back is a question about timing rather than about code.
+ *
+ * This did not exist until the bridge walk did: before it, nothing of type 1
+ * was ever measured.  A walk that reaches more of the machine has to be
+ * careful with more of it.
+ */
+static void bar_measure(struct pci_fn *f, uint32_t hdr_type) {
+    /* Anything that is not an ordinary device is left alone.  A bridge's two
+     * BARs are all but unused, and a driver claims devices rather than the
+     * bridges between them. */
+    if (hdr_type != 0u) return;
+
     uint32_t cmd = cfg_read(f->devfn, CFG_COMMAND);
     cfg_write(f->devfn, CFG_COMMAND, cmd & ~(uint32_t)(PCI_CMD_IO | PCI_CMD_MEMORY));
 
@@ -162,7 +186,12 @@ static void bar_measure(struct pci_fn *f) {
         if (type == 2u) {
             /* A 64-bit BAR: the high half lives in the NEXT BAR slot, and that
              * slot is not a BAR of its own — reporting it as one would offer a
-             * window at whatever the high dword happens to be. */
+             * window at whatever the high dword happens to be.
+             *
+             * A 64-bit BAR declared in the LAST slot has no next slot: the
+             * read would land on 0x28, which is not a BAR at all.  Malformed,
+             * and the answer to malformed is to skip it. */
+            if (b + 1u >= PCI_BAR_COUNT) continue;
             flags |= PCI_BAR_64;
             uint32_t hi = cfg_read(f->devfn, CFG_BAR(b + 1u));
             base |= (uint64_t)hi << 32;
@@ -234,7 +263,7 @@ static void pci_scan_bus(uint32_t bus) {
             f->class_code    = cfg_read(bdf, CFG_CLASS);
             f->devfn         = (uint16_t)bdf;
             for (uint32_t b = 0; b < PCI_BAR_COUNT; b++) f->bar_window[b] = -1;
-            bar_measure(f);
+            bar_measure(f, (hdr >> 16) & 0x7Fu);
             g_fn_count++;
 
             if (((hdr >> 16) & 0x7Fu) == 1u) {

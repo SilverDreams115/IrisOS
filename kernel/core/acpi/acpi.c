@@ -96,8 +96,46 @@ static int acpi_checksum_ok(const void *p, uint32_t len) {
     return sum == 0u;
 }
 
+/*
+ * The physmap window covers physical memory below PHYS_WINDOW_END, and this
+ * file reads addresses and lengths the FIRMWARE chose.
+ *
+ * Nothing here trusted either.  A table that declares a length of 0xFFFFFFFF
+ * made the checksum walk four gigabytes from wherever it started; a pointer
+ * past the window became a garbage virtual address that was then
+ * dereferenced.  Both end the same way -- a fault at CPL 0, which this kernel
+ * answers by halting, so a machine whose firmware has a quirk stops without
+ * saying why.
+ *
+ * `acpi_span_ok` is the one question worth asking of every address and length
+ * that came from a table: is all of it inside the window this kernel can
+ * actually read?
+ *
+ * The cap on a table's length is a megabyte.  The field is 32 bits and the
+ * spec allows far more, but a real ACPI table is kilobytes, and a bound
+ * generous by three orders of magnitude is still a bound.
+ */
+#define ACPI_TABLE_MAX_LEN (1u << 20)
+
+static int acpi_span_ok(uint64_t phys, uint64_t len) {
+    if (phys == 0u || len == 0u) return 0;
+    if (phys >= PHYS_WINDOW_END) return 0;
+    if (len > PHYS_WINDOW_END - phys) return 0;
+    return 1;
+}
+
 static const void *phys_ptr(uint64_t phys) {
     return (const void *)(uintptr_t)PHYS_TO_VIRT(phys);
+}
+
+/* A table header this kernel may read at all: inside the window, long enough
+ * to BE a header, and not claiming a length nothing sane would. */
+static const struct acpi_sdt_header *acpi_header_at(uint64_t phys) {
+    if (!acpi_span_ok(phys, sizeof(struct acpi_sdt_header))) return 0;
+    const struct acpi_sdt_header *h = phys_ptr(phys);
+    if (h->length < sizeof(*h) || h->length > ACPI_TABLE_MAX_LEN) return 0;
+    if (!acpi_span_ok(phys, h->length)) return 0;
+    return h;
 }
 
 /*
@@ -158,9 +196,8 @@ static void madt_walk(const struct acpi_madt *madt) {
  * bytes. */
 static const struct acpi_sdt_header *find_table(uint64_t sdt_phys, int is_xsdt,
                                                 const char *sig) {
-    if (!sdt_phys) return 0;
-    const struct acpi_sdt_header *sdt = phys_ptr(sdt_phys);
-    if (sdt->length < sizeof(*sdt)) return 0;
+    const struct acpi_sdt_header *sdt = acpi_header_at(sdt_phys);
+    if (!sdt) return 0;
     if (!acpi_checksum_ok(sdt, sdt->length)) return 0;
 
     uint32_t entry_bytes = is_xsdt ? 8u : 4u;
@@ -178,11 +215,11 @@ static const struct acpi_sdt_header *find_table(uint64_t sdt_phys, int is_xsdt,
             for (int b = 0; b < 4; b++) v |= (uint32_t)ents[i * 4 + b] << (8 * b);
             phys = v;
         }
-        if (!phys) continue;
-        const struct acpi_sdt_header *h = phys_ptr(phys);
+        const struct acpi_sdt_header *h = acpi_header_at(phys);
+        if (!h) continue;              /* a pointer this kernel cannot follow */
         if (h->signature[0] == sig[0] && h->signature[1] == sig[1] &&
             h->signature[2] == sig[2] && h->signature[3] == sig[3]) {
-            if (h->length >= sizeof(*h) && acpi_checksum_ok(h, h->length))
+            if (acpi_checksum_ok(h, h->length))
                 return h;
         }
     }
@@ -197,7 +234,9 @@ static const struct acpi_sdt_header *find_table(uint64_t sdt_phys, int is_xsdt,
  * them is how the two would eventually disagree about which one is valid.
  */
 static const struct acpi_sdt_header *acpi_find(uint64_t rsdp_phys, const char *sig) {
-    if (!rsdp_phys) return 0;
+    /* The pointer the firmware handed over, checked before it is followed:
+     * everything else in this file is reached THROUGH it. */
+    if (!acpi_span_ok(rsdp_phys, sizeof(struct acpi_rsdp))) return 0;
 
     const struct acpi_rsdp *r = phys_ptr(rsdp_phys);
     if (r->signature[0] != 'R' || r->signature[1] != 'S' ||
@@ -210,7 +249,12 @@ static const struct acpi_sdt_header *acpi_find(uint64_t rsdp_phys, const char *s
     /* Prefer the XSDT: it is the only one that can describe a table above
      * 4 GiB, and a machine that has both is telling us the 64-bit one is
      * authoritative. */
-    if (r->revision >= 2 && acpi_checksum_ok(r, r->length))
+    /* `length` is the firmware's too, and this checksum walks it.  A revision-2
+     * RSDP is 36 bytes; anything claiming more than its own structure is a
+     * table this kernel will not read past. */
+    if (r->revision >= 2 && r->length >= 20u &&
+        r->length <= (uint32_t)sizeof(struct acpi_rsdp) &&
+        acpi_checksum_ok(r, r->length))
         h = find_table(r->xsdt_address, 1, sig);
     if (!h)
         h = find_table((uint64_t)r->rsdt_address, 0, sig);

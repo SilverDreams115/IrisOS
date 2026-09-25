@@ -125,22 +125,60 @@ static long net_pci(uint64_t op, uint64_t a0, uint64_t a1,
 }
 
 /* Class 02 subclass 00: an Ethernet controller.  By class, not by identity,
- * for the reason the disk driver is: a driver that matched vendor:device would
- * drive one machine. */
+ * by CLASS and not by vendor:device -- and that was the wrong lesson to carry
+ * here, for a reason worth writing down.
+ *
+ * The disk driver matches class 01:06:01 because AHCI IS a programming
+ * interface: a device that reports it has the register layout the driver
+ * knows, whoever made it.  Ethernet class 02:00 says only "this is a network
+ * controller".  An e1000 and a Realtek share that class and share no
+ * registers at all.
+ *
+ * So this matched any Ethernet controller on the machine and then wrote e1000
+ * register offsets into its BAR.  On the first real machine it found one and
+ * reported no link, which is the polite version of what it was doing.
+ *
+ * It matches the family it was actually written against now, and what it
+ * refuses it REPORTS -- "there is a network controller here and it is not one
+ * I know" is a different fact from "there is no network controller", and the
+ * difference is the whole question of what to write next. */
 #define CLASS_ETHERNET 0x02000000u
+
+/* Intel 82540EM / 82545EM: the e1000 this driver was written and tested
+ * against.  A device outside this list may well be an e1000 too; it is not one
+ * anybody has run this code on, and guessing is what the paragraph above is
+ * about. */
+#define E1000_VENDOR 0x8086u
+static int e1000_known(uint32_t device) {
+    return device == 0x100Eu || device == 0x100Fu;
+}
+
+/* What was seen and refused, so the machine can say so. */
+static uint32_t g_seen_eth;
+static uint32_t g_seen_vd;
+uint32_t net_seen_eth(void);
+uint32_t net_seen_eth(void) { return g_seen_eth; }
 
 static int net_find(uint32_t *out_index) {
     struct iris_msg r;
+    g_seen_eth = 0u; g_seen_vd = 0u;
     if (net_pci(PCI_OP_COUNT, 0, 0, 0, &r) != 0) return 0;
     uint32_t n = (uint32_t)r.words[0];
+    int found = 0;
     for (uint32_t i = 0; i < n; i++) {
         if (net_pci(PCI_OP_INFO, i, 0, 0, &r) != 0) continue;
         if (((uint32_t)r.words[1] & 0xFFFF0000u) != CLASS_ETHERNET) continue;
+        uint32_t vd = (uint32_t)r.words[0];
+        g_seen_eth++;
+        if (!g_seen_vd) g_seen_vd = vd;
+        if (found) continue;
+        if ((vd & 0xFFFFu) != E1000_VENDOR) continue;
+        if (!e1000_known((vd >> 16) & 0xFFFFu)) continue;
         *out_index  = i;
         g_source_id = (uint16_t)r.words[2];
-        return 1;
+        found = 1;
     }
-    return 0;
+    return found;
 }
 
 /* ── memory the NIC will reach ───────────────────────────────────────────── */
@@ -386,10 +424,19 @@ void net_main(iris_cptr_t bootstrap_ch_h) {
 
         if (m.label == NET_OP_INFO) {
             rep.label      = NET_REP_OK;
+            /*
+             * When there is no card, say whether there was NOTHING or
+             * something this driver does not know.  Packed into the flags word
+             * because a message carries four and the other three are spoken
+             * for -- bit 0 is containment, the rest is how many Ethernet
+             * controllers were seen and the first one's vendor:device.
+             */
             rep.words[0]   = g_ready;
             rep.words[1]   = g_mac;
             rep.words[2]   = g_source_id;
-            rep.words[3]   = g_contained;
+            rep.words[3]   = (g_contained ? 1u : 0u) |
+                             ((uint64_t)(g_seen_eth & 0xFFu) << 8) |
+                             ((uint64_t)g_seen_vd << 32);
             rep.word_count = 4u;
         } else if (m.label == NET_OP_TXBUF && g_ready) {
             rep.label      = NET_REP_OK;

@@ -662,6 +662,8 @@ int init_spawn_net(void) {
             static const char hx[] = "0123456789abcdef";
             g_init_found.net_link = (uint32_t)(m.words[0] & 1u);
             g_init_found.net_mac  = m.words[1];
+            g_init_found.net_seen = (uint32_t)((m.words[3] >> 8) & 0xFFu);
+            g_init_found.net_vd   = (uint32_t)(m.words[3] >> 32);
             char b[72] = "[USER][INIT] net: link ";
             uint32_t k = 0; while (b[k]) k++;
             b[k++] = (char)('0' + (uint32_t)(m.words[0] & 1u));
@@ -1950,7 +1952,18 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
     b[k++] = '\n';
 
     rep_str(b, &k, " net   ");
-    if (g_init_found.net_link) {
+    if (!g_init_found.net_link && g_init_found.net_seen) {
+        /* "no card" and "a card I do not know" are different facts, and only
+         * the second one tells you what to write next. */
+        rep_str(b, &k, "found ");
+        rep_num(b, &k, g_init_found.net_seen);
+        rep_str(b, &k, " ethernet, none an e1000  first ");
+        { static const char hx[] = "0123456789abcdef";
+          uint32_t vd = g_init_found.net_vd;
+          for (int sh = 12; sh >= 0; sh -= 4) b[k++] = hx[(vd >> sh) & 0xFu];
+          b[k++] = ':';
+          for (int sh = 28; sh >= 16; sh -= 4) b[k++] = hx[(vd >> sh) & 0xFu]; }
+    } else if (g_init_found.net_link) {
         rep_str(b, &k, "up  mac ");
         /* Octet 0 first: the driver packs the address little-endian, which is
          * the order the `net:` line prints.  Walking it downward produced a
