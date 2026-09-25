@@ -359,6 +359,10 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
     int         elf_mapped     = 0;
     uint32_t    segs_in_loader = 0;  /* bitmask of loader-mapped seg slots */
     iris_cptr_t elf_h          = IRIS_CPTR_NULL;
+    /* What the initrd said the image measures.  Every offset below is the
+     * IMAGE's own account of itself, and this is the only thing that can
+     * say whether one of them is inside it. */
+    uint64_t    elf_bytes      = 0;
     iris_cptr_t proc_h         = IRIS_CPTR_NULL;
     iris_cptr_t ch_h           = IRIS_CPTR_NULL;
     iris_cptr_t stack_vmo_h    = IRIS_CPTR_NULL;
@@ -442,6 +446,11 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * ABI to read a file the kernel already had. */
         r = iris_invoke((long)initrd_c, INV_BOOT_INITRD_FRAME, idx, sl_ws_dest(ws, SL_WS_ELF), pool);
         if (r <= 0) { if (r == 0) r = (long)IRIS_ERR_NOT_FOUND; goto out; }
+        /* Keep it.  Everything below reads the image through offsets the IMAGE
+         * declares, and the only thing that can say whether an offset is
+         * inside it is this number -- which was being thrown away one line
+         * later. */
+        elf_bytes = (uint64_t)r;
         elf_h = (iris_cptr_t)sl_ws_cptr(ws, SL_WS_ELF);
     }
 
@@ -459,17 +468,32 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
 
     {
         const Elf64_Ehdr *eh  = (const Elf64_Ehdr *)(uintptr_t)SL_ELF_VADDR;
-        const Elf64_Phdr *phs = (const Elf64_Phdr *)(uintptr_t)
-                                    (SL_ELF_VADDR + eh->e_phoff);
 
         /* 3. Validate ELF header. */
         r = (long)IRIS_ERR_INVALID_ARG;
+        if (elf_bytes < sizeof(Elf64_Ehdr))          goto out;
         if (eh->e_ident[0] != 0x7f || eh->e_ident[1] != 'E' ||
             eh->e_ident[2] != 'L'  || eh->e_ident[3] != 'F') goto out;
         if (eh->e_type    != (Elf64_Half)ET_DYN)    goto out;
         if (eh->e_machine != (Elf64_Half)EM_X86_64) goto out;
         if (eh->e_phnum   == 0 || eh->e_phentsize <
                 (Elf64_Half)sizeof(Elf64_Phdr))      goto out;
+        /*
+         * The program header TABLE has to be inside the image.
+         *
+         * `e_phoff` is the image's own account of where it is, and it was
+         * followed without asking.  A file that declares a table past its end
+         * sends this loop reading whatever is mapped after the image -- in
+         * ring 3, so the loader faults rather than the kernel, but a loader
+         * that faults on a malformed file is a loader that cannot report one.
+         */
+        {
+            uint64_t phsz = (uint64_t)eh->e_phnum * (uint64_t)eh->e_phentsize;
+            if (eh->e_phoff > elf_bytes)              goto out;
+            if (phsz > elf_bytes - eh->e_phoff)       goto out;
+        }
+        const Elf64_Phdr *phs = (const Elf64_Phdr *)(uintptr_t)
+                                    (SL_ELF_VADDR + eh->e_phoff);
 
         /* 4. Collect PT_LOAD segments; compute max virtual end for bias. */
         uint64_t max_vend = 0;
@@ -477,6 +501,9 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             const Elf64_Phdr *ph = &phs[i];
             uint64_t map_base, map_end, map_size, page_off;
             if (ph->p_type != PT_LOAD || ph->p_memsz == 0) continue;
+            /* ...and so must the bytes it says to copy out of the file. */
+            if (ph->p_offset > elf_bytes)                       goto out;
+            if (ph->p_filesz > elf_bytes - ph->p_offset)        goto out;
             /*
              * REFUSE an image with more loadable segments than there is room
              * for, rather than loading the first eight of them.
