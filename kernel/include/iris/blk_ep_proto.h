@@ -144,6 +144,22 @@
  */
 #define BLK_OP_HOME   0x7106u
 
+/*
+ * What the partition scan saw on a disk, for the case where it found nothing.
+ *   words[0] = disk index
+ * Reply:
+ *   words[0] = flags: 1 header read, 2 signature present, 4 entries read
+ *   words[1] = how many entries the header claimed
+ *   words[2] = the first eight bytes of entry 0's type
+ *
+ * It exists because the failure it describes DISABLES the other channel: a
+ * disk with no IRIS partition is a disk the filesystem will not write a report
+ * to, so the screen has to carry the diagnosis.  Those four numbers separate
+ * "the read failed" from "not a GPT disk" from "the entries never arrived"
+ * from "they arrived and nothing matched".
+ */
+#define BLK_OP_SCAN   0x7107u
+
 #define BLK_REP_OK    0x7180u
 #define BLK_REP_ERR   0x7181u
 

@@ -1788,7 +1788,7 @@ static void rep_str(char *b, uint32_t *k, const char *s) {
  */
 static uint32_t init_build_report(char *b, uint32_t cap) {
     uint32_t k = 0;
-    if (cap < 480u) return 0;
+    if (cap < 720u) return 0;
 
     rep_str(b, &k, "==== IRIS on this machine ====\n");
 
@@ -1807,6 +1807,48 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
         rep_str(b, &k, "  NO IRIS PARTITION");
     }
     b[k++] = '\n';
+
+    /*
+     * When no partition was found, say what the scan SAW.
+     *
+     * "NO IRIS PARTITION" is the right answer and a useless one to debug from:
+     * it is the same sentence whether the disk could not be read, is not a GPT
+     * disk, had its entries arrive empty, or simply carries nothing of ours.
+     * And this is exactly the case where the disk cannot be used to report --
+     * so the screen has to.
+     */
+    if (!g_init_found.blk_home && g_init_found.blk_disks) {
+        for (uint32_t d = 0; d < g_init_found.blk_disks && d < 2u; d++) {
+            struct iris_msg sc;
+            { uint8_t *z = (uint8_t *)&sc;
+              for (uint32_t i = 0; i < (uint32_t)sizeof(sc); i++) z[i] = 0; }
+            sc.label = BLK_OP_SCAN;
+            sc.words[0] = d;
+            sc.word_count = 1u;
+            if (iris_msg_call((long)INIT_SLOT_BLK_EP, &sc) != 0 ||
+                sc.label != BLK_REP_OK) continue;
+            rep_str(b, &k, " scan  d"); rep_num(b, &k, d);
+            rep_str(b, &k, " port "); rep_num(b, &k, sc.words[3] & 0xFFFFu);
+            rep_str(b, &k, (sc.words[0] & 1u) ? "  read ok" : "  READ FAILED");
+            rep_str(b, &k, (sc.words[0] & 2u) ? "  gpt yes" : "  gpt NO");
+            rep_str(b, &k, (sc.words[0] & 4u) ? "  entries ok" : "  ENTRIES NOT READ");
+            rep_str(b, &k, "  count "); rep_num(b, &k, sc.words[1]);
+            rep_str(b, &k, "  t0 ");
+            { static const char hx[] = "0123456789abcdef";
+              for (int by = 0; by < 8; by++) {
+                  uint32_t v = (uint32_t)((sc.words[2] >> (8 * by)) & 0xFFu);
+                  b[k++] = hx[(v >> 4) & 0xFu]; b[k++] = hx[v & 0xFu];
+              } }
+            b[k++] = '\n';
+            if (d == 0u) {
+                rep_str(b, &k, " ahci  drives seen ");
+                rep_num(b, &k, (sc.words[3] >> 32) & 0xFFFFu);
+                rep_str(b, &k, "  ports implemented ");
+                rep_num(b, &k, (sc.words[3] >> 16) & 0xFFFFu);
+                rep_str(b, &k, "  this build holds 2\n");
+            }
+        }
+    }
 
     rep_str(b, &k, " fs    ");
     if (g_init_found.fs_foreign) {
@@ -1905,7 +1947,7 @@ static void init_write_report(const char *text, uint32_t len) {
 }
 
 void init_report_findings(void) {
-    static char body[512];
+    static char body[768];
 
     /* Ask again rather than report what mount saw: the count was taken before
      * this task wrote its own file, so the cached number is always one short of

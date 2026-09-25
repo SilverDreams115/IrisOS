@@ -115,6 +115,22 @@ static uint32_t g_port[BLK_MAX_PORTS];   /* the AHCI port number of each */
  */
 static uint64_t g_win_base[BLK_MAX_PORTS];
 static uint64_t g_win_count[BLK_MAX_PORTS];
+
+/*
+ * What the partition scan SAW, per disk.
+ *
+ * When the scan finds nothing, the disk channel is not available to say why --
+ * the filesystem has no partition to write a report into, which is the whole
+ * failure being diagnosed.  So the scan records what it got and the screen
+ * carries it: whether the header read worked, whether the signature was there,
+ * how many entries the header claimed, and the first eight bytes of the first
+ * entry's type.  Those four numbers separate every way this can fail.
+ */
+static uint32_t g_ports_seen;    /* how many AHCI ports reported a SATA device */
+static uint32_t g_ports_impl;    /* how many the controller implements at all */
+static uint32_t g_scan_flags[BLK_MAX_PORTS];   /* 1 = header read, 2 = signature */
+static uint32_t g_scan_ents[BLK_MAX_PORTS];
+static uint64_t g_scan_type0[BLK_MAX_PORTS];
 static uint16_t g_source_id;
 static uint32_t g_contained;      /* the controller's DMA is behind a unit */
 static uint64_t g_cmd_phys, g_data_phys, g_wr_phys;
@@ -406,23 +422,29 @@ static uint32_t ld32(const volatile uint8_t *p) {
 static void blk_find_partition(uint32_t idx) {
     static const char want[] = BLK_PART_TYPE;
     g_win_base[idx] = 0; g_win_count[idx] = 0;
+    g_scan_flags[idx] = 0; g_scan_ents[idx] = 0; g_scan_type0[idx] = 0;
 
     if (!blk_xfer(idx, 1, 1, 0)) return;            /* the GPT header */
+    g_scan_flags[idx] |= 1u;
     const volatile uint8_t *h = (const volatile uint8_t *)(uintptr_t)BLK_VA_DATA;
     {
         static const char sig[] = "EFI PART";
         for (uint32_t i = 0; i < 8u; i++)
             if (h[i] != (uint8_t)sig[i]) return;    /* not a GPT disk */
+        g_scan_flags[idx] |= 2u;
     }
     uint64_t ent_lba   = ld64(h + 72);
     uint32_t ent_count = ld32(h + 80);
     uint32_t ent_size  = ld32(h + 84);
+    g_scan_ents[idx] = ent_count;
     if (ent_size != 128u || ent_count == 0u) return;
     if (ent_count > 32u) ent_count = 32u;
 
     /* 8 sectors is one frame and holds 32 entries, so one read covers them. */
     if (!blk_xfer(idx, ent_lba, 8u, 0)) return;
+    g_scan_flags[idx] |= 4u;
     const volatile uint8_t *e = (const volatile uint8_t *)(uintptr_t)BLK_VA_DATA;
+    g_scan_type0[idx] = ld64(e);                    /* entry 0's type, first 8 */
     for (uint32_t i = 0; i < ent_count; i++) {
         const volatile uint8_t *ent = e + (uint64_t)i * 128u;
         int match = 1;
@@ -537,8 +559,13 @@ static void blk_bring_up(void) {
     uint32_t pi = ab_rd(AHCI_PI);
     for (uint32_t p = 0; p < 32u && g_ready < BLK_MAX_PORTS; p++) {
         if (!(pi & (1u << p))) continue;
+        g_ports_impl++;
         if ((ab_rd(AHCI_PORT(p) + PORT_SSTS) & 0xFu) != DET_PRESENT) continue;
         if (ab_rd(AHCI_PORT(p) + PORT_SIG) != SIG_ATA) continue;
+        /* Counted BEFORE the BLK_MAX_PORTS cut, so a machine with more drives
+         * than this service can hold says so instead of looking like a machine
+         * with fewer drives. */
+        g_ports_seen++;
         uint32_t idx = g_ready;
         g_port[idx] = p;
         if (!blk_port_init(p, idx)) continue;
@@ -591,6 +618,17 @@ void blk_main(iris_cptr_t bootstrap_ch_h) {
             rep.words[0]   = which;
             rep.words[1]   = found;
             rep.word_count = 2u;
+        } else if (m.label == BLK_OP_SCAN) {
+            uint32_t d = (uint32_t)m.words[0];
+            int ok = (d < BLK_MAX_PORTS && d < g_ready);
+            rep.label      = BLK_REP_OK;
+            rep.words[0]   = ok ? g_scan_flags[d] : 0u;
+            rep.words[1]   = ok ? g_scan_ents[d]  : 0u;
+            rep.words[2]   = ok ? g_scan_type0[d] : 0u;
+            rep.words[3]   = ((uint64_t)g_ports_seen << 32) |
+                             ((uint64_t)g_ports_impl << 16) |
+                             (uint64_t)(ok ? g_port[d] : 0u);
+            rep.word_count = 4u;
         } else if (m.label == BLK_OP_PART) {
             /* Zero sectors is a real answer: the disk is there and carries no
              * partition of ours, so nothing on it may be addressed.  That is a
