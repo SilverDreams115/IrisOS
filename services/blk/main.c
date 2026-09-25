@@ -128,6 +128,8 @@ static uint64_t g_win_count[BLK_MAX_PORTS];
  */
 static uint32_t g_ports_seen;    /* how many AHCI ports reported a SATA device */
 static uint32_t g_ports_impl;    /* how many the controller implements at all */
+static uint32_t g_ctrl_found;    /* 1 once pci handed over a SATA controller  */
+static uint32_t g_abar_mapped;   /* 1 once its registers were mapped          */
 static uint32_t g_scan_flags[BLK_MAX_PORTS];   /* 1 = header read, 2 = signature */
 static uint32_t g_scan_ents[BLK_MAX_PORTS];
 static uint64_t g_scan_type0[BLK_MAX_PORTS];
@@ -162,18 +164,38 @@ static long blk_pci(uint64_t op, uint64_t a0, uint64_t a1,
  */
 #define CLASS_SATA_AHCI 0x01060100u   /* class 01 subclass 06 prog-if 01 */
 
+/*
+ * The class codes of the MASS-STORAGE controllers this machine has, whether or
+ * not any of them is one this driver can use.
+ *
+ * "no AHCI controller" and "no storage controller at all" are different
+ * machines, and a driver that reports only the first cannot tell them apart.
+ * The common case it distinguishes is a real one: a desktop whose firmware has
+ * SATA set to RAID or IDE rather than AHCI presents class 01:04 or 01:01, and
+ * the right answer there is a BIOS setting, not a code change.
+ */
+static uint32_t g_storage_class[4];
+static uint32_t g_storage_seen;
+
 static int blk_find_controller(uint32_t *out_index) {
     struct iris_msg r;
+    g_storage_seen = 0u;
     if (blk_pci(PCI_OP_COUNT, 0, 0, 0, &r) != 0) return 0;
     uint32_t n = (uint32_t)r.words[0];
+    int found = 0;
     for (uint32_t i = 0; i < n; i++) {
         if (blk_pci(PCI_OP_INFO, i, 0, 0, &r) != 0) continue;
-        if (((uint32_t)r.words[1] & 0xFFFFFF00u) != CLASS_SATA_AHCI) continue;
+        uint32_t cls = (uint32_t)r.words[1];
+        /* Class 01 is mass storage, whatever the subclass says it is. */
+        if ((cls >> 24) == 0x01u && g_storage_seen < 4u)
+            g_storage_class[g_storage_seen++] = cls >> 8;   /* class/sub/prog */
+        if (found) continue;
+        if ((cls & 0xFFFFFF00u) != CLASS_SATA_AHCI) continue;
         *out_index  = i;
         g_source_id = (uint16_t)r.words[2];
-        return 1;
+        found = 1;
     }
-    return 0;
+    return found;
 }
 
 /* ── memory the controller will reach ────────────────────────────────────── */
@@ -507,6 +529,7 @@ static int blk_xfer_win(uint32_t idx, uint64_t rel, uint32_t sectors, int write)
 static void blk_bring_up(void) {
     uint32_t dev;
     if (!blk_find_controller(&dev)) return;
+    g_ctrl_found = 1u;
 
     /* The register window, as a capability, from the service that owns the
      * PCI hole.  BAR5 is where AHCI puts its registers. */
@@ -522,6 +545,7 @@ static void blk_bring_up(void) {
     if (iris_map_frame(BLK_SLOT_ABAR, IRIS_CPTR_OWN_VSPACE,
                        IRIS_CPTR_OWN_UNTYPED, BLK_SLOT_PT,
                        BLK_VA_ABAR, r.words[1], 1ull | 4ull) != 0) return;
+    g_abar_mapped = 1u;
 
     if (blk_frame(BLK_SLOT_CMD,  4096u, &g_cmd_phys)  != 0) return;
     if (blk_frame(BLK_SLOT_DATA, 4096u, &g_data_phys) != 0) return;
@@ -619,14 +643,27 @@ void blk_main(iris_cptr_t bootstrap_ch_h) {
             rep.words[1]   = found;
             rep.word_count = 2u;
         } else if (m.label == BLK_OP_SCAN) {
+            /*
+             * Answers even for a disk index that does not exist, because the
+             * AHCI counts in words[3] are most needed exactly when NO disk was
+             * found -- and refusing then would withhold the only numbers that
+             * distinguish "the controller was never claimed" from "it was, and
+             * no port had a drive".
+             */
             uint32_t d = (uint32_t)m.words[0];
             int ok = (d < BLK_MAX_PORTS && d < g_ready);
             rep.label      = BLK_REP_OK;
             rep.words[0]   = ok ? g_scan_flags[d] : 0u;
             rep.words[1]   = ok ? g_scan_ents[d]  : 0u;
-            rep.words[2]   = ok ? g_scan_type0[d] : 0u;
+            /* The storage controllers seen, packed three bytes each. */
+            rep.words[2]   = ok ? g_scan_type0[d]
+                                : ((uint64_t)g_storage_seen << 56) |
+                                  ((uint64_t)g_storage_class[0] << 32) |
+                                  ((uint64_t)g_storage_class[1] << 8);
             rep.words[3]   = ((uint64_t)g_ports_seen << 32) |
                              ((uint64_t)g_ports_impl << 16) |
+                             ((uint64_t)g_ctrl_found << 9) |
+                             ((uint64_t)g_abar_mapped << 8) |
                              (uint64_t)(ok ? g_port[d] : 0u);
             rep.word_count = 4u;
         } else if (m.label == BLK_OP_PART) {

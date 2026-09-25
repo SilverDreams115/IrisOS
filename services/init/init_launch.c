@@ -1817,7 +1817,51 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
      * And this is exactly the case where the disk cannot be used to report --
      * so the screen has to.
      */
-    if (!g_init_found.blk_home && g_init_found.blk_disks) {
+    /*
+     * Asked whenever no home was found, INCLUDING when no disk was found at
+     * all -- which is the case that most needs describing and the one the
+     * first version of this excluded, by requiring a disk count it did not
+     * have.  A diagnostic that goes quiet in its own worst case is not one.
+     */
+    if (!g_init_found.blk_home) {
+        {
+            struct iris_msg sc;
+            { uint8_t *z = (uint8_t *)&sc;
+              for (uint32_t i = 0; i < (uint32_t)sizeof(sc); i++) z[i] = 0; }
+            sc.label = BLK_OP_SCAN;
+            sc.words[0] = 0;
+            sc.word_count = 1u;
+            if (iris_msg_call((long)INIT_SLOT_BLK_EP, &sc) == 0 &&
+                sc.label == BLK_REP_OK) {
+                rep_str(b, &k, " ahci  ctrl ");
+                rep_str(b, &k, (sc.words[3] & 0x200u) ? "found" : "NOT FOUND");
+                rep_str(b, &k, "  regs ");
+                rep_str(b, &k, (sc.words[3] & 0x100u) ? "mapped" : "NOT MAPPED");
+                rep_str(b, &k, "  ports ");
+                rep_num(b, &k, (sc.words[3] >> 16) & 0xFFFFu);
+                rep_str(b, &k, "  drives ");
+                rep_num(b, &k, (sc.words[3] >> 32) & 0xFFFFu);
+                b[k++] = '\n';
+                /* If no AHCI controller was found, say what storage
+                 * controllers DO exist -- 0106xx is AHCI, 0104xx is RAID and
+                 * 0101xx is IDE, and the last two mean a firmware setting
+                 * rather than a missing driver. */
+                if (!(sc.words[3] & 0x200u)) {
+                    rep_str(b, &k, " pcicls storage devices ");
+                    rep_num(b, &k, (sc.words[2] >> 56) & 0xFFu);
+                    rep_str(b, &k, "  class ");
+                    { static const char hx[] = "0123456789abcdef";
+                      uint32_t c0 = (uint32_t)((sc.words[2] >> 32) & 0xFFFFFFu);
+                      uint32_t c1 = (uint32_t)((sc.words[2] >> 8) & 0xFFFFFFu);
+                      for (int sh = 20; sh >= 0; sh -= 4) b[k++] = hx[(c0 >> sh) & 0xFu];
+                      b[k++] = ' ';
+                      for (int sh = 20; sh >= 0; sh -= 4) b[k++] = hx[(c1 >> sh) & 0xFu]; }
+                    b[k++] = '\n';
+                }
+            } else {
+                rep_str(b, &k, " ahci  the disk service did not answer\n");
+            }
+        }
         for (uint32_t d = 0; d < g_init_found.blk_disks && d < 2u; d++) {
             struct iris_msg sc;
             { uint8_t *z = (uint8_t *)&sc;
@@ -1828,7 +1872,7 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
             if (iris_msg_call((long)INIT_SLOT_BLK_EP, &sc) != 0 ||
                 sc.label != BLK_REP_OK) continue;
             rep_str(b, &k, " scan  d"); rep_num(b, &k, d);
-            rep_str(b, &k, " port "); rep_num(b, &k, sc.words[3] & 0xFFFFu);
+            rep_str(b, &k, " port "); rep_num(b, &k, sc.words[3] & 0xFFu);
             rep_str(b, &k, (sc.words[0] & 1u) ? "  read ok" : "  READ FAILED");
             rep_str(b, &k, (sc.words[0] & 2u) ? "  gpt yes" : "  gpt NO");
             rep_str(b, &k, (sc.words[0] & 4u) ? "  entries ok" : "  ENTRIES NOT READ");
@@ -1840,13 +1884,6 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
                   b[k++] = hx[(v >> 4) & 0xFu]; b[k++] = hx[v & 0xFu];
               } }
             b[k++] = '\n';
-            if (d == 0u) {
-                rep_str(b, &k, " ahci  drives seen ");
-                rep_num(b, &k, (sc.words[3] >> 32) & 0xFFFFu);
-                rep_str(b, &k, "  ports implemented ");
-                rep_num(b, &k, (sc.words[3] >> 16) & 0xFFFFu);
-                rep_str(b, &k, "  this build holds 2\n");
-            }
         }
     }
 
