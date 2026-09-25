@@ -947,10 +947,35 @@ int init_spawn_blk(void) {
             b[k++] = 'd'; b[k++] = 'o'; b[k++] = 'w'; b[k++] = ' ';
             { uint64_t wn = 0;
               struct iris_msg pm;
+              /*
+               * The window of the disk that HAS a partition of ours -- asked
+               * for by identity, like everything else here.
+               *
+               * This said 1, because on the machine the tests build the data
+               * disk is always disk 1.  On real hardware it was disk 0, so the
+               * line read "window 0  home 0": the window of a disk with no
+               * IRIS partition, beside the index of the one that had it.  Both
+               * numbers were correct and the sentence they made was nonsense.
+               *
+               * `blk_home` is stored as index + 1 so that zero can mean "none",
+               * which is why it is asked BEFORE this and unwrapped here.
+               */
               { uint8_t *z = (uint8_t *)&pm;
                 for (uint32_t i = 0; i < (uint32_t)sizeof(pm); i++) z[i] = 0; }
               pm.label = BLK_OP_PART;
-              pm.words[0] = 1u;            /* the data disk */
+              /* Which disk is ours, asked HERE rather than read from
+               * g_init_found: that field is filled further down, after this
+               * line runs, so reading it would have been reading a zero. */
+              { struct iris_msg h0;
+                { uint8_t *z = (uint8_t *)&h0;
+                  for (uint32_t i = 0; i < (uint32_t)sizeof(h0); i++) z[i] = 0; }
+                h0.label = BLK_OP_HOME;
+                h0.word_count = 0u;
+                if (iris_msg_call((long)INIT_SLOT_BLK_EP, &h0) == 0 &&
+                    h0.label == BLK_REP_OK && h0.words[1] != 0u)
+                    g_init_found.blk_home = (uint32_t)h0.words[0] + 1u;
+              }
+              pm.words[0] = g_init_found.blk_home ? (g_init_found.blk_home - 1u) : 1u;
               pm.word_count = 1u;
               if (iris_msg_call((long)INIT_SLOT_BLK_EP, &pm) == 0 &&
                   pm.label == BLK_REP_OK)
