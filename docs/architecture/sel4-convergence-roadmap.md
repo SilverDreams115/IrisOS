@@ -2939,6 +2939,34 @@ which caught real defects repeatedly; it is the limit of what a uniform test
 environment can tell you, and it is the same limit the untyped-allocator
 overflow demonstrated from the other direction.
 
+### The sweep the first real machine started
+
+Every defect that machine found was one shape, and the shape turned out to have
+forms.  Five sweeps closed them; each is a rule rather than a fix, because the
+fix is only the instance that was found.
+
+| the rule | what it replaced |
+|---|---|
+| **A ceiling that is reached has to say so** | processors past `MAX_CPUS` dropped uncounted, so a sixteen-thread machine printed "processors: 8"; a PCI table that filled stopped the walk; a loader that took the first eight segments of an ELF and carried on |
+| **A value from firmware is not a bound** | an ACPI checksum ran before anything limited the length, so a table declaring 0xFFFFFFFF walked four gigabytes into a fault at CPL 0 -- which this kernel answers by halting |
+| **A class code is a programming interface only when it is one** | `net` matched any Ethernet controller "for the reason the disk driver does".  AHCI class 01:06:01 *is* a register layout; Ethernet class 02:00 is not, and an e1000 and a Realtek share nothing but the number |
+| **An input's account of itself is not a bound** | `e_phoff` followed without asking whether it pointed inside the image -- with the size available and thrown away one line earlier |
+| **A bound honoured by most of the writers is not a bound** | the boot report's writers took no capacity and its worst case was 768 bytes into a buffer of 768; and `init_write_report` dropped the whole report, silently, when it exceeded one sector |
+| **A count of reads is not a length of time** | `blk` waited two million register reads for a command that on real hardware can take the better part of a second; `net` the same for a transmit.  The ARP wait had already taught this and it was fixed only where it was found |
+
+What did not need changing is worth recording too.  The DMAR walk already
+bounded every record and COUNTED the units it could not hold -- it was the
+model the rest were held to.  `pmm_init` starts from an all-reserved bitmap and
+only clears usable entries, so a truncated memory map loses RAM and can never
+hand out memory the firmware reserved.  `blk` claiming BAR 5 is the AHCI
+specification rather than an assumption.  And the AP-startup and VT-d waits are
+counts because they run before there is a clock to ask, and both already fail
+safe and say so.
+
+None of these was exotic, and all of them were green on every configuration for
+as long as they existed.  That is the limit of a uniform test environment
+stated as precisely as this project can state it.
+
 ### What is NOT claimed
 
 The device-driver stack is three drivers deep and none has an interrupt: they

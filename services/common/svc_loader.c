@@ -987,7 +987,10 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             uint64_t rb = (mints[mi].badge << 32) | (uint64_t)mints[mi].rights;
             uint32_t src = mints[mi].src_cptr ? mints[mi].src_cptr
                                               : (uint32_t)mints[mi].src_h;
-            if (src == 0u || src == (uint32_t)IRIS_CPTR_NULL) {
+            /* One test, not two: IRIS_CPTR_NULL IS zero, so the second
+             * half never decided anything and read as though an empty slot
+             * and a null capability were different states. */
+            if (src == (uint32_t)IRIS_CPTR_NULL) {
                 mints[mi].result = SVC_MINT_SKIPPED;
                 continue;
             }
