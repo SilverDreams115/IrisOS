@@ -51,14 +51,37 @@
  * that loses a character is a diagnostic and a log that hangs is an outage.
  */
 #define CON_UART_SPIN 200000u
+#define CON_UART_MS      250u   /* the real deadline under the count */
 
 static void con_uart_write_byte(iris_cptr_t ioport_h, uint8_t byte) {
     long v;
+    long t0 = 0;
     for (uint32_t spin = 0; spin < CON_UART_SPIN; spin++) {
         v = iris_invoke1((long)ioport_h, INV_IOPORT_IN, 5);
         if (v >= 0 && ((uint8_t)v & 0x20u)) {
             (void)iris_invoke2((long)ioport_h, INV_IOPORT_OUT, 0, (long)byte);
             return;
+        }
+        /*
+         * A real deadline underneath the count, checked rarely.
+         *
+         * The count alone is machine-dependent, like every other count this
+         * sweep has replaced -- but this one is on the path EVERY ring-3 line
+         * is logged through, and a clock reading per byte would make the whole
+         * boot pay for it.  Every four thousand-odd reads is free by
+         * comparison and still bounds the wait in real time.
+         *
+         * The margin is deliberate: a 16550 at 115200 baud empties its holding
+         * register in under a hundred microseconds, so a wait this long means
+         * the port is not coming back.
+         */
+        if ((spin & 0xFFFu) == 0xFFFu) {
+            long now = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
+            if (now > 0) {
+                if (t0 == 0) t0 = now;
+                else if ((uint64_t)(now - t0) > (uint64_t)CON_UART_MS * 1000000ull)
+                    return;                     /* the byte is dropped */
+            }
         }
     }
     /* Gone.  Say nothing and keep serving: there is nowhere to report it to. */

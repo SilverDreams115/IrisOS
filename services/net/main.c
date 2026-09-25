@@ -89,6 +89,11 @@ static void net_msg_zero(struct iris_msg *m) {
 #define RXD_STAT_DD   (1u << 0)
 #define RXD_STAT_EOP  (1u << 1)
 
+/* How long a transmit may take before the card is called unresponsive.
+ * Generous on purpose: the cost of being wrong the other way is a frame
+ * reported lost that the card was about to acknowledge. */
+#define NET_TX_MS     1000u
+
 #define NET_RING_LEN  8u           /* RDLEN must be a multiple of 128 bytes,
                                     * and a descriptor is 16 — so eight is the
                                     * smallest ring the hardware will take. */
@@ -345,10 +350,30 @@ static uint32_t net_send(uint32_t len) {
 
     wr(E1000_TDT, (tail + 1u) % NET_RING_LEN);
 
-    /* Bounded: a driver that spins for ever on a card that never reports is a
-     * service that stops answering. */
-    for (uint32_t i = 0; i < 2000000u; i++)
-        if (txd[tail * 4u + 3u] & TXD_STAT_DD) return len;
+    /*
+     * Bounded by TIME, not by a count of reads.
+     *
+     * A driver that spins for ever on a card that never reports is a service
+     * that stops answering -- but two million register reads is a different
+     * amount of patience on every machine, and it was chosen against the only
+     * one this ran on.  An emulated card completes a transmit before the loop
+     * begins; a real one at the far end of a PCI bridge, with the link
+     * negotiating, does not.
+     *
+     * A clock that will not answer leaves this unbounded rather than
+     * instantaneous: the failure being guarded is a card that never replies,
+     * and treating a missing clock as an expired deadline turns a working card
+     * into a broken one.
+     */
+    {
+        long t0 = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
+        for (;;) {
+            if (txd[tail * 4u + 3u] & TXD_STAT_DD) return len;
+            long now = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
+            if (t0 > 0 && now > 0 &&
+                (uint64_t)(now - t0) > (uint64_t)NET_TX_MS * 1000000ull) break;
+        }
+    }
     return 0;
 }
 

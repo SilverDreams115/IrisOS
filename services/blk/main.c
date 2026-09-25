@@ -301,6 +301,40 @@ static int blk_port_init(uint32_t p, uint32_t idx) {
 #define ATA_WRITE_DMA_EXT  0x35u
 #define ATA_FLUSH_CACHE_EXT 0xEAu
 
+/*
+ * Wait for bits in a controller register to clear, bounded by TIME.
+ *
+ * These were iteration counts -- a million for the port to go idle, two
+ * million for a command to finish.  A COUNT cannot be right on both a fast
+ * machine and a slow one, because what it buys depends on how quickly the
+ * machine gets through it; that is the lesson the ARP wait taught one stage
+ * ago, where a count generous on the success path blew the deadline on the
+ * failure path and a smaller one started missing real replies.
+ *
+ * It matters more here than it did there.  Two million MMIO reads is a fifth
+ * of a second on the machine this was written on, and an emulated disk answers
+ * in microseconds -- but a real one seeks, and a FLUSH CACHE EXT on an SSD
+ * that has decided to garbage-collect can take the better part of a second.
+ * The count was not chosen against that; it was never chosen at all.
+ *
+ * Returns 0 if the deadline passed with the bits still set.  A clock that
+ * refuses to answer leaves the wait unbounded rather than instantaneous: the
+ * failure this guards is a device that never replies, and treating a missing
+ * clock as an expired deadline would turn a working disk into a broken one.
+ */
+#define BLK_READY_MS    2000u   /* the port going idle before a command       */
+#define BLK_COMMAND_MS 10000u   /* the command itself, flushes included       */
+
+static int blk_wait_clear(uint32_t reg, uint32_t bits, uint32_t ms) {
+    long t0 = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
+    for (;;) {
+        if (!(ab_rd(reg) & bits)) return 1;
+        long now = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
+        if (t0 > 0 && now > 0 &&
+            (uint64_t)(now - t0) > (uint64_t)ms * 1000000ull) return 0;
+    }
+}
+
 static int blk_xfer(uint32_t idx, uint64_t lba, uint32_t sectors, int write) {
     if (idx >= g_ready) return 0;
     uint32_t port = g_port[idx];
@@ -349,17 +383,12 @@ static int blk_xfer(uint32_t idx, uint64_t lba, uint32_t sectors, int write) {
      * because a driver that spins forever on a device that never answers is a
      * service that stops answering. */
     uint32_t tfd = AHCI_PORT(port) + PORT_TFD;
-    for (uint32_t i = 0; ; i++) {
-        if (!(ab_rd(tfd) & (TFD_BSY | TFD_DRQ))) break;
-        if (i >= 1000000u) return 0;
-    }
+    if (!blk_wait_clear(tfd, TFD_BSY | TFD_DRQ, BLK_READY_MS)) return 0;
+
     ab_wr(AHCI_PORT(port) + PORT_IS, 0xFFFFFFFFu);
     ab_wr(AHCI_PORT(port) + PORT_CI, 1u);
 
-    for (uint32_t i = 0; ; i++) {
-        if (!(ab_rd(AHCI_PORT(port) + PORT_CI) & 1u)) break;
-        if (i >= 2000000u) return 0;
-    }
+    if (!blk_wait_clear(AHCI_PORT(port) + PORT_CI, 1u, BLK_COMMAND_MS)) return 0;
     if (ab_rd(tfd) & TFD_ERR) return 0;
     return 1;
 }
