@@ -63,8 +63,21 @@
 #define PCI_MAX_WINDOWS    16u
 
 /* ── limits, which are part of the contract ─────────────────────────────── */
-#define PCI_MAX_FUNCTIONS  32u  /* how many functions the service will record */
-#define PCI_SCAN_BUS       0u   /* the only bus walked; see the header note   */
+/*
+ * How many functions the service records, and how deep it looks.
+ *
+ * 32 was enough for a machine with one bus.  A real desktop enumerated 24
+ * functions on bus 0 alone and had NO mass-storage controller among them --
+ * its SATA and NVMe controllers sit behind PCI-to-PCI bridges, on buses this
+ * service never visited.  That is the limitation the roadmap had recorded
+ * since the service was written, met on the first real machine.
+ *
+ * `PCI_SCAN_BUS` is gone with it: the walk starts at bus 0 and follows every
+ * bridge it finds, which is what "enumerate the machine" means on anything
+ * newer than the one it was developed against.
+ */
+#define PCI_MAX_FUNCTIONS  96u  /* how many functions the service will record */
+#define PCI_MAX_BUSES     256u  /* a bus number is eight bits                 */
 
 /* ── operations ────────────────────────────────────────────────────────── */
 
@@ -106,6 +119,18 @@
  * interrupt lines and parity error responses nobody asked for.
  */
 #define PCI_OP_ENABLE      0x7005u
+
+/*
+ * Why the carve stopped, in numbers.
+ *   words[0] = the gap it could not step over
+ *   words[1] = the error the retype gave
+ *   words[2] = the watermark   words[3] = the end of the region
+ *
+ * Separate from PCI_OP_COUNT because that message already carries four words,
+ * which is all a message has -- and because the state code it carries names
+ * the STEP that failed rather than the reason.
+ */
+#define PCI_OP_CARVE       0x7006u
 
 /* Reply labels. */
 #define PCI_REP_OK         0x7080u

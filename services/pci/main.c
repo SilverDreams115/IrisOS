@@ -46,13 +46,22 @@ static void pci_msg_zero(struct iris_msg *m) {
  * exists (Stage 10-dma §10.2 step 6 found that the port ABI had no width above
  * a byte and therefore could not host a PCI driver at all).
  */
-static uint32_t cfg_read(uint32_t devfn, uint32_t off) {
-    uint32_t addr = 0x80000000u | (PCI_SCAN_BUS << 16) | (devfn << 8) | (off & 0xFCu);
+/*
+ * Configuration space, addressed by BDF: bus in the high eight bits, device
+ * and function in the low eight.  That is the same sixteen-bit shape
+ * `struct pci_fn` already stored, so a caller holding one of those needs no
+ * conversion -- which is why the bus could be threaded through here without
+ * touching the BAR measurement at all.
+ */
+static uint32_t cfg_read(uint32_t bdf, uint32_t off) {
+    uint32_t addr = 0x80000000u | ((bdf >> 8) << 16) |
+                    ((bdf & 0xFFu) << 8) | (off & 0xFCu);
     (void)iris_invoke2((long)PCI_SLOT_IOPORT, INV_IOPORT_OUT32, 0, (long)addr);
     return (uint32_t)iris_invoke1((long)PCI_SLOT_IOPORT, INV_IOPORT_IN32, 4);
 }
-static void cfg_write(uint32_t devfn, uint32_t off, uint32_t v) {
-    uint32_t addr = 0x80000000u | (PCI_SCAN_BUS << 16) | (devfn << 8) | (off & 0xFCu);
+static void cfg_write(uint32_t bdf, uint32_t off, uint32_t v) {
+    uint32_t addr = 0x80000000u | ((bdf >> 8) << 16) |
+                    ((bdf & 0xFFu) << 8) | (off & 0xFCu);
     (void)iris_invoke2((long)PCI_SLOT_IOPORT, INV_IOPORT_OUT32, 0, (long)addr);
     (void)iris_invoke2((long)PCI_SLOT_IOPORT, INV_IOPORT_OUT32, 4, (long)v);
 }
@@ -106,6 +115,13 @@ static uint32_t          g_window_count;
 #define PCI_CARVE_NO_SKIP   3u   /* could not skip the gap below a window    */
 #define PCI_CARVE_NO_FRAME  4u   /* could not carve the window itself        */
 static uint32_t g_carve_state = PCI_CARVE_NO_REGION;
+/* The gap the carve stopped on, and what the retype said about it.  A state
+ * code names the STEP that failed; these name the reason, which for a skip is
+ * always a number -- how far ahead the next window was, and whether the region
+ * had that much left. */
+static uint64_t g_carve_gap;
+static long     g_carve_err;
+static uint64_t g_carve_mark, g_carve_end;
 
 /* ── BAR measurement ─────────────────────────────────────────────────────── */
 
@@ -167,25 +183,67 @@ static void bar_measure(struct pci_fn *f) {
 
 /* ── the scan ────────────────────────────────────────────────────────────── */
 
-static void pci_scan(void) {
+/*
+ * Which buses have been walked, so a malformed bridge cannot make this loop
+ * forever.  A bus number is eight bits, so the whole space is 32 bytes.
+ */
+static uint8_t g_bus_done[PCI_MAX_BUSES / 8u];
+
+static int bus_seen(uint32_t bus) {
+    return (g_bus_done[(bus & 0xFFu) >> 3] >> (bus & 7u)) & 1u;
+}
+static void bus_mark(uint32_t bus) {
+    g_bus_done[(bus & 0xFFu) >> 3] |= (uint8_t)(1u << (bus & 7u));
+}
+
+/*
+ * Walk one bus, recording every function and queueing every bridge.
+ *
+ * A header type of 1 is a PCI-to-PCI bridge, and its SECONDARY bus number --
+ * byte 1 of the dword at 0x18 -- is the bus on its far side.  Devices there
+ * are invisible from bus 0, which is how a machine with two SATA drives and an
+ * NVMe reported no mass-storage controller at all.
+ *
+ * Bridges are recorded like anything else.  They are not interesting to a
+ * driver, but leaving them out would make the function list disagree with what
+ * is actually on the machine, and this service is the only thing that can see
+ * it.
+ */
+static void pci_scan_bus(uint32_t bus) {
+    if (bus_seen(bus)) return;
+    bus_mark(bus);
+
     for (uint32_t dev = 0; dev < 32u && g_fn_count < PCI_MAX_FUNCTIONS; dev++) {
         uint32_t fn_max = 1u;
         for (uint32_t fn = 0; fn < fn_max && g_fn_count < PCI_MAX_FUNCTIONS; fn++) {
-            uint32_t devfn = (dev << 3) | fn;
-            uint32_t vd    = cfg_read(devfn, CFG_VENDOR);
+            uint32_t bdf = (bus << 8) | (dev << 3) | fn;
+            uint32_t vd  = cfg_read(bdf, CFG_VENDOR);
             if (vd == 0xFFFFFFFFu || vd == 0u) continue;
-            if (fn == 0u && (cfg_read(devfn, CFG_HEADER) & 0x00800000u))
+            uint32_t hdr = cfg_read(bdf, CFG_HEADER);
+            if (fn == 0u && (hdr & 0x00800000u))
                 fn_max = 8u;                          /* multifunction */
 
             struct pci_fn *f = &g_fn[g_fn_count];
             f->vendor_device = vd;
-            f->class_code    = cfg_read(devfn, CFG_CLASS);
-            f->devfn         = (uint16_t)((PCI_SCAN_BUS << 8) | devfn);
+            f->class_code    = cfg_read(bdf, CFG_CLASS);
+            f->devfn         = (uint16_t)bdf;
             for (uint32_t b = 0; b < PCI_BAR_COUNT; b++) f->bar_window[b] = -1;
             bar_measure(f);
             g_fn_count++;
+
+            if (((hdr >> 16) & 0x7Fu) == 1u) {
+                uint32_t secondary = (cfg_read(bdf, 0x18u) >> 8) & 0xFFu;
+                if (secondary != 0u && secondary != bus)
+                    pci_scan_bus(secondary);
+            }
         }
     }
+}
+
+static void pci_scan(void) {
+    /* Bus 0, and everything reachable from it.  The recursion is bounded by
+     * the visited bitmap above, not by trusting the topology. */
+    pci_scan_bus(0u);
 }
 
 /* ── carving the windows, in address order ───────────────────────────────── */
@@ -259,6 +317,15 @@ static void pci_carve(void) {
                 uint64_t wb = g_fn[i].bar_base[b];
                 uint64_t ws = g_fn[i].bar_size[b];
                 if (wb < mark || wb + ws > end) continue;
+                /*
+                 * A window has to be expressible as a FRAME, and a frame is
+                 * page-aligned and a whole number of pages.  A PCI memory BAR
+                 * is aligned to its own SIZE, which for a 256-byte register
+                 * block is 256 bytes -- so a real machine has windows that
+                 * simply cannot be handed out this way, and the right answer
+                 * is to leave them alone rather than to fail the whole carve.
+                 */
+                if ((wb & 0xFFFULL) != 0u || ws < 4096u) continue;
                 if (!found || wb < best) { best = wb; bf = i; bb = b; found = 1; }
             }
         }
@@ -266,15 +333,35 @@ static void pci_carve(void) {
         if (g_window_count >= PCI_MAX_WINDOWS)
                      { g_carve_state = PCI_CARVE_FULL;  break; }
 
-        if (best > mark) {
+        /*
+         * Step over the gap below this window, in WHOLE PAGES.
+         *
+         * The gap itself is whatever the firmware left, and there is no reason
+         * for it to be a multiple of 4096 -- small BARs are aligned to their
+         * own size, so a 256-byte register block leaves a gap ending 256 bytes
+         * past a page boundary.  Retyping that many bytes as a frame is
+         * INVALID_ARG, and the first real machine this ran on stopped the
+         * carve there: gap 950528, which is 232 pages and 256 bytes.
+         *
+         * Rounding DOWN is safe because the allocator aligns the next
+         * allocation UP to a page anyway: the remainder is skipped by the
+         * same arithmetic that would have skipped it had it been asked for.
+         */
+        uint64_t pad_bytes = (best > mark) ? ((best - mark) & ~0xFFFULL) : 0u;
+        if (pad_bytes != 0u) {
             /* Skipped, not wasted: these bytes belong to whatever the firmware
              * put below this window, and the service must not hand them out. */
             long pad = iris_invoke((long)PCI_SLOT_MMIO_UT, INV_UNTYPED_RETYPE,
                                    (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
                                    (long)((uint64_t)(PCI_SLOT_BAR_BASE +
                                           PCI_MAX_WINDOWS) << 32),
-                                   (long)(best - mark));
-            if (pad != 0) { g_carve_state = PCI_CARVE_NO_SKIP; break; }
+                                   (long)pad_bytes);
+            if (pad != 0) {
+                g_carve_state = PCI_CARVE_NO_SKIP;
+                g_carve_gap = pad_bytes; g_carve_err = pad;
+                g_carve_mark = mark; g_carve_end = end;
+                break;
+            }
             (void)iris_invoke1(0, INV_CNODE_DELETE,
                                (long)(PCI_SLOT_BAR_BASE + PCI_MAX_WINDOWS));
         }
@@ -332,6 +419,30 @@ void pci_main(iris_cptr_t bootstrap_ch_h) {
             rep.word_count = 4u;
             break;
 
+        case PCI_OP_CARVE:
+
+            /* Why the carve stopped, in numbers rather than a state code.
+
+             * PCI_OP_COUNT already carries four words, which is all a message
+
+             * has, and the state it carries names the STEP that failed -- not
+
+             * the reason.  For a skip the reason is always a number. */
+
+            rep.label      = PCI_REP_OK;
+
+            rep.words[0]   = g_carve_gap;
+
+            rep.words[1]   = (uint64_t)g_carve_err;
+
+            rep.words[2]   = g_carve_mark;
+
+            rep.words[3]   = g_carve_end;
+
+            rep.word_count = 4u;
+
+            break;
+
         case PCI_OP_INFO:
             if (fn_ok(m.words[0])) {
                 const struct pci_fn *f = &g_fn[m.words[0]];
@@ -382,10 +493,10 @@ void pci_main(iris_cptr_t bootstrap_ch_h) {
             if (fn_ok(m.words[0])) {
                 const struct pci_fn *f = &g_fn[m.words[0]];
                 uint32_t set = (uint32_t)m.words[1] & PCI_CMD_SETTABLE;
-                uint32_t cmd = cfg_read(f->devfn & 0xFFu, CFG_COMMAND);
-                cfg_write(f->devfn & 0xFFu, CFG_COMMAND, cmd | set);
+                uint32_t cmd = cfg_read(f->devfn, CFG_COMMAND);
+                cfg_write(f->devfn, CFG_COMMAND, cmd | set);
                 rep.label      = PCI_REP_OK;
-                rep.words[0]   = cfg_read(f->devfn & 0xFFu, CFG_COMMAND);
+                rep.words[0]   = cfg_read(f->devfn, CFG_COMMAND);
                 rep.word_count = 1u;
             }
             break;

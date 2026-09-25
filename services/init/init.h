@@ -201,7 +201,7 @@ int init_spawn_ip(void);
  * what changes is that it is still there to be read.
  */
 struct init_findings {
-    uint32_t pci_functions, pci_windows;
+    uint32_t pci_functions, pci_windows, pci_carve;
     uint32_t blk_disks, blk_contained, blk_home;
     uint64_t blk_window;
     uint32_t fs_mounted, fs_generation, fs_formatted, fs_files, fs_foreign;

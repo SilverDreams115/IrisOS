@@ -318,13 +318,22 @@ void fs_main(iris_cptr_t bootstrap_ch_h) {
             rep.words[0]   = g_mounted;
             rep.words[1]   = g_generation;
             rep.words[2]   = g_files;
-            rep.words[3]   = g_formatted;
-            /* A disk that is there and is not ours is a DIFFERENT answer from
-             * no disk at all, and the caller has to be able to tell them
-             * apart: one means "prepare a disk", the other means "this machine
-             * has no disk this service can drive". */
-            rep.words[4]   = g_foreign;
-            rep.word_count = 5u;
+            /*
+             * Two flags in one word, because a message carries exactly
+             * IRIS_MSG_WORDS of them and the first three are spoken for.
+             *
+             * This was a fifth word.  There is no fifth word: the write went
+             * past the array, and the caller read whatever was next on the
+             * stack -- which on real hardware said a disk had been REFUSED on
+             * a machine where no disk had been found at all.  The audit caught
+             * exactly this shape in the block service and it was written again
+             * here within the hour.
+             *
+             * bit 0 = formatted on this boot, bit 1 = a disk is there and is
+             * not ours, which is a different answer from having no disk.
+             */
+            rep.words[3]   = (g_formatted ? 1u : 0u) | (g_foreign ? 2u : 0u);
+            rep.word_count = 4u;
         } else if (m.label == FS_OP_BUF && g_mounted) {
             rep.label      = FS_REP_OK;
             rep.words[0]   = FS_SECTOR;

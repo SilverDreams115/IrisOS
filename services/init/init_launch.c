@@ -233,7 +233,10 @@ int init_spawn_pci(void) {
         if (iris_msg_call((long)INIT_SLOT_PCI_EP, &m) == 0 &&
             m.label == PCI_REP_OK) {
             g_init_found.pci_functions = (uint32_t)m.words[0];
-            g_init_found.pci_windows   = (uint32_t)m.words[1];
+            /* words[1] is the MAXIMUM this service can record, not what it
+ * carved.  The report said "windows 96" on a machine with four. */
+            g_init_found.pci_windows   = (uint32_t)m.words[2];
+            g_init_found.pci_carve     = (uint32_t)m.words[3];
             char b[64] = "[USER][INIT] pci: functions ";
             uint32_t k = 0; while (b[k]) k++;
             uint32_t n2 = (uint32_t)m.words[0];
@@ -491,7 +494,7 @@ int init_spawn_fs(void) {
         m.label = FS_OP_STAT;
         if (iris_msg_call((long)INIT_SLOT_FS_EP, &m) != 0 ||
             m.label != FS_REP_OK || m.words[0] == 0u) {
-            if (m.words[4]) {
+            if (m.words[3] & 2u) {
                 /* Refused, not failed.  See `iris/fs_ep_proto.h`: a disk with
                  * no IRIS filesystem and no token saying it is disposable is
                  * left exactly as it was found, which on a real machine is
@@ -505,7 +508,7 @@ int init_spawn_fs(void) {
             return 0;
         }
         uint32_t gen = (uint32_t)m.words[1];
-        uint32_t formatted = (uint32_t)m.words[3];
+        uint32_t formatted = (uint32_t)(m.words[3] & 1u);
         g_init_found.fs_mounted = 1u;
         g_init_found.fs_generation = gen;
         g_init_found.fs_formatted = formatted;
@@ -1796,6 +1799,27 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
     rep_num(b, &k, g_init_found.pci_functions);
     rep_str(b, &k, "  windows "); rep_num(b, &k, g_init_found.pci_windows);
     b[k++] = '\n';
+
+    /* If the bus service could not carve every window, the drivers below it
+     * have nothing to map, and everything after this line is a consequence
+     * rather than a finding. */
+    if (g_init_found.pci_carve) {
+        struct iris_msg cv;
+        { uint8_t *z = (uint8_t *)&cv;
+          for (uint32_t i = 0; i < (uint32_t)sizeof(cv); i++) z[i] = 0; }
+        cv.label = PCI_OP_CARVE;
+        cv.word_count = 0u;
+        if (iris_msg_call((long)INIT_SLOT_PCI_EP, &cv) == 0 &&
+            cv.label == PCI_REP_OK) {
+            rep_str(b, &k, " carve stopped ");
+            rep_num(b, &k, g_init_found.pci_carve);
+            rep_str(b, &k, "  gap "); rep_num(b, &k, cv.words[0]);
+            rep_str(b, &k, "  err "); rep_num(b, &k, (uint64_t)(-(long)cv.words[1]));
+            rep_str(b, &k, "  left ");
+            rep_num(b, &k, cv.words[3] > cv.words[2] ? cv.words[3] - cv.words[2] : 0u);
+            b[k++] = '\n';
+        }
+    }
 
     rep_str(b, &k, " disk  found ");
     rep_num(b, &k, g_init_found.blk_disks);
