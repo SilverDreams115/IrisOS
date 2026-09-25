@@ -113,8 +113,7 @@ static long fs_map_blkbuf(uint64_t flags) {
 static int fs_read_sector(uint64_t lba) {
     struct iris_msg r;
     fs_release_blkbuf();
-    if (fs_blk(BLK_OP_READ, lba, 1u, g_disk, (long)FS_SLOT_BLKBUF, &r) != 0)
-        return 0;
+    if (fs_blk(BLK_OP_READ, lba, 1u, g_disk, (long)FS_SLOT_BLKBUF, &r) != 0) return 0;
     if (r.got_caps == 0u) return 0;
     return fs_map_blkbuf(0ull) == 0;    /* read-only: we only copy out of it */
 }
@@ -253,9 +252,16 @@ static void name_pack(uint64_t w0, uint64_t w1, uint8_t out[FS_NAME_BYTES]) {
 }
 
 /* The directory slot holding `name`, or the first free one, or -1. */
+/*
+ * -1 means "no slot", -2 means "the directory could not be READ".
+ *
+ * They were both -1, and the caller reported them as one thing.  A full
+ * directory and a disk that stopped answering are different problems with
+ * different fixes, and collapsing them cost a debugging session.
+ */
 static int dir_find(const uint8_t name[FS_NAME_BYTES], int want_free,
                     uint32_t *out_size) {
-    if (!fs_read_sector(FS_DIR_LBA)) return -1;
+    if (!fs_read_sector(FS_DIR_LBA)) return -2;
     const volatile struct fs_dirent *d =
         (const volatile struct fs_dirent *)(uintptr_t)FS_VA_BLK;
     int first_free = -1;
@@ -331,6 +337,15 @@ void fs_main(iris_cptr_t bootstrap_ch_h) {
             name_pack(m.words[0], m.words[1], name);
             uint32_t len = (uint32_t)m.words[2];
             int slot = (len > 0u && len <= FS_SECTOR) ? dir_find(name, 1, 0) : -1;
+            /* Say WHY on the way out.  A write that answers only "no" leaves
+             * the caller guessing between a bad length, a full directory and a
+             * disk that stopped answering -- three different problems with
+             * three different fixes. */
+            rep.words[0] = (len == 0u || len > FS_SECTOR) ? 1u   /* bad length */
+                         : (slot == -2)                   ? 4u   /* directory unreadable */
+                         : (slot < 0)                     ? 2u   /* no free slot */
+                                                          : 3u;  /* the I/O itself */
+            rep.word_count = 1u;
             if (slot >= 0) {
                 /* The contents first, the directory second.  A crash between
                  * them leaves a file that is not named, which is lost space;
@@ -393,6 +408,24 @@ void fs_main(iris_cptr_t bootstrap_ch_h) {
                 rep.cap_rights = RIGHT_READ;
             }
         }
+
+        /*
+         * Let go of the driver's buffer before waiting for the next request.
+         *
+         * `blk` hands out ONE frame and REVOKES it before each handout -- that
+         * is its ownership rule, and it is the right one.  What it means for a
+         * client is that holding the buffer while idle is holding something
+         * somebody else is entitled to take: the revoke destroys this
+         * service's capability and leaves its MAPPING standing, at an address
+         * it can no longer name to unmap.  Every later read then fails with
+         * BUSY, because the address is occupied by a frame that cannot be
+         * reached.
+         *
+         * It survived for as long as nothing asked this service to do anything
+         * after the test suite had used the disk.  The first thing that did --
+         * writing a boot report at the end of init -- found it immediately.
+         */
+        fs_release_blkbuf();
 
         (void)iris_msg_reply((long)FS_SLOT_REPLY, &rep);
     }

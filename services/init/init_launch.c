@@ -1775,20 +1775,29 @@ static void rep_str(char *b, uint32_t *k, const char *s) {
     while (*s) b[(*k)++] = *s++;
 }
 
-void init_report_findings(void) {
-    char b[128];
-    uint32_t k;
+/*
+ * The report, built ONCE and sent two ways.
+ *
+ * The screen is for whoever is standing at the machine.  The FILE is for
+ * whoever is not: a disk can be carried to another computer and read there,
+ * which is the only channel that survives the machine being switched off and
+ * does not depend on anybody transcribing a photograph correctly.
+ *
+ * One buffer feeds both, deliberately.  Two builders would be two texts, and
+ * the one nobody was looking at would be the one that went stale.
+ */
+static uint32_t init_build_report(char *b, uint32_t cap) {
+    uint32_t k = 0;
+    if (cap < 480u) return 0;
 
-    /* A form feed first: the console starts a clean page, so this block is
-     * read whole instead of straddling the point where the screen wrapped. */
-    init_log("\f[USER][INIT] ==== IRIS on this machine ====\n");
+    rep_str(b, &k, "==== IRIS on this machine ====\n");
 
-    k = 0; rep_str(b, &k, "[USER][INIT]  pci   functions ");
+    rep_str(b, &k, " pci   functions ");
     rep_num(b, &k, g_init_found.pci_functions);
     rep_str(b, &k, "  windows "); rep_num(b, &k, g_init_found.pci_windows);
-    b[k++] = '\n'; b[k] = 0; init_log(b);
+    b[k++] = '\n';
 
-    k = 0; rep_str(b, &k, "[USER][INIT]  disk  found ");
+    rep_str(b, &k, " disk  found ");
     rep_num(b, &k, g_init_found.blk_disks);
     rep_str(b, &k, g_init_found.blk_contained ? "  dma contained" : "  dma open");
     rep_str(b, &k, "  window "); rep_num(b, &k, g_init_found.blk_window);
@@ -1797,7 +1806,106 @@ void init_report_findings(void) {
     } else {
         rep_str(b, &k, "  NO IRIS PARTITION");
     }
-    b[k++] = '\n'; b[k] = 0; init_log(b);
+    b[k++] = '\n';
+
+    rep_str(b, &k, " fs    ");
+    if (g_init_found.fs_foreign) {
+        rep_str(b, &k, "REFUSED a disk that is not ours");
+    } else if (g_init_found.fs_mounted) {
+        rep_str(b, &k, "mounted  generation ");
+        rep_num(b, &k, g_init_found.fs_generation);
+        rep_str(b, &k, g_init_found.fs_formatted ? "  (formatted now)" : "  (already there)");
+        rep_str(b, &k, "  files "); rep_num(b, &k, g_init_found.fs_files);
+    } else {
+        rep_str(b, &k, "not mounted");
+    }
+    b[k++] = '\n';
+
+    rep_str(b, &k, " net   ");
+    if (g_init_found.net_link) {
+        rep_str(b, &k, "up  mac ");
+        /* Octet 0 first: the driver packs the address little-endian, which is
+         * the order the `net:` line prints.  Walking it downward produced a
+         * plausible-looking number that is not this machine's address. */
+        { static const char hx[] = "0123456789abcdef";
+          for (int byte = 0; byte < 6; byte++) {
+              uint32_t v = (uint32_t)((g_init_found.net_mac >> (8 * byte)) & 0xFFu);
+              b[k++] = hx[(v >> 4) & 0xFu]; b[k++] = hx[v & 0xFu];
+          } }
+    } else {
+        rep_str(b, &k, "no card");
+    }
+    b[k++] = '\n';
+
+    rep_str(b, &k, " ip    ");
+    if (g_init_found.ip_ok) {
+        rep_str(b, &k, "udp round trip ok, "); rep_num(b, &k, g_init_found.ip_bytes);
+        rep_str(b, &k, " bytes from a real server");
+    } else {
+        rep_str(b, &k, "no answer");
+    }
+    b[k++] = '\n';
+
+    rep_str(b, &k, "==============================\n");
+    b[k] = 0;
+    return k;
+}
+
+/*
+ * Write the report into IRIS's own filesystem, as a file called `boot.rep`.
+ *
+ * This is the half of the loop that works when nobody is watching.  A machine
+ * with no serial port can be photographed, and a photograph has to be read by
+ * a person and typed back in; a partition can be carried to another computer
+ * and read exactly.  Everything above this line is already true of the screen,
+ * so what this adds is not the information but the ABILITY TO FETCH IT LATER.
+ *
+ * Best effort: a boot that got far enough to mount a filesystem writes it, and
+ * one that did not has the screen and nothing else -- which is the case the
+ * screen exists for.
+ */
+static void init_write_report(const char *text, uint32_t len) {
+    struct iris_msg m;
+    if (!g_init_found.fs_mounted || len == 0u || len > FS_SECTOR) return;
+
+    { uint8_t *z = (uint8_t *)&m;
+      for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+    m.label = FS_OP_BUF;
+    m.recv_slot = (long)INIT_SLOT_FS_BUF;
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_FS_BUF);
+    if (iris_msg_call((long)INIT_SLOT_FS_EP, &m) != 0 || m.label != FS_REP_OK ||
+        m.got_caps == 0u) { init_log("[USER][INIT] dbg: no fs buffer\n"); return; }
+    { long mr = iris_map_frame(INIT_SLOT_FS_BUF, IRIS_CPTR_OWN_VSPACE,
+                       g_init_untyped_c, INIT_SLOT_NET_PT,
+                       0x80B6000000ULL, 4096u, 1ull);
+      if (mr != 0) { char d[64]="[USER][INIT] dbg: map failed "; uint32_t k=0; while(d[k])k++;
+                     rep_num(d,&k,(uint64_t)(-mr)); d[k++]='\n'; d[k]=0; init_log(d); return; } }
+
+    { volatile uint8_t *d = (volatile uint8_t *)(uintptr_t)0x80B6000000ULL;
+      for (uint32_t i = 0; i < len; i++) d[i] = (uint8_t)text[i]; }
+    (void)iris_invoke2((long)INIT_SLOT_FS_BUF, INV_FRAME_UNMAP,
+                       (long)IRIS_CPTR_OWN_VSPACE, (long)0x80B6000000ULL);
+
+    { uint8_t *z = (uint8_t *)&m;
+      for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
+    m.label = FS_OP_WRITE;
+    m.words[0] = 0x7065722E746F6F62ULL;   /* "boot.rep", packed little-endian */
+    m.words[1] = 0;
+    m.words[2] = len;
+    m.word_count = 3u;
+    if (iris_msg_call((long)INIT_SLOT_FS_EP, &m) == 0 && m.label == FS_REP_OK)
+        init_log("[USER][INIT] report written to boot.rep\n");
+    else {
+        char d[64] = "[USER][INIT] report NOT written, reason ";
+        uint32_t k = 0; while (d[k]) k++;
+        rep_num(d, &k, m.words[0]);
+        d[k++] = '\n'; d[k] = 0;
+        init_log(d);
+    }
+}
+
+void init_report_findings(void) {
+    static char body[512];
 
     /* Ask again rather than report what mount saw: the count was taken before
      * this task wrote its own file, so the cached number is always one short of
@@ -1811,44 +1919,13 @@ void init_report_findings(void) {
             g_init_found.fs_files = (uint32_t)sm.words[2];
     }
 
-    k = 0; rep_str(b, &k, "[USER][INIT]  fs    ");
-    if (g_init_found.fs_foreign) {
-        rep_str(b, &k, "REFUSED a disk that is not ours");
-    } else if (g_init_found.fs_mounted) {
-        rep_str(b, &k, "mounted  generation ");
-        rep_num(b, &k, g_init_found.fs_generation);
-        rep_str(b, &k, g_init_found.fs_formatted ? "  (formatted now)" : "  (already there)");
-        rep_str(b, &k, "  files "); rep_num(b, &k, g_init_found.fs_files);
-    } else {
-        rep_str(b, &k, "not mounted");
-    }
-    b[k++] = '\n'; b[k] = 0; init_log(b);
+    uint32_t len = init_build_report(body, (uint32_t)sizeof(body));
+    if (len == 0u) return;
 
-    k = 0; rep_str(b, &k, "[USER][INIT]  net   ");
-    if (g_init_found.net_link) {
-        rep_str(b, &k, "up  mac ");
-        /* Octet 0 first: the driver packs the address little-endian, which is
-         * the order the `net:` line above already prints.  Walking it downward
-         * produced a MAC with its bytes reversed -- a plausible-looking number
-         * that is not this machine's address. */
-        { static const char hx[] = "0123456789abcdef";
-          for (int byte = 0; byte < 6; byte++) {
-              uint32_t v = (uint32_t)((g_init_found.net_mac >> (8 * byte)) & 0xFFu);
-              b[k++] = hx[(v >> 4) & 0xFu]; b[k++] = hx[v & 0xFu];
-          } }
-    } else {
-        rep_str(b, &k, "no card");
-    }
-    b[k++] = '\n'; b[k] = 0; init_log(b);
+    /* A form feed first: the console starts a clean page, so this block is
+     * read whole instead of straddling the point where the screen wrapped. */
+    init_log("\f");
+    init_log(body);
 
-    k = 0; rep_str(b, &k, "[USER][INIT]  ip    ");
-    if (g_init_found.ip_ok) {
-        rep_str(b, &k, "udp round trip ok, "); rep_num(b, &k, g_init_found.ip_bytes);
-        rep_str(b, &k, " bytes from a real server");
-    } else {
-        rep_str(b, &k, "no answer");
-    }
-    b[k++] = '\n'; b[k] = 0; init_log(b);
-
-    init_log("[USER][INIT] ===============================\n");
+    init_write_report(body, len);
 }
