@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #include "framework.h"
 #include <iris/nc/kobject.h>
 #include <iris/nc/kcnode.h>

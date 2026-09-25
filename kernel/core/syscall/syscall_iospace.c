@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * syscall_iospace.c — what a DEVICE may reach (Stage 10-dma, §10.2 steps 4/5).
  *

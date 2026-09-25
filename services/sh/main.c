@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * sh/main.c — ring-3 interactive shell service (Phase 31).
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef IRIS_CONSOLE_EP_PROTO_H
 #define IRIS_CONSOLE_EP_PROTO_H
 

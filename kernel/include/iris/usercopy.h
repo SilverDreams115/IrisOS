@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef IRIS_USERCOPY_H
 #define IRIS_USERCOPY_H
 

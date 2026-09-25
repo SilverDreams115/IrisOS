@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * it_t239_t297.c — tests T239 through T297.
  *

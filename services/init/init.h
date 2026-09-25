@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * init.h — shared primitives for the init service (Phase 14).
  *

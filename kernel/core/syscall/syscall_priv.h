@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * syscall_priv.h — private header shared by all syscall subsystem TUs.
  *

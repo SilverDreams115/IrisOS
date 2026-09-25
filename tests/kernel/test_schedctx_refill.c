@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * test_schedctx_refill.c — sporadic replenishment (Stage 8-mcs).
  *

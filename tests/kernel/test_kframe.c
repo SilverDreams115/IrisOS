@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * test_kframe.c — Phase 5 / 5.1 unit tests for KFrame capability model.
  *

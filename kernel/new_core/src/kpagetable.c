@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * kpagetable.c — the page table as a retyped object (Stage 6-pure, Step 1).
  *

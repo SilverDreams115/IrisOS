@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * kiospace.c — a device's address space (Stage 10-dma, §10.2 steps 4 and 5).
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * fs/main.c — a filesystem that survives the power going off (Stage 10).
  *

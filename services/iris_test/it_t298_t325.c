@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * it_t298_t325.c — tests T298 through T325.
  *

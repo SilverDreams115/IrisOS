@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * syscall_tcb.c — Block 8 (Ph96-101): TCB capability syscalls.
  *

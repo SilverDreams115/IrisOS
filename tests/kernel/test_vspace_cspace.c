@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * test_vspace_cspace.c — Phase 4 unit tests for KVSpace capability model.
  *

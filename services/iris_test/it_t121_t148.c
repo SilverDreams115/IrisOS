@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * it_t121_t148.c — tests T121 through T148.
  *

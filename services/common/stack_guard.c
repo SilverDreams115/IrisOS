@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #include <stdint.h>
 
 /* Canary seeded by RDTSC in each service's entry.S before the first C frame.

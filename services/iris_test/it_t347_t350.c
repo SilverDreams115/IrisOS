@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * it_t347_t350.c — the adversarial phase (SMP roadmap §9.3 step 5).
  *

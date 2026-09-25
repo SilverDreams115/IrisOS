@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * it_t210_t238.c — tests T210 through T238.
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * test_kasidpool.c — address-space identifiers as a capability (ledger A-21).
  *

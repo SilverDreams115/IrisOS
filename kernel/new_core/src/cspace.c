@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/nc/cspace.h>
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kendpoint.h>

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * fpu_switch.S — saving and restoring the FPU/SSE state across a resume.
  *

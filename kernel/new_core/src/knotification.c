@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/nc/knotification.h>
 #include <iris/nc/kendpoint.h>
 #include <iris/irq_routing.h>

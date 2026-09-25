@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * it_t354.c — ring 3 reads the machine's own description (Stage 10).
  *

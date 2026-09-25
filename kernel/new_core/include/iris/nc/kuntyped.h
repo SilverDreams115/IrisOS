@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef IRIS_NC_KUNTYPED_H
 #define IRIS_NC_KUNTYPED_H
 

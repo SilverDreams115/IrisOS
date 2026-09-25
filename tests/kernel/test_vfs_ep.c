@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * test_vfs_ep.c — host unit tests for the VFS endpoint-protocol dispatcher
  * (services/vfs/vfs_ep.c, Phase 7.1).

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef IRIS_IRQ_ROUTING_H
 #define IRIS_IRQ_ROUTING_H
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * fb/main.c — ring-3 framebuffer painting service.
  *

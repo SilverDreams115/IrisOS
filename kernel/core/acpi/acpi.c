@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * acpi.c — RSDP to the two tables the kernel reads, and nothing else.  See
  * iris/acpi.h for why the "nothing else" is the design rather than an

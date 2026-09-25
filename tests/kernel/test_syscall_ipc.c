@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * test_syscall_ipc.c — the IPC authority layer, under host unit test.
  *

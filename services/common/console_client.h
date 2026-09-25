@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef IRIS_CONSOLE_CLIENT_H
 #define IRIS_CONSOLE_CLIENT_H
 

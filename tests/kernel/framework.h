@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /* framework.h — minimal test harness for IRIS kernel unit tests */
 #ifndef IRIS_TEST_FRAMEWORK_H
 #define IRIS_TEST_FRAMEWORK_H

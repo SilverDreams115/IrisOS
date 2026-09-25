@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/nc/kobject.h>
 #include <iris/serial.h>
 #include <iris/nc/kuntyped.h>

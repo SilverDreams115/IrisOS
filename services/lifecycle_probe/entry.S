@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * entry.S — lifecycle_probe test child entry point.
  *

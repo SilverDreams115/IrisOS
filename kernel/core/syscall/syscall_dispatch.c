@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * syscall_dispatch.c — syscall infrastructure: MSR setup, dispatch table.
  *

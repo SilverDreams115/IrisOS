@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef IRIS_COMMON_TIMER_H
 #define IRIS_COMMON_TIMER_H
 

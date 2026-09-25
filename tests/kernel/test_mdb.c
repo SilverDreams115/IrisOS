@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * test_mdb.c — host unit tests for the native MDB/CDT (Phase S3).
  *

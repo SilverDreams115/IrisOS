@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * test_boot_cspace.c — Phase 3.4 + Phase 3.5 unit tests for bootstrap CSpace grants.
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * entry.S — e1000 network service entry point (Stage 10).
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * blk/main.c — an AHCI disk driver in ring 3 (Stage 10).
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/gdt.h>
 #include <iris/tss.h>
 #include <iris/cpu_local.h>

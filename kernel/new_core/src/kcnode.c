@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * kcnode.c — capability nodes + native MDB/CDT (Phase S3).
  *

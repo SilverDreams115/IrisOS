@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * tlb.c — cross-CPU TLB invalidation (SMP roadmap §9.3 step 2).
  *

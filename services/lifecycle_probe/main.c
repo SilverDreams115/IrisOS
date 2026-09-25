@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * lifecycle_probe/main.c — minimal ring-3 test child for the spawn/kill
  * lifecycle harness.

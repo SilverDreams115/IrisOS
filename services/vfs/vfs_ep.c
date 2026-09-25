@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * vfs_ep.c — VFS endpoint-protocol dispatcher (Phase 7.1; grants Phase 28.1).
  *

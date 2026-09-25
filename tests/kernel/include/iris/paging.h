@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * tests/kernel/include/iris/paging.h — the REAL header, plus test-only hooks.
  *

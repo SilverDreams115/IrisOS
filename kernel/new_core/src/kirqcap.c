@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/nc/kirqcap.h>
 #include <iris/nc/kobject.h>
 #include <iris/kslab.h>

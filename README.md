@@ -764,6 +764,30 @@ claim formal verification; its invariants are proven by construction plus
 adversarial tests, and that divergence is registered as permanent in the
 [purity charter](docs/architecture/iris-sel4-purity-charter.md).
 
+## License
+
+Copyright 2026 Mauricio Mendoza Molina.  Licensed under the Apache License,
+Version 2.0 — the full text is in [LICENSE](LICENSE), and every source file
+carries an `SPDX-License-Identifier` line.
+
+**Use it, build on it, ship it — commercially if you like.**  What the license
+asks in return is attribution, and it asks for it in three specific ways:
+
+- keep the copyright notice and a copy of the License with what you distribute
+  (§4(a));
+- **state, prominently, which files you changed** (§4(b)) — this is the clause
+  that distinguishes building on someone's work from presenting it as your own;
+- reproduce [NOTICE](NOTICE) in any distribution that carries one (§4(d)).
+
+It also grants patent rights in both directions (§3), which protects everyone
+who touches the code rather than only its author.
+
+IRIS is an original implementation.  It reuses no seL4 code and reproduces no
+seL4 ABI: what it converges on is the architecture and authority model, and
+that relationship is set out in
+[the purity charter](docs/architecture/iris-sel4-purity-charter.md) rather than
+implied by shared source.
+
 ## Documentation
 
 Three documents are normative and outrank the rest when they disagree:

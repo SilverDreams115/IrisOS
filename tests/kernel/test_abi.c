@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * test_abi.c — the 1.0 surface, asserted rather than described.
  *

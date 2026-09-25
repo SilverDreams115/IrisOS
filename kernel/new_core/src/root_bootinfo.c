@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * root_bootinfo.c — Stage 5, Step 1: building the root task's BootInfo page.
  *

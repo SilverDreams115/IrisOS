@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * it_t353.c — a driver, so that "the DMA is refused" stops being a claim.
  *

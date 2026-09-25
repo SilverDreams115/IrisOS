@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * vfs_ep_proto.h — VFS service protocol over KEndpoint (Phase 7.1).
  *

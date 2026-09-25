@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /* stubs.c — host-side implementations of kernel allocator and globals
  * used by the unit-test build.  Never linked into the real kernel. */
 #include <stdlib.h>

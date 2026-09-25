@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * fbcon.c — the kernel's console of last resort, on the screen.
  *

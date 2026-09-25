@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef IRIS_SVCMGR_PROTO_H
 #define IRIS_SVCMGR_PROTO_H
 

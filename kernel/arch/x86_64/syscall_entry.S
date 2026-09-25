@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 .global syscall_entry
 .extern syscall_dispatch
 .extern syscall_save_user_ctx

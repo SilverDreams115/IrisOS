@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * syscall_reply.c — Block 7 (Ph85-87): seL4-style reply capabilities.
  *

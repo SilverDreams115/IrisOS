@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/nc/kbootcap.h>
 #include <iris/kslab.h>
 #include <iris/nc/kuntyped.h>

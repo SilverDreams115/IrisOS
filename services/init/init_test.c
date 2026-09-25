@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * init_test.c — init runtime probes + S8 exception selftest (Phase 14/Inc 2).
  *

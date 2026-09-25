@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * svc_loader.c — ring-3 ELF loader for IRIS services.
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * test_cnode_guard.c — CNode guards (Stage 8-cap, ledger D-2).
  *

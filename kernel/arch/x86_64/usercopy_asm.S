@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * usercopy_asm.S — the one store the kernel makes into a user address, and
  * the landing pad it uses when that store faults.

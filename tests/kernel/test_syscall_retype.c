@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * test_syscall_retype.c — the OBJECT-CREATION authority, under host unit test.
  *

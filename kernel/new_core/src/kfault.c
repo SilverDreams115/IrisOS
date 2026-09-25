@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * kfault.c — delivering a fault to the handler a thread named, and the two
  * counters that make quota exhaustion and fault handling observable.

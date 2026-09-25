@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * test_root_bootinfo.c — Stage 5, Step 1: the root task's BootInfo builder.
  *

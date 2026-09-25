@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * smp.c — starting application processors (§9.3 step 3) and handing them the
  * dispatcher (§9.3 step 4).

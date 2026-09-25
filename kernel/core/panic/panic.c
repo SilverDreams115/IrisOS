@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/panic.h>
 #include <iris/serial.h>
 #include <stdint.h>

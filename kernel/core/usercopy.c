@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * usercopy.c — the kernel's accesses to user memory, and there is one
  * direction left.

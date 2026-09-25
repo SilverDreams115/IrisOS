@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #include <efi.h>
 #include <efilib.h>
 #include <elf.h>

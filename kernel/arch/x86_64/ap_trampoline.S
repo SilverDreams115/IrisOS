@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * ap_trampoline.S — from 16-bit real mode to 64-bit long mode, for an
  * application processor (SMP roadmap §9.3 step 3).

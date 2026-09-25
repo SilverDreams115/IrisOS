@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * net/main.c — an Intel e1000 driver in ring 3 (Stage 10).
  *

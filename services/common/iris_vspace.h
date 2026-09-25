@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef IRIS_COMMON_VSPACE_H
 #define IRIS_COMMON_VSPACE_H
 #include <iris/invoke.h>

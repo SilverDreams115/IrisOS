@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * main.c — the iris_test suite's entry point and its running order.
  *

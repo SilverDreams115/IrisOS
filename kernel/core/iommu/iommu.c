@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * iommu.c — finding the DMA remapping units (Stage 10-dma, §10.2 step 1).
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/klog.h>
 #include <iris/fbcon.h>
 #include <iris/nc/spinlock.h>

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * entry.S — pager service entry point (Fase 27 model, promoted to its own
  * binary in Fase 28 once the initrd boot-growth fragility was fixed).

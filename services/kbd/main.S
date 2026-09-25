@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * main.S — keyboard service, ring 3 (standalone ELF binary).
  *

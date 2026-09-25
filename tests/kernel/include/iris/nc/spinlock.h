@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /* Test stub — replaces the real spinlock.h for host unit tests.
  * Preserves struct layouts (atomic_flag = 1 byte) but removes CLI/PAUSE asm
  * that traps in user mode.  Single-threaded tests need no actual locking. */

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * test_ipc_cspace.c — Phase 3.2 unit tests for IPC dual-resolve helpers.
  *

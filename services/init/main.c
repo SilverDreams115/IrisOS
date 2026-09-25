@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * main.c — init service boot supervisor (ring-3 ELF, phase 22+).
  *

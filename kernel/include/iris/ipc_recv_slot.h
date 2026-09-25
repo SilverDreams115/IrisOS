@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * ipc_recv_slot.h — userland helpers for the IPC receive-slot protocol
  * (A1.5 kernel mechanism, A1.6 in-tree adoption).

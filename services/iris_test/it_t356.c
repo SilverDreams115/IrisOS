@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * it_t356.c — how fast is it, and a number to regress against (Stage 10).
  *

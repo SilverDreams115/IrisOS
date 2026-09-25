@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * pmm.c — Physical Memory Manager: bitmap + two-phase buddy allocator.
  *

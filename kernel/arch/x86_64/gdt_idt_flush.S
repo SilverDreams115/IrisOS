@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 
 .global gdt_flush
 .global idt_flush

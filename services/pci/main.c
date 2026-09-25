@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * pci/main.c — the PCI bus, as a service (Stage 10).
  *

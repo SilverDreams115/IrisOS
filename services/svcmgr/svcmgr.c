@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/svcmgr_proto.h>
 #include "../common/iris_msg.h"
 #include "service_catalog.h"

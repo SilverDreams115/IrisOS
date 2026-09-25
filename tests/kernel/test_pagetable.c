@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * test_pagetable.c — the page table as a capability (Stage 6-pure).
  *

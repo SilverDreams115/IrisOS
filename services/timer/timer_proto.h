@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef IRIS_TIMER_PROTO_H
 #define IRIS_TIMER_PROTO_H
 

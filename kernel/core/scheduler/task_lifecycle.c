@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #include "scheduler_priv.h"
 #include <iris/smp.h>
 #include <iris/lapic.h>

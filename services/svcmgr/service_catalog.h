@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef SVCMGR_SERVICE_CATALOG_H
 #define SVCMGR_SERVICE_CATALOG_H
 

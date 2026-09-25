@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/pic.h>
 #include <iris/tsc.h>
 #include <iris/klog.h>

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * ip/main.c — ARP, IPv4 and UDP, above a driver that parses nothing.
  *

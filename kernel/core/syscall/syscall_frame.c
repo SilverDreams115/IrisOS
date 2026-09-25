@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * syscall_frame.c — Phase 5 / 5.1: SYS_FRAME_MAP and SYS_FRAME_UNMAP.
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * endpoint_proto.h — the service IPC protocols, carried by message registers.
  *

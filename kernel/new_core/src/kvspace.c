@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/nc/kasidpool.h>
 #include <iris/nc/kvspace.h>
 #include <iris/nc/kframe.h>

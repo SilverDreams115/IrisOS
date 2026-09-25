@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * vfs.c — VFS service, endpoint-only (Phase 7.5).
  *
