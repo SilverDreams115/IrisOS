@@ -1795,14 +1795,39 @@ out:
  * monitor, or photographed, by somebody standing at a machine that has no
  * serial port and no keyboard driver they can use yet.
  */
-static void rep_num(char *b, uint32_t *k, uint64_t v) {
-    if (v == 0u) { b[(*k)++] = '0'; return; }
+/*
+ * The report's writers, and why they carry a capacity.
+ *
+ * They did not.  They appended until the caller stopped calling them, and the
+ * caller was a function whose output grew every time a diagnostic was added to
+ * it -- the scan lines, the AHCI counts, the storage classes, the refused
+ * network card.  Worked out line by line, the worst case reached 768 bytes and
+ * a NUL, into a buffer of 768.
+ *
+ * A bigger buffer is the same defect with a later deadline; it is the sentence
+ * written beside PCI_MAX_WINDOWS one sweep ago, about a number chosen against
+ * one machine and met by the next.  What the writers needed was the ability to
+ * say no, so `cap` is theirs and everything past it is DROPPED rather than
+ * written somewhere else.
+ *
+ * Truncation is the right failure here: the report is a diagnostic, and a
+ * diagnostic that is one line short is still a diagnostic, while one that
+ * overruns its buffer is a fault somewhere unrelated, later.
+ */
+static void rep_num(char *b, uint32_t *k, uint32_t cap, uint64_t v) {
     char t[20]; uint32_t n = 0;
-    while (v > 0u && n < 20u) { t[n++] = (char)('0' + (uint32_t)(v % 10u)); v /= 10u; }
-    while (n > 0u) b[(*k)++] = t[--n];
+    if (v == 0u) { t[n++] = '0'; }
+    else while (v > 0u && n < 20u) { t[n++] = (char)('0' + (uint32_t)(v % 10u)); v /= 10u; }
+    while (n > 0u && *k < cap) b[(*k)++] = t[--n];
 }
-static void rep_str(char *b, uint32_t *k, const char *s) {
-    while (*s) b[(*k)++] = *s++;
+static void rep_str(char *b, uint32_t *k, uint32_t cap, const char *s) {
+    while (*s && *k < cap) b[(*k)++] = *s++;
+}
+/* One character, with the same refusal.  The report appended newlines and hex
+ * digits directly, which walked past `cap` however careful the two writers
+ * above were -- a bound honoured by most of the writers is not a bound. */
+static void rep_ch(char *b, uint32_t *k, uint32_t cap, char c) {
+    if (*k < cap) b[(*k)++] = c;
 }
 
 /*
@@ -1818,14 +1843,17 @@ static void rep_str(char *b, uint32_t *k, const char *s) {
  */
 static uint32_t init_build_report(char *b, uint32_t cap) {
     uint32_t k = 0;
-    if (cap < 720u) return 0;
+    if (cap < 64u) return 0;
+    /* One byte held back for the terminator, so `lim` is the last index a
+     * writer may touch and the NUL always has somewhere to go. */
+    const uint32_t lim = cap - 1u;
 
-    rep_str(b, &k, "==== IRIS on this machine ====\n");
+    rep_str(b, &k, lim, "==== IRIS on this machine ====\n");
 
-    rep_str(b, &k, " pci   functions ");
-    rep_num(b, &k, g_init_found.pci_functions);
-    rep_str(b, &k, "  windows "); rep_num(b, &k, g_init_found.pci_windows);
-    b[k++] = '\n';
+    rep_str(b, &k, lim, " pci   functions ");
+    rep_num(b, &k, lim, g_init_found.pci_functions);
+    rep_str(b, &k, lim, "  windows "); rep_num(b, &k, lim, g_init_found.pci_windows);
+    rep_ch(b, &k, lim, '\n');
 
     /* If the bus service could not carve every window, the drivers below it
      * have nothing to map, and everything after this line is a consequence
@@ -1838,26 +1866,26 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
         cv.word_count = 0u;
         if (iris_msg_call((long)INIT_SLOT_PCI_EP, &cv) == 0 &&
             cv.label == PCI_REP_OK) {
-            rep_str(b, &k, " carve stopped ");
-            rep_num(b, &k, g_init_found.pci_carve);
-            rep_str(b, &k, "  gap "); rep_num(b, &k, cv.words[0]);
-            rep_str(b, &k, "  err "); rep_num(b, &k, (uint64_t)(-(long)cv.words[1]));
-            rep_str(b, &k, "  left ");
-            rep_num(b, &k, cv.words[3] > cv.words[2] ? cv.words[3] - cv.words[2] : 0u);
-            b[k++] = '\n';
+            rep_str(b, &k, lim, " carve stopped ");
+            rep_num(b, &k, lim, g_init_found.pci_carve);
+            rep_str(b, &k, lim, "  gap "); rep_num(b, &k, lim, cv.words[0]);
+            rep_str(b, &k, lim, "  err "); rep_num(b, &k, lim, (uint64_t)(-(long)cv.words[1]));
+            rep_str(b, &k, lim, "  left ");
+            rep_num(b, &k, lim, cv.words[3] > cv.words[2] ? cv.words[3] - cv.words[2] : 0u);
+            rep_ch(b, &k, lim, '\n');
         }
     }
 
-    rep_str(b, &k, " disk  found ");
-    rep_num(b, &k, g_init_found.blk_disks);
-    rep_str(b, &k, g_init_found.blk_contained ? "  dma contained" : "  dma open");
-    rep_str(b, &k, "  window "); rep_num(b, &k, g_init_found.blk_window);
+    rep_str(b, &k, lim, " disk  found ");
+    rep_num(b, &k, lim, g_init_found.blk_disks);
+    rep_str(b, &k, lim, g_init_found.blk_contained ? "  dma contained" : "  dma open");
+    rep_str(b, &k, lim, "  window "); rep_num(b, &k, lim, g_init_found.blk_window);
     if (g_init_found.blk_home) {
-        rep_str(b, &k, "  home "); rep_num(b, &k, g_init_found.blk_home - 1u);
+        rep_str(b, &k, lim, "  home "); rep_num(b, &k, lim, g_init_found.blk_home - 1u);
     } else {
-        rep_str(b, &k, "  NO IRIS PARTITION");
+        rep_str(b, &k, lim, "  NO IRIS PARTITION");
     }
-    b[k++] = '\n';
+    rep_ch(b, &k, lim, '\n');
 
     /*
      * When no partition was found, say what the scan SAW.
@@ -1884,33 +1912,33 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
             sc.word_count = 1u;
             if (iris_msg_call((long)INIT_SLOT_BLK_EP, &sc) == 0 &&
                 sc.label == BLK_REP_OK) {
-                rep_str(b, &k, " ahci  ctrl ");
-                rep_str(b, &k, (sc.words[3] & 0x200u) ? "found" : "NOT FOUND");
-                rep_str(b, &k, "  regs ");
-                rep_str(b, &k, (sc.words[3] & 0x100u) ? "mapped" : "NOT MAPPED");
-                rep_str(b, &k, "  ports ");
-                rep_num(b, &k, (sc.words[3] >> 16) & 0xFFFFu);
-                rep_str(b, &k, "  drives ");
-                rep_num(b, &k, (sc.words[3] >> 32) & 0xFFFFu);
-                b[k++] = '\n';
+                rep_str(b, &k, lim, " ahci  ctrl ");
+                rep_str(b, &k, lim, (sc.words[3] & 0x200u) ? "found" : "NOT FOUND");
+                rep_str(b, &k, lim, "  regs ");
+                rep_str(b, &k, lim, (sc.words[3] & 0x100u) ? "mapped" : "NOT MAPPED");
+                rep_str(b, &k, lim, "  ports ");
+                rep_num(b, &k, lim, (sc.words[3] >> 16) & 0xFFFFu);
+                rep_str(b, &k, lim, "  drives ");
+                rep_num(b, &k, lim, (sc.words[3] >> 32) & 0xFFFFu);
+                rep_ch(b, &k, lim, '\n');
                 /* If no AHCI controller was found, say what storage
                  * controllers DO exist -- 0106xx is AHCI, 0104xx is RAID and
                  * 0101xx is IDE, and the last two mean a firmware setting
                  * rather than a missing driver. */
                 if (!(sc.words[3] & 0x200u)) {
-                    rep_str(b, &k, " pcicls storage devices ");
-                    rep_num(b, &k, (sc.words[2] >> 56) & 0xFFu);
-                    rep_str(b, &k, "  class ");
+                    rep_str(b, &k, lim, " pcicls storage devices ");
+                    rep_num(b, &k, lim, (sc.words[2] >> 56) & 0xFFu);
+                    rep_str(b, &k, lim, "  class ");
                     { static const char hx[] = "0123456789abcdef";
                       uint32_t c0 = (uint32_t)((sc.words[2] >> 32) & 0xFFFFFFu);
                       uint32_t c1 = (uint32_t)((sc.words[2] >> 8) & 0xFFFFFFu);
-                      for (int sh = 20; sh >= 0; sh -= 4) b[k++] = hx[(c0 >> sh) & 0xFu];
-                      b[k++] = ' ';
-                      for (int sh = 20; sh >= 0; sh -= 4) b[k++] = hx[(c1 >> sh) & 0xFu]; }
-                    b[k++] = '\n';
+                      for (int sh = 20; sh >= 0; sh -= 4) rep_ch(b, &k, lim, hx[(c0 >> sh) & 0xFu]);
+                      rep_ch(b, &k, lim, ' ');
+                      for (int sh = 20; sh >= 0; sh -= 4) rep_ch(b, &k, lim, hx[(c1 >> sh) & 0xFu]); }
+                    rep_ch(b, &k, lim, '\n');
                 }
             } else {
-                rep_str(b, &k, " ahci  the disk service did not answer\n");
+                rep_str(b, &k, lim, " ahci  the disk service did not answer\n");
             }
         }
         for (uint32_t d = 0; d < g_init_found.blk_disks && d < 2u; d++) {
@@ -1922,72 +1950,73 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
             sc.word_count = 1u;
             if (iris_msg_call((long)INIT_SLOT_BLK_EP, &sc) != 0 ||
                 sc.label != BLK_REP_OK) continue;
-            rep_str(b, &k, " scan  d"); rep_num(b, &k, d);
-            rep_str(b, &k, " port "); rep_num(b, &k, sc.words[3] & 0xFFu);
-            rep_str(b, &k, (sc.words[0] & 1u) ? "  read ok" : "  READ FAILED");
-            rep_str(b, &k, (sc.words[0] & 2u) ? "  gpt yes" : "  gpt NO");
-            rep_str(b, &k, (sc.words[0] & 4u) ? "  entries ok" : "  ENTRIES NOT READ");
-            rep_str(b, &k, "  count "); rep_num(b, &k, sc.words[1]);
-            rep_str(b, &k, "  t0 ");
+            rep_str(b, &k, lim, " scan  d"); rep_num(b, &k, lim, d);
+            rep_str(b, &k, lim, " port "); rep_num(b, &k, lim, sc.words[3] & 0xFFu);
+            rep_str(b, &k, lim, (sc.words[0] & 1u) ? "  read ok" : "  READ FAILED");
+            rep_str(b, &k, lim, (sc.words[0] & 2u) ? "  gpt yes" : "  gpt NO");
+            rep_str(b, &k, lim, (sc.words[0] & 4u) ? "  entries ok" : "  ENTRIES NOT READ");
+            rep_str(b, &k, lim, "  count "); rep_num(b, &k, lim, sc.words[1]);
+            rep_str(b, &k, lim, "  t0 ");
             { static const char hx[] = "0123456789abcdef";
               for (int by = 0; by < 8; by++) {
                   uint32_t v = (uint32_t)((sc.words[2] >> (8 * by)) & 0xFFu);
-                  b[k++] = hx[(v >> 4) & 0xFu]; b[k++] = hx[v & 0xFu];
+                  rep_ch(b, &k, lim, hx[(v >> 4) & 0xFu]); rep_ch(b, &k, lim, hx[v & 0xFu]);
               } }
-            b[k++] = '\n';
+            rep_ch(b, &k, lim, '\n');
         }
     }
 
-    rep_str(b, &k, " fs    ");
+    rep_str(b, &k, lim, " fs    ");
     if (g_init_found.fs_foreign) {
-        rep_str(b, &k, "REFUSED a disk that is not ours");
+        rep_str(b, &k, lim, "REFUSED a disk that is not ours");
     } else if (g_init_found.fs_mounted) {
-        rep_str(b, &k, "mounted  generation ");
-        rep_num(b, &k, g_init_found.fs_generation);
-        rep_str(b, &k, g_init_found.fs_formatted ? "  (formatted now)" : "  (already there)");
-        rep_str(b, &k, "  files "); rep_num(b, &k, g_init_found.fs_files);
+        rep_str(b, &k, lim, "mounted  generation ");
+        rep_num(b, &k, lim, g_init_found.fs_generation);
+        rep_str(b, &k, lim, g_init_found.fs_formatted ? "  (formatted now)" : "  (already there)");
+        rep_str(b, &k, lim, "  files "); rep_num(b, &k, lim, g_init_found.fs_files);
     } else {
-        rep_str(b, &k, "not mounted");
+        rep_str(b, &k, lim, "not mounted");
     }
-    b[k++] = '\n';
+    rep_ch(b, &k, lim, '\n');
 
-    rep_str(b, &k, " net   ");
+    rep_str(b, &k, lim, " net   ");
     if (!g_init_found.net_link && g_init_found.net_seen) {
         /* "no card" and "a card I do not know" are different facts, and only
          * the second one tells you what to write next. */
-        rep_str(b, &k, "found ");
-        rep_num(b, &k, g_init_found.net_seen);
-        rep_str(b, &k, " ethernet, none an e1000  first ");
+        rep_str(b, &k, lim, "found ");
+        rep_num(b, &k, lim, g_init_found.net_seen);
+        rep_str(b, &k, lim, " ethernet, none an e1000  first ");
         { static const char hx[] = "0123456789abcdef";
           uint32_t vd = g_init_found.net_vd;
-          for (int sh = 12; sh >= 0; sh -= 4) b[k++] = hx[(vd >> sh) & 0xFu];
-          b[k++] = ':';
-          for (int sh = 28; sh >= 16; sh -= 4) b[k++] = hx[(vd >> sh) & 0xFu]; }
+          for (int sh = 12; sh >= 0; sh -= 4) rep_ch(b, &k, lim, hx[(vd >> sh) & 0xFu]);
+          rep_ch(b, &k, lim, ':');
+          for (int sh = 28; sh >= 16; sh -= 4) rep_ch(b, &k, lim, hx[(vd >> sh) & 0xFu]); }
     } else if (g_init_found.net_link) {
-        rep_str(b, &k, "up  mac ");
+        rep_str(b, &k, lim, "up  mac ");
         /* Octet 0 first: the driver packs the address little-endian, which is
          * the order the `net:` line prints.  Walking it downward produced a
          * plausible-looking number that is not this machine's address. */
         { static const char hx[] = "0123456789abcdef";
           for (int byte = 0; byte < 6; byte++) {
               uint32_t v = (uint32_t)((g_init_found.net_mac >> (8 * byte)) & 0xFFu);
-              b[k++] = hx[(v >> 4) & 0xFu]; b[k++] = hx[v & 0xFu];
+              rep_ch(b, &k, lim, hx[(v >> 4) & 0xFu]); rep_ch(b, &k, lim, hx[v & 0xFu]);
           } }
     } else {
-        rep_str(b, &k, "no card");
+        rep_str(b, &k, lim, "no card");
     }
-    b[k++] = '\n';
+    rep_ch(b, &k, lim, '\n');
 
-    rep_str(b, &k, " ip    ");
+    rep_str(b, &k, lim, " ip    ");
     if (g_init_found.ip_ok) {
-        rep_str(b, &k, "udp round trip ok, "); rep_num(b, &k, g_init_found.ip_bytes);
-        rep_str(b, &k, " bytes from a real server");
+        rep_str(b, &k, lim, "udp round trip ok, "); rep_num(b, &k, lim, g_init_found.ip_bytes);
+        rep_str(b, &k, lim, " bytes from a real server");
     } else {
-        rep_str(b, &k, "no answer");
+        rep_str(b, &k, lim, "no answer");
     }
-    b[k++] = '\n';
+    rep_ch(b, &k, lim, '\n');
 
-    rep_str(b, &k, "==============================\n");
+    rep_str(b, &k, lim, "==============================\n");
+    if (k > lim) k = lim;
     b[k] = 0;
     return k;
 }
@@ -2007,20 +2036,34 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
  */
 static void init_write_report(const char *text, uint32_t len) {
     struct iris_msg m;
-    if (!g_init_found.fs_mounted || len == 0u || len > FS_SECTOR) return;
+    if (!g_init_found.fs_mounted || len == 0u) return;
+    /*
+     * A file here is one sector.  The report can be longer than that -- it is,
+     * on any machine that prints the diagnostic lines -- and the previous rule
+     * was to write NOTHING when it did not fit, silently, which is the same
+     * shape as every other ceiling this sweep has been closing.
+     *
+     * What fits is written, and the fact that it was cut is said out loud.
+     * The screen carries the whole of it either way; this file is the copy
+     * that can be read from another computer, and a copy of the first five
+     * hundred bytes is worth more than no copy.
+     */
+    int cut = 0;
+    if (len > FS_SECTOR) { len = FS_SECTOR; cut = 1; }
 
     { uint8_t *z = (uint8_t *)&m;
       for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
     m.label = FS_OP_BUF;
     m.recv_slot = (long)INIT_SLOT_FS_BUF;
     (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_FS_BUF);
+    /* Silent on failure by design: a boot that got far enough to mount a
+     * filesystem writes the report, and one that did not has the screen --
+     * which is the case the screen exists for. */
     if (iris_msg_call((long)INIT_SLOT_FS_EP, &m) != 0 || m.label != FS_REP_OK ||
-        m.got_caps == 0u) { init_log("[USER][INIT] dbg: no fs buffer\n"); return; }
-    { long mr = iris_map_frame(INIT_SLOT_FS_BUF, IRIS_CPTR_OWN_VSPACE,
+        m.got_caps == 0u) return;
+    if (iris_map_frame(INIT_SLOT_FS_BUF, IRIS_CPTR_OWN_VSPACE,
                        g_init_untyped_c, INIT_SLOT_NET_PT,
-                       0x80B6000000ULL, 4096u, 1ull);
-      if (mr != 0) { char d[64]="[USER][INIT] dbg: map failed "; uint32_t k=0; while(d[k])k++;
-                     rep_num(d,&k,(uint64_t)(-mr)); d[k++]='\n'; d[k]=0; init_log(d); return; } }
+                       0x80B6000000ULL, 4096u, 1ull) != 0) return;
 
     { volatile uint8_t *d = (volatile uint8_t *)(uintptr_t)0x80B6000000ULL;
       for (uint32_t i = 0; i < len; i++) d[i] = (uint8_t)text[i]; }
@@ -2035,18 +2078,23 @@ static void init_write_report(const char *text, uint32_t len) {
     m.words[2] = len;
     m.word_count = 3u;
     if (iris_msg_call((long)INIT_SLOT_FS_EP, &m) == 0 && m.label == FS_REP_OK)
-        init_log("[USER][INIT] report written to boot.rep\n");
+        init_log(cut ? "[USER][INIT] report written to boot.rep (CUT to one sector)\n"
+                     : "[USER][INIT] report written to boot.rep\n");
     else {
         char d[64] = "[USER][INIT] report NOT written, reason ";
         uint32_t k = 0; while (d[k]) k++;
-        rep_num(d, &k, m.words[0]);
+        rep_num(d, &k, (uint32_t)sizeof(d) - 1u, m.words[0]);
         d[k++] = '\n'; d[k] = 0;
         init_log(d);
     }
 }
 
 void init_report_findings(void) {
-    static char body[768];
+        /* Sized with room over the worst case (measured line by line at 769
+     * bytes when every conditional line prints its widest value), and the
+     * writers refuse to pass it either way -- the size is comfort, the bound
+     * is the guarantee. */
+    static char body[1024];
 
     /* Ask again rather than report what mount saw: the count was taken before
      * this task wrote its own file, so the cached number is always one short of
