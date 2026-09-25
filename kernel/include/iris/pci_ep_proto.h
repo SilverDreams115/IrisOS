@@ -60,7 +60,18 @@
  * them the endpoint — this service reports the machine, it does not arbitrate.
  */
 #define PCI_SLOT_BAR_BASE  32u
-#define PCI_MAX_WINDOWS    16u
+/*
+ * 16 was not a near miss on the first real machine -- it was 14 of 16 used.
+ * One more device with a memory BAR and the carve would have stopped with
+ * PCI_CARVE_FULL, and the drivers above would have found nothing to map for
+ * reasons that have nothing to do with them.
+ *
+ * A number chosen against one machine and then met by the next one is not a
+ * limit, it is a coincidence with a deadline.  64 is chosen against the shape
+ * of the problem instead: a desktop with bridged storage, graphics, audio,
+ * USB controllers and a NIC lands in the tens.
+ */
+#define PCI_MAX_WINDOWS    64u
 
 /* ── limits, which are part of the contract ─────────────────────────────── */
 /*

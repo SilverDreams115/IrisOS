@@ -48,6 +48,9 @@ struct iris_cpu_desc {
 uint32_t acpi_parse_madt(uint64_t rsdp_phys);
 
 uint32_t acpi_cpu_count(void);
+/* Processors the firmware described that this build could not hold.
+ * Non-zero means the count above is a ceiling, not a census. */
+uint32_t acpi_cpu_dropped_count(void);
 const struct iris_cpu_desc *acpi_cpu(uint32_t index);
 
 /*

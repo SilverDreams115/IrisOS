@@ -89,6 +89,10 @@ struct pci_fn {
 
 static struct pci_fn g_fn[PCI_MAX_FUNCTIONS];
 static uint32_t      g_fn_count;
+/* Set when the table filled and the walk stopped early.  Without it
+ * "functions 96" reads like a census when it is a ceiling -- the same shape
+ * that made a sixteen-thread machine report eight processors. */
+static uint32_t      g_fn_truncated;
 
 /* A window the service carved a frame over. */
 struct pci_window {
@@ -213,9 +217,11 @@ static void pci_scan_bus(uint32_t bus) {
     if (bus_seen(bus)) return;
     bus_mark(bus);
 
-    for (uint32_t dev = 0; dev < 32u && g_fn_count < PCI_MAX_FUNCTIONS; dev++) {
+    for (uint32_t dev = 0; dev < 32u; dev++) {
+        if (g_fn_count >= PCI_MAX_FUNCTIONS) { g_fn_truncated = 1u; return; }
         uint32_t fn_max = 1u;
-        for (uint32_t fn = 0; fn < fn_max && g_fn_count < PCI_MAX_FUNCTIONS; fn++) {
+        for (uint32_t fn = 0; fn < fn_max; fn++) {
+            if (g_fn_count >= PCI_MAX_FUNCTIONS) { g_fn_truncated = 1u; return; }
             uint32_t bdf = (bus << 8) | (dev << 3) | fn;
             uint32_t vd  = cfg_read(bdf, CFG_VENDOR);
             if (vd == 0xFFFFFFFFu || vd == 0u) continue;
@@ -408,7 +414,9 @@ void pci_main(iris_cptr_t bootstrap_ch_h) {
         case PCI_OP_COUNT:
             rep.label      = PCI_REP_OK;
             rep.words[0]   = g_fn_count;
-            rep.words[1]   = PCI_MAX_FUNCTIONS;
+            /* The high bit says the walk STOPPED because the table filled,
+             * so the count beside it is a ceiling rather than a total. */
+            rep.words[1]   = PCI_MAX_FUNCTIONS | (g_fn_truncated ? 0x80000000u : 0u);
             /* How many windows were CARVED.  A machine where the scan found
              * devices and the carve produced nothing is a machine where every
              * claim will be refused, and the difference between that and "no

@@ -473,10 +473,21 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
 
         /* 4. Collect PT_LOAD segments; compute max virtual end for bias. */
         uint64_t max_vend = 0;
-        for (uint16_t i = 0; i < eh->e_phnum && seg_count < SL_MAX_SEGS; i++) {
+        for (uint16_t i = 0; i < eh->e_phnum; i++) {
             const Elf64_Phdr *ph = &phs[i];
             uint64_t map_base, map_end, map_size, page_off;
             if (ph->p_type != PT_LOAD || ph->p_memsz == 0) continue;
+            /*
+             * REFUSE an image with more loadable segments than there is room
+             * for, rather than loading the first eight of them.
+             *
+             * The loop used to stop at the ceiling and carry on, which loads a
+             * program with pieces missing -- and a program missing a segment
+             * does not fail here, it fails later, somewhere else, as a fault
+             * at an address nobody mapped.  Every ELF in this tree has two or
+             * three; that is a fact about this tree and not about ELF.
+             */
+            if (seg_count >= SL_MAX_SEGS) goto out;
             if (ph->p_filesz > ph->p_memsz) goto out;
             map_base = sl_page_floor(ph->p_vaddr);
             map_end  = sl_page_ceil(ph->p_vaddr + ph->p_memsz);

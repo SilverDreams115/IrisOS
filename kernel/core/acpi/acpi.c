@@ -100,12 +100,27 @@ static const void *phys_ptr(uint64_t phys) {
     return (const void *)(uintptr_t)PHYS_TO_VIRT(phys);
 }
 
+/*
+ * Processors the firmware described and this build cannot hold.
+ *
+ * Counted, because the alternative is a number that looks like a fact.
+ * `acpi_cpu_count()` returns what was RECORDED, so on a machine with sixteen
+ * threads and MAX_CPUS of eight the boot log said "processors: 8" -- which is
+ * indistinguishable from an eight-thread machine, and wrong in a way nothing
+ * could notice.  A ceiling that is reached has to say so.
+ */
+static uint32_t acpi_cpu_dropped;
+uint32_t acpi_cpu_dropped_count(void) { return acpi_cpu_dropped; }
+
 static void madt_add(uint32_t apic_id, uint32_t flags) {
-    if (acpi_cpu_n >= MAX_CPUS) return;      /* more CPUs than IRIS supports */
-    if (apic_id > 0xFFu) return;             /* x2APIC ids beyond 8 bits: the
+    if (acpi_cpu_n >= MAX_CPUS) { acpi_cpu_dropped++; return; }
+    if (apic_id > 0xFFu) {                   /* x2APIC ids beyond 8 bits: the
                                               * IPI path addresses by 8-bit
                                               * destination, so an id it cannot
                                               * name is one it cannot start */
+        acpi_cpu_dropped++;
+        return;
+    }
     acpi_cpus[acpi_cpu_n].lapic_id = (uint8_t)apic_id;
     acpi_cpus[acpi_cpu_n].enabled  = (flags & MADT_LAPIC_ENABLED) ? 1u : 0u;
     acpi_cpu_n++;
@@ -241,6 +256,14 @@ uint32_t acpi_parse_madt(uint64_t rsdp_phys) {
 
     klog_write("[IRIS][ACPI] processors: ");
     klog_write_dec(acpi_cpu_n);
+    if (acpi_cpu_dropped != 0u) {
+        /* The number above is a CEILING, not a census, and saying so is the
+         * whole point: without this a sixteen-thread machine and an
+         * eight-thread machine print the same line. */
+        klog_write(" (");
+        klog_write_dec(acpi_cpu_dropped);
+        klog_write(" more this build cannot hold)");
+    }
     klog_write("\n");
     return acpi_cpu_n;
 }
