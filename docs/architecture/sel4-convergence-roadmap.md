@@ -74,7 +74,7 @@ against seL4 turned up, including one A9 defect it fixed.
 | 9 — SMP | ✅ **All 5 steps done.**  §9.1 hierarchy and §9.2 catalog written and enforced (`make check-locks`); step 1 (the one-core kernel made SMP-correct), step 2 (TLB shootdown), step 3 (APs discovered and started), step 4 (they schedule — `online=4 dispatching=4`), step 5 (the adversarial phase — four tests aiming four cores at one object, which found four real defects: a rollback that freed another core's memory, a release-then-use, a teardown gate that was not atomic, and a dispatch that overwrote a Suspend).  Full suite green on `-smp 1` and `-smp 4`.  What remains is NOT mechanism: the model-based fuzzer is not yet aimed at N cores, and §9.4's limit stands — TCG interleaves, it does not reorder |
 | 10-dma — device authority must be containable | ✅ **All 6 steps done**, a device is watched being refused.  The DMAR is parsed and the units probed; translation is ENABLED with every device blocked; `KIOSpace` and `KIOPageTable` are retyped objects and `IOSpaceControl` a BootInfo authority; a frame mapped into an IOSpace is what a device may reach, and unmapping or destroying the space takes it back — from the unit's translation cache as well as the table.  **T351** pins containment, **T352** the whole arc, and **T353** is a ring-3 driver for a real bus master that is refused without a mapping, reaches exactly the frame it is granted, and is refused again when it is revoked — on a machine with no unit the same driver reaches memory nobody granted it.  The driver cost three pre-existing defects: an NX bit riding in every physical address `paging_virt_to_phys` returned, a port ABI with no width above a byte, and no way to map a BAR uncached |
 | 10-abi — freeze the ABI | ✅ **CLOSED.**  The surface is four syscall numbers and 77 contiguous invocation labels, declared in `iris/abi.h` and ASSERTED by `tests/kernel/test_abi.c` over every number the dispatcher can see — a description nothing checks is a description that goes stale, which is the lesson the stage was taught by its own opening paragraph.  BootInfo names the ABI and the root task refuses a major it was not built for.  The naming residue of the retired handle namespace is gone, and removing it found a capability argument being truncated to 32 bits |
-| 10 — General-purpose platform | ◐ **8 of 9 settled.**  Delivered and gated: `pci` (the bus is a service and the only task that reaches configuration space), ACPI reachable from ring 3, `blk` (an AHCI driver whose controller's DMA is contained, with a write path and FLUSH CACHE), `fs` (a filesystem on a disk IRIS owns, proven by booting twice and reading the image from the host), `net` + `ip` (an e1000 driver and, above it, ARP/IPv4/UDP — gated by a TFTP read against a server that is not this machine), and **T356**, which measures the system and fails on order-of-magnitude regressions.  POSIX is DECLINED on the record (charter §6).  **Real hardware cannot be done in this environment** — every gate runs under QEMU, and that is the one item no amount of work here closes |
+| 10 — General-purpose platform | ◐ **8 of 9 settled.**  Delivered and gated: `pci` (the bus is a service and the only task that reaches configuration space), ACPI reachable from ring 3, `blk` (an AHCI driver whose controller's DMA is contained, with a write path and FLUSH CACHE), `fs` (a filesystem on a disk IRIS owns, proven by booting twice and reading the image from the host), `net` + `ip` (an e1000 driver and, above it, ARP/IPv4/UDP — gated by a TFTP read against a server that is not this machine), and **T356**, which measures the system and fails on order-of-magnitude regressions.  POSIX is DECLINED on the record (charter §6).  **Real hardware is no longer untried**: IRIS booted a real desktop on 2026-09-25, found its disks and wrote to its own partition — but that is one machine observed once, not support, and every automated gate still runs under QEMU |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
 A9, A10** (authority); **O2–O6** (objects); **I1–I7** (IPC); **S1–S5**
@@ -2795,7 +2795,7 @@ that survives because nobody re-adds it.)
 | networking | ✅ **a driver and a stack, as two services.**  `services/net` is an e1000 driver in ring 3 that moves Ethernet frames and parses nothing; `services/ip` is ARP, IPv4 and UDP ABOVE it, holding an endpoint to the driver and no hardware authority of its own.  The gate is a TFTP read completed against QEMU's gateway — a peer that is not this machine accepted the ARP, the IPv4 checksum and the UDP pseudo-header checksum, and answered.  There is no TCP, no fragment reassembly and no sockets, which is stated below rather than rounded |
 | POSIX personality | ⊘ **declined, and recorded as a deliberate divergence** in charter §6.  It needs no kernel change — that is the point of the capability model — and all of it is policy.  The sharper objection: POSIX's ambient authority is the thing thirteen stages removed |
 | performance | ✅ **T356** measures an invocation, an IPC round trip and a disk read, prints the numbers, and fails on order-of-magnitude regressions.  They are TCG figures and are not presented as hardware ones |
-| real hardware | ⛔ **cannot be done from this environment.**  Every gate in this repository runs under QEMU.  What is established is that IRIS is correct against QEMU's implementation of x86-64, VT-d and AHCI; real errata, real timing and real firmware are not exercised, and nothing here should be read as if they were.  What HAS been done is to make the first attempt yield a diagnosis instead of a black screen — see *Preparing for a machine this repository cannot test on*, below |
+| real hardware | ◐ **it has run on one, once.**  On 2026-09-25 IRIS booted a real x86-64 desktop from a partition on its own disk: the kernel came up, the screen carried the log (there is no serial port on that machine), `pci` enumerated 41 functions across PCI bridges, `blk` found both SATA drives, `fs` recognised the IRIS partition, formatted it, and wrote a report into it — which was then read back from the other operating system, off the medium, with nobody transcribing anything.  What that is NOT is real-hardware SUPPORT: it is one machine, observed once, with no gate.  Every automated check in this repository still runs under QEMU.  Its network card is not an e1000, so `net` found nothing and `ip` had nothing to say.  The honest claim is that the item moved from *cannot be attempted* to *attempted, and here is exactly what happened* |
 
 ### What the delivered items are
 
@@ -2917,6 +2917,27 @@ loses a character is a diagnostic and a log that hangs is an outage.
 What is still untouched, and would be the next thing to break on a real
 machine: nobody has interrupts, `pci` walks bus 0 only, and `blk` assumes the
 first SATA controller answers the way QEMU's does.
+
+### What the first real machine actually taught
+
+Every defect the hardware found was the same shape, and naming the shape is
+worth more than the list: **something true of the machine this was developed
+on, written down as though it were true of machines.**
+
+| what broke | the assumption under it |
+|---|---|
+| `pci` saw 24 functions and no storage controller at all | the bus is bus 0.  A desktop keeps storage behind PCI-to-PCI bridges |
+| the carve stopped on a gap of 232 pages and 256 bytes | gaps between BAR windows are page-sized.  A PCI BAR is aligned to its own SIZE, so a 256-byte register block is not |
+| `fs` reported a disk REFUSED on a machine with no disks | a message has a fifth word.  It has four, and the write went past the array — the same shape the audit had already found in `blk` and fixed |
+| the report said `window 0  home 0` | the data disk is disk 1.  On that machine it was disk 0 |
+| the scan diagnostic printed nothing in the failing case | a failure worth describing has at least one disk |
+
+None of them is exotic.  All of them passed every gate, on every
+configuration, for as long as they existed — because the gates run on the
+machine the assumptions came from.  That is not an argument against the gates,
+which caught real defects repeatedly; it is the limit of what a uniform test
+environment can tell you, and it is the same limit the untyped-allocator
+overflow demonstrated from the other direction.
 
 ### What is NOT claimed
 
