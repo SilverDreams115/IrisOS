@@ -711,9 +711,12 @@ IRIS has booted one real x86-64 desktop, on 2026-09-25: the kernel came up, the
 screen carried the log (that machine has no serial port), the bus service
 enumerated it across its PCI bridges, the disk driver found both SATA drives,
 and the filesystem formatted a partition of its own and wrote a report into it
-that was read back afterwards from the other operating system.  That is one
-machine observed once, not hardware support — every automated gate here still
-runs under QEMU, and that machine's network card is not an e1000.
+that was read back afterwards from the other operating system.  A second boot
+found the filesystem it had made rather than formatting again, so what it wrote
+survived the power going off — the claim `make smoke-persist` makes under QEMU,
+made on metal.  That is still one machine and there is no gate on it: every
+automated check here runs under QEMU, and that machine's network card is not an
+e1000.
 
 ## Positioning
 
