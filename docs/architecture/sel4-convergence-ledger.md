@@ -171,6 +171,61 @@ UT-TOP-1..5 and T298.
 
 ## Structural divergences from seL4
 
+### A-45 — retype handed out memory it had not cleared  ✅ CLOSED
+
+**Found by the roadmap review, checking a property seL4 guarantees and no row
+had claimed.**
+
+`kuntyped_bump_alloc_phys_page` is the carve that becomes a `KFrame`, and a
+frame is the one object ring 3 reads directly.  It returned its region without
+clearing it.
+
+The top carve — kernel object headers — zeroes unconditionally, and the
+comment there reads "unlike the bottom carve this is never handed to userland
+as device memory".  That is the reason the BOTTOM carve needed clearing more,
+not less, and it was the only one without it.
+
+**Two ways a principal read bytes nobody gave it.**  A boot Untyped comes
+straight from the buddy allocator, so the first frame carved out of it carries
+whatever the firmware and the loader left in that RAM.  And
+`SYS_UNTYPED_RESET` rewinds the watermark without touching the region: a frame
+retyped after a reset is the previous holder's frame, byte for byte.  An
+Untyped capability can be revoked from one principal and delegated to another,
+and the generation counter witnesses the reuse without preventing the
+disclosure.
+
+seL4 permits neither — memory is cleared before it can be observed through a
+new capability.
+
+**What was already safe, and why it hid this.**  `kuntyped_bump_alloc` (the
+generic bottom carve) zero-fills, and `retype_page_table` calls
+`kpagetable_zero` explicitly — which matters, because a page table over stale
+bytes is not a disclosure but a set of PTEs mapping arbitrary physical memory.
+Every neighbouring path did the right thing, which is why the frame path read
+as if it must be doing it too.
+
+**The repair**: the carve clears what it hands out, which is the cheapest
+place because every frame in the system passes through that line.  **Device
+Untypeds are excluded and must be** — their region is MMIO, the bytes are
+registers, and writing zeroes across them is not sanitisation but a series of
+device commands.  seL4 excludes device untyped for the same reason.  The clear
+runs after the lock is dropped: the watermark has already moved, so the region
+belongs to that caller, and a page-sized clear with interrupts off is latency
+paid for nothing.
+
+**Tests**: `tests/kernel/test_kuntyped.c` fills a region with `0xEE`, carves a
+page and asserts it reads zero; writes `0xA5` across that page, rewinds the
+watermark the way `SYS_UNTYPED_RESET` does, carves the SAME page again and
+asserts the secret did not survive; and asserts a device Untyped's bytes are
+left exactly as they were.  Verified to fail both zeroing assertions against
+the unpatched carve.
+
+**The host harness had to become more honest to run it.**  Several suites
+build an Untyped over a made-up physical address and assert on it, and the
+host's `PHYS_TO_VIRT` is the identity — harmless while nothing wrote through
+those addresses.  `test_main` now maps real memory under that range, which is
+what the kernel's own `PHYS_TO_VIRT` always has.
+
 ### A-44 — an endpoint wait queue named threads it did not hold  ✅ CLOSED
 
 **Found by extending A-43.  Fixed on the second attempt; the first was

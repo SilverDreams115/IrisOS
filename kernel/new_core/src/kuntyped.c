@@ -497,5 +497,42 @@ uint64_t kuntyped_bump_alloc_phys_page(struct KUntyped *u, uint64_t size) {
     }
     u->used = aligned_start + size;
     irq_spinlock_unlock(&u->lock, irqfl);
+
+    /*
+     * Ledger A-45 — retype hands out ZEROED memory.
+     *
+     * This is the carve that becomes a FRAME, and a frame is the one object
+     * ring 3 reads directly.  Nothing cleared it: the top carve zeroes because
+     * a kernel header over stale bytes is a half-built object, and the comment
+     * there says "unlike the bottom carve this is never handed to userland" --
+     * which is exactly the reason the bottom carve needed it more, not less.
+     *
+     * Two ways a principal read bytes it was never given.  A boot Untyped
+     * comes straight from the buddy allocator, so its first frame carries
+     * whatever the firmware and the loader left in that RAM.  And
+     * `SYS_UNTYPED_RESET` rewinds this watermark without touching the region,
+     * so a frame retyped after a reset is the previous holder's frame, byte
+     * for byte -- an Untyped can be revoked from one principal and delegated
+     * to another, and the generation counter witnesses the reuse without
+     * preventing the disclosure.
+     *
+     * seL4 does not allow either; memory is cleared before it can be observed
+     * through a new capability.  Here that is cheapest at the carve, because
+     * every frame in the system passes through this line.
+     *
+     * DEVICE Untypeds are excluded, and must be: their region is MMIO, the
+     * bytes are registers, and writing zeroes across them is not a
+     * sanitisation but a series of device commands.  seL4 does not clear
+     * device untyped either, for the same reason.
+     *
+     * Zeroed AFTER the lock: the watermark has already moved, so this region
+     * belongs to this caller and no other core can be handed it meanwhile --
+     * and a page-sized memset with interrupts off is a latency cost paid for
+     * nothing.
+     */
+    if (!u->is_device) {
+        uint8_t *p = (uint8_t *)(uintptr_t)PHYS_TO_VIRT(aligned_abs);
+        for (uint64_t i = 0; i < size; i++) p[i] = 0;
+    }
     return aligned_abs;
 }

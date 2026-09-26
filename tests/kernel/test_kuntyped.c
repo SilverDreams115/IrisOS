@@ -224,4 +224,58 @@ void test_kuntyped(void) {
          * the ordinary case the wrapping one was hiding. */
         ASSERT_EQ(kuntyped_bump_alloc_phys_page(ov, RSZ + 4096u), 0u);
     }
+
+    /* ── A-45: a retyped frame page reads ZERO ─────────────────────────────
+     *
+     * The bottom carve is what becomes a KFrame, and a frame is the one object
+     * ring 3 reads directly.  A boot Untyped comes straight from the buddy
+     * allocator, and SYS_UNTYPED_RESET rewinds the watermark without touching
+     * the region -- so without this, a frame is whatever the firmware, the
+     * loader, or the previous holder left behind.
+     */
+    {
+        enum { ZSZ = 3u * 4096u };
+        static uint8_t zbuf[ZSZ] __attribute__((aligned(4096)));
+        for (uint32_t i = 0; i < ZSZ; i++) zbuf[i] = 0xEE;
+
+        struct KUntyped *zu = kuntyped_create((uint64_t)(uintptr_t)zbuf, ZSZ, 0);
+        ASSERT_NOT_NULL(zu);
+
+        uint64_t pa = kuntyped_bump_alloc_phys_page(zu, 4096u);
+        ASSERT_TRUE(pa != 0u);
+        const uint8_t *pg = (const uint8_t *)(uintptr_t)pa;
+        int dirty = 0;
+        for (uint32_t i = 0; i < 4096u; i++) if (pg[i] != 0) { dirty = 1; break; }
+        ASSERT_EQ(dirty, 0);                     /* A-45: handed out clean */
+
+        /* ...and again across a RESET, which is the reuse path: write the page
+         * full of secrets, rewind, take it back, and it must not be there. */
+        for (uint32_t i = 0; i < 4096u; i++) ((uint8_t *)(uintptr_t)pa)[i] = 0xA5;
+        zu->used = 0; zu->used_top = 0;          /* what SYS_UNTYPED_RESET does */
+        uint64_t pa2 = kuntyped_bump_alloc_phys_page(zu, 4096u);
+        ASSERT_EQ(pa2, pa);                      /* the same physical page */
+        dirty = 0;
+        for (uint32_t i = 0; i < 4096u; i++)
+            if (((const uint8_t *)(uintptr_t)pa2)[i] != 0) { dirty = 1; break; }
+        ASSERT_EQ(dirty, 0);                     /* the secret did not survive */
+
+    }
+
+    /* ── A-45: a DEVICE Untyped is left alone ──────────────────────────────
+     * Its bytes are registers, not storage.  Zeroing them would not sanitise
+     * anything; it would issue a series of device writes.  seL4 excludes
+     * device untyped for the same reason.
+     */
+    {
+        enum { DSZ = 2u * 4096u };
+        static uint8_t dbuf[DSZ] __attribute__((aligned(4096)));
+        for (uint32_t i = 0; i < DSZ; i++) dbuf[i] = 0xC7;
+
+        struct KUntyped *du = kuntyped_create((uint64_t)(uintptr_t)dbuf, DSZ, 1);
+        ASSERT_NOT_NULL(du);
+        uint64_t dpa = kuntyped_bump_alloc_phys_page(du, 4096u);
+        ASSERT_TRUE(dpa != 0u);
+        ASSERT_EQ(((const uint8_t *)(uintptr_t)dpa)[0], (uint8_t)0xC7);
+        ASSERT_EQ(((const uint8_t *)(uintptr_t)dpa)[4095], (uint8_t)0xC7);
+    }
 }
