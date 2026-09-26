@@ -611,14 +611,23 @@ uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * Checked BEFORE `started` is set, so a refusal does not freeze the entry
      * it just refused to run.
      */
+    /*
+     * A-42: the witness is read and `started` is published under the thread's
+     * own obj_lock, because WRITE_REGS tests `started` to decide whether the
+     * entry frame is still writable.  Unlocked on both sides, the two pass
+     * each other and the frame of a thread this call is about to run gets
+     * rewritten underneath it.
+     */
+    uint64_t tf = irq_spinlock_lock(&target->obj_lock);
     if (target->resume_user == TASK_RESUME_KERNEL && !target->kentry) {
+        irq_spinlock_unlock(&target->obj_lock, tf);
         kobject_release(&target->base);
         return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }
-    /* Stage 5 Step 4: a thread that has been runnable once holds live state
-     * on its kernel stack, so its entry frame is frozen from here on
-     * (SYS_TCB_WRITE_REGS refuses). */
+    /* Stage 5 Step 4: a thread that has been runnable once holds live state,
+     * so its entry frame is frozen from here on (SYS_TCB_WRITE_REGS refuses). */
     target->started = 1;
+    irq_spinlock_unlock(&target->obj_lock, tf);
     if (target->state == TASK_SUSPENDED)
         task_wakeup(target);
 

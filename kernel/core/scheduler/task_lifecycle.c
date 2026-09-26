@@ -113,8 +113,15 @@ static int task_registry_alloc(struct task *t) {
     /* Cannot fail.  It used to scan ktcb_registry[TASK_MAX] and return -1 when
      * the array was full — the kernel telling a holder with memory and a
      * capability that it may not have another thread. */
-    if (t->reg_slot >= 0) return 0;              /* already listed */
     uint64_t lf = irq_spinlock_lock(&sched_list_lock);
+    if (t->reg_slot >= 0) {                      /* already listed */
+        irq_spinlock_unlock(&sched_list_lock, lf);
+        return 0;
+    }
+    /* A-42: the test used to be OUTSIDE this hold, so two callers could both
+     * pass it and both splice `t` into the list, losing whichever links the
+     * second overwrote.  A-41's claim is what keeps that unreachable today;
+     * the test belongs under the lock that does the linking regardless. */
     t->sched_prev = 0;
     t->sched_next = sched_thread_list;
     if (sched_thread_list) sched_thread_list->sched_prev = t;
@@ -1494,7 +1501,6 @@ iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
                              uint64_t arg) {
     if (!t) return IRIS_ERR_INVALID_ARG;
     if (!t->configured || t->terminal) return IRIS_ERR_NOT_SUPPORTED;
-    if (t->state != TASK_SUSPENDED || t->started) return IRIS_ERR_BUSY;
 
     /*
      * Stage 7: the range checks live here now.
@@ -1512,10 +1518,33 @@ iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
     if (sp & 0x7ULL)
         return IRIS_ERR_INVALID_ARG;   /* the ABI's stack alignment */
 
+    /*
+     * A-42 — the gate and the write are ONE critical section.
+     *
+     * `started` is what freezes the entry frame, and it was tested here and
+     * set by TCB_RESUME with nothing between the two.  Two cores pass each
+     * other: this one reads `started == 0`, RESUME sets it and wakes the
+     * thread, and this one then writes the entry frame of a thread that is
+     * RUNNING.  `task_set_first_user_entry` zeroes `user_ctx`, republishes
+     * `resume_user` as FIRST and clears `kentry` — the continuation witness —
+     * so a thread the kernel believes is mid-syscall is handed back to user
+     * at a fresh entry with its continuation dropped.  A thread abandoned
+     * that way while queued on an endpoint leaves the queue naming it, and
+     * the next sender to rendezvous with it is a DIFFERENT principal.
+     *
+     * The thread's own obj_lock, which RESUME now takes to publish `started`,
+     * makes the test and the write inseparable.  Rank 6: nothing is taken
+     * under it here.
+     */
+    uint64_t f = irq_spinlock_lock(&t->obj_lock);
+    if (t->state != TASK_SUSPENDED || t->started) {
+        irq_spinlock_unlock(&t->obj_lock, f);
+        return IRIS_ERR_BUSY;
+    }
     t->user_entry = entry;
     t->user_rsp   = sp;
-
     task_set_first_user_entry(t, entry, sp, arg);
+    irq_spinlock_unlock(&t->obj_lock, f);
     return IRIS_OK;
 }
 

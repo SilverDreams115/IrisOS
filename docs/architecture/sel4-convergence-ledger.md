@@ -171,6 +171,44 @@ UT-TOP-1..5 and T298.
 
 ## Structural divergences from seL4
 
+### A-42 — the entry frame was frozen by a flag nobody held  ✅ CLOSED
+
+**Found by looking for A-41's siblings: other once-only transitions tested and
+set without a claim.**
+
+A thread's entry frame stops being writable once it has been runnable, and
+`started` is the flag that says so.  `ktcb_write_regs` tested it; `sys_tcb_resume`
+set it; nothing held anything across either.
+
+Two cores pass each other.  WRITE_REGS reads `started == 0` and
+`state == TASK_SUSPENDED`; RESUME sets `started` and wakes the thread; WRITE_REGS
+then runs `task_set_first_user_entry` on a thread that is RUNNING.  That call
+zeroes `user_ctx`, republishes `resume_user` as `TASK_RESUME_USER_FIRST`, and
+clears `kentry`.
+
+`kentry` is the continuation witness — it is what RESUME itself checks to
+decide whether a thread can be resumed in the kernel.  Clearing it under a
+thread the kernel believes is mid-syscall hands that thread back to user at a
+fresh entry with its continuation dropped.  **A thread abandoned that way while
+queued on an endpoint leaves the queue still naming it**, and the next sender
+to rendezvous with it is a different principal, which is what makes this more
+than a caller mangling a thread it already owns.
+
+The comment on the old gate said writing a running thread's registers "would
+corrupt the kernel stack it is standing on".  That is no longer where the
+damage is — Stage 9-evt step 3 moved the frame into the TCB — and the comment
+had not moved with it.  The hazard did.
+
+**The repair**: the test and the write are one critical section under the
+thread's own `obj_lock`, and RESUME publishes `started` under the same lock.
+Rank 6, nothing taken beneath it, so the ordering table is unchanged.
+
+**Also closed here**: `task_registry_alloc` tested `reg_slot >= 0` OUTSIDE the
+`sched_list_lock` it then links under, so two callers could both pass and both
+splice one thread into `sched_thread_list`.  A-41's claim is what keeps that
+unreachable today — the test belongs under the lock that does the linking
+whether or not a caller happens to serialise it.
+
 ### A-41 — teardown was claimed against concurrent callers; construction was not  ✅ CLOSED
 
 **Found by audit, by reading the fix that was already there and looking for
