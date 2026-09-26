@@ -407,11 +407,13 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         }
         kfault_resolve(caller, /*killed=*/0);
         task_wakeup(caller);
+        kobject_release(&caller->base);   /* A-43: the binding's, inherited */
         kobject_release(&rp->base);
         return syscall_ok_u64(0);
     }
 
-    /* Deliver reply message into caller's staging (caller is blocked — safe). */
+    /* Deliver reply message into caller's staging.  Safe because the binding
+     * holds a reference on it (A-43), not merely because it is blocked. */
     copy_irismsg_r(&caller->ipc_msg, &reply_msg);
     caller->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
     caller->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
@@ -456,6 +458,12 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Unblock caller. */
     task_wakeup(caller);
 
+    /*
+     * A-43 — the reference the binding took, released now that this is the
+     * last touch of the task.  "caller is blocked, safe" was the assumption
+     * above; blocked is not alive when another core can be tearing it down.
+     */
+    kobject_release(&caller->base);
     kobject_release(&rp->base); /* drop resolve lifecycle ref */
     return syscall_ok_u64(0);
 }

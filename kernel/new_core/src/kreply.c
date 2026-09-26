@@ -63,6 +63,7 @@ static void kreply_obj_close(struct KObject *obj) {
     /* sys_ep_call wake-up path reads ipc_ep_closed and returns IRIS_ERR_CLOSED;
      * a fault caller has no such path and is killed instead. */
     kreply_abandon_caller(caller);
+    if (caller) kobject_release(&caller->base);   /* A-43: the binding's */
 }
 
 /* Phase S1: the ONLY KReply storage is untyped-backed — payload returns to the
@@ -116,6 +117,24 @@ iris_error_t kreply_bind_caller(struct KReply *r, struct task *caller) {
     }
     r->staged = 0;
     r->caller = caller;
+    /*
+     * Ledger A-43 — the binding HOLDS the caller.
+     *
+     * `r->caller` is a raw task pointer that SYS_REPLY takes out under this
+     * lock and then walks with the lock dropped: it writes the reply into the
+     * caller's staging and wakes it.  A blocked thread is not a live one on
+     * SMP — another core running TCB_EXIT on it completes teardown in that
+     * window and the storage goes back to its Untyped, zero-filled.  That is
+     * the same crash §9.3 step 5 fixed in sys_tcb_exit (T350:
+     * `kobject_retain: resurrect from refcount 0`, type field reading 0), and
+     * this path had the identical shape and no reference.
+     *
+     * So the binding takes one, and whoever takes the caller OUT of the reply
+     * object inherits it and releases when it is done walking the task.  That
+     * makes `r->caller != NULL` mean "this task is still there", which is what
+     * every reader of it already assumed.
+     */
+    kobject_retain(&caller->base);
     irq_spinlock_unlock(&r->lock, flags);
     return IRIS_OK;
 }
@@ -219,4 +238,5 @@ void kreply_cancel_caller(struct KReply *r) {
 
     /* caller->pending_kreply is managed by the teardown path; not touched here. */
     kreply_abandon_caller(caller);
+    if (caller) kobject_release(&caller->base);   /* A-43: the binding's */
 }
