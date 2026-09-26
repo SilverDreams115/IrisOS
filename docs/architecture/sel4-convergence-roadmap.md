@@ -95,6 +95,16 @@ task is.  The rest is classified as mechanism with the reason for each.
 
 **36 of the 36 charter invariants are MET.**
 
+**One of them was not, and the review is how that was found.**  M5 — shared
+memory requires explicit delegation — was carried as MET on evidence that
+cited `KVmo`, an object deleted in D-5.  Underneath the stale citation the
+property had a real hole: retype handed out memory it had not cleared, so a
+frame carved from a boot Untyped carried the loader's bytes and a frame carved
+after `SYS_UNTYPED_RESET` carried the previous holder's.  That is memory shared
+between principals with no delegation at all.  Closed as ledger **A-45**; M5 is
+MET on its own terms now.  M4's evidence cited quotas, which are retired, and
+is restated on what actually rolls back.
+
 **Every item A-20's file-by-file audit found is closed.**  It found six things
 no row had named — three authority holes (`SchedControl`, MCP, ambient
 priority; closed in A-20 itself), the ASID capability model (A-21), faults as
