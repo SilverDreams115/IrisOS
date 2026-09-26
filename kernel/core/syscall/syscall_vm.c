@@ -261,22 +261,28 @@ uint64_t sys_initrd_frame(uint64_t arg0, uint64_t arg1,
     if (r != IRIS_OK) return syscall_err(r);
     int ok = kbootcap_is((struct KBootstrapCap *)auth_obj,
                          IRIS_BOOTCAP_INITRD_CONTROL);
-    kobject_release(auth_obj);
-    if (!ok) return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    if (!ok) { kobject_release(auth_obj); return syscall_err(IRIS_ERR_ACCESS_DENIED); }
+    /* A-40: held past its own check, because it is ALSO the expected MDB
+     * parent of the frame published below, and the slot naming it can be
+     * emptied and refilled by a sibling thread in between. */
 
     const void *elf_data = 0;
     uint32_t    elf_size = 0;
-    if (!initrd_get((uint32_t)arg1, &elf_data, &elf_size))
-        return syscall_err(IRIS_ERR_NOT_FOUND);
-    if (elf_size == 0u) return syscall_err(IRIS_ERR_NOT_FOUND);
+    if (!initrd_get((uint32_t)arg1, &elf_data, &elf_size)) {
+        kobject_release(auth_obj); return syscall_err(IRIS_ERR_NOT_FOUND);
+    }
+    if (elf_size == 0u) {
+        kobject_release(auth_obj); return syscall_err(IRIS_ERR_NOT_FOUND);
+    }
 
     struct KUntyped *pool = 0;
     {
         iris_rights_t nr;
         iris_error_t ne = cspace_resolve_only_untyped(t->cspace_root,
                               (iris_cptr_t)pool_cptr, RIGHT_WRITE, &pool, &nr);
-        if (ne != IRIS_OK)
-            return syscall_err(ne);
+        if (ne != IRIS_OK) {
+            kobject_release(auth_obj); return syscall_err(ne);
+        }
     }
 
     uint64_t bytes = ((uint64_t)elf_size + 0xFFFu) & ~0xFFFULL;
@@ -287,6 +293,7 @@ uint64_t sys_initrd_frame(uint64_t arg0, uint64_t arg1,
     if (!frm) {
         if (hdr) kuntyped_release_child(hdr, sizeof(struct KFrame));
         kobject_active_release(&pool->base); kobject_release(&pool->base);
+        kobject_release(auth_obj);
         return syscall_err(IRIS_ERR_NO_MEMORY);
     }
     kobject_active_release(&pool->base); kobject_release(&pool->base);
@@ -306,11 +313,12 @@ uint64_t sys_initrd_frame(uint64_t arg0, uint64_t arg1,
                             &auth_cn, &auth_idx) != IRIS_OK)
         auth_cn = 0;
     iris_error_t pe = syscall_publish_slot(t, &frm->base, RIGHT_READ,
-                                           dest, auth_cn, auth_idx);
+                                           dest, auth_cn, auth_idx, auth_obj);
     if (auth_cn) {
         kobject_active_release(&auth_cn->base);
         kobject_release(&auth_cn->base);
     }
+    kobject_release(auth_obj);
     if (pe != IRIS_OK) return syscall_err(pe);
     return syscall_ok_u64((uint64_t)elf_size);
 }

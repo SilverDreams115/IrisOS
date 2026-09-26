@@ -545,6 +545,14 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
              * the staged object fails closed — the message is delivered
              * without the capability, which is the same shape a revoked or
              * occupied destination already had.
+             *
+             * A-40: this check is the EARLY one, and it is not the guarantee.
+             * It takes `src_cn->lock` and lets it go, so on SMP the slot can
+             * still change before the install.  `parent_expect` below repeats
+             * it under the `mdb_lock` hold that actually links the parent,
+             * which is where it becomes atomic.  This one stays because it
+             * gives the delivery its own clean failure instead of an install
+             * error to translate.
              */
             if (!kcnode_slot_holds(src_cn, src_idx, xo)) {
                 kobject_active_release(&cn->base);
@@ -554,7 +562,7 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
             }
             e = kcnode_slot_install_linked(
                     cn, idx, xo, (iris_rights_t)cap_rights,
-                    badge, src_cn, src_idx,
+                    badge, src_cn, src_idx, /*parent_expect*/xo,
                     /*exclusive*/1, /*legacy*/0);
             kobject_active_release(&cn->base);
             kobject_release(&cn->base);

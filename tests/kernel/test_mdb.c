@@ -41,7 +41,7 @@ static void expect_valid(struct KCNode **set, uint32_t n,
 /* Install a root cap holding `obj` at (cn, idx). */
 static iris_error_t install_root(struct KCNode *cn, uint32_t idx,
                                  struct KObject *obj, iris_rights_t r) {
-    return kcnode_slot_install_linked(cn, idx, obj, r, 0, 0, 0, 1, 1);
+    return kcnode_slot_install_linked(cn, idx, obj, r, 0, 0, 0, 0, 1, 1);
 }
 
 /* ── K.1 — basic operations ─────────────────────────────────────────────── */

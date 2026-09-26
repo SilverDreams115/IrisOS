@@ -638,6 +638,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         err = kcnode_slot_install_linked(cn, dest_slot + i, objs[i],
                                          new_rights, 0,
                                          ut_slot_cn, ut_slot_idx,
+                                         /*parent_expect=*/&ut->base,
                                          /*exclusive=*/1,
                                          /*legacy=*/ut_slot_cn ? 0 : 1);
         if (err != IRIS_OK) break;

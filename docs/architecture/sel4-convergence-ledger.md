@@ -171,6 +171,66 @@ UT-TOP-1..5 and T298.
 
 ## Structural divergences from seL4
 
+### A-40 — a derivation named its parent by location, and a slot is reusable  ✅ CLOSED
+
+**Found by audit while checking the CDT for use-after-free, fixed and gated in
+the same session.**
+
+Every path that installs a capability as the child of another one does the
+same three things: read the parent slot, decide what it is allowed to do, then
+install.  `kcnode_slot_install_linked` checked the parent slot for OCCUPANCY —
+`if (!parent->object || parent == s)` — and nothing more.
+
+A slot is a reusable location, and the installing thread is not the only
+thread in its process.  On SMP a sibling can empty that slot and mint
+something unrelated into it between the read and the install.  The new
+capability is then linked as a child of whatever now sits there: revoking the
+true ancestor does not reach it, and revoking the impostor destroys a
+capability that has no relation to it.  **A capability surviving a revoke is
+the one outcome the derivation tree exists to prevent** — charter A9, in both
+directions.
+
+The authority itself was never bypassed; the caller really did observe what it
+read while it was there.  What breaks is revocability, which is the property
+that makes granting a capability a decision a principal can take back.
+
+**Five paths had it**, all the same shape:
+
+- `kcnode_slot_derive` — `CNODE_COPY`/`MINT`.  The most reachable: two threads
+  racing on one slot, no rendezvous to time, retried until it lands.
+- IPC capability delivery (`syscall_endpoint.c`).  It already called
+  `kcnode_slot_holds` for exactly this reason, but under `src_cn->lock`, which
+  it then dropped — the window was narrowed, not closed.
+- `SYS_UNTYPED_RETYPE2` — the parent is the Untyped's slot.
+- `dev_cap_publish` (IRQ, ioport, ioport-narrow) — the parent is the
+  authorising bootstrap capability's slot.
+- `syscall_publish_slot` (initrd frame) — likewise.
+
+**The repair.**  A caller that names a parent says what it expects to find
+there, and the comparison happens under the same `mdb_lock` hold that installs
+the link.  `NULL` still means occupancy only, for a caller that genuinely has
+no expectation.
+
+Three of the five had to start HOLDING the authority they name, because a
+pointer whose object may already have been freed and its address reused is not
+an expectation.  `dev_cap_auth_ranged` used to release the bootstrap
+capability the moment it had finished checking its kind; it now hands it back
+to the caller and `dev_cap_auth_release` drops it after the publish.  The same
+in `sys_ioport_control_narrow` and in the initrd path.
+
+**Why not check identity always, with no parameter.**  A derivation's parent
+holds the same object it does, so `obj` would serve — but retype and the
+device-capability paths legitimately parent a NEW object under an authority
+that is a different object entirely.  There is no universal rule; there is
+only what the caller expects, so that is what the caller passes.
+
+**Tests**: `tests/kernel/test_parent_identity.c`.  Matching expectation
+installs; mismatched is refused with the slot still empty and no reference
+kept — the refusal path takes a retain and an active_retain at the top of the
+function and has to undo both.  An absent expectation still refuses an empty
+parent.  Verified to FAIL on four assertions against the occupancy-only
+version.
+
 ### A-39 — CNode teardown recursed as deep as ring 3 nested capabilities  ✅ CLOSED
 
 **Found by audit, measured on the real object code, fixed and gated in the

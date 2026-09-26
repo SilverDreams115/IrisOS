@@ -195,11 +195,25 @@ iris_error_t   kcnode_swap(struct KCNode *cn, uint32_t slot_a, uint32_t slot_b);
 int kcnode_slot_holds(struct KCNode *cn, uint32_t slot_idx,
                       const struct KObject *obj);
 
+/*
+ * `parent_expect` — ledger A-40.  A parent is named by IDENTITY, not by
+ * location.  A slot is a reusable place: the caller reads it, decides what it
+ * is allowed to do, and only then installs, and on SMP another thread of the
+ * same process can empty that slot and mint something unrelated into it in
+ * between.  Checking only that the parent slot is OCCUPIED then links the new
+ * capability under an ancestor that never authorised it, which breaks
+ * revocation in both directions (charter A9).
+ *
+ * So a caller that names a parent says what it expects to find there, and the
+ * check happens under the same `mdb_lock` hold that installs the link.  NULL
+ * means occupancy only, for the callers that genuinely have no expectation.
+ */
 iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
                                         struct KObject *obj,
                                         iris_rights_t rights, uint64_t badge,
                                         struct KCNode *parent_cn,
                                         uint32_t parent_idx,
+                                        struct KObject *parent_expect,
                                         int exclusive, int legacy);
 
 /* Derive (copy/mint) from source slot into dest slot: reads object, rights

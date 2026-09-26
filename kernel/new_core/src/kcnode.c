@@ -445,6 +445,7 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
                                         iris_rights_t rights, uint64_t badge,
                                         struct KCNode *parent_cn,
                                         uint32_t parent_idx,
+                                        struct KObject *parent_expect,
                                         int exclusive, int legacy) {
     if (!cn || !obj || rights == RIGHT_NONE) return IRIS_ERR_INVALID_ARG;
     if (parent_cn && parent_idx >= parent_cn->slot_count) return IRIS_ERR_INVALID_ARG;
@@ -517,7 +518,20 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
     struct KCSlot *parent = 0;
     if (parent_cn) {
         parent = &parent_cn->slots[parent_idx];
-        if (!parent->object || parent == s) {
+        /*
+         * A-40 — identity, under the hold that links it.
+         *
+         * `parent->object` used to be tested only for being non-NULL, and the
+         * caller had read that slot earlier under a DIFFERENT lock.  Between
+         * the two, a sibling thread can delete the slot and mint something
+         * else into it; the new capability would then be linked as a child of
+         * whatever now sits there.  Revoking the true ancestor would not reach
+         * it and revoking the impostor would destroy a capability unrelated to
+         * it -- authority surviving a revoke, which is the one thing the
+         * derivation tree exists to prevent.
+         */
+        if (!parent->object || parent == s ||
+            (parent_expect && parent->object != parent_expect)) {
             irq_spinlock_unlock(&mdb_lock, mf);
             kcnode_slot_drop_old(cn, old);
             if (!self_ref) kobject_active_release(obj);
@@ -602,10 +616,14 @@ iris_error_t kcnode_slot_derive(struct KCNode *src_cn, uint32_t src_idx,
                                        (uint32_t)obj->type, &eff_badge);
     if (be != IRIS_OK) return be;
 
-    /* Install as a child of the source slot.  The source's occupancy is
-     * re-verified under mdb_lock by install_linked (parent must be live). */
+    /* Install as a child of the source slot.  The source is re-verified under
+     * mdb_lock by install_linked -- by IDENTITY, not occupancy (A-40): the
+     * object was read above under a lock that has since been dropped, and a
+     * derivation whose parent slot now holds something else is not a
+     * derivation of it. */
     return kcnode_slot_install_linked(dst_cn, dst_idx, obj, effective,
                                       eff_badge, src_cn, src_idx,
+                                      /*parent_expect=*/obj,
                                       /*exclusive=*/1, /*legacy=*/0);
 }
 
@@ -927,7 +945,7 @@ iris_error_t kcnode_slot_revoke_bounded(struct KCNode *cn, uint32_t slot_idx,
 
 iris_error_t kcnode_mint(struct KCNode *cn, uint32_t slot_idx,
                           struct KObject *obj, iris_rights_t rights) {
-    return kcnode_slot_install_linked(cn, slot_idx, obj, rights, 0, 0, 0,
+    return kcnode_slot_install_linked(cn, slot_idx, obj, rights, 0, 0, 0, 0,
                                       /*exclusive=*/0, /*legacy=*/1);
 }
 
@@ -940,7 +958,7 @@ iris_error_t kcnode_mint(struct KCNode *cn, uint32_t slot_idx,
 iris_error_t kcnode_mint_excl_badged(struct KCNode *cn, uint32_t slot_idx,
                                      struct KObject *obj,
                                      iris_rights_t rights, uint64_t badge) {
-    return kcnode_slot_install_linked(cn, slot_idx, obj, rights, badge, 0, 0,
+    return kcnode_slot_install_linked(cn, slot_idx, obj, rights, badge, 0, 0, 0,
                                       /*exclusive=*/1, /*legacy=*/1);
 }
 

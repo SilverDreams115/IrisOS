@@ -239,7 +239,8 @@ static inline iris_error_t syscall_publish_slot(struct task *t,
                                                 iris_rights_t rights,
                                                 uint64_t dest,
                                                 struct KCNode *parent_cn,
-                                                uint32_t parent_idx) {
+                                                uint32_t parent_idx,
+                                                struct KObject *parent_expect) {
     /* `dest` follows the RETYPE2 convention: destination CNode in the low 32
      * bits (0 = the caller's own root), destination slot index in the high 32.
      * A spawning service holds its working capabilities in a second-level
@@ -259,7 +260,7 @@ static inline iris_error_t syscall_publish_slot(struct task *t,
     if (err != IRIS_OK) { kobject_release(obj); return err; }
 
     err = kcnode_slot_install_linked(cn, dest_slot, obj, rights, 0,
-                                     parent_cn, parent_idx,
+                                     parent_cn, parent_idx, parent_expect,
                                      /*exclusive*/1,
                                      /*legacy*/parent_cn ? 0 : 1);
     kobject_active_release(&cn->base);

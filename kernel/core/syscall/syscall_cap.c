@@ -45,7 +45,8 @@
  */
 static iris_error_t dev_cap_publish(struct task *t, struct KObject *obj,
                                     iris_rights_t rights, uint64_t dest,
-                                    struct KCNode *auth_cn, uint32_t auth_idx) {
+                                    struct KCNode *auth_cn, uint32_t auth_idx,
+                                    struct KObject *auth_obj) {
     uint64_t dest_cnode = dest & 0xFFFFFFFFu;
     uint32_t dest_slot  = (uint32_t)(dest >> 32);
     if (dest_slot == 0u) return IRIS_ERR_INVALID_ARG;
@@ -59,6 +60,7 @@ static iris_error_t dev_cap_publish(struct task *t, struct KObject *obj,
 
     err = kcnode_slot_install_linked(cn, dest_slot, obj, rights, 0,
                                      auth_cn, auth_idx,
+                                     /*parent_expect*/auth_obj,
                                      /*exclusive*/1, /*legacy*/0);
     kobject_active_release(&cn->base);
     kobject_release(&cn->base);
@@ -83,7 +85,8 @@ static iris_error_t dev_cap_auth_ranged(struct task *t, uint64_t auth_cptr,
                                         uint32_t kind,
                                         struct KCNode **out_cn,
                                         uint32_t *out_idx,
-                                        uint16_t out_ports[2]) {
+                                        uint16_t out_ports[2],
+                                        struct KObject **out_auth) {
     if (!cspace_only_cptr(auth_cptr)) return IRIS_ERR_INVALID_ARG;
 
     struct KCNode *cn; uint32_t idx;
@@ -104,24 +107,32 @@ static iris_error_t dev_cap_auth_ranged(struct task *t, uint64_t auth_cptr,
         out_ports[0] = ((struct KBootstrapCap *)auth)->port_first;
         out_ports[1] = ((struct KBootstrapCap *)auth)->port_last;
     }
-    kobject_active_release(auth);
-    kobject_release(auth);
     if (!ok) {
+        kobject_active_release(auth);
+        kobject_release(auth);
         kobject_active_release(&cn->base);
         kobject_release(&cn->base);
         return IRIS_ERR_ACCESS_DENIED;
     }
-    *out_cn = cn; *out_idx = idx;   /* active+lifecycle held by caller */
+    /*
+     * A-40: the authority object stays HELD until the publish is done with it.
+     * It is the expected MDB parent, and an expectation compared against a
+     * pointer whose object may have been freed and its address reused is not
+     * an expectation.  The caller drops it through dev_cap_auth_release.
+     */
+    *out_cn = cn; *out_idx = idx; *out_auth = auth;
     return IRIS_OK;
 }
 
 static iris_error_t dev_cap_auth(struct task *t, uint64_t auth_cptr,
                                  uint32_t kind,
-                                 struct KCNode **out_cn, uint32_t *out_idx) {
-    return dev_cap_auth_ranged(t, auth_cptr, kind, out_cn, out_idx, 0);
+                                 struct KCNode **out_cn, uint32_t *out_idx,
+                                 struct KObject **out_auth) {
+    return dev_cap_auth_ranged(t, auth_cptr, kind, out_cn, out_idx, 0, out_auth);
 }
 
-static void dev_cap_auth_release(struct KCNode *cn) {
+static void dev_cap_auth_release(struct KCNode *cn, struct KObject *auth) {
+    if (auth) { kobject_active_release(auth); kobject_release(auth); }
     kobject_active_release(&cn->base);
     kobject_release(&cn->base);
 }
@@ -174,28 +185,28 @@ uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     if (irq_num > 15u)     return syscall_err(IRIS_ERR_INVALID_ARG);
     if ((uint32_t)(dest >> 32) == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    struct KCNode *auth_cn; uint32_t auth_idx;
+    struct KCNode *auth_cn; uint32_t auth_idx; struct KObject *auth_obj;
     iris_error_t err = dev_cap_auth(t, arg0, IRIS_BOOTCAP_IRQ_CONTROL,
-                                    &auth_cn, &auth_idx);
+                                    &auth_cn, &auth_idx, &auth_obj);
     if (err != IRIS_OK) return syscall_err(err);
 
     struct KUntyped *pool;
     err = dev_cap_budget(t, arg2, &pool);
-    if (err != IRIS_OK) { dev_cap_auth_release(auth_cn); return syscall_err(err); }
+    if (err != IRIS_OK) { dev_cap_auth_release(auth_cn, auth_obj); return syscall_err(err); }
 
     /* Stage 6 Step 6: the object comes out of a budget.  Stage 7 Step 14: out
      * of the one the caller named. */
     struct KIrqCap *irqcap = kirqcap_alloc_from(pool, irq_num);
     dev_cap_budget_release(pool);
     if (!irqcap) {
-        dev_cap_auth_release(auth_cn);
+        dev_cap_auth_release(auth_cn, auth_obj);
         return syscall_err(IRIS_ERR_NO_MEMORY);
     }
 
     err = dev_cap_publish(t, &irqcap->base,
                           RIGHT_ROUTE | RIGHT_DUPLICATE | RIGHT_TRANSFER,
-                          dest, auth_cn, auth_idx);
-    dev_cap_auth_release(auth_cn);
+                          dest, auth_cn, auth_idx, auth_obj);
+    dev_cap_auth_release(auth_cn, auth_obj);
     if (err != IRIS_OK) {
         kirqcap_free(irqcap);
         return syscall_err(err);
@@ -236,37 +247,38 @@ uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2,
      * caller learns it has no authority rather than learning something about
      * the port map.
      */
-    struct KCNode *auth_cn; uint32_t auth_idx;
+    struct KCNode *auth_cn; uint32_t auth_idx; struct KObject *auth_obj;
     uint16_t auth_ports[2] = { 0u, 0u };
     iris_error_t err = dev_cap_auth_ranged(t, arg0, IRIS_BOOTCAP_IOPORT_CONTROL,
-                                           &auth_cn, &auth_idx, auth_ports);
+                                           &auth_cn, &auth_idx, auth_ports,
+                                           &auth_obj);
     if (err != IRIS_OK) return syscall_err(err);
     {
         uint32_t req_last = (uint32_t)base + (uint32_t)count - 1u;
         if ((uint32_t)base < (uint32_t)auth_ports[0] ||
             req_last > (uint32_t)auth_ports[1]) {
-            dev_cap_auth_release(auth_cn);
+            dev_cap_auth_release(auth_cn, auth_obj);
             return syscall_err(IRIS_ERR_ACCESS_DENIED);
         }
     }
 
     struct KUntyped *pool;
     err = dev_cap_budget(t, arg2, &pool);
-    if (err != IRIS_OK) { dev_cap_auth_release(auth_cn); return syscall_err(err); }
+    if (err != IRIS_OK) { dev_cap_auth_release(auth_cn, auth_obj); return syscall_err(err); }
 
     /* Stage 6 Step 6: the object comes out of a budget.  Stage 7 Step 14: out
      * of the one the caller named. */
     struct KIoPort *ioport = kioport_alloc_from(pool, base, count);
     dev_cap_budget_release(pool);
     if (!ioport) {
-        dev_cap_auth_release(auth_cn);
+        dev_cap_auth_release(auth_cn, auth_obj);
         return syscall_err(IRIS_ERR_NO_MEMORY);
     }
 
     err = dev_cap_publish(t, &ioport->base,
                           RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER,
-                          dest, auth_cn, auth_idx);
-    dev_cap_auth_release(auth_cn);
+                          dest, auth_cn, auth_idx, auth_obj);
+    dev_cap_auth_release(auth_cn, auth_obj);
     if (err != IRIS_OK) {
         kioport_free(ioport);
         return syscall_err(err);
@@ -321,7 +333,7 @@ uint64_t sys_ioport_control_narrow(uint64_t arg0, uint64_t arg1,
     struct KObject *auth; iris_rights_t ar;
     err = kcnode_fetch(auth_cn, auth_idx, &auth, &ar);
     if (err != IRIS_OK) {
-        dev_cap_auth_release(auth_cn);
+        dev_cap_auth_release(auth_cn, 0);
         return syscall_err(err);
     }
 
@@ -334,13 +346,14 @@ uint64_t sys_ioport_control_narrow(uint64_t arg0, uint64_t arg1,
         src_first = ((struct KBootstrapCap *)auth)->port_first;
         src_last  = ((struct KBootstrapCap *)auth)->port_last;
     }
-    kobject_active_release(auth);
-    kobject_release(auth);
+    /* A-40: `auth` stays held all the way to the publish below — it is the
+     * expected MDB parent, and a pointer whose object may already be freed
+     * and its address reused is not an expectation. */
 
     /* A narrowing can only narrow.  Checked here rather than in the allocator
      * because it is a fact about the pair, not about the new object. */
     if (!ok || first < src_first || last > src_last) {
-        dev_cap_auth_release(auth_cn);
+        dev_cap_auth_release(auth_cn, auth);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
@@ -351,21 +364,21 @@ uint64_t sys_ioport_control_narrow(uint64_t arg0, uint64_t arg1,
     struct KUntyped *pool;
     err = dev_cap_budget(t, arg2, &pool);
     if (err != IRIS_OK) {
-        dev_cap_auth_release(auth_cn);
+        dev_cap_auth_release(auth_cn, auth);
         return syscall_err(err);
     }
     struct KBootstrapCap *narrow =
         kbootcap_alloc_from(pool, IRIS_BOOTCAP_IOPORT_CONTROL, first, last);
     dev_cap_budget_release(pool);
     if (!narrow) {
-        dev_cap_auth_release(auth_cn);
+        dev_cap_auth_release(auth_cn, auth);
         return syscall_err(IRIS_ERR_NO_MEMORY);
     }
 
     err = dev_cap_publish(t, &narrow->base,
                           RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER,
-                          dest, auth_cn, auth_idx);
-    dev_cap_auth_release(auth_cn);
+                          dest, auth_cn, auth_idx, auth);
+    dev_cap_auth_release(auth_cn, auth);
     if (err != IRIS_OK) {
         kbootcap_free(narrow);
         return syscall_err(err);

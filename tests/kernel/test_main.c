@@ -22,6 +22,7 @@ void test_kasidpool(void);
 void test_kframe(void);
 void test_mdb(void);
 void test_cnode_teardown_depth(void);
+void test_mdb_parent_identity(void);
 void test_klog(void);
 void test_vfs_ep(void);
 void test_root_bootinfo(void);
@@ -53,6 +54,7 @@ int main(void) {
     test_kframe();
     test_mdb();
     test_cnode_teardown_depth();
+    test_mdb_parent_identity();
     test_klog();
     test_vfs_ep();
     test_root_bootinfo();
