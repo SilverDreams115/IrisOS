@@ -171,6 +171,61 @@ UT-TOP-1..5 and T298.
 
 ## Structural divergences from seL4
 
+### A-44 — an endpoint wait queue names threads it does not hold  ⚠️ OPEN
+
+**Found by extending A-43.  Mechanism proven, reachability proven, fix
+attempted and REVERTED.  This row is what the next attempt needs.**
+
+`KEndpoint`'s wait queue is an intrusive list of raw `struct task *` through
+`t->ep_next`, and nothing on it holds a reference.  The core that takes a
+waiter off the queue keeps walking it after `ep->lock` is dropped — it wakes
+it, and on several paths writes to it first.
+
+**Why that is reachable, which is the part worth keeping.**  A blocked thread
+is off-CPU, and `sys_tcb_exit` on an off-CPU target does NOT defer to the
+reaper: it falls through to `task_execution_teardown_off_cpu(t)` and runs the
+whole teardown **synchronously on the killer's core**.  So a supervisor on one
+core can free a waiter's storage back to its Untyped while another core, mid
+rendezvous, still holds the pointer.  `task_wakeup` refuses a `terminal` or
+`TASK_DEAD` task, which guards against enqueueing the dead — not against a
+slot already retyped into a different live thread.
+
+It is the same defect as A-43 and as the one `sys_tcb_exit` fixed for itself
+(T350, `kobject_retain: resurrect from refcount 0` on an object whose type
+field read 0).  `kendpoint_close` has it too, and worse: it calls
+`task_kill_external(t)` while holding `ep->lock`, and clears `t->blocking_ep`
+first — so a concurrent `kendpoint_cancel_waiter(t)` reads that field BEFORE
+taking the lock, sees 0, returns without ever blocking, and teardown proceeds.
+
+**The surface**: three enqueues (`sys_ep_send`, the call-mode sender, and the
+receiver), and ten removals — the two fastpaths, the fault-call delivery's two
+branches, the notification-to-blocked-receiver path, both `ep_recv` rendezvous,
+`sys_ep_cancel_badged_sends`, `kendpoint_close`, and `kendpoint_cancel_waiter`
+(which must release only when it is the caller that actually dequeued).
+
+**Why the obvious one-line fix does not work.**  Making `sys_tcb_exit` always
+defer to the reaper would close every site at once, because nothing dispatches
+between a dequeue and its wakeup.  But the reap ring's capacity is DERIVED —
+"a task dies on the CPU it was running on, so at most one new entry per CPU
+between reap calls" — and enqueuing off-CPU threads from a killer core breaks
+that bound.  Its overflow path drops the slot silently.
+
+**What the reverted attempt got wrong.**  Retain at each enqueue, release after
+each removal's last touch; the pairing was 1:1 and the host suite went green
+at 27877, but the ring-3 run panicked with `sched_resume: kernel resume with
+no entry` — the signature of a task resumed after its storage was zeroed, i.e.
+one release too many somewhere. A retains-only build then failed differently
+(ring 3 never reached the ACPI probe), which says the task reference model has
+paths this analysis did not account for: pool-born threads whose `refcount == 1`
+IS the execution reference, retyped threads that carry a separate one, and the
+Stage 9-evt re-execution paths where a parked syscall re-enters from the top.
+Closing this needs that model written down FIRST, not inferred from the sites.
+
+**What already landed toward it**: `tests/kernel/` now initialises its
+`struct task` fixtures as real KObjects (`test_task_object_init`), because a
+queue that holds references makes a bare `struct task { 0 }` underflow on the
+first release.  That is a prerequisite and it is in.
+
 ### A-43 — a reply binding named a thread it did not hold  ✅ CLOSED
 
 **Found by the same method as A-41 and A-42: reading a fix already in the tree

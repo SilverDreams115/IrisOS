@@ -65,6 +65,8 @@ void test_kendpoint(void) {
         ASSERT_NOT_NULL(e);
 
         struct task t = { 0 };
+
+        test_task_object_init(&t);
         eq_enqueue(e, &t, EP_STATE_RECV);
 
         kobject_active_retain(&e->base);    /* active_refs = 1 */
@@ -87,6 +89,8 @@ void test_kendpoint(void) {
         ASSERT_NOT_NULL(e);
 
         struct task t = { 0 };
+
+        test_task_object_init(&t);
         eq_enqueue(e, &t, EP_STATE_SEND);
 
         kobject_active_retain(&e->base);
@@ -112,6 +116,8 @@ void test_kendpoint(void) {
         kobject_retain(&cap->base);        /* cap refcount: 1 → 2 */
 
         struct task t = { 0 };
+
+        test_task_object_init(&t);
         t.ep_cap_obj     = &cap->base;
         t.ep_cap_rights  = 7u;
         t.ep_cap_src_cn  = (struct KCNode *)(uintptr_t)0x11223344u;
@@ -140,6 +146,12 @@ void test_kendpoint(void) {
         ASSERT_NOT_NULL(e);
 
         struct task t1 = { 0 }, t2 = { 0 }, t3 = { 0 };
+
+        test_task_object_init(&t1);
+
+        test_task_object_init(&t2);
+
+        test_task_object_init(&t3);
         eq_enqueue(e, &t1, EP_STATE_RECV);
         eq_enqueue(e, &t2, EP_STATE_RECV);
         eq_enqueue(e, &t3, EP_STATE_RECV);
@@ -165,6 +177,8 @@ void test_kendpoint(void) {
         ASSERT_NOT_NULL(e);
 
         struct task t = { 0 };
+
+        test_task_object_init(&t);
         eq_enqueue(e, &t, EP_STATE_RECV);
 
         kendpoint_cancel_waiter(&t);
@@ -188,6 +202,8 @@ void test_kendpoint(void) {
         kobject_retain(&cap->base);   /* cap refcount: 1 → 2 */
 
         struct task t = { 0 };
+
+        test_task_object_init(&t);
         t.ep_cap_obj    = &cap->base;
         t.ep_cap_rights = 3u;
         struct KCNode *src_cn = kcnode_alloc(8);   /* S4: real source CNode */
@@ -226,6 +242,12 @@ void test_kendpoint(void) {
         ASSERT_NOT_NULL(e);
 
         struct task t1 = { 0 }, t2 = { 0 }, t3 = { 0 };
+
+        test_task_object_init(&t1);
+
+        test_task_object_init(&t2);
+
+        test_task_object_init(&t3);
         eq_enqueue(e, &t1, EP_STATE_RECV);
         eq_enqueue(e, &t2, EP_STATE_RECV);
         eq_enqueue(e, &t3, EP_STATE_RECV);
@@ -251,6 +273,12 @@ void test_kendpoint(void) {
         ASSERT_NOT_NULL(e);
 
         struct task t1 = { 0 }, t2 = { 0 }, t3 = { 0 };
+
+        test_task_object_init(&t1);
+
+        test_task_object_init(&t2);
+
+        test_task_object_init(&t3);
         eq_enqueue(e, &t1, EP_STATE_RECV);
         eq_enqueue(e, &t2, EP_STATE_RECV);
         eq_enqueue(e, &t3, EP_STATE_RECV);
@@ -277,6 +305,12 @@ void test_kendpoint(void) {
         ASSERT_NOT_NULL(e);
 
         struct task t1 = { 0 }, t2 = { 0 }, t3 = { 0 };
+
+        test_task_object_init(&t1);
+
+        test_task_object_init(&t2);
+
+        test_task_object_init(&t3);
         eq_enqueue(e, &t1, EP_STATE_RECV);
         eq_enqueue(e, &t2, EP_STATE_RECV);
         eq_enqueue(e, &t3, EP_STATE_RECV);

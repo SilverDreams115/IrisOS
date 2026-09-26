@@ -552,3 +552,18 @@ uint64_t tsc_hz(void)                        { return 1000000000ULL; }
  * The two shadow globals that used to live beside this are deleted with their
  * definitions in syscall_entry.S. */
 void syscall_entry(void) { }
+
+/*
+ * A-44/A-43 — a test task has to BE an object.
+ *
+ * Wait queues and reply bindings hold a reference on the task they name, so a
+ * bare `struct task { 0 }` on a test's stack underflows on the first release.
+ * The destructor only has to exist: these live and die with their scope.
+ */
+static void test_task_obj_destroy(struct KObject *o) { (void)o; }
+static const struct KObjectOps test_task_obj_ops = {
+    .close = NULL, .destroy = test_task_obj_destroy
+};
+void test_task_object_init(struct task *t) {
+    kobject_init(&t->base, KOBJ_TCB, &test_task_obj_ops);
+}

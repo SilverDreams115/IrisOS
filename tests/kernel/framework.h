@@ -9,6 +9,10 @@
 extern int g_pass;
 extern int g_fail;
 
+/* Initialise a test's `struct task` as a KObject (see stubs.c). */
+struct task;
+void test_task_object_init(struct task *t);
+
 #define ASSERT_TRUE(expr) do { \
     if (!(expr)) { \
         fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #expr); \
