@@ -2157,6 +2157,22 @@ Observed edges, all of them:
 | `live_lock` → `KObject.lock` | `knotification.c:166` |
 | `sched_list_lock` → `CpuRunQueue.lock` | `scheduler.c`, both walks, via `task_wakeup` |
 
+**The table the GATE enforces is `scripts/check_lock_order.py`'s `RANK`, and it
+matches by SPELLING.**  The roadmap review found the two ways that drifts, both
+of which report OK: sixteen locks the code takes had no rank at all, so every
+ordering through them was skipped — including the ASID pool, which this table
+names and the code spells `p->lock` while the gate ranked a `pool->lock` nothing
+takes — and three ranked names had no taker, making the table look wider than
+it was.  The gate now FAILS on an unranked lock and notes a dead row, because
+an unranked lock is an unchecked lock.  Thirty-two spellings, one tier per
+object-lock family, and each per-subsystem global (`pmm_lock`, `kslab_lock`,
+`klog_lock`, `tlb_lock`, `irq_lock`, `reap_queue_lock`) a distinct leaf so
+nesting two of them is reported too.
+
+`KEndpoint.lock` → `task.obj_lock` was cited here at `kendpoint.c:54`, via
+`kfault_resolve`.  **A-46 moved that call out of the lock** — the order stays
+legal, that site no longer exercises it.
+
 Three locks are BOOT-ONLY and cannot contend once the system is running, which
 is worth stating because it removes them from the analysis rather than leaving
 them to be reasoned about every time:

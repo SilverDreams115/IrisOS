@@ -171,6 +171,43 @@ UT-TOP-1..5 and T298.
 
 ## Structural divergences from seL4
 
+### A-48 — the lock-order gate ranked names the code does not use, and skipped sixteen it does  ✅ CLOSED
+
+**Found by the roadmap review, checking a GATE rather than the code it guards.**
+
+`check_lock_order.py` matches by SPELLING: `RANK` maps a lock's variable name
+to its tier, and `rank()` returns `None` for anything absent — which the scan
+then treats as "no opinion" and passes.  So an unranked lock was not a gap in
+the report; it was absent from it.
+
+Sixteen locks the tree takes had no rank: `p->lock` (the ASID pool — which
+§9.1's table NAMES, while the gate ranked a `pool->lock` nothing takes),
+`u->lock` and `ut->lock` (KUntyped), `src_cn->lock` and `v_cn->lock` (CNodes),
+`rp->lock` (KReply), `ft->obj_lock` (a task), `t->sched_ctx->lock`,
+`dev->lock`, and seven per-subsystem globals — `pmm_lock`, `kslab_lock`,
+`klog_lock`, `tlb_lock`, `irq_lock`, `reap_queue_lock`, `kvspace_boot_lock`.
+Three ranked names had no taker at all (`obj->lock`, `parent_cn->lock`,
+`pool->lock`), which is the other half of the same drift: a dead row makes the
+table look like it covers something.
+
+**This is the third time this shape appeared in one session.**  `cascade_lock`
+was unranked when A-39 introduced it and the gate reported OK; A-46's inversion
+was invisible because it ran through a function pointer, which §9.1 says
+outright the analysis does not follow.  A gate that answers OK about what it
+cannot see is worse than no gate, because the OK is read as evidence.
+
+**The repair is the gate reporting its own drift.**  An unranked lock now FAILS
+it, with the message saying why — an unranked lock is an unchecked lock — and a
+ranked name nothing takes is noted.  Thirty-two spellings, one tier for each
+object-lock family, and a distinct leaf rank per subsystem global so nesting
+two of them is reported as well.
+
+Expanding the table revealed **no new inversions**, which is the outcome worth
+having: the hierarchy held at full coverage rather than only where the table
+happened to look.  Verified both directions — a deliberate `p->lock → mdb_lock`
+is caught, and caught transitively through `kasidpool_take()` called under
+`vs->lock`; a lock with a novel name fails the drift check.
+
 ### A-47 — the frozen ABI declared twenty-four retired numbers as live  ✅ CLOSED
 
 **Found by the roadmap review's second pass, and closed the way Stage 10-abi

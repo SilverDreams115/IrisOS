@@ -19,21 +19,45 @@ a per-object lock.
 """
 import re, pathlib, collections, sys
 
+#
+# The names here are the SPELLINGS the code uses, because that is all this
+# script can match.  A rank for a name nothing takes is a dead row that makes
+# the table look like it covers something; a lock the code takes under a name
+# that is not here is IGNORED, and an inversion through it is reported as OK.
+# The roadmap review found three of the first and sixteen of the second —
+# `pool->lock` was ranked while `u->lock`/`ut->lock` were not, the ASID pool is
+# `p->lock` and not `pool->lock`, and seven per-subsystem globals were absent
+# entirely.  `scripts/check_lock_order.py --audit` now reports both directions.
+#
 RANK = {
     'mdb_lock': 1,
     'ep->lock': 2,
-    'vs->lock': 3,
+    'vs->lock': 3, 'kvspace_boot_lock': 3,
     'live_lock': 4,
     'sched_list_lock': 5,   # the scheduler's list of live threads
-    'cn->lock': 6, 'to_cn->lock': 6, 'from_cn->lock': 6, 'parent_cn->lock': 6,
-    'obj->lock': 6, 'n->base.lock': 6, 'pool->lock': 6,
-    't->obj_lock': 6, 'target->obj_lock': 6, 'sc->lock': 6, 'r->lock': 6,
+    # Per-OBJECT locks, one tier: every spelling the tree actually uses.
+    'cn->lock': 6, 'to_cn->lock': 6, 'from_cn->lock': 6,
+    'src_cn->lock': 6, 'v_cn->lock': 6,
+    'n->base.lock': 6,
+    't->obj_lock': 6, 'target->obj_lock': 6, 'ft->obj_lock': 6,
+    'sc->lock': 6, 't->sched_ctx->lock': 6,
+    'r->lock': 6, 'rp->lock': 6,
+    'u->lock': 6, 'ut->lock': 6, 'dev->lock': 6,   # KUntyped, incl. device
+    'p->lock': 6,                                  # KAsidPool
     'dom_lock': 7,          # the domain schedule's cursor
     'rq->lock': 8,          # leaf: nothing may be taken under it
     # A-39's CNode teardown queue.  A leaf, and BELOW rq->lock on purpose: it
     # is only ever taken with nothing held, so anything taken under it — the
     # mdb_lock the drain needs most of all — goes up the list and is reported.
     'cascade_lock': 9,
+    # Per-subsystem leaves, each confined to its own file and never co-held.
+    # Distinct ranks rather than one tier so nesting two of them is reported.
+    'reap_queue_lock': 10,
+    'tlb_lock': 11,
+    'irq_lock': 12,
+    'pmm_lock': 13,
+    'kslab_lock': 14,
+    'klog_lock': 15,
 }
 
 LOCK   = re.compile(r'(?:irq_)?spinlock_lock\(&\s*([\w\->\.\[\]]+)')
@@ -70,6 +94,31 @@ def main():
             for c in calls[f]:
                 acc |= reach.get(c, set())
             reach[f] = acc
+
+    #
+    # Drift, in both directions, BEFORE the inversion scan — because an
+    # unranked lock makes that scan answer OK about a lock it never looked at,
+    # which is how sixteen of them stayed invisible until the roadmap review
+    # counted them.  A rank matches by SPELLING, so a new lock, or an old one
+    # reached through a new variable name, has to be added here to be checked.
+    #
+    taken = set()
+    for p in files:
+        for line in p.read_text().splitlines():
+            m = LOCK.search(line)
+            if m: taken.add(m.group(1).strip())
+    unranked = sorted(l for l in taken if rank(l) is None)
+    if unranked:
+        for l in unranked:
+            print(f"[lockorder] {l} is taken but has no rank — it would be SKIPPED")
+        print("[lockorder] RESULT: FAIL (an unranked lock is an unchecked lock)")
+        print("[lockorder] Add it to RANK with the order it belongs at, and to "
+              "docs/architecture/sel4-convergence-roadmap.md §9.1.")
+        return 1
+    dead = sorted(r for r in RANK if r not in taken)
+    for r in dead:
+        print(f"[lockorder] note: '{r}' is ranked but nothing takes it — "
+              f"a dead row makes the table look wider than it is")
 
     bad = 0
     for p in files:
