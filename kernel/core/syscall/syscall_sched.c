@@ -7,7 +7,7 @@
  * It set the CALLER's own priority, up to TASK_PRIORITY_MAX, taking NO
  * CAPABILITY at all — ambient authority over the scheduler, and the strongest
  * kind, because priority 255 starves everything below it.  It is the same
- * shape as the three SELF syscalls A-18 retired, sitting on the scheduler
+ * shape as the three retired SELF syscalls, sitting on the scheduler
  * instead of on the CSpace, and it had no callers.
  *
  * `SYS_TCB_SET_PRIORITY` is the capability-based call that already did this
@@ -100,7 +100,7 @@ uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             bound->sched_ctx = 0;
             kobject_release(&sc->base);   /* task's SC ref */
         }
-        if (bound) kobject_release(&bound->base);   /* A-44 */
+        if (bound) kobject_release(&bound->base);   /* held across the use */
         kschedctx_unbind(sc, 0);
         kobject_release(sc_obj);
         return 0;

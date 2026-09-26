@@ -45,7 +45,7 @@
  * An invocation is `(cptr, label, a1 .. a7)`.  Three method arguments is what
  * the widest existing METHOD needs — `Untyped_Retype`, `TCB_Configure`,
  * `Frame_Map` — and it is why the syscall entry grew a fifth register.  The
- * four beyond that are the MESSAGE, not a method's arguments: ledger A-33 made
+ * four beyond that are the MESSAGE, not a method's arguments: that change made
  * a message a MessageInfo word plus four message registers plus a capability
  * to transfer plus a receive slot, and the entry grew to nine argument
  * registers to carry it (`iris/ipc_msg.h` maps them).
@@ -158,7 +158,7 @@
  * expresses them as CNode invocations, with the CNode as the object and
  * (index, depth) as arguments; IRIS invokes them on the slot directly.  That
  * difference is about WHICH object a method hangs off, not about whether a
- * method needs one, and A-32 records it rather than rounding it away.
+ * method needs one, and the ABI records it rather than rounding it away.
  */
 #define INV_CAP_IDENTIFY                   57u
 #define INV_CAP_SAME_OBJECT                58u

@@ -94,7 +94,7 @@ void test_t150(void) {
     const char *why = "user ptr fuzz";
 
     /* SYS_SCHED_INFO takes its KDEBUG authority as a CPtr argument (ledger
-     * A-3 retired the ambient handle-table scan), so the pointer checks reach
+     * the ambient handle-table scan is retired), so the pointer checks reach
      * the user_range_writable stage without any capability being staged
      * first.  This used to resolve the spawn cap into a handle purely to make
      * the ambient scan find it. */
@@ -159,7 +159,7 @@ void test_t150(void) {
         it_close(&no_h);
     }
     /*
-     * A-33 deleted this probe's subject.
+     * This probe's subject is deleted.
      *
      * It sent a hostile MESSAGE POINTER and asked for INVALID_ARG with the
      * endpoint left clean.  A message has no pointer any more — it is a
@@ -410,12 +410,11 @@ void test_t153(void) {
 }
 
 /* ── T154: rights monotonicity fuzz across syscalls ─────────────────────────
- * A reduced-rights cap must never be amplified by ANY syscall, and no legacy
- * path may ignore rights.  A RIGHT_READ notification dup cannot signal
+ * A reduced-rights cap must never be amplified by ANY syscall, and no old * path may ignore rights.  A RIGHT_READ notification dup cannot signal
  * (ACCESS_DENIED); a RIGHT_READ frame cap cannot map writable; a derive can
  * only narrow, never widen (asking for a right the parent lacks does not grant
  * it); and the reduced cap's failures mutate nothing.  Cross the CPtr path and
- * the legacy handle path for the same object.  Invariants: X3, X8. */
+ * the retired handle path for the same object.  Invariants: X3, X8. */
 void test_t154(void) {
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
@@ -989,7 +988,7 @@ void test_t163(void) {
 static uint32_t g_it_dev_next;
 /* Device caps now live in CSpace, so their derivation is
  * the NATIVE CDT operation — SYS_CSPACE_MINT into a slot, producing a real
- * MDB child of the source — not the legacy handle tree.  Returns the
+ * MDB child of the source — not the retired handle tree.  Returns the
  * destination CPtr, or the negative error. */
 static long it_dev_mint(long src_cptr, uint32_t dest_slot, uint32_t rights) {
     it_slot_delete(dest_slot);
@@ -2027,7 +2026,7 @@ void test_t180(void) {
     else { it_fz_note("T180", T180_SEED, i, op); it_fail("T180", why); }
 }
 
-/* Best-effort reap: kill (no-op if already dead), wait, close.  Every Phase 25
+/* Best-effort reap: kill (no-op if already dead), wait, close.  Every
  * exit path — success or failure — must NOT leave a probe blocked in EP_RECV
  * forever: the child holds its own mint of the command endpoint, so closing
  * the parent's handle alone never wakes it, and a leaked live child keeps its
@@ -2251,7 +2250,7 @@ int t25_wait_fault(const struct t25_tgt *g, struct it_fault *f) {
  * a claim on the fault.
  *
  * The old version polled SYS_TCB_FAULT_INFO, which was a THIRD view of the
- * same event and is exactly what A-22 removed.
+ * same event and is exactly what faults-as-IPC removed.
  */
 int t25_wait_delivered(uint32_t base) {
     uint32_t f[6];

@@ -5,7 +5,7 @@
  * Implements svc_load() using the composable spawn primitives:
  *   SYS_INITRD_FRAME(55) + SYS_PROCESS_CREATE(56) + SYS_FRAME_MAP(57) +
  *   SYS_THREAD_START(58); pre-start caps are SYS_PROC_CSPACE_MINT CSpace
- *   mints — the legacy SYS_HANDLE_INSERT step is gone (A1.8).
+ *   mints — the old SYS_HANDLE_INSERT step is gone (A1.8).
  *
  * Supports ET_DYN (static PIE, base=0) ELF64 x86-64 with R_X86_64_RELATIVE
  * RELA relocations.  RDTSC-seeded Xorshift64 ASLR bias applied per spawn.
@@ -220,7 +220,7 @@ long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
     return svc_load_minted(proc_c, initrd_c, name, out_proc_h, out_chan_h, 0, 0);
 }
 
-/* Legacy arity: RETIRED.  It existed so a caller with nowhere to put
+/* Retired arity: RETIRED.  It existed so a caller with nowhere to put
  * the child's capabilities could take them as handles; every spawner supplies
  * a workspace CNode now, so the handle path underneath had no callers left.
  * Kept as a hard failure rather than deleted: a caller that reaches here has
@@ -247,7 +247,7 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * with no writable .data at all — its linker script says so — so anything the
  * loader remembers between calls is a fault waiting for its first caller.
  * `ws` packs the untyped to carve from in the low 32 bits and the root slot in
- * the high 32; zero means "no workspace", which keeps the legacy handle path.
+ * the high 32; zero means "no workspace", which keeps the retired handle path.
  */
 #define SL_WS_ELF    1u
 #define SL_WS_PROC_BASE 16u  /* 16..99: one live process each */
@@ -904,7 +904,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * 18a2. The child's own ADDRESS SPACE and own THREAD, delegated.
          *
          * Both were reachable already through SYS_VSPACE_SELF / SYS_TCB_SELF,
-         * and both arrived as MDB LEGACY_ROOTS when they did — capabilities
+         * and both arrived as MDB UNPARENTED roots when they did — capabilities
          * with no parent, which SYS_CSPACE_REVOKE can never reach.  The loader
          * retyped the address space and made the thread; it holds both right
          * here.  Minting them puts the child's copies in the derivation tree
@@ -1019,7 +1019,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * existed because the kernel had a free slot rather than because
          * somebody held the memory and the authority.  It could not be
          * anything else until the spawner could NAME the CSpace and VSpace the
-         * thread would run in, which is what Stage 6-pure Step 4/5 gave it.
+         * thread would run in, which is what retyping gave it.
          *
          * Four steps, and every one names a capability: retype the TCB out of
          * the child's budget, configure it with the child's CSpace and VSpace,

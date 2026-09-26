@@ -22,7 +22,7 @@
  *
  * AHCI is a bus master: the driver writes physical addresses into a command
  * table and the controller reads and writes those addresses itself.  That is
- * precisely the reach Stage 10-dma made containable, so this service does the
+ * precisely the reach DMA containment made bounded, so this service does the
  * containable thing — when the machine has a remapping unit it binds an
  * IOSpace to the controller's source-id and maps ONLY the frames the
  * controller needs.  A compromised disk driver on such a machine can make the

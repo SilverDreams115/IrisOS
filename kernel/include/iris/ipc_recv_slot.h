@@ -9,7 +9,7 @@
  * process whose root CNode is full can still receive capabilities — into a
  * second-level CNode, the way a real CSpace hierarchy works.
  *
- * A-33 gave the declaration an argument register of its own.  It used to ride
+ * The declaration was given an argument register of its own.  It used to ride
  * in two dead message fields whose identity depended on the operation
  * (`attached_cap` for a receive, `attached_handle` for a Call), which is why
  * the old text here said "no ABI change" and why there used to be two helpers

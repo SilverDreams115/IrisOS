@@ -186,7 +186,7 @@ void syscall_request_restart(struct task *t) {
  * Parking ABANDONS this frame and does not come back: `task_park_restart`
  * records the thread's resume point in its TCB, moves the CPU to the CORE's
  * kernel stack, and enters the dispatcher.  Nothing of this call survives the
- * block, which is the property D-1 is about.
+ * block, which is the property an event kernel is about.
  *
  * Step 2 had a fallback here — "nobody else to run, so keep this frame and
  * re-dispatch" — and step 3 removed the condition it existed for.  The
@@ -281,7 +281,7 @@ __attribute__((noreturn)) void syscall_restart_trampoline(void) {
  *
  * The invocation ABI is adopted one caller at a time, and a caller that was
  * never migrated keeps working: that is what makes the migration safe and also
- * what makes it fail SILENTLY.  D-4 already recorded this exact shape — a
+ * what makes it fail SILENTLY.  The IPC-buffer work already recorded this exact shape — a
  * service whose IPC-buffer registration was refused kept using the staging
  * path and the whole suite passed either way.  So this counts, from the first
  * commit of the conversion, and `SYS_UNTYPED_QUERY` reports it: the number
@@ -311,7 +311,7 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
      *
      * seL4 keeps `seL4_Yield` as a real syscall because it invokes nothing;
      * IRIS keeps `SYS_EXIT` for the same reason a thread ending itself names
-     * no object, and `SYS_CLOCK_GET` because A-27 answered it rather than
+     * no object, and `SYS_CLOCK_GET` because it was answered rather than
      * retiring it.  Counting those would make the gauge measure traffic
      * instead of migration: the suite spins on YIELD in its settle loops, and
      * the first reading was 438,901 — almost all of it one call that is not
@@ -328,7 +328,7 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
      * Three calls, and each is here because it invokes NOTHING.  seL4 keeps
      * `seL4_Yield` as a real syscall for exactly this reason: there is no
      * capability it could be a method of.  A thread ending itself names no
-     * object either, and `SYS_CLOCK_GET` reads a counter that A-27 established
+     * object either, and `SYS_CLOCK_GET` reads a counter already established
      * is unprivileged on this architecture anyway — retiring it would have
      * bought nothing, so it was answered rather than removed.
      *

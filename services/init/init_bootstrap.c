@@ -117,7 +117,7 @@ static void init_imsg_zero(struct iris_msg *msg) {
  * EP_CALL(svcmgr_ep, IRIS_SVCMGR_EP_LOOKUP_NAME, name).  The reply carries the
  * endpoint cap via SYS_REPLY cap transfer.  Returns IRIS_CPTR_NULL on any
  * failure (caller retries / fails fast).  This EP_LOOKUP_NAME
- * path replaces the retired legacy KChannel LOOKUP_NAME (init_lookup_name).
+ * path replaces the retired retired KChannel LOOKUP_NAME (init_lookup_name).
  *
  * A1.6: reply_slot != 0 declares a receive-slot for the looked-up cap — it
  * lands in init's CSpace and the return value is the CPtr, directly invocable.

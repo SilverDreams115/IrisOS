@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * main.c — init service boot supervisor (ring-3 ELF, phase 22+).
+ * main.c — init service boot supervisor (ring-3 ELF).
  *
  * Orchestrator ONLY.  Every helper lives in its module (see the
  * split contract in init.h): init_bootstrap.c (spawn-cap / early-serial /
@@ -8,7 +8,7 @@
  * iris_test spawns), init_test.c (runtime probes + S8).  main.c owns the
  * boot sequence, the log sink and the tiny process utilities — nothing else.
  *
- * Receives a legacy bootstrap handle in %rdi (set by entry.S from %rbx).  That
+ * Receives a old bootstrap handle in %rdi (set by entry.S from %rbx).  That
  * handle is now vestigial — init closes it immediately.  The real spawn/bootstrap
  * capabilities arrive as pre-start CPtr mints (IRIS_CPTR_PROC_CONTROL and the
  * other five control slots) in init's
@@ -29,8 +29,7 @@
 /* ── Utilities ──────────────────────────────────────────────────────────── */
 
 /* Console KEndpoint master: init creates it, console serves it,
- * svcmgr publishes the send side as "console.ep".  The legacy
- * console KChannel write handle (g_init_console_h) is retired — init logs over
+ * svcmgr publishes the send side as "console.ep".  The old * console KChannel write handle (g_init_console_h) is retired — init logs over
  * console.ep, with early-serial as the only pre-console.ep fallback. */
 iris_cptr_t g_init_console_ep_h = IRIS_CPTR_NULL;
 iris_cptr_t g_init_timer_ep_h   = IRIS_CPTR_NULL;
@@ -48,7 +47,7 @@ uint64_t g_init_untyped_c = 0;
 void init_log(const char *s) {
     /* Endpoint-first over console.ep (synchronous flush
      * barrier) once it exists; the only pre-console.ep fallback is the direct
-     * UART (early-serial) — never the legacy console KChannel.  No silent
+     * UART (early-serial) — never the retired console KChannel.  No silent
      * fallback after verification: a broken EP drops the gated markers and
      * fails smoke. */
     if (g_init_console_ep_h != IRIS_CPTR_NULL) {
@@ -62,11 +61,11 @@ static const char init_stage_lookup[]    = "[USER][INIT][S1] service lookup\n";
 static const char init_stage_vfs_list[]  = "[USER][INIT][S5] vfs ep list\n";
 static const char init_stage_vfs_rw[]    = "[USER][INIT][S6] vfs ep rw\n";
 /* init_stage_hello (S2) / init_stage_subscribe (S7) retired —  */
-/* init_stage_exception (S8) lives in init_test.c — Phase 14/Inc 2 */
+/* init_stage_exception (S8) lives in init_test.c */
 /* init_stage_seal/init_stage_rights (S9/S10) retired —  */
 static const char init_stage_healthy[]   = "[USER][INIT][BOOT] healthy path OK\n";
 /* Readdup/writedup/boot_ioport/boot_service fail strings
- * retired with the legacy console KChannel bootstrap.  The console/fb spawn
+ * retired with the retired console KChannel bootstrap.  The console/fb spawn
  * fail strings moved to init_launch.c with their users — . */
 
 void init_exit(long code) {
@@ -93,7 +92,7 @@ void init_close(iris_cptr_t *h) {
 
 /* init_msg_zero retired — (no KChannel messages in init). */
 
-/* Runtime probes + S8 exception selftest extracted to init_test.c — Phase 14/Inc 2. */
+/* Runtime probes + S8 exception selftest extracted to init_test.c. */
 
 /* Init S9 (channel seal) and S10 (rights reduction)
  * KChannel selftests retired — the seal/close and rights-reduction
@@ -106,19 +105,19 @@ void init_close(iris_cptr_t *h) {
 
 /* init_retry_pause / init_recv_spawn_cap moved to init_bootstrap.c — . */
 
-/* ── Legacy channel send/recv helper (retired) ──────────────────────────── */
+/* ── Retired channel send/recv helper (retired) ──────────────────────────── */
 
 /* init_chan_send_recv retired — (kbd HELLO/STATUS was its
  * only caller; kbd is endpoint-only now). */
 
-/* ── fb / console / svcmgr spawns moved to init_launch.c — Phase 14 ──────── */
+/* ── fb / console / svcmgr spawns moved to init_launch.c ──────── */
 
 /* ── svcmgr lookup ──────────────────────────────────────────────────────── */
 
 /* Init_lookup / init_lookup_wait / init_lookup_name (the
- * legacy KChannel SVCMGR_MSG_LOOKUP[_NAME] discovery) are fully retired —
+ * retired KChannel SVCMGR_MSG_LOOKUP[_NAME] discovery) are fully retired —
  * init discovers services via EP_LOOKUP_NAME over svcmgr.ep
- * (init_ep_lookup_name, init_bootstrap.c).  No legacy LOOKUP, no fallback. */
+ * (init_ep_lookup_name, init_bootstrap.c).  No LOOKUP, no fallback. */
 
 
 /* ── VFS endpoint client + S5/S6 boot-health checks ─────────────────────── */
@@ -127,7 +126,7 @@ void init_close(iris_cptr_t *h) {
  * discovery, incl. the A1.6 reply receive-slot), init_vfs_ep_call, and the
  * S5/S6 LIST/STAT/READ_AT validation with their retry waits. */
 
-/* The KBD HELLO/SUBSCRIBE legacy-KChannel helpers and the
+/* The KBD HELLO/SUBSCRIBE retired KChannel helpers and the
  * PS/2 scancode→ASCII echo table are retired — kbd is endpoint-only and sh
  * is the keystroke consumer (kbd.ep pull). */
 
@@ -188,7 +187,7 @@ void init_main(iris_cptr_t rbx_unused) {
      * SYS_UNTYPED_INFO answers by CPtr and materializes nothing, so
      * the check costs no handle-table entry and the pool stays a CPtr all the
      * way into retype2 — which is what gives the fabricated objects a real MDB
-     * ancestor instead of LEGACY_ROOT status (see init_retype_slot). */
+     * ancestor instead of MDB_FLAG_UNPARENTED status (see init_retype_slot). */
     {
         long ur = iris_invoke2((long)IRIS_CPTR_INIT_UNTYPED, INV_UNTYPED_INFO, 0, 0);
         if (ur >= 0) g_init_untyped_c = IRIS_CPTR_INIT_UNTYPED;
@@ -202,7 +201,7 @@ void init_main(iris_cptr_t rbx_unused) {
      * `fb` is NOT spawned any more.
      *
      * It painted rainbow stripes and exited, which proved a ring-3 service
-     * could reach the framebuffer -- the thing Stage 5 needed to show.  The
+     * could reach the framebuffer -- the thing the bootstrap needed to show.  The
      * console service now paints the ring-3 LOG on that screen, which proves
      * the same thing and is worth reading, and two writers on one framebuffer
      * produce a screen that describes neither.  The service stays in the tree
@@ -220,7 +219,7 @@ void init_main(iris_cptr_t rbx_unused) {
      * EP_CALL blocks until console serves it, so this also synchronizes with
      * console boot.  Done BEFORE early-serial is stopped so a broken EP can
      * still report LOUDLY over the direct UART (the missing OK marker fails
-     * smoke either way — no legacy console KChannel fallback). */
+     * smoke either way — no retired console KChannel fallback). */
     if (g_init_console_ep_h != IRIS_CPTR_NULL) {
         if (console_ep_write(g_init_console_ep_h, g_init_buf,
                              "[USER] console ep OK\n") != 0) {
@@ -283,14 +282,14 @@ void init_main(iris_cptr_t rbx_unused) {
 
     /* ── Service discovery ── */
     init_log(init_stage_lookup);
-    /* Init no longer probes kbd over the legacy service/reply
+    /* Init no longer probes kbd over the retired service/reply
      * KChannel — kbd is endpoint/notification-only.  kbd liveness is covered by
      * sh's "[SH] kbd cptr OK" (a kbd.ep PING) and by T034/T035/T044/T058. */
 
-    /* Phase 7.2/13: the VFS endpoint is the mandatory operational path.  sm_h is
+    /* The VFS endpoint is the mandatory operational path.  sm_h is
      * svcmgr's discovery endpoint ("svcmgr.ep", owned by init) — look up "vfs.ep"
      * through it via EP_LOOKUP_NAME (retrying until VFS has bootstrapped).
-     * Fail-fast: no legacy fallback.
+     * Fail-fast: no old fallback.
      * A1.6: the session cap lands in init's CSpace (INIT_RSLOT_VFS_EP) and
      * every init VFS EP_CALL below invokes it by CPtr — no handle is created.
      * A failed attempt (EP_CALL error or reply ERR) transfers no cap and
@@ -306,7 +305,7 @@ void init_main(iris_cptr_t rbx_unused) {
         init_exit(5);
     }
 
-    /* the legacy KChannel diagnostics + dynamic-registry
+    /* the retired KChannel diagnostics + dynamic-registry
      * self-tests were retired; their coverage now lives in the endpoint suite
      * (EP_DIAG → T067, cap-backed REGISTER/LOOKUP/UNREGISTER → T054/T063–T066). */
 

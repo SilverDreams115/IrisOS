@@ -104,7 +104,7 @@ iris_error_t kreply_stage(struct KReply *r);
 void         kreply_unstage(struct KReply *r);
 iris_error_t kreply_bind_caller(struct KReply *r, struct task *caller);
 
-/* Phase 18/S1: live KReply count + retype/destroy counters (diagnostics). */
+/* Live KReply count + retype/destroy counters (diagnostics). */
 uint32_t kreply_live_count(void);
 
 /*

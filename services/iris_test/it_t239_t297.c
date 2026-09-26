@@ -15,7 +15,7 @@
 #include "../common/iris_msg.h"
 /* ── T239: every object has a budget, a charge point and a release point ────
  *
- * Stage 7-mem rewrote this test rather than retiring it, because the CLAIM
+ * The memory-server work rewrote this test rather than retiring it, because the CLAIM
  * survives and only its subject moved.  It used to read the per-process
  * resource manifest: a VMO charged self, or charged a CHILD through
  * SYS_VMO_CREATE_FOR's payer argument, against a ceiling of 32.  There is no
@@ -268,7 +268,7 @@ void test_t244(void) {
  * supervisor's children are independent (the "supervisor death" contract's
  * core: no cross-child resource coupling).
  *
- * Stage 7-mem restated the measurement.  It used to read each child's
+ * The memory-server work restated the measurement.  It used to read each child's
  * per-process VMO count and assert B's was untouched by A's death; there is no
  * per-process domain, so independence is measured where it now lives: on the
  * BUDGET each child was given.  Killing A must let A's region become
@@ -536,7 +536,7 @@ void test_t250(void) {
  * VSPACE, ASID_POOL, IOSPACE, IO_PAGE_TABLE} and refuses every other type code (0..31) with
  * NOT_SUPPORTED — an unregistered KOBJ_* can never be born.  Every created object reports its declared type through the
  * sanctioned bridge, and the migrated family has a retirement witness: the
- * legacy handle-first retype refuses it (S19/S20/S21). */
+ * retired handle-first retype refuses it (S19/S20/S21). */
 void test_t251(void) {
     int ok = 1;
     const char *why = "object manifest";
@@ -601,14 +601,14 @@ void test_t251(void) {
             ok = 0; why = "non-canonical type creatable";
         }
     }
-    /* Retirement witness: the legacy handle-publishing path refuses every
+    /* Retirement witness: the retired handle-publishing path refuses every
      * type now, not just the migrated family. */
     static const uint32_t migrated[] = { IRIS_KOBJ_ENDPOINT, IRIS_KOBJ_NOTIFICATION,
                                          IRIS_KOBJ_CNODE, IRIS_KOBJ_REPLY,
                                          IRIS_KOBJ_TCB /* Step 0 */ };
     for (uint32_t i = 0; ok && i < 5u; i++) {
         if (it_sys3(SYS_UNTYPED_RETYPE, su, (long)migrated[i], 4) !=
-            (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy path not retired"; }
+            (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "retired path not retired"; }
     }
 
     it_close(&su_h);
@@ -709,7 +709,7 @@ void test_t253(void) {
         if (it_invoke0(239, INV_CAP_IDENTIFY) >= 0) { ok = 0; why = "partial slot filled"; }
         if (it_invoke0(240, INV_CAP_IDENTIFY) >= 0) { ok = 0; why = "partial slot filled 2"; }
     }
-    /* Capacity failure: 8 CNodes of 64 slots (~5 KiB each with the Phase S3
+    /* Capacity failure: 8 CNodes of 64 slots (~5 KiB each with the
      * MDB slot metadata) ≫ the 8 KiB region, while the batch stays under
      * KUNTYPED_RETYPE_MAX_BYTES so the failure exercised is genuinely the
      * REGION capacity (NO_MEMORY), not the batch-size validation. */
@@ -1189,14 +1189,14 @@ void test_t259(void) {
     if (ok) it_pass("T259"); else it_fail("T259", why);
 }
 
-/* ── T260: legacy create-path retirement ────────────────────────────────────
+/* ── T260: old create-path retirement ────────────────────────────────────
  * SYS_ENDPOINT_CREATE / SYS_NOTIFY_CREATE / SYS_CNODE_CREATE return
  * NOT_SUPPORTED and create NOTHING: no kslab movement, no live-object
  * change, no handle, no CSpace mutation (S22).  The one-shot KReply
  * fabrication inside EP_CALL is equally retired (proven in T257). */
 void test_t260(void) {
     int ok = 1;
-    const char *why = "legacy retirement";
+    const char *why = "retired retirement";
     struct it_utq_global k0, k1;
     struct it_utq_objects o0, o1;
     uint32_t e0[14], e1[14];
@@ -1560,11 +1560,11 @@ void test_t283(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
- * Stage 0 — canonical TCB from Untyped (T284–T287).
+ * Canonical TCB from Untyped (T284–T287).
  *
  * Charter §2.2 (O1–O6) and §C.2: the TCB is born from RETYPE2 as an INACTIVE
  * object (configured = 0) — cap-complete (GET_INFO / SET_PRIORITY / delete /
- * transfer) but not runnable until TCB_CONFIGURE (roadmap Stage 5/6); the
+ * transfer) but not runnable until TCB_CONFIGURE ; the
  * execution syscalls reject it with NOT_SUPPORTED and no side effects.  A
  * TERMINATED TCB stays observable through any surviving cap; the registry
  * (scheduler identity) is released at TERMINATION, not at the last cap; the
@@ -1621,10 +1621,10 @@ void test_t284(void) {
     if (ok && (it_invoke1((long)S1_SLOT_A, INV_TCB_GET_INFO, (long)(uintptr_t)&info) != 0 ||
                info.priority != 7u)) { ok = 0; why = "prio roundtrip"; }
 
-    /* Legacy handle-publishing birth is retired outright; it was
-     * already refused for TCB by S20 + Stage 0. */
+    /* Retired handle-publishing birth is retired outright; it was
+     * already refused for TCB by S20. */
     if (ok && it_sys3(SYS_UNTYPED_RETYPE, su, (long)IRIS_KOBJ_TCB, 0) !=
-              (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy tcb retype alive"; }
+              (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "retired tcb retype alive"; }
 
     /* Lifecycle: RESET with live children refuses; last cap destroys. */
     if (ok && it_invoke0(su, INV_UNTYPED_RESET) != (long)IRIS_ERR_BUSY) { ok = 0; why = "reset with children"; }

@@ -56,7 +56,7 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * Base total: 40 bytes.
  *
  * A1.7 additive extension — written ONLY when the caller passes
- * buf_size >= 88 (a legacy caller passing 40..87 gets the exact historical
+ * buf_size >= 88 (a old caller passing 40..87 gets the exact historical
  * 40 bytes; no signature or number change — same additive style as the
  * A1.5 message-field reinterpretation):
  *   offset 40: uint32_t self_handles_live     — caller's handle table
@@ -79,7 +79,7 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * A caller passing 88..95 still gets the historical 88-byte snapshot; only a
  * buffer >= 96 receives the lifecycle words (same additive rule).
  *
- * Phase 17 additive scheduler-hardening tier — written ONLY when the caller
+ * Additive scheduler-hardening tier — written ONLY when the caller
  * passes buf_size >= 112 (a caller passing 96..111 gets the exact historical
  * 96-byte snapshot; same additive rule as every tier above):
  *   offset  96: uint32_t run_queue_hwm            — (run-queue depth hwm)
@@ -88,7 +88,7 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *   offset 108: uint32_t yield_count              — (task_yield entries)
  * Extended-2 total: 112 bytes.
  *
- * Phase 18 additive authority tier — written ONLY when the caller passes
+ * Additive authority tier — written ONLY when the caller passes
  * buf_size >= 136 (a caller passing 112..135 gets the exact historical 112-byte
  * snapshot; same additive rule as every tier above).  Live per-type object
  * counts let authority tests prove objects are born and destroyed exactly once:
@@ -100,7 +100,7 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *   offset 132: uint32_t _pad1
  * Extended-3 total: 136 bytes.
  *
- * Phase 19 additive VM/VSpace tier — written ONLY when the caller passes
+ * Additive VM/VSpace tier — written ONLY when the caller passes
  * buf_size >= 160 (a caller passing 136..159 gets the exact 136-byte snapshot;
  * same additive rule as every tier above):
  *   offset 136: uint32_t vspace_live        — (KVSpace objects live)
@@ -112,7 +112,7 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *                                             structurally 0 on one core)
  * Extended-4 total: 160 bytes.
  *
- * Phase 20 additive fault-model tier — written ONLY when the caller passes
+ * Additive fault-model tier — written ONLY when the caller passes
  * buf_size >= 184 (a caller passing 160..183 gets the exact 160-byte snapshot;
  * same additive rule as every tier above):
  *   offset 160: uint32_t fault_delivery_count  — (faults handed to a handler)
@@ -138,7 +138,7 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *   offset 204: uint32_t _pad4
  * Extended-6 total: 208 bytes.
  *
- * Stage 10-dma §10.2 step 3 — additive DMA-containment tier, written ONLY when
+ * DMA containment — additive DMA-containment tier, written ONLY when
  * the caller passes buf_size >= 224:
  *   offset 208: uint32_t iommu_units       — remapping units the DMAR named
  *   offset 212: uint32_t iommu_usable      — ...that are what the kernel needs
@@ -216,7 +216,7 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
          * the objects that are actually there: live TCBs, CSpaces and address
          * spaces, all already reported here. */
         w[11] = 0u;
-        w[12] = sched_reap_queue_hwm();          /* Phase 16 */
+        w[12] = sched_reap_queue_hwm();
         /* SMP step 1: the ring holds one entry per CPU and a task dies on the
          * CPU it ran on, so this cannot move.  Reported because a leaked slot
          * and a queue that has simply not drained yet look identical from
@@ -227,7 +227,7 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     if (want >= SCHED_INFO_EXT2_BYTES) {
-        /* Phase 17 scheduler-hardening words (offsets 96..108). */
+        /* Scheduler-hardening words (offsets 96..108). */
         uint32_t s0 = sched_run_queue_hwm();
         uint32_t s1 = sched_duplicate_enqueue_count();
         uint32_t s2 = kschedctx_live_count();
@@ -237,7 +237,7 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     if (want >= SCHED_INFO_EXT3_BYTES) {
-        /* Phase 18 authority words (offsets 112..132): live per-type counts. */
+        /* Authority words (offsets 112..132): live per-type counts. */
         uint32_t a0 = kuntyped_live_count();
         uint32_t a1 = kframe_live_count();
         uint32_t a2 = kendpoint_live_count();
@@ -271,7 +271,7 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     if (want >= SCHED_INFO_EXT5_BYTES) {
-        /* Phase 20 fault-model words (offsets 160..176). */
+        /* Fault-model words (offsets 160..176). */
         uint32_t g0 = kfault_delivery_count();
         uint32_t g1 = kfault_nohandler_count();
         uint32_t g2 = kfault_resume_count();
@@ -326,7 +326,7 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_poweroff(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *t = task_current();
-    /* arg0 = KDEBUG authority CPtr (0 = legacy ambient scan). */
+    /* arg0 = KDEBUG authority CPtr (0 = old ambient scan). */
     if (!t || !task_kdebug_cap_named(t, arg0))
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     for (;;) __asm__ volatile ("hlt");

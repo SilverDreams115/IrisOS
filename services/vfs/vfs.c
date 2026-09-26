@@ -4,10 +4,9 @@
  *
  * The service speaks exactly one protocol: the stateless KEndpoint protocol
  * in iris/vfs_ep_proto.h (LIST / STAT / READ_AT / STATUS / PING), dispatched
- * by vfs_ep.c. The legacy stateful KChannel protocol (iris/vfs_proto.h:
+ * by vfs_ep.c. The old stateful KChannel protocol (iris/vfs_proto.h:
  * OPEN/READ/CLOSE + server-side fd table + reply channel) was removed with
- * its last clients in this phase; svcmgr no longer creates the legacy
- * service/reply channels for VFS (catalog endpoint_only flag).
+ * its last clients in this phase; svcmgr no longer creates the old * service/reply channels for VFS (catalog endpoint_only flag).
  *
  * KChannel is fully retired: vfs receives its bootstrap
  * capability as a pre-start CPtr mint (IRIS_CPTR_INITRD_CONTROL) and logs over
@@ -56,7 +55,7 @@ static const uint8_t vfs_boot_export_services_data[] =
 static const char vfs_boot_export_readme[] = "readme.txt";
 static const uint8_t vfs_boot_export_readme_data[] =
     "IRIS — pure microkernel OS\n"
-    "Phase 55 — ring-0/3 separation, IPC-only kernel interface.\n"
+    "ring-0/3 separation, IPC-only kernel interface.\n"
     "Kernel: PMM, paging, IPC, caps, IRQ routing, scheduler.\n"
     "Services: init svcmgr kbd vfs console fb sh\n";
 
@@ -117,7 +116,7 @@ static long vfs_self_vs(void) {
 /* g_vfs_console_h retired — (console.ep only). */
 /* Console endpoint: the well-known slot IRIS_CPTR_CONSOLE_EP,
  * verified with a PING after bootstrap; pre-verification boot lines are
- * dropped (vfs no longer receives a legacy console cap). */
+ * dropped (vfs no longer receives a retired console cap). */
 static iris_cptr_t g_vfs_console_ep_h = IRIS_CPTR_NULL;
 /* The console client marshals into the buffer it is given, and a thread
  * with a registered IPC buffer must marshal into THAT — the kernel refuses a
@@ -131,7 +130,7 @@ static iris_cptr_t g_vfs_console_ep_h = IRIS_CPTR_NULL;
 static uint8_t *g_vfs_reply;
 
 static void vfs_log(const char *msg) {
-    /* Vfs logs over console.ep only — the legacy console
+    /* Vfs logs over console.ep only — the retired console
      * KChannel writer is retired (vfs is endpoint_only; g_vfs_console_h was
      * always invalid). */
     if (g_vfs_console_ep_h != IRIS_CPTR_NULL)
@@ -382,7 +381,7 @@ void vfs_server_main_c(iris_cptr_t rbx_unused) {
 
     vfs_log(vfs_str_started);
 
-    /* Phase 8/13: every cap arrives as a well-known pre-start CSpace slot —
+    /* Every cap arrives as a well-known pre-start CSpace slot —
      * slot 5 our endpoint recv side, slot 3 the console endpoint, and
      * slot 6 the initrd-access spawn KBootstrapCap.  The spawn cap resolves
      * through the device-cap dual resolver, so SYS_INITRD_* accept it by CPtr;

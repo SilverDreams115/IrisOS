@@ -6,7 +6,7 @@
 
 /* WRITE-BACK ONLY.  The read side (user_range_readable,
  * copy_from_user_checked, copy_user_cstr_bounded) is retired: since ledger
- * A-33 the kernel reads no input from a user pointer.  See usercopy.c. */
+ * The kernel reads no input from a user pointer.  See usercopy.c. */
 int      user_range_writable(uint64_t ptr, uint32_t len);
 int      copy_to_user_checked(uint64_t dst_uptr, const void *src, uint32_t len);
 
@@ -16,7 +16,7 @@ int      copy_to_user_checked(uint64_t dst_uptr, const void *src, uint32_t len);
  * prepared to take a fault on.
  *
  * The fault path asks this BEFORE it decides to halt.  See usercopy.c for what
- * the table is for and ledger A-37 for what it replaces.
+ * the table is for and usercopy.c for what it replaces.
  */
 uint64_t exfixup_lookup(uint64_t fault_rip);
 

@@ -5,7 +5,7 @@
 /*
  * abi.h — the IRIS 1.0 application binary interface, declared in one place.
  *
- * Stage 10-abi exists because "the correct state for a system in convergence
+ * The ABI freeze exists because "the correct state for a system in convergence
  * is the wrong state to ship".  Everything the kernel offers ring 3 was
  * DESCRIBED across three headers and a hundred and forty comments, and a
  * description spread that thin is not a contract: nobody can read it, nothing
@@ -85,7 +85,7 @@
  * 3. AN ERROR CODE IS PART OF THE CONTRACT.  A capability of the wrong type is
  *    WRONG_TYPE; a capability of the right type without the authority is
  *    ACCESS_DENIED; a label that names no method is NOT_SUPPORTED (ledger
- *    A-30).  Changing which of these a case produces is a MAJOR change, even
+ *    WRONG_TYPE).  Changing which of these a case produces is a MAJOR change, even
  *    though the call still fails, because callers branch on them.
  *
  * ── What this is NOT ───────────────────────────────────────────────────────

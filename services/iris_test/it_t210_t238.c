@@ -805,10 +805,10 @@ void test_t217(void) {
         /* Step 2 adds slot 12: the budget the pager's own
          * address space was built from.  It MAPS, and the kernel no longer
          * creates paging levels, so it must be able to retype one. */
-        /* D-6 adds 18 and 19: the pager's own address space and own thread,
+        /* Two more: 18 and 19: the pager's own address space and own thread,
          * delegated by its spawner rather than fabricated with the *_SELF
          * syscalls, which publish MDB roots nothing can revoke. */
-        /* D-5 removes 16 and 17.  They held the cache and private-pool VMOs a
+        /* Deleting KVmo removes 16 and 17.  They held the cache and private-pool VMOs a
          * supervisor granted; the pager has retyped both pools from its own
          * budget since the day its pages became frames, and nothing had read
          * the grants since.  Authority nothing uses is exactly what this

@@ -146,7 +146,7 @@ void test_t123(void) {
     if (ok && it_invoke((long)sc, INV_SC_CONFIGURE, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0)   { ok = 0; why = "configure valid"; }
     if (ok && it_invoke((long)sc, INV_SC_CONFIGURE, 0, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
     if (ok && it_invoke((long)sc, INV_SC_CONFIGURE, 10, 0, (long)IRIS_CPTR_SCHED_CONTROL)  != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "period 0"; }
-    /* Phase S2 (fix I1): budget == period is a full CPU reservation, VALID
+    /* Budget == period is a full CPU reservation, VALID
      * (MCS style).  Only budget > period is rejected. */
     if (ok && it_invoke((long)sc, INV_SC_CONFIGURE, 100, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "budget==period rejected"; }
     if (ok && it_invoke((long)sc, INV_SC_CONFIGURE, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "reconfigure back"; }
@@ -355,14 +355,14 @@ void test_t125(void) {
         if (ok && it_retype_slot_alloc(IT_UT, IT_KOBJ_UNTYPED, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad ut size"; }
         /* non-power-of-two CNode slot count (RETYPE2 — the canonical path). */
         if (ok && it_retype2_at(IT_UT, IT_KOBJ_CNODE, 240u, 1u, 3) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad cnode slots"; }
-        /* The LEGACY handle-publishing retype (87) is retired for
+        /* The OLD handle-publishing retype (87) is retired for
          * EVERY type, not just the migrated family it refused.
          * There is one way to create an object from an Untyped, and it puts
          * the result in a CSpace slot. */
-        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0)     != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy ep not retired"; }
-        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096)     != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy frame not retired"; }
-        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_UNTYPED, 4096)   != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy ut not retired"; }
-        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_SCHED_CONTEXT, 0)!= (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy sc not retired"; }
+        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0)     != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "retired ep not retired"; }
+        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096)     != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "retired frame not retired"; }
+        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_UNTYPED, 4096)   != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "retired ut not retired"; }
+        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_SCHED_CONTEXT, 0)!= (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "retired sc not retired"; }
         /* missing RIGHT_WRITE: retype through a read-only derived cap. */
         if (ok) {
             /* The read-only copy is a native-CDT child. */
@@ -417,7 +417,7 @@ void test_t126(void) {
         { IT_KOBJ_UNTYPED,     huge, (long)IRIS_ERR_NO_MEMORY,     "nomem" },
         { 99u,                 0,    (long)IRIS_ERR_NOT_SUPPORTED, "badtype" },
         { IT_KOBJ_FRAME,       1u,   (long)IRIS_ERR_INVALID_ARG,   "badsize" },
-        /* Was "the LEGACY path refuses KOBJ_CNODE".  With 87 retired there is
+        /* Was "the OLD path refuses KOBJ_CNODE".  With 87 retired there is
          * only RETYPE2, which accepts CNode but not a non-power-of-two slot
          * count — so the same input is still a clean rejection, under the
          * rule that actually applies to it. */
@@ -484,7 +484,7 @@ void test_t127(void) {
 
     /* The "a SYS_CNODE_MINT copy is an independent ref, not a derivation
      * child, and survives the revoke" leg is retired with that syscall: it
-     * asserted the MDB LEGACY_ROOT behaviour the ledger tracks to zero.  Every
+     * asserted the MDB MDB_FLAG_UNPARENTED behaviour the ledger tracks to zero.  Every
      * copy is a derivation child now, which is what the rest of this test
      * checks. */
 
@@ -809,11 +809,11 @@ void test_t131(void) {
 
 /* ── VM / VSpace / frame mapping hardening (T132–T139) ──────────────
  *
- * These tests close the gap Phase 18 left open: ring 3 now drives SYS_FRAME_MAP /
+ * These tests close the gap left open: ring 3 now drives SYS_FRAME_MAP /
  * SYS_FRAME_UNMAP directly against its OWN address space, using a self-VSpace
  * cap obtained from SYS_VSPACE_SELF (self-authority only) and minted into
  * IRIS_CPTR_TEST_VSPACE.  Frames come from the boot untyped
- * (IRIS_CPTR_TEST_UNTYPED).  The Phase 19 additive instrumentation
+ * (IRIS_CPTR_TEST_UNTYPED).  The additive instrumentation
  * (it_sched_ext4) exposes live KVSpace count, live KFrameMapping count, and the
  * cumulative map/unmap/TLB-invalidate counters — the observables behind V10–V18.
  *
@@ -1679,7 +1679,7 @@ void test_t141(void) {
  *     the condition re-faults at the same rip/cr2 (no silent write, no
  *     corruption), after which the supervisor kills the child.
  * VSpace books return to baseline after reap.  Invariants: F6, F7, F16, F20,
- * F21 (write bit distinguishable).  Phase 19 V6 gap closed. */
+ * F21 (write bit distinguishable).  V6 gap closed. */
 void test_t142(void) {
     uint32_t v0[5], v1[5], f0[6], f1[6];
     uint32_t t0 = 0, t1 = 0;
@@ -2265,7 +2265,7 @@ void test_t148(void) {
          * configured with CSpace/VSpace capabilities.
          * 58 = SYS_THREAD_START, the LAST pool-born execution path —
          * a spawned process's first thread.  It survived Step 4 only because
-         * a spawner could not name its child's CSpace and VSpace; Stage 6-pure
+         * a spawner could not name its child's CSpace and VSpace; retyping from Untyped
          * made it retype both, so the child's first thread is composed the
          * same way any other is. */
         45, 48, 58,
@@ -2289,11 +2289,11 @@ void test_t148(void) {
      * live from Fases 25/26/29). */
     /* 114-116 are SYS_CSPACE_MINT/REVOKE/MINT_INTO.
      * 117-118 are SYS_CAP_IDENTIFY/SYS_CAP_SAME_OBJECT — the CSpace-native
-     * introspection that replaces SYS_HANDLE_TYPE/SAME_OBJECT.  Stage 5
+     * introspection that replaces SYS_HANDLE_TYPE/SAME_OBJECT.  The bootstrap
      * Step 4: 119-121 are SYS_CSPACE_SELF / SYS_TCB_CONFIGURE /
      * SYS_TCB_WRITE_REGS — execution for a TCB retyped from an Untyped.
      * 122 is SYS_VSPACE_MAP_TABLE, which installs a page
-     * table the holder retyped.  Stage 7 Steps 8/10: 123-125 are
+     * table the holder retyped.  123-125 are
      * SYS_TCB_FAULT_INFO, SYS_TCB_WATCH and SYS_TCB_EXIT_CODE — a fault read
      * off the thread that took it, and a death observed on the thread that
      * dies.  126 is SYS_TCB_SET_FAULT_HANDLER — faults armed

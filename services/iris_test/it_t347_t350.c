@@ -826,7 +826,7 @@ void test_t350(void) {
 
 /* ── T351: DMA is contained, or the kernel says plainly that it is not ───────
  *
- * Stage 10-dma §10.2 step 3.  A driver in IRIS holds an I/O port capability
+ * DMA containment.  A driver in IRIS holds an I/O port capability
  * and an IRQ capability and nothing else, and the claim that goes with that is
  * containment.  Against a DMA-capable device that claim is only true if a
  * remapping unit is enforcing — otherwise the driver writes a physical address
@@ -902,7 +902,7 @@ void test_t351(void) {
 
 /* ── T352: a device reaches what somebody mapped, and nothing else ───────────
  *
- * Stage 10-dma §10.2 steps 4 and 5.  T351 says the hardware is switched on and
+ * DMA containment.  T351 says the hardware is switched on and
  * blocking; this says the capability model on top of it does what it claims.
  *
  * The whole arc, in the order a driver's supervisor would do it:

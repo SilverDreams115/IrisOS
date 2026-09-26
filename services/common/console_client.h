@@ -10,7 +10,7 @@
 #include <iris/syscall.h>
 #include <iris/invoke.h>
 
-/* Console_write / console_sync (legacy KChannel) retired —
+/* Console_write / console_sync (retired KChannel) retired —
  * the console is endpoint-only; use console_ep_write / console_ep_sync. */
 
 /*
@@ -49,7 +49,7 @@ static inline long console_ep_write(iris_cptr_t ep_h, uint8_t *buf,
 
 /*
  * console_ep_sync — cross-path flush barrier over the console KEndpoint.
- * Returns after the console has drained all legacy KChannel writes queued
+ * Returns after the console has drained all retired KChannel writes queued
  * before this call (EP writes are already synchronous).
  */
 static inline long console_ep_sync(iris_cptr_t ep_h) {

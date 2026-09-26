@@ -2,8 +2,8 @@
 /*
  * pmm.c — Physical Memory Manager: bitmap + two-phase buddy allocator.
  *
- * Phase 1 (pmm_init → pmm_buddy_setup): O(N/64) bitmap scan using ctzll.
- * Phase 2 (after pmm_buddy_setup, called once post paging_init):
+ * Early (pmm_init → pmm_buddy_setup): O(N/64) bitmap scan using ctzll.
+ * Later (after pmm_buddy_setup, called once post paging_init):
  *   O(log N) buddy allocator with power-of-2 blocks and coalescing.
  *   BuddyNode metadata is stored inline in free physical pages via PHYS_TO_VIRT,
  *   which is why pmm_buddy_setup requires the physmap to be active.

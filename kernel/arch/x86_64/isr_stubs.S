@@ -100,9 +100,9 @@ isr_common:
      * CS bits[1:0] == 3 → came from ring-3 → must SWAPGS to get kernel GS.
      * CS bits[1:0] == 0 → came from ring-0 → GS already kernel, no SWAPGS.
      *
-     * NMI PARANOID_ENTRY debt (Fase 2.1):
+     * NMI PARANOID_ENTRY debt:
      *
-     *   Fase 2 ABI: ring-0 always has GS_BASE = &cpu_local.  The CS-check is
+     *   ABI: ring-0 always has GS_BASE = &cpu_local.  The CS-check is
      *   therefore CORRECT for the overwhelmingly common cases:
      *     · ring-3 user code → CS bits=3 → SWAPGS → GS_BASE=&cpu_local ✓
      *     · ring-0 normal (idle loop, ring-0 ISRs) → CS bits=0, GS already ✓
@@ -159,7 +159,7 @@ isr_common:
     pushq %r14
     pushq %r15
 
-    /* Fase 20: #GP/#PF (vectors 13/14) enter through IST1, a fixed per-CPU
+    /* #GP/#PF (vectors 13/14) enter through IST1, a fixed per-CPU
      * stack reused from the top on every entry.  A task that the C handler
      * suspends in TASK_BLOCKED_FAULT would leave its context live (frame + C
      * frames + context_switch) inside IST1, and the next #GP/#PF from any
@@ -192,7 +192,7 @@ isr_common:
 .Lisr_no_migrate:
 
     /*
-     * Ledger D-1 step 3: the thread's user context goes into its TCB before
+     * Ledger The event kernel: the thread's user context goes into its TCB before
      * the handler runs, and comes back out of the TCB — of whatever thread is
      * current by then — after it.  Done in C so no struct task offset is
      * hard-coded here; see isr_save_user_ctx in idt.c for why the frame cannot

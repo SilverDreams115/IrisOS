@@ -32,7 +32,7 @@
  * It was KNOTIF_WAITERS_MAX = 4: a fixed array inside the object, and a fifth
  * waiter got IRIS_ERR_BUSY.  The kernel was deciding how many threads may wait
  * on a notification — a number it invented, of the same class as the
- * per-process quotas Stage 7 removed (charter P2).  seL4 queues waiters on an
+ * the per-process quotas that were removed (charter P2).  seL4 queues waiters on an
  * intrusive list through the TCB and has no such limit.
  *
  * So does IRIS, and it always did: KEndpoint has queued its waiters that way

@@ -23,7 +23,7 @@
 
 .section .text
 /*
- * SWAPGS ABI (Fase 2):
+ * SWAPGS ABI:
  *   Ring-0 resting: GS_BASE = &cpu_local[cpu_id], KGS_BASE = 0.
  *   Ring-3 user:    GS_BASE = 0,                  KGS_BASE = &cpu_local[cpu_id].
  *
@@ -55,11 +55,11 @@ syscall_entry:
      *   [rsp+128] user rbp   ┐ callee-saved (see below)
      *   [rsp+120] user rbx   │
      *   [rsp+112] user r12   ┘
-     *   [rsp+104] arg8       (r13, 9th user arg — A-33)
-     *   [rsp+96]  arg7       (r14, 8th user arg — A-33)
-     *   [rsp+88]  arg6       (r15, 7th user arg — A-33)
-     *   [rsp+80]  arg5       (r9,  6th user arg — A-33)
-     *   [rsp+72]  arg4       (r8,  5th user arg — A-32)
+     *   [rsp+104] arg8       (r13, 9th user arg)
+     *   [rsp+96]  arg7       (r14, 8th user arg)
+     *   [rsp+88]  arg6       (r15, 7th user arg)
+     *   [rsp+80]  arg5       (r9,  6th user arg)
+     *   [rsp+72]  arg4       (r8,  5th user arg)
      *   [rsp+64] user rsp    (from %gs:72)
      *   [rsp+56] user rflags (r11, set by syscall insn)
      *   [rsp+48] user rip    (rcx, set by syscall insn)
@@ -272,7 +272,7 @@ syscall_entry:
 syscall_return_to_user:
     /* Switch to the user address space, as the normal exit does.
      *
-     * r11 is the scratch.  It used to be r9 — which A-33 made an ARGUMENT, the
+     * r11 is the scratch.  It used to be r9 — which became an ARGUMENT, the
      * pointer to the return message, and the first thing this function then
      * did was overwrite it with a CR3 value and dereference that.  r8 carries
      * the callee-saved block and r9 the message, so r11 is what is left: it is

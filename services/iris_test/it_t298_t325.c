@@ -617,7 +617,7 @@ void test_t304(void) {
 
 /* ── T305: every capability is traceable to an ancestor (charter A9) ──────
  *
- * A LEGACY_ROOT is a capability sitting in a CSpace with NO parent in the
+ * A MDB_FLAG_UNPARENTED is a capability sitting in a CSpace with NO parent in the
  * derivation tree.  It is not reachable by revoking anything: SYS_CSPACE_REVOKE
  * walks descendants, and a root has no ancestor to be a descendant of.  The
  * ABI calls the gauge "must → 0" and charter A9 claims the property is MET,
@@ -660,7 +660,7 @@ void test_t305(void) {
      *
      * The no-growth check below catches a NEW producer of unparented
      * capabilities appearing during the cycle it runs.  It cannot catch one
-     * that was there at boot, and that is exactly what A-14 was: an open-coded
+     * that was there at boot, and that is exactly what one of them was: an open-coded
      * `< 1024` in RETYPE2 published every object retyped from a second-level
      * Untyped as a root, for the whole life of the system, and this test
      * printed the number and passed.
@@ -672,7 +672,7 @@ void test_t305(void) {
      * started publishing without an ancestor and the change that did it is the
      * one to look at.
      */
-    if (q0.mdb_unparented_roots > IT_MDB_LEGACY_ROOT_CEILING) {
+    if (q0.mdb_unparented_roots > IT_MDB_UNPARENTED_ROOT_CEILING) {
         ok = 0; why = "unparented roots above the boot-path ceiling";
     }
 
@@ -726,7 +726,7 @@ void test_t305(void) {
     }
 
     /*
-     * And the specific claim D-6 is about: a FAULT DELIVERY installs a
+     * And the specific claim about unparented roots: a FAULT DELIVERY installs a
      * parented capability, not a root.  The kernel publishes the faulting
      * thread into a mailbox while the fault is pending, so the count is read
      * with the capability still sitting there — if it were installed as a root
@@ -1190,13 +1190,13 @@ void test_t309(void) {
 
 /* ── T310: a blocking syscall is RE-EXECUTED, not parked ────
  *
- * Ledger D-1, step 1.  seL4 is an event kernel: no thread blocks inside the
+ * seL4 is an event kernel.  seL4 is an event kernel: no thread blocks inside the
  * kernel.  A syscall that cannot finish records what it needs in the THREAD,
  * returns, and is re-executed when the thread runs again.  IRIS parked the
  * thread mid-syscall on an 8 KiB kernel stack instead, which is why it could
  * bound neither in-kernel latency nor kernel memory per thread.
  *
- * The subject was SYS_SLEEP, the first handler converted.  Ledger A-24 retired
+ * The subject was SYS_SLEEP, the first handler converted.  Moving waiting out of the kernel retired
  * it — a kernel that can block on time owns a policy about time — so the
  * property moved to the blocking syscall that remains the simplest:
  * SYS_NOTIFY_WAIT.  The claim is unchanged, and it is now made about a
@@ -1243,7 +1243,7 @@ void test_t310(void) {
 
     /* (1) and (2): a wait with nothing pending blocks, and blocking means
      *     re-execution.  The timer service is what ends it — which is also the
-     *     shape A-24 left behind: waiting is somebody else's job. */
+     *     shape left behind: waiting is somebody else's job. */
     if (ok) {
         long give = it_cs_reduce(n, RIGHT_WRITE | RIGHT_TRANSFER);
         uint64_t tok = 0;
@@ -1600,9 +1600,9 @@ void test_t313(void) {
      * boot's worth of corrupted console output and failed no test: the shared
      * console client marshalled into a buffer its caller passed, five services
      * passed their own static array, and the kernel sent whatever was at
-     * offset 0 of their IPC buffer instead.  D-4 turned it into a refusal.
+     * offset 0 of their IPC buffer instead.  The per-thread IPC buffer turned it into a refusal.
      *
-     * A-33 removed the question.  A message carries a LENGTH; the bytes are in
+     * Making the message registers removed the question.  A message carries a LENGTH; the bytes are in
      * the page the thread registered because there is nowhere else they could
      * be, and `buf_uptr` is deleted.  What is left to assert is that the
      * length alone still gets the bytes there and back, which is what the
@@ -1876,7 +1876,7 @@ void test_t315(void) {
  * the ABI since v1 and boot always wrote 0 — so no device Untyped could exist,
  * the invariants about them (U11/U12) described an object the system could not
  * construct, and IRIS reached device memory the other way: the kernel
- * fabricating a KVMO over the framebuffer, which is the object family D-5
+ * fabricating a KVMO over the framebuffer, which is the object family KVmo's deletion
  * still records as un-retyped.  The two gaps were one gap seen from opposite
  * ends.
  *
@@ -2119,7 +2119,7 @@ void test_t318(void) {
  * checked rights first knew exactly what the caller had named and reported
  * something else.
  *
- * Found closing D-5, and found the way these are always found: a "wrong type"
+ * Found closing that, and found the way these are always found: a "wrong type"
  * assertion in T079 was passing on ACCESS_DENIED, because its fixture happened
  * to lack a right the new call needed.  It was green and it was not testing
  * what it said.  Every probe here is deliberately double-wrong, so it can only

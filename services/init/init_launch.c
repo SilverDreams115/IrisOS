@@ -89,7 +89,7 @@ static const char init_fb_load_fail[] = "[INIT] fb load FAILED\r\n";
 /* ── fb spawn ────────────────────── */
 
 /* Slot 42 held fb's FRAMEBUFFER-restricted clone between its construction and
- * the pre-start mint.  Stage 5 Step 2 deleted the construction: fb is minted
+ * the pre-start mint.  That construction is deleted: fb is minted
  * the framebuffer control capability from init's own slot. */
 
 void init_spawn_fb(void) {
@@ -146,7 +146,7 @@ void init_spawn_fb(void) {
  * 0xCF8/0xCFC is a single pair of ports through which any device on the
  * machine can be reprogrammed, so a capability for it is a capability over the
  * whole bus.  Handing that to each driver would undo, one port range at a
- * time, the thing Stage 10-dma just established: that a driver reaches only
+ * time, the thing containment just established: that a driver reaches only
  * what its capabilities name.  So init claims those eight ports ONCE, gives
  * them to this service, and gives them to nothing else ever again.
  *
@@ -852,7 +852,7 @@ static int init_net_arp_probe(void) {
  *
  * IOSPACE_CONTROL is the interesting one.  AHCI is a bus master: the driver
  * writes physical addresses into a command table and the controller reads and
- * writes them itself, which is exactly the reach Stage 10-dma made
+ * writes them itself, which is exactly the reach containment made
  * containable.  Giving the driver the authority to contain ITSELF is what lets
  * it bind an IOSpace to its controller and map only its own buffers — a
  * driver that is trusted to say what its hardware may touch, and able to say
@@ -934,7 +934,7 @@ int init_spawn_blk(void) {
               b[k++] = hx[(sid >> 4) & 0xFu];  b[k++] = hx[sid & 0xFu]; }
             b[k++] = ' '; b[k++] = 'd'; b[k++] = 'm'; b[k++] = 'a'; b[k++] = ' ';
             /* "contained" or "open": the difference is the whole of
-             * Stage 10-dma, seen from the one driver that most needs it. */
+             * Containment, seen from the one driver that most needs it. */
             if (m.words[3]) { b[k++]='c'; b[k++]='o'; b[k++]='n'; b[k++]='t';
                               b[k++]='a'; b[k++]='i'; b[k++]='n'; b[k++]='e';
                               b[k++]='d'; }
@@ -1108,7 +1108,7 @@ int init_spawn_timer(void) {
 
 /* Console is endpoint-only and CPtr-provisioned — its
  * endpoint recv side (IRIS_CPTR_OWN_EP) and its 0x3F8 UART KIoPort
- * (IRIS_CPTR_IOPORT) are pre-start mints; no legacy console KChannel pair, no
+ * (IRIS_CPTR_IOPORT) are pre-start mints; no retired console KChannel pair, no
  * bootstrap sends.  Returns 1 on success, 0 on failure. */
 int init_spawn_console(void) {
     iris_cptr_t con_proc_h  = IRIS_CPTR_NULL;
@@ -1268,7 +1268,7 @@ iris_cptr_t init_spawn_svcmgr(void) {
     {
         /* Svcmgr's pool funds everything its subtree consumes, not
          * just its own endpoints and replies — each child's address space and
-         * kernel state (Etapas 2-4), the loader's segment and stack VMOs per
+         * kernel state, the loader's segment and stack VMOs per
          * spawn AND per restart, and vfs's copies of the initrd images
          * (Step 5).  A bump allocator does not rewind, so a restart costs its
          * images again until the pool is RESET; the budget is sized for that

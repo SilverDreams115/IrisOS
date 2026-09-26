@@ -33,7 +33,7 @@ struct KFrame;
  *
  * `TASK_MAX` and `TASK_STACK_SIZE` are gone with it.  They were kept for two
  * consumers that have since gone themselves: the kernel-stack window in
- * paging.h, which D-1 step 3 deleted along with per-thread kernel stacks, and
+ * paging.h, which The event kernel deleted along with per-thread kernel stacks, and
  * a `tasks_max` diagnostic field that reported the ceiling as 0.  A number
  * kept for readers that no longer read it is a ceiling waiting to be
  * reintroduced by someone who finds it and assumes it means something.
@@ -150,14 +150,14 @@ struct task {
      * Both fields are 0 for an uninitialized/dead task slot. */
     uint8_t          *kstack;
     uint64_t          kstack_phys;
-    /* Phase S2 (scheduler indirection): saved kernel RSP across a context
+    /* Saved kernel RSP across a context
      * switch.  Replaces the parallel index-keyed task_rsp[TASK_MAX] array — the
      * scheduler no longer derives a slot index by pointer arithmetic
      * (old - tasks) to find where to save/restore the kernel stack pointer;
      * it lives inside the TCB backing itself.  This is the first structural
      * decoupling of scheduler identity from the static-array index. */
     uint64_t          saved_krsp;
-    /* Inc.2B (Bloque A): intrusive run-queue links.  The per-CPU run
+    /* Intrusive run-queue links.  The per-CPU run
      * queue no longer uses index-keyed parallel arrays (next[TASK_MAX] /
      * queued[TASK_MAX]) nor (t - tasks) pointer arithmetic; each TCB carries
      * its own FIFO link + queued flag, so scheduling identity is by pointer,
@@ -508,7 +508,7 @@ struct task {
     /* IPC buffer staging */
     uint64_t            ep_recv_buf_uptr;/* receiver's output buffer user addr (set at EP_RECV) */
     /* A1.5: receiver-declared receive-slot (direct root-CNode CPtr, 1..1023;
-     * 0 = none/legacy).  Written by EVERY recv-family syscall entry
+     * 0 = none).  Written by EVERY recv-family syscall entry
      * (EP_RECV / EP_NB_RECV / EP_CALL) and consumed by at most one routed
      * cap delivery, so it can never leak across operations. */
     uint32_t            ep_recv_slot;
@@ -535,7 +535,7 @@ struct task {
      * call, and the size is the frame's rather than a kernel constant.
      *
      * NULL means the thread has not registered one and still goes through the
-     * staging path; that fallback is what the ledger's D-4 row calls
+     * staging path; that fallback is what the IPC-buffer row calls
      * MIGRATING, and it is what the boot services still use.
      *
      * `ipc_buffer_uvaddr` is where the OWNER mapped it.  The kernel does not
@@ -550,7 +550,7 @@ struct task {
     struct KFrame      *ipc_buffer;
     uint64_t            ipc_buffer_uvaddr;
     /*
-     * D-1 step 3 — the thread's ring-3 register state, saved on every kernel
+     * The event kernel — the thread's ring-3 register state, saved on every kernel
      * entry from user mode and restored on every return to it.
      *
      * It lives here rather than on a kernel stack because an event kernel has
@@ -763,7 +763,7 @@ iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
 void         task_set_bootstrap_arg0(struct task *t, uint64_t arg0);
 void         task_abort_spawned_user(struct task *t);
 void         task_exit_current(void);
-/* D-4 gauges, defined in syscall_tcb.c: how many threads hold a registered IPC
+/* IPC-buffer gauges, defined in syscall_tcb.c: how many threads hold a registered IPC
  * buffer, and the teardown hook that keeps the count honest. */
 uint32_t ipc_buffers_registered(void);
 void     ipc_buffer_gauge_drop(void);

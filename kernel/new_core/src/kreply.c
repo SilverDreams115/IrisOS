@@ -10,7 +10,7 @@
 
 static _Atomic uint32_t kreply_live;
 
-/* Phase 18/S1 — live KReply object count (additive diagnostics). */
+/* Live KReply object count (additive diagnostics). */
 uint32_t kreply_live_count(void) {
     return atomic_load_explicit(&kreply_live, memory_order_relaxed);
 }
@@ -225,7 +225,7 @@ void kreply_return_donation(struct KReply *r, struct task *back_to) {
     to->sched_ctx = 0;
     if (back_to && !back_to->sched_ctx) back_to->sched_ctx = sc;
     else                                kobject_release(&sc->base);
-    kobject_release(&to->base);          /* A-44 */
+    kobject_release(&to->base);          /* held across the use */
 }
 
 void kreply_cancel_caller(struct KReply *r) {

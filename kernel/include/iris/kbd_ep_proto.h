@@ -6,7 +6,7 @@
  * kbd_ep_proto.h — stateless KEndpoint protocol for the keyboard service
  *.
  *
- * Replaces the legacy KBD_MSG_SUBSCRIBE push channel (sh ← kbd) with a
+ * Replaces the old KBD_MSG_SUBSCRIBE push channel (sh ← kbd) with a
  * seL4-style pull: the client EP_CALLs the kbd endpoint and the service
  * replies through the per-call KReply capability.
  *
@@ -39,7 +39,7 @@
  *
  * Liveness: kbd never blocks on event delivery. IRQ scancodes (KNotification)
  * and endpoint requests are multiplexed in one loop (EP drain + notification
- * poll).  The legacy KChannel HELLO/STATUS path is retired, its header
+ * poll).  The retired KChannel HELLO/STATUS path is retired, its header
  * deleted, and it is no longer part of this loop.
  *
  * Discovery: svcmgr publishes the endpoint as "kbd.ep"

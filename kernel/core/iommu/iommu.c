@@ -108,7 +108,7 @@ uint32_t iommu_parse_dmar(uint64_t rsdp_phys) {
     if (!t || len < sizeof(*t)) {
         /* No IOMMU on this machine.  Not an error and not a warning: it is the
          * ordinary case for the hardware IRIS is tested on, and the line that
-         * matters is the one Stage 10-dma will print when a driver asks for
+         * matters is the one containment will print when a driver asks for
          * containment that cannot be given. */
         klog_write("[IRIS][IOMMU] no DMAR; DMA is unrestricted on this machine\n");
         return 0;
@@ -572,7 +572,7 @@ uint32_t iommu_enable_blocking(void) {
         }
 
         /* Root table pointer, then the command that makes the unit read it.
-         * Legacy mode: the low bits of RTADDR select the table format and 0 is
+         * Retired mode: the low bits of RTADDR select the table format and 0 is
          * the root/context pair this kernel builds. */
         vtd_write64(u->reg_base, VTD_REG_RTADDR, root_phys);
         if (!vtd_command(u, i, VTD_GCMD_SRTP, VTD_GSTS_RTPS, 1)) {

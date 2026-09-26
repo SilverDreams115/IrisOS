@@ -13,7 +13,7 @@
  * a place to compose one before it goes into those registers and to unpack one
  * after it comes back — a CONVENIENCE, never the ABI.  The kernel has never
  * seen it and cannot: it holds no pointer to it, which is the whole of what
- * A-33 changed.  seL4 has the same split and calls its half `seL4_SetMR` and
+ * That changed.  seL4 has the same split and calls its half `seL4_SetMR` and
  * `seL4_GetMR`.
  *
  * What this replaced WAS the ABI: the kernel took a pointer to an 80-byte

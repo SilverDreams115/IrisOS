@@ -18,7 +18,7 @@
  * `SYS_GETPID` handed a thread its own task id and `SYS_THREAD_EXIT` ended it
  * without recording why.  Neither was authority — no number selected an object
  * and none conferred a right — but both answered a question from NOTHING, which
- * is the shape A-18 spent its length removing from the CSpace and A-24 from the
+ * is the shape removed from the CSpace, and likewise from the
  * scheduler.  seL4 has an equivalent for neither: identity is what others hold
  * about you, and exiting says what happened.
  *
@@ -26,7 +26,7 @@
  * unprivileged instruction, so a monotonic read cannot be gated by anything and
  * retiring the syscall would have moved the same ungated read into an
  * instruction.  Reading a counter is not authority; BLOCKING on one is, and
- * A-24 made that a capability.  Ledger A-27. */
+ * That became a capability. */
 void test_t001(void) {
     int ok = 1;
     const char *why = "ambient answers";
@@ -1142,13 +1142,13 @@ void test_t031(void) {
     }
 }
 
-/* ── T032: legacy "vfs" KChannel name must no longer resolve ─── */
+/* ── T032: old "vfs" KChannel name must no longer resolve ─── */
 
 /*
- * vfs is endpoint_only: svcmgr never creates the legacy service/reply
+ * vfs is endpoint_only: svcmgr never creates the retired service/reply
  * KChannel pair, so a lookup of the bare "vfs" name must return NOT_FOUND
  * with no capability attached. A resolvable "vfs" here would mean a stale
- * legacy KChannel route back into the stateful protocol.
+ * retired KChannel route back into the stateful protocol.
  */
 void test_t032(void) {
     if (g_svcmgr_ep_h == IRIS_CPTR_NULL) {
@@ -1171,7 +1171,7 @@ void test_t032(void) {
             iris_cptr_t h = (iris_cptr_t)msg.got_cap;
             it_close(&h);
         }
-        it_fail("T032", "legacy vfs name must NOT resolve");
+        it_fail("T032", "retired vfs name must NOT resolve");
     }
 }
 
@@ -1604,7 +1604,7 @@ void test_t051(void) {
         it_fail("T051", "payload badge spoof must not work");
 }
 
-/* T052: legacy unbadged path stays compatible — a cap obtained via name
+/* T052: unbadged path stays compatible — a cap obtained via name
  * lookup (handle >= 1024, unbadged master dup) delivers badge 0. */
 void test_t052(void) {
     uint32_t len = it_stage_path(CONSOLE_EP_SVC_NAME);
@@ -1631,7 +1631,7 @@ void test_t052(void) {
     if (ok)
         it_pass("T052");
     else
-        it_fail("T052", "legacy unbadged path");
+        it_fail("T052", "unbadged path");
 }
 
 /* T053: two caps to the SAME endpoint deliver DIFFERENT badges (slot 1 vs
@@ -2007,9 +2007,9 @@ void test_t066(void) {
     if (ok) it_pass("T066"); else it_fail("T066", "lookup after unregister");
 }
 
-/* ── Endpoint-first svcmgr — DIAG over EP + no legacy fallback ──── */
+/* ── Endpoint-first svcmgr — DIAG over EP + no old fallback ──── */
 
-/* T067: svcmgr DIAG over the endpoint (replaces legacy KChannel SVCMGR_MSG_DIAG
+/* T067: svcmgr DIAG over the endpoint (replaces retired KChannel SVCMGR_MSG_DIAG
  * as the productive path) returns the expected catalog snapshot. */
 void test_t067(void) {
     struct iris_msg msg;
@@ -2026,7 +2026,7 @@ void test_t067(void) {
 }
 
 /* T068: an unknown/malformed svcmgr EP opcode fails cleanly with INVALID_ARG —
- * there is NO silent fallback to a legacy path and no hang/crash. */
+ * there is NO silent fallback to a retired path and no hang/crash. */
 void test_t068(void) {
     struct iris_msg msg;
     iris_msg_zero(&msg);
@@ -2087,8 +2087,8 @@ void test_t070(void) {
 
 /* ── T071: cascade revoke over the NATIVE CDT ────────────
  *
- * Runtime coverage for recursive revocation.  Until Phase S4 this exercised the
- * legacy handle tree (SYS_CAP_DERIVE/SYS_CAP_REVOKE); that tree is retired and
+ * Runtime coverage for recursive revocation.  This used to exercise the
+ * retired handle tree (SYS_CAP_DERIVE/SYS_CAP_REVOKE); that tree is retired and
  * the mechanism is now the CSpace CDT: SYS_CSPACE_MINT derives slot→slot
  * (installing a real MDB child) and SYS_CSPACE_REVOKE removes the whole
  * descendant subtree.  Proves that revoking a root slot transitively destroys

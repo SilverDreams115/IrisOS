@@ -52,7 +52,7 @@ struct task;
  *
  * Two is the floor because one replenishment can be in flight while the
  * current run accumulates another.  A constant here would put the memory back
- * in the kernel's hands, which is the whole thing Stage 6 was about.
+ * in the kernel's hands, which is the whole thing budgets are about.
  */
 #define KSCHEDCTX_REFILL_MIN      2u
 #define KSCHEDCTX_REFILL_DEFAULT  8u
@@ -129,7 +129,7 @@ iris_error_t          kschedctx_configure(struct KSchedContext *sc,
 /* Bind/unbind a task (one-to-one, atomic). */
 iris_error_t          kschedctx_bind(struct KSchedContext *sc, struct task *t);
 void                  kschedctx_unbind(struct KSchedContext *sc, struct task *t);
-/* Phase 17/S2: live count + high-water/retype/destroy diagnostics. */
+/* Live count + high-water/retype/destroy diagnostics. */
 uint32_t              kschedctx_live_count(void);
 void                  kschedctx_stats(uint32_t *live, uint32_t *hwm,
                                       uint32_t *retyped, uint32_t *destroyed);

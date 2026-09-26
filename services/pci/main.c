@@ -44,7 +44,7 @@ static void pci_msg_zero(struct iris_msg *m) {
 /*
  * 0xCF8 takes the address and 0xCFC gives the data, and the address register
  * IGNORES anything narrower than a dword — which is why INV_IOPORT_OUT32
- * exists (Stage 10-dma §10.2 step 6 found that the port ABI had no width above
+ * exists (DMA containment found that the port ABI had no width above
  * a byte and therefore could not host a PCI driver at all).
  */
 /*

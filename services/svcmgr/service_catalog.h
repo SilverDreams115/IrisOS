@@ -72,13 +72,13 @@ struct iris_service_catalog_entry {
      * number differs per image. */
     uint16_t       own_budget_slot;
     uint8_t        irq_notify;      /* 1 = route the IRQ to a KNotification owned by svcmgr
-                                     * instead of the legacy service KChannel;
+                                     * instead of the retired service KChannel;
                                      *     the WAIT side reaches the child at bootstrap as
                                      *     SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY. */
     uint8_t        own_service_ep;  /* 1 = svcmgr creates a KEndpoint for this service,
                                      *     sends the recv side at bootstrap (kind 0x21)
                                      *     and publishes it as "<image_name>.ep" */
-    uint8_t        endpoint_only;   /* 1 = no legacy KChannel service/reply pair: svcmgr
+    uint8_t        endpoint_only;   /* 1 = no retired KChannel service/reply pair: svcmgr
                                      *     creates neither channel and bootstrap sends no
                                      *     SERVICE/REPLY kinds; lookups by the service's
                                      *     endpoint ids fail.
@@ -124,7 +124,7 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .own_budget_slot = 12u,
         /* Kbd owns a KEndpoint ("kbd.ep"); sh pulls key events
          * through it. The IRQ reaches kbd as a KNotification.
-         * The legacy service/reply KChannel pair is retired —
+         * The retired service/reply KChannel pair is retired —
          * kbd is endpoint-only (HELLO/STATUS/SUBSCRIBE gone). */
         .own_service_ep = 1u,
         .irq_notify = 1u,
@@ -154,7 +154,7 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .give_initrd_cap = 1u,
         .own_budget_slot = 12u,  /* maps each initrd image to serve it */
         .own_service_ep = 1u,
-        /* Vfs is endpoint-only — no legacy service/reply channels. */
+        /* Vfs is endpoint-only — no retired service/reply channels. */
         .endpoint_only = 1u,
         /* Vfs logs to console (IRIS_CPTR_CONSOLE_EP) and serves its own
          * endpoint; it never calls svcmgr, itself, or kbd, so it receives ONLY
@@ -179,10 +179,10 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .ioport_count = 0u,
         .give_console = 0u,
         /* sh reaches VFS only through "vfs.ep" and kbd only
-         * through "kbd.ep"; the legacy give_vfs/give_kbd
+         * through "kbd.ep"; the old give_vfs/give_kbd
          * forwarding flags were removed in 7.5/7.4.
          * Sh is a pure CPtr-first client — endpoint_only without
-         * an own endpoint means no legacy channel pair and an empty
+         * an own endpoint means no channel pair and an empty
          * bootstrap bag; everything sh needs arrives as well-known CSpace
          * slots 1..4. Readiness tracks proc_h (svcmgr_ready_service_count). */
         .endpoint_only = 1u,

@@ -44,8 +44,8 @@ static struct KNotification *p3_notif_fixture(void) {
 
 /* The channel-quota portion was retired with KChannel.
  * The NOTIFICATION quota is retired too (Untyped is the budget for
- * notifications), so this selftest now covers the remaining legacy quota:
- * KVmo ownership accounting (LEGACY_FOR_KPROCESS_KVMO in the ledger). */
+ * notifications), so this selftest now covers the remaining old quota:
+ * KVmo ownership accounting. */
 /*
  * phase3_quota_selftest DELETED — its subject was the per-process VMO
  * ceiling of 32, which is gone with the owner relation.  A VMO's accounting is
@@ -108,7 +108,7 @@ static int phase3_notification_selftest(void) {
     n->closed = 0;
     for (uint32_t i = 0; i < sizeof(cancelled_waiter); i++) ((uint8_t *)&cancelled_waiter)[i] = 0;
     cancelled_waiter.state = TASK_BLOCKED_IRQ;
-    kobject_init(&cancelled_waiter.base, KOBJ_TCB, &selftest_waiter_ops);  /* A-44 */
+    kobject_init(&cancelled_waiter.base, KOBJ_TCB, &selftest_waiter_ops);  /* held by the queue */
     n->queue_head = n->queue_tail = &cancelled_waiter;
     n->waiter_count = 1;
     knotification_cancel_waiter(&cancelled_waiter);

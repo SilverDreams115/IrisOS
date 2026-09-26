@@ -60,7 +60,7 @@
  *                                                 0xFF for no IRQ route.
  *   data[SVCMGR_SPAWN_OFF_FLAGS]      uint8_t     bootstrap flags (0 = none).
  *
- * ── SVCMGR_MSG_ACK (svcmgr → kernel, phase 2) ───────────────────
+ * ── SVCMGR_MSG_ACK (svcmgr → kernel, second step) ───────────────────
  *   data[SVCMGR_ACK_OFF_TASK_ID]  uint32_t  spawned task id (0 = failed)
  *   data[SVCMGR_ACK_OFF_ERR]      int32_t   0 = OK, negative = iris_error_t
 
@@ -164,12 +164,12 @@
  * data[56..59] uint32_t vfs exported bytes
  * data[60..63] uint32_t kbd status flags
  *
- * ── Phase status ─────────────────────────────────────────────────
+ * ── Status ─────────────────────────────────────────────────
  * Current healthy path: `svcmgr` is the discovery and supervision authority
  * for built-in and runtime-published services. Well-known service handles are
  * kept in `svcmgr` state and returned over IPC with attached-handle transfer.
  * Service exit is supervised through a death KNotification (SYS_PROCESS_WATCH
- * signals bit 1<<service_id; Track B). IRQ routing remains kernel-side, but route ownership is
+ * signals bit 1<<service_id). IRQ routing remains kernel-side, but route ownership is
  * transferred to the child `KProcess` so teardown remains process-scoped.
  */
 

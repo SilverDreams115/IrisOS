@@ -7,9 +7,9 @@
  *
  * WHAT CHANGES, AND WHY IT IS NOT COSMETIC
  *
- * Stage 6 made every intermediate page table come out of an Untyped the
+ * Every intermediate page table now comes come out of an Untyped the
  * address space named, which answered "who pays".  It did not answer the
- * question seL4 answers, and ledger D-5 records the difference: the KERNEL
+ * question seL4 answers, and deleting KVmo records the difference: the KERNEL
  * still decided WHEN a table came into existence and WHERE it went, carving
  * one silently on whichever map first needed it.  The holder paid for an
  * object it could not name, could not count, could not hand to anyone else and

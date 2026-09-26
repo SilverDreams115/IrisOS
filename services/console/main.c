@@ -8,7 +8,7 @@
  *
  * Main loop: endpoint-only. Drain EP requests (CONSOLE_EP_OP_WRITE / SYNC /
  * PING — iris/console_ep_proto.h). EP WRITE replies only after the bytes hit
- * the UART; EP SYNC is an explicit flush barrier. The legacy KChannel write
+ * the UART; EP SYNC is an explicit flush barrier. The retired KChannel write
  * path (CONSOLE_MSG_WRITE/SYNC) is retired, header deleted, and no longer
  * served — every writer, including svcmgr's klog drain, uses console.ep
  *.
@@ -88,7 +88,7 @@ static void con_uart_write_byte(iris_cptr_t ioport_h, uint8_t byte) {
     /* Gone.  Say nothing and keep serving: there is nowhere to report it to. */
 }
 
-/* The legacy KChannel write path (con_serve_chan_msg /
+/* The retired KChannel write path (con_serve_chan_msg /
  * con_drain_chan, CONSOLE_MSG_WRITE/SYNC) is retired — console is endpoint-only.
  * Its sole writers (svcmgr klog drain, init logging) now use console.ep. */
 
@@ -310,7 +310,7 @@ static void con_serve_ep_msg(iris_cptr_t ioport_h, struct iris_msg *req) {
             con_ep_reply_err(&reply, IRIS_ERR_INVALID_ARG);
             break;
         }
-        /* No legacy KChannel writers remain — EP writes are
+        /* No retired KChannel writers remain — EP writes are
          * synchronous by construction, so SYNC is a trivial acknowledge. */
         con_imsg_zero(&reply);
         reply.label      = IRIS_EP_REPLY_OK;
@@ -339,7 +339,7 @@ void console_main_c(iris_cptr_t rbx_unused) {
      * the endpoint recv side is the IRIS_CPTR_OWN_EP mint (slot 5) and the
      * KIoPort for 0x3F8..0x3FF the IRIS_CPTR_IOPORT mint (slot 10), named by
      * CPtr like everything else (INV_IOPORT_IN/OUT).  No bootstrap KChannel
-     * recv, no legacy service channel. */
+     * recv, no retired service channel. */
     iris_cptr_t ioport_h = (iris_cptr_t)IRIS_CPTR_IOPORT;
     iris_cptr_t ep_h     = (iris_cptr_t)IRIS_CPTR_OWN_EP;
 

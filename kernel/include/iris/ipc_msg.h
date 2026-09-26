@@ -12,7 +12,7 @@
  * A message is a MESSAGE INFO word plus message registers, and for a payload
  * longer than that, the thread's registered IPC buffer.  It is not a struct in
  * user memory that the kernel dereferences, and that is the whole of what
- * A-33 changed:
+ * What changed:
  *
  *   - there is no user pointer on the message path, so there is no address to
  *     validate and none for a second thread to invalidate between the check

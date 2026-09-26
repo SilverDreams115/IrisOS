@@ -45,7 +45,7 @@ struct KCSlot {
      * a destroyed CNode.  All links are guarded by the global mdb_lock
      * (kcnode.c); readers of object/rights/badge keep using cn->lock only.
      */
-    struct KCSlot  *mdb_parent;       /* NULL = root (always LEGACY or promoted) */
+    struct KCSlot  *mdb_parent;       /* NULL = root (always OLD or promoted) */
     struct KCSlot  *mdb_first_child;
     struct KCSlot  *mdb_next_sib;     /* doubly-linked sibling list */
     struct KCSlot  *mdb_prev_sib;
@@ -183,7 +183,7 @@ iris_error_t   kcnode_swap(struct KCNode *cn, uint32_t slot_a, uint32_t slot_b);
  */
 
 /* Install obj into (cn, idx) as an MDB node.  parent_cn == NULL → root
- * (legacy != 0 marks MDB_FLAG_UNPARENTED — non-CSpace origin); otherwise
+ * (old != 0 marks MDB_FLAG_UNPARENTED — non-CSpace origin); otherwise
  * the new cap is a child of (parent_cn, parent_idx), which must be occupied.
  * exclusive != 0 → IRIS_ERR_ALREADY_EXISTS on an occupied slot; otherwise
  * the old occupant is deleted first (full delete-with-reparent semantics).

@@ -27,7 +27,7 @@
 /*
  * iris_ipc_buffer_init — give THIS thread an IPC buffer of its own.
  *
- * Ledger D-4.  A message's bulk payload used to be staged in 256 bytes living
+ * A message's bulk payload used to be staged in 256 bytes living
  * inside the thread's TCB: a size the service did not choose, memory it did
  * not pay for, and a buffer it could not name with a capability.  Since
  * `SYS_TCB_SET_IPC_BUFFER` a thread registers a FRAME instead, and the kernel
@@ -43,7 +43,7 @@
  * The address space and the thread are named through `IRIS_CPTR_OWN_VSPACE`
  * and `IRIS_CPTR_OWN_TCB` — the delegations the spawner minted — rather than
  * fabricated with SYS_VSPACE_SELF / SYS_TCB_SELF, which publish MDB
- * LEGACY_ROOTS: capabilities with no parent, which no revoke can reach.  A
+ * UNPARENTED roots: capabilities with no parent, which no revoke can reach.  A
  * service should not have to create an unparented capability to use its own
  * address space.
  *
@@ -56,7 +56,7 @@
  * Returns the buffer's address, or NULL.  A NULL is not fatal by itself: the
  * kernel staging path still works and is what a thread with no registered
  * buffer gets, so a caller may simply keep using its static buffer.  That
- * fallback is the whole reason D-4 is MIGRATING rather than CLOSED.
+ * fallback is the whole reason this is MIGRATING rather than CLOSED.
  */
 static inline void *iris_ipc_buffer_init_from(uint64_t untyped_c,
                                               uint64_t vspace_c,
@@ -78,7 +78,7 @@ static inline void *iris_ipc_buffer_init_from(uint64_t untyped_c,
      * Map it — installing the paging levels the window needs, because nobody
      * else will.
      *
-     * Since Stage 6-pure the kernel creates no page tables: a map whose walk is
+     * The kernel creates no page tables: a map whose walk is
      * incomplete answers MISSING_TABLE, and the holder retypes a level and
      * installs it (seL4's seL4_X86_PageTable_Map).  The IPC buffer lands in a
      * window a service has never touched, so on a fresh address space all

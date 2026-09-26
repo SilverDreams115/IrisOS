@@ -528,7 +528,7 @@ void vfs_ep_dispatch(struct vfs_ep_state *st,
         return;
     }
 
-    /* Phase 28.1 containment: a SESSION badge gets the grant ops and PING —
+    /* Containment: a SESSION badge gets the grant ops and PING —
      * nothing else.  The check runs BEFORE the opcode switch so no name-based
      * path is reachable from a session cap, present or future. */
     if (iris_badge_filegrant_session(req->sender_badge) >= 0) {

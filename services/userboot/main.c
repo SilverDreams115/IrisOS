@@ -197,7 +197,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
      * over a capability that was in use.  Two slots are needed — the loader
      * workspace and the diagnostic KIoPort — and they are taken from opposite
      * ends so they cannot be the same slot.  A third is where the root task
-     * PARKS: A-24 made that a wait on a notification instead of an endless
+     * PARKS: that is a wait on a notification instead of an endless
      * sleep, and a notification needs somewhere to live. */
     if (bi->empty_slot_end < bi->empty_slot_first + 3u) {
         ub_boot_panic(ioport_control_c, UB_PANIC_IOPORT_SLOT,
@@ -245,7 +245,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     }
     boot_untyped_c = bi->untyped[0].cptr;
 
-    /* Phase 28 boot-growth fix: the boot invariant is that the kernel initrd has
+    /* Boot-growth fix: the boot invariant is that the kernel initrd has
      * AT LEAST every image the ring-3 name→index catalog references (indices
      * 0..SL_CATALOG_COUNT-1 must resolve).  The initrd is allowed to hold MORE
      * images at higher indices (new services, backing blobs) — those are not
@@ -260,7 +260,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         goto fail;
     }
 
-    /* The Phase 3.4 liveness probe of BOOT_CPTR_UNTYPED_START is
+    /* The liveness probe of BOOT_CPTR_UNTYPED_START is
      * RETIRED.  It invoked a slot named by a compile-time constant, ignored
      * the answer, and documented itself as something boot was not gated on —
      * a probe that cannot fail proves nothing.  The BootInfo validation above

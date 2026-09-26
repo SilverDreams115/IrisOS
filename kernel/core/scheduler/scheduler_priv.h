@@ -11,8 +11,9 @@
  *
  * SMP readiness: irq_spinlock_t is used for PMM, futex, and klog.
  * cpu_local[cpu_id].current_task is kept in sync with current_task on every
- * context switch.  IA32_GS_BASE is wired to &cpu_local[0] by gdt_init() (Phase 2:
- * ring-0 always has GS_BASE = &cpu_local[cpu_id]; cpu_self() safe everywhere).
+ * context switch.  IA32_GS_BASE is wired to &cpu_local[0] by gdt_init():
+ * ring-0 always has GS_BASE = &cpu_local[cpu_id], so cpu_self() is safe
+ * everywhere.
  * AP bringup and LAPIC timer are deferred; infrastructure is correct for BSP.
  */
 
@@ -30,7 +31,7 @@
  */
 struct CpuRunQueue {
     irq_spinlock_t lock;
-    /* Inc.2B: pointer-based FIFO per priority.  The parallel
+    /* Pointer-based FIFO per priority.  The parallel
      * index-keyed arrays (next[TASK_MAX]/queued[TASK_MAX]) are retired — the
      * per-task FIFO link and queued flag live inside struct task (rq_next /
      * rq_queued), so the run queue no longer derives identity from a static

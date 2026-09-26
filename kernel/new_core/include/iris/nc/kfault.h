@@ -17,7 +17,7 @@ struct KFrame;
  *
  * 64 was an invented ceiling of the same class as the page quota Step 2
  * removed — a number the kernel picked, refused at, and could not be asked to
- * raise.  Since Stage 6 Step 4 a spawned KProcess is a child block of an
+ * raise.  A spawned KProcess was a child block of an
  * Untyped its creator named, and its root CNode comes from the same region, so
  * what bounds how many processes exist is how much memory somebody delegated.
  * Refusing at 64 on top of that told a holder with a large budget that it had
@@ -28,7 +28,7 @@ struct KFrame;
  *     CNode, the PML4 and every paging level (a bump allocator that does not
  *     rewind, so the bound is real and the holder can measure it);
  *   - the thread registry, for a process that runs a thread (a LIST now,
- *     with no ceiling — ledger A-19) —
+ *     with no ceiling) —
  *     a separate resource with a separate ceiling, which is why conflating the
  *     two in one constant was wrong even as an approximation;
  *   - the PCID pool (1..4094) when PCID is enabled, which is hardware.
@@ -40,10 +40,10 @@ struct KFrame;
 /* KPROCESS_NOTIFICATION_QUOTA retired — the capacity to create
  * notifications is possessing Untyped memory plus CSpace slots, never a
  * kernel-side numeric quota.  (SYS_RESOURCE_INFO reports notifs_limit = 0.) */
-/* RESTORED 128 → 32.  Phase 28.1 temporarily raised this to 128 to
+/* RESTORED 128 → 32.  This was temporarily raised to 128 to
  * work around a caller-charged accounting BUG: a loader (svc_load) created each
  * child's segment+stack VMOs under ITS OWN ownership, so a supervisor holding N
- * children accumulated ~4*N VMOs against its own quota.  Phase 29 fixes the root
+ * children accumulated ~4*N VMOs against its own quota.  The root cause is fixed at the root
  * cause — a VMO created for a child is now charged to the CHILD via an explicit,
  * capability-authorized payer (sys_vmo_create charge-target; svc_loader passes
  * the child process cap) — so the loader's own_vmos stays flat regardless of how
@@ -91,7 +91,7 @@ struct KFrame;
  * the budget for notifications).
  *
  * **Roadmap review correction.**  This used to end "VMO/page quotas remain for
- * legacy objects".  They do not.  `KVmo` is deleted, no path charges a
+ * old objects".  They do not.  `KVmo` is deleted, no path charges a
  * quota, no path refuses on one, and there is no `IRIS_ERR_QUOTA`.  What
  * bounds an allocation is the budget it was given, with no second ceiling
  * anywhere — which is the whole of charter M3.

@@ -3,7 +3,7 @@
  * pager/main.c — the IRIS user pager service.
  *
  * A supervised userland service that resolves faults from raw VMO
- * grants (PGR_OP_MAP_RESUME).  Phase 28 Bloque B: a complete file-backed memory
+ * grants (PGR_OP_MAP_RESUME).  A complete file-backed memory
  * subsystem layered on top — backing identity + generation, validated file
  * regions, a bounded RO page cache, private-writable pages, EOF/zero-fill, and
  * generation-safe revocation — all in userland, composed from the existing
@@ -111,7 +111,7 @@ static long pg_self_vs_now(void) { return g_self_vs > 0 ? g_self_vs : 0; }
 static uint64_t          g_pending = 0;   /* accumulated fault bits (bit i = target i) */
 
 /*
- * IPC buffers (single-threaded service), and the shape ledger D-4 forces.
+ * IPC buffers (single-threaded service), and the shape the IPC buffer forces.
  *
  * The pager is a SERVER on its control endpoint and a CLIENT of vfs, on one
  * thread.  With a registered IPC buffer there is one page and the kernel reads
@@ -601,7 +601,7 @@ static uint32_t pg_report_slots(void) {
     return mask;
 }
 
-/* Phase 27 raw-VMO resolution (still used by T201–T210/T215).  The
+/* Raw-VMO resolution (still used by T201–T210/T215).  The
  * fault wait goes through the same shared-notification accumulator. */
 static long pg_serve_raw(uint32_t op, uint32_t tidx, uint32_t vidx, uint32_t flags,
                          uint64_t offset, uint64_t expect_cr2) {
@@ -618,7 +618,7 @@ static long pg_serve_raw(uint32_t op, uint32_t tidx, uint32_t vidx, uint32_t fla
     if (expect_cr2 != 0 && cr2 != expect_cr2) return -(long)PGR_ERR_CR2;
     if (op == PGR_OP_MAP_RESUME) {
         /*
-         * Ledger D-5, closed: the pager maps a FRAME the client granted.
+         * The pager maps a FRAME the client granted.
          *
          * The offset the client names selects WHICH capability, not a byte
          * offset into a region the kernel walks — so the range check is

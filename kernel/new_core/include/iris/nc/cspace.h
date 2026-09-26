@@ -181,7 +181,7 @@ iris_error_t cspace_resolve_frame(struct KCNode   *root, iris_cptr_t cptr,
  * cspace_resolve_only_frame — dual-resolution helper for KFrame syscalls.
  *
  * Tries CSpace traversal first (CSpace-first authority).  Falls back to the
- * handle table if CSpace fails with NOT_FOUND or INVALID_ARG (legacy handle).
+ * handle table if CSpace fails with NOT_FOUND or INVALID_ARG (retired handle).
  * ACCESS_DENIED from CSpace is a hard stop — no fallback.
  *
  * Ref-count contract: active + lifecycle (same as cspace_resolve_only_untyped).
@@ -253,7 +253,7 @@ iris_error_t cspace_resolve_only_cnode(struct KCNode   *root,
  * Ref-count contract: ACTIVE + LIFECYCLE (same as cspace_resolve_only_cnode).
  * KUntyped operations (INFO/RETYPE/RESET) never PARK; holding active_refs
  * across one is safe.  (This said "across task_yield()" until the roadmap
- * review: Stage 9-evt step 3 deleted that function, and the boundary an
+ * review: the event kernel deleted that function, and the boundary an
  * invariant like this is written against is the park point.)  KUntyped's
  * close callback is a no-op, so there is no IPC-style "wake blocked tasks"
  * concern.

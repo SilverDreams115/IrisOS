@@ -4,7 +4,7 @@
  *
  * ── The hole this closes ────────────────────────────────────────────────────
  *
- * Stage 10-dma §10.2 step 6 says, in its own words, what the stage could not
+ * DMA containment says, in its own words, what the stage could not
  * prove: "There is no DMA engine under IRIS's control in the test environment,
  * so nothing here watches a device be refused."  Everything before this file
  * is about the KERNEL side — the DMAR is parsed, the units are probed, the
@@ -51,7 +51,7 @@
  *      test reading configuration space.  0xCF8/0xCFC is one pair of ports
  *      through which any device on the machine can be reprogrammed, so a
  *      driver holding a capability for it would hold the bus — exactly the
- *      thing Stage 10-dma closed for DMA, reopened through the config space
+ *      thing DMA containment closed, reopened through the config space
  *      that programs the DMA.  One task holds those ports; this one holds an
  *      endpoint and asks.
  *   2. The register window arrives as a FRAME capability, from the same
@@ -85,7 +85,7 @@
  *     read PCI configuration space at all.
  *   · every mapping was write-back, so there was no way to map a BAR.
  *
- * Invariants: D-9 (device memory is a capability), U11/U12, M3 (no kernel
+ * Invariants: device memory is a capability, U11/U12, M3 (no kernel
  * allocation on this path), and the containment claim itself.
  */
 

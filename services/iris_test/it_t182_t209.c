@@ -363,7 +363,7 @@ void test_t185(void) {
 
 /* ── T186: pager death while the target's fault is pending ──────────────────
  * The pager dies holding responsibility (blocked, never resolving).  The
- * contract (same as Phase 20 handler-death, now under supervision): the target
+ * contract (same as handler-death, now under supervision): the target
  * is NOT a zombie — it stays suspended with its record and generation intact,
  * observable by any READ holder, resolvable by any proper authority.  The
  * supervisor restarts the pager with the SAME declared manifest; the new
@@ -438,11 +438,11 @@ void test_t186(void) {
 /* ── T187: target death during pager resolution ─────────────────────────────
  * The supervisor kills the target between fault delivery and the pager's
  * completion.  Every late step that names the DEAD THREAD fails clean:
- * seq-checked and legacy resume are NOT_FOUND, the record reports WOULD_BLOCK.
+ * seq-checked and old resume are NOT_FOUND, the record reports WOULD_BLOCK.
  * The never-installed frame stays clean and reusable; VSpace/mapping books
  * return to baseline once the stale caps are dropped.
  *
- * Stage 7-proc changed one of these, deliberately.  Mapping into the target's
+ * The process object's removal changed one of these, deliberately.  Mapping into the target's
  * address space used to be BAD_HANDLE, "the VSpace was invalidated with the
  * process".  An address space is not invalidated by a thread dying any more —
  * it is invalidated when the last CAPABILITY to it goes, which is its close
@@ -936,7 +936,7 @@ int t26_page_word(iris_cptr_t page, uint32_t *val, int write) {
 }
 
 /* ── T191: granted-page authority ───────────────────────────────────────────
- * Ledger D-5.  Its subject was a KVmo — size contract, offset gating, a live
+ * Its subject was a KVmo — size contract, offset gating, a live
  * count of memory objects.  What survives is everything that was about
  * AUTHORITY, restated on the capability that now carries it: a granted page is
  * a frame, its size is stable and READ-gated, mapping it is READ-gated with
@@ -1051,7 +1051,7 @@ void test_t192(void) {
 }
 
 /* ── T193: VMO-backed pager resolves a target fault ──────────────────────────
- * The defining Phase 26 path.  The supervisor fills VMO page 2 (offset 0x2000)
+ * The defining path.  The supervisor fills VMO page 2 (offset 0x2000)
  * with a pattern; a VMO-backed pager (slot 14 = the VMO) resolves the target's
  * read fault by mapping THAT page read-only at the fault VA and seq-resuming;
  * the target continues and reads the pattern (its exit code proves the byte
@@ -1237,7 +1237,7 @@ void test_t195(void) {
 }
 
 /* ── T196: a mapping keeps its frame alive ──────────────────────────────────
- * The lifetime contract, and Ledger D-5 made it sharper rather than weaker.
+ * The lifetime contract, and deleting KVmo made it sharper rather than weaker.
  * It used to say a KVmo with a live mapping is not destroyed while the mapping
  * exists, because the KFrame behind the map retained the VMO — one object
  * holding another.  Now the mapped thing IS the frame: installing a PTE
@@ -1278,7 +1278,7 @@ void test_t196(void) {
         t25_reap(&pproc); it_close(&pcmd);
     }
     /*
-     * The target exited, but Stage 7-proc means its ADDRESS SPACE did not: an
+     * The target exited, but an address space is its own object, so its ADDRESS SPACE did not: an
      * address space ends when its last capability does, and this test still
      * holds one.  So the mapping is still installed — which is the whole point
      * of what follows.

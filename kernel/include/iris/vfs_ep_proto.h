@@ -10,11 +10,11 @@
  *   - The endpoint protocol is STATELESS: there is no open-file table on the
  *     EP path. Reads carry an explicit (path, offset, len) triple, so a dead
  *     client leaves no server-side state behind and no sender identity is
- *     required (it was designed before badges; Phase 9 lifted the constraint
+ *     required (it was designed before badges, which lifted the constraint
  *     and statelessness stayed on its own merits).
- *   - This is the ONLY VFS protocol: the legacy stateful KChannel
+ *   - This is the ONLY VFS protocol: the old stateful KChannel
  *     open/read/close protocol (iris/vfs_proto.h) was removed with its last
- *     clients; VFS no longer owns a legacy service channel.
+ *     clients; VFS no longer owns a retired service channel.
  *   - Requests and replies never transfer capabilities.  A Call CAN carry one
  * and svcmgr's REGISTER does; every VFS answer is inline data.
  *
@@ -84,8 +84,7 @@
  *             a bulk payload is rejected as IRIS_ERR_INVALID_ARG).
  *   Reply OK: words[1] = number of ready exports
  *             words[2] = total exported bytes across ready exports
- *   The stateless protocol has no open-file table, so the legacy
- *   opens/capacity counters do not exist on this path.
+ *   The stateless protocol has no open-file table, so the old *   opens/capacity counters do not exist on this path.
  */
 #define VFS_EP_OP_STATUS   UINT64_C(0x0104)
 

@@ -10,7 +10,7 @@
 /*
  * iris_map_frame — map a frame, supplying the paging levels the window needs.
  *
- * Since Stage 6-pure the kernel creates no page tables: a map whose walk is
+ * The kernel creates no page tables: a map whose walk is
  * incomplete answers MISSING_TABLE and the holder retypes a KOBJ_PAGE_TABLE
  * and installs it (seL4's `seL4_X86_PageTable_Map`).  For a single page that
  * is a short loop over the levels; for a LARGE frame it is not, and the reason

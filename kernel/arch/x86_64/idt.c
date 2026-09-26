@@ -129,7 +129,7 @@ static void panic_dec(uint32_t v) {
 }
 
 /*
- * ── Ledger D-1, step 3: the interrupted user context lives in the TCB ──────
+ * ── The interrupted user context lives in the TCB ──────
  *
  * Every ring-3 kernel entry now copies the thread's whole register state into
  * its own TCB, and every ring-3 exit rebuilds the frame from the TCB of

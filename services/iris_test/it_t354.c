@@ -19,7 +19,7 @@
  * to know about the machine, it could only learn by the kernel having already
  * decided to tell it.
  *
- * Stage 10 publishes those regions as device Untypeds.  This test is the proof
+ * The platform work publishes those regions as device Untypeds.  This test is the proof
  * that the publication is real: it retypes a frame over the region, maps it,
  * and finds the root pointer by doing what every firmware reader does — search
  * for the signature on sixteen-byte boundaries — then validates the checksum
@@ -37,7 +37,7 @@
  * one frame and one mapping — which is what "ring 3 can read ACPI" has to mean
  * if a real consumer is ever going to walk a table chain through it.
  *
- * Invariants: D-9 (device memory is a capability), U11/U12, M3.
+ * Invariants: device memory is a capability, U11/U12, M3.
  */
 
 #include "it_priv.h"

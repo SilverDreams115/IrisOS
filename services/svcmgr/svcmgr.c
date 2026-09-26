@@ -22,12 +22,12 @@
 #define SVCMGR_DYNAMIC_SERVICE_CAP 256u /* mirrors HANDLE_TABLE_MAX (A1.7).
                                          * CSpace-pool registrations (slots
                                          * 64..255) cover the first 192; the
-                                         * legacy-handle overflow shares the
+                                         * old-handle overflow shares the
                                          * shrunken table with the working
                                          * set, which the A1.7 measurements
                                          * bound at ~33 entries. */
 /* Indexed by IRQ number (0–15); mirrors KIRQCAP_POOL_SIZE in kirqcap.h. */
-/* Phase S4 (Step 3 prep): device caps live in svcmgr's CSPACE, not its handle
+/* Device caps live in svcmgr's CSPACE, not its handle
  * table.  SYS_CAP_CREATE_IRQCAP/_IOPORT publish into these slots as MDB
  * children of the bootstrap-cap slot, so revoking the bootstrap cap revokes
  * every device cap issued under it.  Slots 16..47 are free in svcmgr's root
@@ -93,7 +93,7 @@ struct svcmgr_dynamic_service {
     /* A1.6: canonical CSpace storage for the registered master.  When the
      * REGISTER cap arrives through a declared receive-slot it lives in
      * svcmgr's root CNode at this CPtr (1..1023) and public_h stays
-     * IRIS_CPTR_NULL; when it arrives as a legacy handle (no slot available,
+     * IRIS_CPTR_NULL; when it arrives as a retired handle (no slot available,
      * or the TOCTOU fallback) public_h holds it and public_cptr is 0.
      * Exactly one of the two is set while active. */
     uint32_t public_cptr;
@@ -102,7 +102,7 @@ struct svcmgr_dynamic_service {
     uint8_t active;
     /* Badge of the client that registered this service (sender_badge
      * stamped by the kernel on the EP REGISTER call).  UNREGISTER over the EP
-     * requires a matching owner badge; legacy KChannel registrations are
+     * requires a matching owner badge; retired KChannel registrations are
      * owner_badge 0 (unidentified). generation supports logical revocation. */
     uint64_t owner_badge;
     uint32_t generation;
@@ -132,7 +132,7 @@ struct svcmgr_state {
      *
      * Step 4: held as the CPtr, not a handle.  retype2 only gives a created
      * capability a real MDB parent when its source untyped was named by CPtr;
-     * a handle source has no CSpace ancestor and the result is a LEGACY_ROOT.
+     * a handle source has no CSpace ancestor and the result is a MDB_FLAG_UNPARENTED.
      * 0 = no pool. */
     uint64_t    untyped_c;
     /* CPtr slots (0 = absent), not handles. */
@@ -223,8 +223,7 @@ static int64_t svcmgr_retype_to_slot(uint64_t ut_cptr, uint32_t obj_type,
 }
 
 
-/* Svcmgr logs over console.ep (CONSOLE_EP_OP_WRITE), not the legacy
- * KChannel console writer.  Synchronous per-write flush; if console.ep is not
+/* Svcmgr logs over console.ep (CONSOLE_EP_OP_WRITE), not the old * KChannel console writer.  Synchronous per-write flush; if console.ep is not
  * yet wired the line is dropped (same as the old early-boot behaviour). */
 /* The console client marshals into the buffer it is given, and a thread
  * with a registered IPC buffer must marshal into THAT — the kernel refuses a
@@ -277,7 +276,7 @@ static void svcmgr_close_handle_if_valid(iris_cptr_t *h) {
  *
  * Returns 1 once SPAWN_CAP has been received.
  */
-/* int svcmgr_recv_bootstrap_caps retired — (legacy KChannel LOOKUP / bootstrap recv). */
+/* int svcmgr_recv_bootstrap_caps retired — (retired KChannel LOOKUP / bootstrap recv). */
 
 /*
  * Request hardware capabilities from the kernel using the spawn cap as authority.
@@ -351,7 +350,7 @@ static struct svcmgr_service_state *svcmgr_service_state(struct svcmgr_state *st
  * The handle is then closed normally to drop the master reference.
  */
 /* Svcmgr_seal_handle_if_valid retired — the only sealable
- * KChannels were the legacy service/reply pair, now gone (every service is
+ * KChannels were the retired service/reply pair, now gone (every service is
  * endpoint_only).  Dynamic masters are KEndpoint caps, which are just closed. */
 static void svcmgr_clear_service_masters(struct svcmgr_state *state, uint32_t service_id) {
     struct svcmgr_service_state *svc = svcmgr_service_state(state, service_id);
@@ -516,7 +515,7 @@ static uint32_t svcmgr_dynamic_ready_count(const struct svcmgr_state *state) {
  * no handle materialized at delivery).  Slots SVCMGR_RSLOT_BASE..LIMIT-1
  * are the registration pool — one per live CSpace-backed registration.
  * When the pool is exhausted (or the root CNode handle was not found) the
- * declaration degrades to 0 = legacy handle delivery, which keeps working.
+ * declaration degrades to 0 = retired handle delivery, which keeps working.
  * ──────────────────────────────────────────────────────────────────────── */
 
 #define SVCMGR_RSLOT_BASE  132u  /* below: well-known bootstrap, master and
@@ -561,16 +560,16 @@ static uint32_t svcmgr_next_recv_slot(const struct svcmgr_state *state) {
  * answers the same question about the slot itself, so the round trip (and the
  * transient handle-table entry it consumed on every delivered cap) is gone.
  *
- * The legacy leg remains only for a delivery that landed in the handle table
+ * The old leg remains only for a delivery that landed in the handle table
  * because the receiver declared no receive slot; it dies with that path. */
 static int64_t svcmgr_delivered_cap_type(uint32_t v) {
     /* A delivered cap is a CPtr or nothing — handle materialisation
-     * on delivery is retired, so the legacy leg has no input left. */
+     * on delivery is retired, so the old leg has no input left. */
     return iris_invoke0((uint64_t)v, INV_CAP_IDENTIFY);
 }
 
 /* Discard a delivered cap svcmgr will not keep: CNODE_DELETE for a CPtr
- * (frees the pool slot), close for a legacy handle.  No-op on no-cap. */
+ * (frees the pool slot), close for a retired handle.  No-op on no-cap. */
 static void svcmgr_discard_delivered_cap(struct svcmgr_state *state, uint32_t v) {
     (void)state;   /* The root CNode is addressed by convention, not by a
                     * per-state handle; the parameter stays for call-site symmetry. */
@@ -753,11 +752,11 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
         }
 
         if ((master_h != IRIS_CPTR_NULL || src_cptr != 0u) && granted != RIGHT_NONE) {
-            /* Phase 10 grant tightening: an ordinary client receives a
+            /* Grant tightening: an ordinary client receives a
              * call-only cap (RIGHT_WRITE).  RIGHT_DUPLICATE/RIGHT_TRANSFER —
              * the authority to re-mint or hand the cap onward — is granted
              * ONLY to supervisor badges (init/svcmgr/unbadged bootstrap).
-             * The legacy KChannel lookup path keeps the old wide grant for
+             * The retired KChannel lookup path keeps the old wide grant for
              * bootstrap re-minting (T046). */
             iris_rights_t client_rights = granted;
             if (!iris_badge_is_supervisor(msg->sender_badge))
@@ -811,13 +810,13 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
             reply.words[0]   = alive;
             reply.words[1]   = gen;
             reply.word_count = 2u;
-            /* Phase 24 (additive): for a catalog service, expose the explicit
+            /* Additive: for a catalog service, expose the explicit
              * supervision policy so a supervisor/test can audit it without
              * reading svcmgr internals.  The IPC message carries only 4 words
              * (IRIS_MSG_WORDS), so the policy is packed:
              *   words[2] = supervision class
              *   words[3] = restart_count | (restart_limit<<8) | (degraded<<16)
-             * Legacy callers reading only words[0..1] are unaffected. */
+             * Retired callers reading only words[0..1] are unaffected. */
             {
                 char base2[SVCMGR_SERVICE_NAME_CAP];
                 const struct iris_service_catalog_entry *pc = 0;
@@ -849,7 +848,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
     }
     case IRIS_SVCMGR_EP_DIAG: {
         /* Endpoint-native snapshot — the productive diagnostics path
-         * (replaces legacy KChannel SVCMGR_MSG_DIAG). No KChannel round-trip. */
+         * (replaces retired KChannel SVCMGR_MSG_DIAG). No KChannel round-trip. */
         reply.label      = IRIS_EP_REPLY_OK;
         reply.words[0]   = (uint64_t)iris_service_catalog_count();
         reply.words[1]   = (uint64_t)svcmgr_ready_service_count(state);
@@ -880,12 +879,12 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
         break;
     }
     case IRIS_SVCMGR_EP_REGISTER: {
-        /* Phase 11 cap-backed registration: the caller transfers its service
+        /* Cap-backed registration: the caller transfers its service
          * endpoint in attached_cap (kernel-delivered, never a forgeable
          * number) and svcmgr stores it so LOOKUP returns a usable cap.
          * A1.6: the drain loop declares a receive-slot, so the cap normally
          * lands in svcmgr's root CNode (attached_cap < 1024 = the CPtr) and
-         * is stored CSpace-canonically; a legacy-handle landing (>= 1024:
+         * is stored CSpace-canonically; a handle landing (>= 1024:
          * pool exhausted, no root CNode, or the TOCTOU fallback) keeps the
          * old handle storage.  Badge-authenticated (sender_badge →
          * owner_badge); reserved names are rejected first (catalog + ".ep");
@@ -913,7 +912,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
 
         if (rej != IRIS_OK) {
             /* No leak on reject: frees the CSpace pool slot or closes the
-             * legacy handle. */
+             * retired handle. */
             svcmgr_discard_delivered_cap(state, cap_v);
             reply.label    = IRIS_EP_REPLY_ERR;
             reply.words[0] = (uint64_t)(uint32_t)rej;
@@ -925,7 +924,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
                 slot->public_cptr = cap_v;           /* CSpace-canonical master */
                 slot->public_h    = IRIS_CPTR_NULL;
             } else {
-                slot->public_h    = (iris_cptr_t)cap_v; /* legacy handle master */
+                slot->public_h    = (iris_cptr_t)cap_v; /* retired handle master */
                 slot->public_cptr = 0u;
             }
             slot->client_rights = RIGHT_WRITE;
@@ -939,7 +938,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
         break;
     }
     case IRIS_SVCMGR_EP_UNREGISTER: {
-        /* Phase 10 badge-authenticated: only the owner badge (or a supervisor)
+        /* Badge-authenticated: only the owner badge (or a supervisor)
          * may unregister. words[0] = dynamic id from REGISTER. */
         uint32_t did = (uint32_t)msg->words[0];
         struct svcmgr_dynamic_service *slot = 0;
@@ -994,7 +993,7 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
      * (svcmgr_build_core_mints) — the well-known endpoints, the vfs
      * spawn cap (C1) and the kbd service/reply KChannels + KIoPort/KIrqCap (C2).
      * Nothing is sent over the bootstrap KChannel anymore; svcmgr just drops its
-     * end.  The channel itself is retired in a later increment (Track C3). */
+     * end.  The channel itself is retired later. */
     svcmgr_close_handle_if_valid(&child_boot_h);
     return IRIS_OK;
 }
@@ -1030,7 +1029,7 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
      * IRIS_BADGE_SVC(service_id).  Server-side caps (own EP recv, IRQ
      * notification) stay unbadged.
      *
-     * Phase 22 (least authority): a slot is minted ONLY if the service's
+     * Least authority: a slot is minted ONLY if the service's
      * client_eps manifest declares it needed.  Previously all four were minted
      * unconditionally, so kbd (a pure IRQ/endpoint driver) and vfs (which only
      * logs to console) each held WRITE caps to peers they never call — a
@@ -1094,7 +1093,7 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
     }
     /* Vfs's initrd access arrives as a pre-start CSpace
      * mint instead of a post-spawn KChannel INITRD_CAP message.  RIGHT_READ
-     * matches the legacy delivery; unbadged.
+     * matches the old delivery; unbadged.
      *
      * What is delegated here is the INITRD capability, which
      * authorises reading boot images and nothing else.  vfs used to receive
@@ -1108,7 +1107,7 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
         mints[n].badge = 0;
         n++;
     }
-    /* The legacy service/reply KChannel pair (IRIS_CPTR_SVC_CHAN
+    /* The retired service/reply KChannel pair (IRIS_CPTR_SVC_CHAN
      * / SVC_REPLY) is retired — every catalog service is endpoint_only, so no
      * service-channel mint is emitted.  Device caps (KIoPort/KIrqCap) below. */
     if (manifest->ioport_count > 0u &&
@@ -1138,7 +1137,7 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
     return n;
 }
 
-/* int64_t svcmgr_send_lookup_reply retired — (legacy KChannel LOOKUP / bootstrap recv). */
+/* int64_t svcmgr_send_lookup_reply retired — (retired KChannel LOOKUP / bootstrap recv). */
 
 
 static uint32_t svcmgr_ready_service_count(const struct svcmgr_state *state) {
@@ -1148,7 +1147,7 @@ static uint32_t svcmgr_ready_service_count(const struct svcmgr_state *state) {
         const struct iris_service_catalog_entry *manifest =
             iris_service_catalog_find_by_service_id(i);
         if (manifest && manifest->endpoint_only) {
-            /* Endpoint_only services have no legacy pair; their
+            /* Endpoint_only services have no old pair; their
              * KEndpoint is the readiness entry point.  Pure-client
              * services (endpoint_only without an own endpoint, e.g. sh) are
              * ready when their process is alive. */
@@ -1285,7 +1284,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
     }
 
     /* Every catalog service is endpoint_only now — the
-     * legacy service/reply KChannel pair is fully retired (no SYS_CHAN_CREATE).
+     * retired service/reply KChannel pair is fully retired (no SYS_CHAN_CREATE).
      * Each service's KEndpoint (+ IRQ notification for kbd) is its whole
      * surface. */
 
@@ -1405,9 +1404,9 @@ static void svcmgr_autostart_services(struct svcmgr_state *state) {
     }
 }
 
-/* void svcmgr_handle_lookup retired — (legacy KChannel LOOKUP / bootstrap recv). */
+/* void svcmgr_handle_lookup retired — (retired KChannel LOOKUP / bootstrap recv). */
 
-/* void svcmgr_handle_lookup_name retired — (legacy KChannel LOOKUP / bootstrap recv). */
+/* void svcmgr_handle_lookup_name retired — (retired KChannel LOOKUP / bootstrap recv). */
 
 static void svcmgr_release_service(struct svcmgr_state *state,
                                    uint32_t service_id,
@@ -1539,7 +1538,7 @@ void svcmgr_main_c(iris_cptr_t rbx_unused) {
          * Step 4: confirmed with SYS_UNTYPED_INFO, which answers by CPtr and
          * materializes nothing — the pool stays a CPtr all the way into
          * retype2, which is what gives the fabricated objects a real MDB
-         * ancestor instead of LEGACY_ROOT status. */
+         * ancestor instead of MDB_FLAG_UNPARENTED status. */
         int64_t ur = iris_invoke2(IRIS_CPTR_OWN_UNTYPED, INV_UNTYPED_INFO, 0, 0);
         state->untyped_c = (ur >= 0) ? (uint64_t)IRIS_CPTR_OWN_UNTYPED : 0u;
 
@@ -1560,7 +1559,7 @@ void svcmgr_main_c(iris_cptr_t rbx_unused) {
      * console_ep_write is a synchronous per-chunk flush barrier — every byte is
      * on the UART before EP_CALL returns — so no early kernel marker (e.g.
      * "boot vspace CSpace grants OK") can be dropped in an async send window.
-     * Replaces the legacy console_h KChannel writer (no SYS_CHAN). */
+     * Replaces the old console_h KChannel writer (no SYS_CHAN). */
     {
         static uint8_t klog_drain_buf[4097]; /* KLOG_BUF_SIZE + 1 for NUL */
         /* Step 4: name the capability that authorises the drain instead of

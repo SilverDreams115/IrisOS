@@ -81,7 +81,7 @@
 #define IRIS_SVCMGR_EP_LOOKUP_ID    UINT64_C(0xF004)
 
 /*
- * Phase 10 lifecycle opcodes.
+ * Lifecycle opcodes.
  *
  * IRIS_SVCMGR_EP_STATUS — query the liveness/generation of a service.
  *   Request:  words[0] = service_id  (catalog id, or a dynamic id >= 0x40).
@@ -103,7 +103,7 @@
 
 /*
  * IRIS_SVCMGR_EP_DIAG — endpoint-native svcmgr snapshot.  Replaces
- * the legacy KChannel SVCMGR_MSG_DIAG as the productive diagnostics path; no
+ * the retired KChannel SVCMGR_MSG_DIAG as the productive diagnostics path; no
  * KChannel round-trip.  Open to any caller (read-only).
  *   Reply OK: words[0] = catalog service count, words[1] = ready services,
  *             words[2] = active dynamic registrations,
@@ -117,7 +117,7 @@
  * SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP — bootstrap handle kind carrying the
  * svcmgr endpoint cap.  Services that receive this in the bootstrap phase
  * can use IRIS_SVCMGR_EP_LOOKUP_NAME for EP-based service discovery.
- * Coexists with the legacy SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP / VFS_CAP etc.
+ * Coexists with the old SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP / VFS_CAP etc.
  */
 /* RETIRED: the discovery endpoint now arrives as the pre-start
  * CSpace mint IRIS_CPTR_SVCMGR_EP.  Kind value reserved; do not reuse. */
@@ -209,8 +209,8 @@
  * taken from the capability the sender invoked, never from the payload,
  * so it cannot be forged by writing the field.  Badges are assigned at
  * mint time by the spawner (CSpace_Mint, the badge in the high bits of its rights argument); a badged
- * cap can never be re-badged.  0 = unbadged (legacy / master caps; servers
- * treat it as "unidentified legacy client").
+ * cap can never be re-badged.  0 = unbadged (old / master caps; servers
+ * treat it as "unidentified old client").
  *
  * Assignment scheme:
  *   0x100 + service_id  → core catalog services (kbd 0x101, vfs 0x102,
@@ -256,7 +256,7 @@
  *       grant ops and are denied every name-based op.
  * Session caps can only be minted from an UNBADGED duplicable vfs.ep cap
  * (fresh badges require an unbadged source), i.e. by a supervisor under the
- * Phase 10 grant-tightening rule.  Neither range overlaps service (0x100+),
+ * Grant-tightening rule.  Neither range overlaps service (0x100+),
  * dynamic (0x200+) or test badges. */
 #define IRIS_BADGE_FILEGRANT_ADMIN  ((uint64_t)0x0F00)
 #define IRIS_BADGE_FILEGRANT_BASE   ((uint64_t)0x0F10)
@@ -300,15 +300,14 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * IRIS_CPTR_SPAWN_CAP is retired with the object it named. */
 #define IRIS_CPTR_PROC_CONTROL ((uint64_t)6)
 #define IRIS_CPTR_IRQ_NOTIFY  ((uint64_t)7)
-/* The legacy handle-boundary caps for a non-endpoint_only
+/* The retired handle-boundary caps for a non-endpoint_only
  * service (kbd) — its service/reply KChannels and KIoPort/KIrqCap device caps —
  * now arrive as pre-start CSpace mints instead of post-spawn KChannel
  * SVCMGR_BOOTSTRAP_KIND_{SERVICE,REPLY,IOPORT_CAP,IRQ_CAP} messages.  The
  * KChannel slots are resolved to handles (CHAN_RECV/SEND need handle-table
  * handles); the device caps resolve by CPtr (cspace_resolve_only_obj). */
-/* Slots 8 and 9 were IRIS_CPTR_SVC_CHAN / IRIS_CPTR_SVC_REPLY, the legacy
- * service/reply KChannel pair.  KChannel is REMOVED and every catalog service
- * is endpoint-only, so both constants had no live use — Stage 5 Step 2 reuses
+/* Slots 8 and 9 were IRIS_CPTR_SVC_CHAN / IRIS_CPTR_SVC_REPLY, the old * service/reply KChannel pair.  KChannel is REMOVED and every catalog service
+ * is endpoint-only, so both constants had no live use, so this reuses
  * them for split-out authorities rather than growing root CNodes that are
  * already nearly full. */
 #define IRIS_CPTR_INITRD_CONTROL ((uint64_t)8)
@@ -389,7 +388,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * A service's own ADDRESS SPACE and own THREAD, delegated by its spawner.
  *
  * Both were reachable already, through SYS_VSPACE_SELF and SYS_TCB_SELF, and
- * both arrived as MDB LEGACY_ROOTS when they did: a capability with no parent,
+ * both arrived as MDB UNPARENTED roots when they did: a capability with no parent,
  * which `SYS_CSPACE_REVOKE` can never reach because it walks descendants.  The
  * kernel says so in as many words at the publish site — "the caller's own
  * address space is an attribute of being a process, not something another slot
@@ -522,8 +521,8 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  *
  * seL4's BootInfo lists device Untypeds alongside RAM ones; that is how a
  * driver is given an MMIO region and retypes frames from it.  IRIS published
- * none until Stage 6, so it reached device memory the other way — the kernel
- * fabricating a KVMO over the framebuffer — which is the object family D-5
+ * none at first, so it reached device memory the other way — the kernel
+ * fabricating a KVMO over the framebuffer — which is the object family KVmo's deletion
  * still records as un-retyped.  This slot is the first step off that path.
  *
  * A device Untyped cannot hold the headers of objects carved from it: MMIO is
@@ -675,8 +674,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
 #define IRIS_CPTR_TEST_VSPACE  ((uint64_t)56)
 
 /*
- * Reserved name suffix ".ep": IRIS_SVCMGR_EP_LOOKUP_NAME and the legacy
- * SVCMGR_MSG_LOOKUP_NAME resolve "<image_name>.ep" to the service's
+ * Reserved name suffix ".ep": IRIS_SVCMGR_EP_LOOKUP_NAME and the old * SVCMGR_MSG_LOOKUP_NAME resolve "<image_name>.ep" to the service's
  * KEndpoint (RIGHT_WRITE) and "svcmgr.ep" to svcmgr's own endpoint.
  * Dynamic registration (SVCMGR_MSG_REGISTER) of names ending in ".ep"
  * is rejected with IRIS_ERR_INVALID_ARG to prevent endpoint spoofing.

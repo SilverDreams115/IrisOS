@@ -23,7 +23,7 @@
  *
  * "Current exported syscall number surface: 0..122 ... the first unassigned
  * number is 124."  It was true when it was written and had been wrong since
- * ledger A-32 retired the numbered door: there are four numbers, and the
+ * the invocation ABI retired the numbered door: there are four numbers, and the
  * largest is 144.  A sentence in a header that nothing checks is a sentence
  * that will be wrong, which is why the surface is now asserted by
  * `tests/kernel/test_abi.c` over every number the dispatcher can see rather
@@ -39,7 +39,7 @@
  *     value is moved through raw register state.
  *   - Syscall implementations must nevertheless encode failures as negative
  *     iris_error_t values and must not introduce new generic -1 error returns
- *     outside explicitly transitional legacy paths.
+ *     outside explicitly transitional old paths.
  *
  * Surface status used in this header:
  *   - live/conforming: current supported surface on the v1 error model
@@ -140,7 +140,7 @@ static inline long iris_syscall0(long nr) {
  * It handed a thread its own task id for the asking.  Not authority — the
  * number conferred nothing and selected nothing — but in a capability system a
  * task's identity is what OTHERS hold about it, and a call that answers "who am
- * I" from nothing at all is the same shape as the three SELF syscalls A-18
+ * I" from nothing at all is the same shape as the three SELF syscalls that were
  * retired, only handing out a number instead of a capability.  seL4 has no
  * equivalent, and nothing in this system used it but the test that tested it.
  */
@@ -162,7 +162,7 @@ static inline long iris_syscall0(long nr) {
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
  *   RETIRED: the kernel cannot block a thread on time; waiting is a ring-3 timer service. */
 #define SYS_SLEEP   8   /* modern/conforming: returns 0 on success */
-/* legacy: removed from user-space dispatch; internal use only */
+/* removed from user-space dispatch; internal use only */
 /* SYS_IPC_CREATE  9  (retired) */
 /* SYS_IPC_SEND   10  (retired) */
 /* SYS_IPC_RECV   11  (retired) */
@@ -258,10 +258,10 @@ static inline long iris_syscall0(long nr) {
  * `state` says more than the one bit this answered. */
 #define SYS_PROCESS_STATUS  26
 
-/* The legacy PROC_EVENT_MSG_EXIT KChannel event is retired.
+/* The old PROC_EVENT_MSG_EXIT KChannel event is retired.
  * Process death is now delivered as a KNotification signal — see
  * SYS_PROCESS_WATCH above. */
-/* SYS_DIAG_SNAPSHOT 30 retired Phase 51 — permanently reserved, returns
+/* SYS_DIAG_SNAPSHOT 30 retired — permanently reserved, returns
  * IRIS_ERR_NOT_SUPPORTED.  Aggregated diagnostics are now provided entirely
  * through SVCMGR_MSG_DIAG over IPC; the kernel no longer exposes a raw
  * user-buffer snapshot path on the healthy boot surface. */
@@ -340,9 +340,9 @@ static inline long iris_syscall0(long nr) {
 #define SYS_CAP_CREATE_IRQCAP  39
 #define SYS_CAP_CREATE_IOPORT  40
 
-/* SYS_INITRD_LOOKUP 41 retired Phase 29 — permanently reserved, returns
+/* SYS_INITRD_LOOKUP 41 retired — permanently reserved, returns
  * IRIS_ERR_NOT_SUPPORTED.
- * SYS_SPAWN_ELF    42 retired Phase 29 — permanently reserved, returns
+ * SYS_SPAWN_ELF    42 retired — permanently reserved, returns
  * IRIS_ERR_NOT_SUPPORTED.
  * ELF loading is now performed entirely in ring-3 via the new primitives below
  * (SYS_INITRD_VMO / SYS_PROCESS_CREATE / SYS_VMO_MAP_INTO / SYS_THREAD_START /
@@ -360,7 +360,7 @@ static inline long iris_syscall0(long nr) {
  *   auth_cptr:   the initrd capability (IRIS_BOOTCAP_INITRD_CONTROL).
  *   index:       initrd catalog index (name→index mapping is a ring-3 concern).
  *   dest:        destination slot (cnode | slot<<32).
- *   budget_cptr: Stage 6 Step 5 — the KUntyped the image COPY is carved from.
+ *   budget_cptr: the KUntyped the image COPY is carved from.
  *                Reading an entry allocates as many pages as the image is
  *                long, and a loader parses it and drops it, so a caller that
  *                points this at a scratch Untyped can RESET that region
@@ -373,7 +373,7 @@ static inline long iris_syscall0(long nr) {
  * SYS_PROCESS_CREATE(auth_cptr, dest, vspace_cptr, cnode_cptr) → 0 or iris_error_t
  *   auth_cptr:   the process control capability (IRIS_BOOTCAP_PROC_CONTROL).
  *   dest:        destination slot (cnode | slot<<32); required.
- *   vspace_cptr: Stage 6-pure Step 4 — REQUIRED.  A KOBJ_VSPACE (RIGHT_WRITE)
+ *   vspace_cptr: REQUIRED.  A KOBJ_VSPACE (RIGHT_WRITE)
  *                the CALLER retyped from its own Untyped
  *                (RETYPE2 IRIS_KOBJ_VSPACE, obj_arg 4096).  A process is
  *                COMPOSED from objects its creator made, not conjured from a
@@ -388,7 +388,7 @@ static inline long iris_syscall0(long nr) {
  *                its root CNode) comes from the Untyped the address space
  *                itself was retyped from, so a child costs exactly one region
  *                and RESETting it returns all of the child.
- *   cnode_cptr:  Stage 6-pure Step 5 — REQUIRED, and passed in arg3 (r10).  A
+ *   cnode_cptr:  REQUIRED, and passed in arg3 (r10).  A
  *                KOBJ_CNODE (RIGHT_WRITE) the CALLER retyped, which becomes
  *                the child's ROOT CSpace; the spawner therefore also chooses
  *                how wide that CSpace is, where the kernel used to pick 256
@@ -405,7 +405,7 @@ static inline long iris_syscall0(long nr) {
  *
  * SYS_VMO_MAP_INTO(vmo_h, vspace_cptr, vaddr, flags) → 0 or negative iris_error_t
  *   vmo_h:   KOBJ_VMO with RIGHT_READ (plus RIGHT_WRITE for MAP_WRITABLE).
- *   vspace_cptr: Stage 7 Step 9 — KOBJ_VSPACE with RIGHT_WRITE, the address
+ *   vspace_cptr: KOBJ_VSPACE with RIGHT_WRITE, the address
  *            space the mapping is installed in.  It was a KOBJ_PROCESS with
  *            RIGHT_MANAGE, out of which the kernel read `proc->vspace`: a
  *            caller that already held the address space had to hold authority
@@ -413,7 +413,7 @@ static inline long iris_syscall0(long nr) {
  *            carried nothing but a pointer to the thing being used.  A spawner
  *            HAS the VSpace — it retyped it and handed it to
  *            SYS_PROCESS_CREATE.  This is the shape SYS_VMO_MAP_PAGE and
- *            SYS_FRAME_MAP have had since Phase 25/26.
+ *            SYS_FRAME_MAP have had .
  *   vaddr:   page-aligned target virtual address in that address space.
  *   flags:   bit 0 = MAP_WRITABLE, bit 1 = MAP_EXEC; W^X enforced.
  *   Eagerly allocates and maps all pages into proc's page table at call time.
@@ -433,7 +433,7 @@ static inline long iris_syscall0(long nr) {
  *   rights:  effective rights in child = rights_reduce(obj_rights, rights); RIGHT_NONE rejected.
  *   Non-destructive: caller retains obj_h; child receives an independent handle slot.
  *   Returns the new handle_id as it appears in the child's handle table.
- *   DEPRECATED (A1.8): legacy compat producer — it plants persistent
+ *   DEPRECATED (A1.8): compat producer — it plants persistent
  *   authority as a handle in the destination table.  No in-tree service
  *   uses it (T082 keeps it covered as the dual-resolver compat path).
  *   New code uses SYS_PROC_CSPACE_MINT or an IPC receive-slot instead.
@@ -501,7 +501,7 @@ static inline long iris_syscall0(long nr) {
  *   No arguments.  Monotonic.  Derived from RDTSC when the TSC was calibrated
  *   at boot, from the tick counter otherwise.  Does not block.
  *
- * KEPT DELIBERATELY, and ledger A-27 records why, because the first answer was
+ * KEPT DELIBERATELY, and the note below records why, because the first answer was
  * to retire it.  seL4 has no such syscall — a timer driver reads its hardware
  * and everybody else asks the driver — so this looked like the last ambient
  * read in the kernel.  It is not gateable: on x86 `rdtsc` is an UNPRIVILEGED
@@ -510,7 +510,7 @@ static inline long iris_syscall0(long nr) {
  * from a syscall into an instruction and bought nothing.
  *
  * What CAN be gated is WAITING — how long a thread is kept off the CPU, and
- * who decides — and ledger A-24 gated it: `SYS_SLEEP`, `SYS_CLOCK_NANOSLEEP`
+ * who decides — and moving waiting out of the kernel gated it: `SYS_SLEEP`, `SYS_CLOCK_NANOSLEEP`
  * and `SYS_NOTIFY_WAIT_TIMEOUT` are retired and waiting is a capability to a
  * service.  Reading a counter is not authority; blocking on one is.
  *
@@ -678,7 +678,7 @@ static inline long iris_syscall0(long nr) {
  *   Returns the new handle_id in dest's table, visible to dest after next recv
  *   or when passed explicitly (e.g. via a channel notification from caller).
  *   RIGHT_NONE result is rejected with IRIS_ERR_INVALID_ARG.
- *   DEPRECATED (A1.8): legacy compat producer — it plants persistent
+ *   DEPRECATED (A1.8): compat producer — it plants persistent
  *   authority as a handle in the destination table.  No in-tree service
  *   uses it (T080/T082/T098 keep it covered).  New code uses
  *   SYS_PROC_CSPACE_MINT into a destination CSpace slot instead.
@@ -785,7 +785,7 @@ static inline long iris_syscall0(long nr) {
  *   A1.7 additive extension: buf_size >= 88 additionally fills handle-table
  *   and IPC-delivery diagnostics at offsets 40..87 (see syscall_diag.c for
  *   the field layout).  Callers passing 40..87 get the exact historical
- *   40-byte snapshot — no signature, number, or legacy-behavior change.
+ *   40-byte snapshot — no signature, number, or old-behavior change.
  *
  * `buf_size` is CLAMPED to the largest tier the kernel knows, and that is why
  * the largest tier's size is published here rather than living only in
@@ -894,7 +894,7 @@ static inline long iris_syscall0(long nr) {
  *   Requires the debug control capability (IRIS_BOOTCAP_DEBUG_CONTROL),
  *   named as a CPtr — never searched for.
  *   type 0: ACPI S5 soft-off (writes 0x2000 to port 0x604; QEMU ACPI).
- *   type 1: legacy QEMU ISA debug exit (writes 0x01 to port 0xB004; any arg0/arg1 ignored).
+ *   type 1: old QEMU ISA debug exit (writes 0x01 to port 0xB004; any arg0/arg1 ignored).
  *   Any type not listed above returns IRIS_ERR_INVALID_ARG.
  */
 #define SYS_POWEROFF           54
@@ -972,7 +972,7 @@ static inline long iris_syscall0(long nr) {
  *   RETIRED: a CNode is RETYPED from an Untyped somebody holds, like every other object. */
 #define SYS_CNODE_CREATE  80
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED: it installed a LEGACY_ROOT.  SYS_CSPACE_MINT derives from a source slot, so the copy has a parent. */
+ *   RETIRED: it installed a MDB_FLAG_UNPARENTED.  SYS_CSPACE_MINT derives from a source slot, so the copy has a parent. */
 #define SYS_CNODE_MINT    81
 
 /*
@@ -995,7 +995,7 @@ static inline long iris_syscall0(long nr) {
  *   Resets remaining_budget to budget_ticks immediately.
  *
  * SYS_THREAD_SET_SC(sc_h) → 0 or negative iris_error_t
- *   LEGACY FROZEN: self-bind of the calling thread.  It may NOT take
+ *   OLD FROZEN: self-bind of the calling thread.  It may NOT take
  *   new consumers — the canonical binding path is SYS_SC_BIND(sc, tcb) by
  *   CPtr.  Kept for existing code; one-to-one enforced (BUSY if sc_h is
  *   already bound to another task).  Pass 0 to unbind.
@@ -1007,7 +1007,7 @@ static inline long iris_syscall0(long nr) {
  *   RIGHT_WRITE on both.  It is the canonical binding path for building tasks
  *   from user space (SYS_THREAD_SET_SC is the self-bind).
  */
-#define SYS_THREAD_PRIORITY 82  /* RETIRED (A5/A-20) → IRIS_ERR_NOT_SUPPORTED */
+#define SYS_THREAD_PRIORITY 82  /* RETIRED → IRIS_ERR_NOT_SUPPORTED */
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
  *   RETIRED: a scheduling context is RETYPED from an Untyped somebody holds. */
 #define SYS_SC_CREATE       83
@@ -1023,7 +1023,7 @@ static inline long iris_syscall0(long nr) {
  *   (either may be NULL to skip that field).
  *
  * SYS_UNTYPED_RETYPE — RETIRED.  It was the single-object retype that returned
- *   a HANDLE, kept during Phase S1 for the types that had not migrated yet.
+ *   a HANDLE, kept for the types that had not migrated yet.
  *   The handle table is gone and there is nothing left for it to
  *   return; every type is born the same way now, into a CSpace slot.  The one
  *   retype is `INV_UNTYPED_RETYPE`, which is what
@@ -1047,7 +1047,7 @@ static inline long iris_syscall0(long nr) {
 #define IRIS_KOBJ_PAGE_TABLE    16u
 #define IRIS_KOBJ_ASID_POOL     17u  /* Address-space identifiers */
 /*
- * Stage 10-dma.  A device's reach becomes a capability: the frames it may
+ * A device's reach becomes a capability: the frames it may
  * target, named by whoever grants them, revocable.  An IOSpace is one device's
  * DMA address space; an IO page table is one level of that space's translation
  * tables, paid for out of the holder's own Untyped exactly as a CPU page table
@@ -1153,7 +1153,7 @@ struct iris_iommu_fault_info {
  *   before staging (bad kreply_h, unreadable msg, stage validation failure)
  *   the server handle is NOT consumed; on IRIS_ERR_NOT_FOUND (KReply already
  *   invoked) the staged cap is destroyed and the handle IS consumed.
- *   Before Phase 7.1 the attached_handle field was ignored on replies.
+ *   The attached_handle field used to be field was ignored on replies.
  */
 #define SYS_EP_CALL  93
 #define SYS_REPLY    94
@@ -1185,7 +1185,7 @@ struct iris_iommu_fault_info {
  * namespace it did not hold by naming something else that pointed at it.
  *
  * SYS_CSPACE_MINT is the whole replacement.  It has taken a destination CNode
- * since Phase S3, dest_cnode 0 meaning the caller's own root; minting into a
+ * dest_cnode 0 meaning the caller's own root; minting into a
  * child is the same call with the child's root CNode as the destination, which
  * a spawner HAS because it retyped it.  A spawner that
  * means to keep delegating keeps that capability; one that does not holds no
@@ -1238,7 +1238,7 @@ struct iris_iommu_fault_info {
 /*
  * SYS_VSPACE_SELF(dest) → handle_id, or 0 when dest names a slot, or negative
  *   iris_error_t
- *   dest == 0 → legacy: the cap is published as a handle.
+ *   dest == 0 → the cap used to be published as a handle.
  *   dest != 0 → RETYPE2 packing (CNode in the low 32 bits, 0 = own root;
  *   slot index in the high 32).  The cap is installed in that slot and the
  *   call returns 0.  The handle leg dies with the handle namespace.
@@ -1263,7 +1263,7 @@ struct iris_iommu_fault_info {
  *
  * It was the map-into-target authority for a user pager: a supervisor holding
  * RIGHT_MANAGE on a process could take a capability to that process's address
- * space and mint it onward.  Phase 25 introduced it to make that authority a
+ * space and mint it onward.  It exists to make that authority a
  * first-class, delegable object instead of a process-cap side effect — which
  * was the right direction and stopped one step short, because the kernel still
  * produced the VSpace by reading `child->vspace` out of a KProcess.  The
@@ -1329,10 +1329,10 @@ struct iris_iommu_fault_info {
  * caller.  The capability lands in the CALLER's CSpace (holder), while the
  * target is the OWNER.  This lets a loader create a child's image VMOs counted
  * against the CHILD's resource domain, so the loader's own quota stays flat
- * regardless of how many children it launches (Phase 29 root-cause fix for
+ * regardless of how many children it launches (the root-cause fix for
  * caller-charged accounting).
  *
- *   budget_cptr: Stage 7 Step 14 — REQUIRED, and it is where the MEMORY comes
+ *   budget_cptr: REQUIRED, and it is where the MEMORY comes
  *                from, resolved in the CALLER's CSpace.  It used to be the
  *                payer's own default budget, so a caller spent an Untyped it
  *                did not hold and could not see.  A loader carving a child's
@@ -1399,7 +1399,7 @@ struct iris_iommu_fault_info {
  *   Deleting the last capability returns the zeroed block to the untyped.
  *
  * SYS_UNTYPED_QUERY(kind|version<<16|size<<32, buf_uptr, ut) → 0 or error
- *   Read-only, versioned instrumentation (never authority).  Phase S2 C.1:
+ *   Read-only, versioned instrumentation (never authority).  
  *   arg0 packs the caller-declared version (bits 16..31, 0 = don't-care) and
  *   buffer size (high 32).  The kernel writes at most min(size, kernel_size)
  *   bytes (prefix-compatible) and never past the declared buffer; size below
@@ -1492,7 +1492,7 @@ struct iris_iommu_fault_info {
  *   tcb_cptr:    KOBJ_TCB with RIGHT_WRITE; must be unconfigured.
  *   cspace_cptr: KOBJ_CNODE — the root CNode the thread resolves CPtrs in.
  *   vspace_cptr: KOBJ_VSPACE — the address space it runs in.
- *   proc_cptr:   Stage 7 Step 1 — the process the thread JOINS, in arg3 (r10).
+ *   proc_cptr:   the process the thread JOINS, in arg3 (r10).
  *                KOBJ_PROCESS with RIGHT_MANAGE.  0 means the caller's own,
  *                which is what a thread creating a sibling wants; a spawner
  *                names its child, which it can do because it retyped that
@@ -1568,7 +1568,7 @@ struct iris_iommu_fault_info {
  *   notification.  Arming an already-dead thread fires immediately, so a
  *   supervisor that lost the race still gets the answer.
  *
- *   Stage 7 Step 10, replacing SYS_PROCESS_WATCH: a supervisor HAS the thread
+ *   Replacing SYS_PROCESS_WATCH: a supervisor HAS the thread
  *   it started — it retyped the TCB and configured it — and needed authority
  *   over a PROCESS to learn about that execution.  One watcher per thread, not
  *   an array: a second watcher is a second capability, not a second slot.
@@ -1581,7 +1581,7 @@ struct iris_iommu_fault_info {
 #define SYS_TCB_EXIT_CODE    125
 /*
  * SYS_TCB_SET_FAULT_HANDLER(tcb_cptr, notif_cptr, signal_bits, dest)
- *   Arm THIS THREAD's faults.  Stage 7 Step 12, replacing SYS_EXCEPTION_HANDLER
+ *   Arm THIS THREAD's faults.  Replacing SYS_EXCEPTION_HANDLER
  *   (63): the handler, the mailbox and the fault generation are properties of
  *   an execution, and a supervisor arming a thread's faults already holds that
  *   thread.  `dest` is the mailbox, cnode|slot<<32, resolved in the
@@ -1688,7 +1688,7 @@ struct iris_iommu_fault_info {
 /*
  * SYS_TCB_SET_IPC_BUFFER(tcb_cptr, frame_cptr, uvaddr) → 0 or -iris_error_t
  *
- * Ledger D-4.  Give a thread an IPC BUFFER of its own: a frame it retyped, at
+ * Give a thread an IPC BUFFER of its own: a frame it retyped, at
  * a size it chose, mapped where it chose, that the kernel uses instead of the
  * 256 bytes of staging every TCB carries today.
  *
@@ -1799,7 +1799,7 @@ struct iris_iommu_fault_info {
  * Its predecessor, `SYS_FRAMEBUFFER_VMO`, answered this question AND
  * fabricated a KVMO over the region in the same call, which is why the
  * geometry could only be learned by accepting a kernel-made object.  Since
- * Stage 6 the region is published as a DEVICE Untyped and a
+ * The region is published as a DEVICE Untyped and a
  * driver retypes a frame from it, so the two halves are separable and only
  * one of them is still the kernel's business: the geometry is a fact about the
  * hardware that boot discovered, and a capability is not.
@@ -1891,7 +1891,7 @@ struct iris_iommu_fault_info {
  *
  * A supervisor could WRITE a thread's registers and not read them.  That
  * asymmetry is the first thing a debugger notices and the second thing a fault
- * handler wants: A-22 gives it the faulting rip and cr2 in the message, and
+ * handler wants: the fault message gives it the faulting rip and cr2 in the message, and
  * anything more — which register held the bad pointer — was unreachable.
  *
  * RIGHT_READ, not RIGHT_WRITE, because reading a thread's state is not
@@ -2128,7 +2128,7 @@ struct iris_untyped_query_global {
      *
      * Separate from `syscall_restarts` because a restart that yielded through
      * its own frame and one that threw it away are indistinguishable from
-     * outside, and only the second is what D-1 is about.
+     * outside, and only the second is what the event kernel is about.
      */
     uint32_t syscall_abandons;
     /*
@@ -2241,16 +2241,16 @@ struct iris_untyped_query_taskobj {
     uint32_t sc_hwm;
     uint32_t sc_retyped;
     uint32_t sc_destroyed;
-    /* CSpace-native derivation tree (MDB) — 0 for handle-tree legacy. */
+    /* CSpace-native derivation tree (MDB) — 0 for the retired handle tree. */
     uint32_t cdt_derivation_count;      /* mint/copy/derive descendants created */
     uint32_t cdt_derivation_hwm;
     uint32_t cdt_revoke_count;
     uint32_t cdt_delete_count;
     uint32_t cdt_cross_cnode_descendants;
     uint32_t cdt_ipc_transfer_count;
-    /* Legacy handle-tree derivations for the migrated canonical types — must
+    /* Retired handle-tree derivations for the migrated canonical types — must
      * be provably 0 (TCB/SC/CNode/EP/Notif/Reply). */
-    uint32_t legacy_handle_derivation_migrated;
+    uint32_t retired_derivation_migrated;
     /* KTCB registry (references, not payload). */
     uint32_t tcb_registry_active;
     uint32_t tcb_registry_hwm;
@@ -2259,7 +2259,7 @@ struct iris_untyped_query_taskobj {
     /* Native MDB/CDT gauges (prefix-compatible append, C.1). */
     uint32_t mdb_nodes_live;         /* occupied slots participating in the MDB */
     uint32_t mdb_nodes_hwm;
-    uint32_t mdb_unparented_roots;       /* live LEGACY_ROOT caps (must → 0, Etapas 2-4) */
+    uint32_t mdb_unparented_roots;       /* caps with no MDB parent; the boot path keeps a few */
     uint32_t mdb_orphan_promotions;  /* children promoted to root by root-delete */
     uint32_t mdb_reparents;          /* children adopted by grandparent on delete */
     uint32_t mdb_revoked_nodes;      /* caps destroyed by revoke */
@@ -2369,7 +2369,7 @@ void syscall_set_user_cr3(uint64_t val);
 
 /* Called from ASM handler — 9 params: num + EIGHT user args.
  * arg3 via r10, arg4 via r8, arg5 via r9, arg6 via r15, arg7 via r14
- * (A-33, the message ABI: r15 and r14 were already being pushed as
+ * (the message ABI: r15 and r14 were already being pushed as
  * callee-saved, so carrying them costs nothing). */
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
                           uint64_t arg1, uint64_t arg2, uint64_t arg3,

@@ -319,7 +319,7 @@ uint64_t sys_cap_identify(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *
  * It handed the caller a capability to its own root CSpace, asking for NO
  * capability at all: ambient authority, which seL4 does not have.  It also
- * published an MDB LEGACY ROOT — a capability with no ancestor, which no
+ * published an MDB unparented root — a capability with no ancestor, which no
  * revoke can reach.
  *
  * A thread is given its CSpace by whoever configured it.  Every service
@@ -368,7 +368,7 @@ uint64_t sys_cap_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /*
  * SYS_CSPACE_SET_GUARD (127) — install a guard on a CNode capability.
  *
- * Stage 8-cap.  See the contract in <iris/syscall.h>.
+ * See the contract in <iris/syscall.h>.
  *
  * The authority is holding the SLOT: a guard changes how CPtrs resolve through
  * that capability, which alters the holder's own capability address space and

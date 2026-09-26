@@ -2,12 +2,12 @@
 /*
  * syscall_untyped.c — KUntyped authority paths.
  *
- * Phase S1 (seL4 Architectural Convergence):
+ * seL4 architectural convergence:
  *
  * SYS_UNTYPED_INFO:    query phys_base and available bytes.
  * SYS_UNTYPED_RETYPE:  RETIRED.  The number stays permanently
- *   reserved and answers NOT_SUPPORTED.  It was the LEGACY single-object
- *   retype that published the new capability as a HANDLE.  Phase S1 already
+ *   reserved and answers NOT_SUPPORTED.  It was the OLD single-object
+ *   retype that published the new capability as a HANDLE.  That is already
  *   refused the migrated family (Endpoint / Notification / Reply / CNode) on
  *   it; the CSpace form refuses the remaining three (KUntyped sub-regions, KFrame,
  *   KSchedContext) too, because RETYPE2 accepts all of them into a CSpace
@@ -302,7 +302,7 @@ static iris_error_t retype_vspace(struct KUntyped *ut, uint64_t obj_arg,
 static iris_error_t retype_frame(struct KUntyped *ut, uint64_t obj_arg,
                                  struct KObject **out) {
     if (ut->is_device) {
-        /* D-9, same rule as a sub-untyped: the frame's header is RAM the
+        /* Same rule as a sub-untyped: the frame's header is RAM the
          * holder named, or there is no frame. */
         if (!ut->hdr_budget) return IRIS_ERR_INVALID_ARG;
         void *hdr = kuntyped_alloc_child_top(ut->hdr_budget,
@@ -420,7 +420,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
              * needs many pending replenishments; a periodic task needs two.
              * Making it a kernel constant would put that memory back in the
              * kernel's hands and charge every SC for the worst case, which is
-             * the arrangement Stage 6 exists to remove.  0 asks for the
+             * the arrangement this exists to remove.  0 asks for the
              * default, so a caller that does not care does not have to decide.
              */
             if (obj_arg != 0u && (obj_arg < KSCHEDCTX_REFILL_MIN ||
@@ -478,7 +478,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                                         RIGHT_WRITE, &ut, &ut_rights);
     if (err != IRIS_OK) { kuntyped_stat_retype_failure(); return syscall_err(err); }
 
-    /* Phase S3 (D.1): the MDB ancestry of the created caps is the SLOT of the
+    /* The MDB ancestry of the created caps is the SLOT of the
      * source untyped — resolved just before publication (see below). */
 
     /* U11/U12: device untyped only produces physical-region types. */
@@ -620,7 +620,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
      * in words that nobody may open-code it — but it also means something
      * else here: a SECOND-LEVEL CPtr is `(leaf << 8) | root_slot`, which is
      * >= 1024 for every leaf above 3.  So every object retyped from an Untyped
-     * held below the root became a LEGACY ROOT: no MDB parent, unreachable by
+     * held below the root became a unparented root: no MDB parent, unreachable by
      * any revoke, and reclaimable only by resetting a region whose children
      * nothing could destroy.  The suite holds all its budgets in a second-level
      * CNode, so this was most of what it retyped.  T321 is the test. */
@@ -640,7 +640,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                          ut_slot_cn, ut_slot_idx,
                                          /*parent_expect=*/&ut->base,
                                          /*exclusive=*/1,
-                                         /*legacy=*/ut_slot_cn ? 0 : 1);
+                                         /*unparented=*/ut_slot_cn ? 0 : 1);
         if (err != IRIS_OK) break;
         installed++;
     }
@@ -870,7 +870,7 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
              * and was a structural zero.  The FIELD stays because this struct
              * is size-validated and prefix-compatible for ring 3, and removing
              * one shifts every field after it. */
-            q.legacy_handle_derivation_migrated = 0u;
+            q.retired_derivation_migrated = 0u;
             task_registry_stats(&q.tcb_registry_active, &q.tcb_registry_hwm,
                                 &q.tcb_registry_exhaustions,
                                 &q.tcb_registry_generation_mismatch);

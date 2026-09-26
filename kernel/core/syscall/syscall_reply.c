@@ -79,7 +79,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* attached_handle is reserved for the reply cap on EP_CALL.  A1.5: a CPtr
      * declares the caller's receive-slot for a cap the REPLY transfers back
      * (the KReply itself always stays a handle); a handle VALUE keeps the
-     * historical INVALID_ARG contract, so legacy callers (forced to pass 0)
+     * historical INVALID_ARG contract, so old callers (forced to pass 0)
      * are unaffected.  The boundary is the handle tag bit, not the
      * literal 1024 — a multi-level CPtr is a legitimate receive slot. */
     /* A Call says where the REPLY's capability should land, and that is
@@ -551,7 +551,7 @@ uint64_t sys_reply_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * server that needs to is doing two different things and should say so
      * with two calls.
      *
-     * A-33 makes the clearing one line: the capability travels only if the
+     * Registers make the clearing one line: the capability travels only if the
      * MessageInfo says so, so dropping the `extra` count is the whole of it.
      */
     rr_t->sc_arg[1 + IRIS_MSGA_INFO] &=

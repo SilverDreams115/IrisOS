@@ -41,7 +41,7 @@ struct KIoPort *kioport_alloc_from(struct KUntyped *pool, uint16_t base_port,
     /* No budget, no object.  This used to fall back to the kernel slab, which
      * is charter M3's exact prohibition — the kernel spending its own memory
      * because the caller did not say whose to spend — and it is the same hole
-     * D-9 closed for device Untypeds, left open here because nothing named a
+     * Closed for device Untypeds, left open here because nothing named a
      * NULL pool.  "Unreachable today" is how the last one was described too. */
     if (!pool) return 0;
     struct KIoPort *port = kuntyped_alloc_child_top(pool, sizeof(struct KIoPort));

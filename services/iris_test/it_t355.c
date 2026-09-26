@@ -31,7 +31,7 @@
  * handed out before each read, so a capability from the last read is gone
  * rather than watching its data change underneath.
  *
- * Invariants: D-9, M3, and the containment claim as a
+ * Invariants: M3, and the containment claim as a
  * subsystem depends on it.
  */
 

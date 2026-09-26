@@ -406,7 +406,7 @@ iris_error_t cspace_resolve_only_cnode(struct KCNode   *root,
  * IPC caller must not hold an active ref across the point where it PARKS,
  * because that would suppress the close callback that wakes blocked tasks.
  *
- * This used to say "across task_yield()", a function Stage 9-evt step 3
+ * This used to say "across task_yield()", a function the event kernel
  * deleted; the boundary is the park-and-re-execute point now, and the
  * constraint is the same one.  The sentence about a handle-table fallback
  * went with the handle namespace — there is one namespace.
@@ -556,7 +556,7 @@ iris_error_t cspace_resolve_only_frame(struct KCNode   *root,
  * cspace_resolve_only_vspace — dual resolver for the VSpace argument of
  * SYS_FRAME_MAP/SYS_FRAME_UNMAP.  Same namespace split and
  * active+lifecycle ref contract as cspace_resolve_only_frame.  Before
- * Phase 25 those syscalls fed the VSpace value straight into the raw radix
+ * Those syscalls used to feed the VSpace value straight into the raw radix
  * walk, where a handle (>= 1024) was masked into low root slots — the exact
  * aliasing hazard the split closed for every other capability
  * argument.  The handle namespace now resolves honestly, which is what lets

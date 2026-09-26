@@ -6,8 +6,7 @@
  *   RBX = bootstrap channel handle from the loader (closed at startup, unused —
  *         every cap is a pre-start CSpace slot, see endpoint_proto.h IRIS_CPTR_*).
  *
- * Fase 13/Track I: kbd is endpoint + IRQ-notification only — the legacy
- * service/reply KChannel pair (HELLO/STATUS/SUBSCRIBE) is fully retired.
+ * kbd is endpoint + IRQ-notification only — the old * service/reply KChannel pair (HELLO/STATUS/SUBSCRIBE) is fully retired.
  *
  * Startup sequence:
  *   1. close the (unused) bootstrap channel
@@ -27,7 +26,7 @@
 
 .global _start
 
-/* ── Endpoint state (Fase 7.4) ─────────────────────────────────────────────
+/* ── Endpoint state ─────────────────────────────────────────────
  * There is no message STRUCT here any more.  A message arrives in
  * registers and leaves in registers, so what the driver keeps between the
  * receive and the reply is three words it actually uses — and it keeps them
@@ -78,12 +77,12 @@ _start:
     movq  $0,    %rax
     syscall
 
-/* ── Fase 13: endpoint/notification-only — all caps are CPtr slots ──
+/* ── Endpoint/notification-only — all caps are CPtr slots ──
  * kbd_ep_h    = IRIS_CPTR_OWN_EP   (5):  recv side of "kbd.ep"
  * kbd_notif_h = IRIS_CPTR_IRQ_NOTIFY (7): WAIT side of the IRQ notification
  * r14         = IRIS_CPTR_IOPORT  (10):  KIoPort (CPtr; SYS_IOPORT_IN/OUT)
  * rbx         = IRIS_CPTR_IRQ_CAP (11):  KIrqCap (CPtr; SYS_IRQ_ACK)
- * The legacy service/reply KChannel pair (slots 8/9) is retired — kbd no
+ * The retired service/reply KChannel pair (slots 8/9) is retired — kbd no
  * longer serves HELLO/STATUS/SUBSCRIBE; clients use the endpoint (POLL/READ/
  * PING) and the IRQ notification feeds the scancode ring. */
     movl  $5, kbd_ep_h(%rip)
@@ -142,7 +141,7 @@ _start:
     movq  $0,    %rax
     syscall
 
-    /* "KBD ep ready" — endpoint recv side granted (Fase 7.4 smoke marker). */
+    /* "KBD ep ready" — endpoint recv side granted (smoke marker). */
     movl  kbd_ep_h(%rip), %eax
     testl %eax, %eax
     jz    .kbd_recv
@@ -164,7 +163,7 @@ _start:
     movq  $0,    %rax
     syscall
 
-/* ── Main service loop (Fase 13/Track I: endpoint + IRQ notification only) ──
+/* ── Main service loop (endpoint + IRQ notification only) ──
  *
  * ONE blocking receive takes both kinds of event.
  *
@@ -320,7 +319,7 @@ _start:
     jz    .kbd_scancode
     jmp   .kbd_recv
 
-/* ── Scancode path: woken by the IRQ KNotification (Fase 7.6) ────────────
+/* ── Scancode path: woken by the IRQ KNotification ────────────
  * The kernel masks IRQ1, signals the notification and EOIs; ring-3 reads
  * port 0x60 via KIoPort and re-arms with SYS_IRQ_ACK.
  * Key press:   scancode < 0x80
@@ -382,7 +381,7 @@ _start:
     movq  $0,    %rdx
     syscall
 
-    /* ── EP delivery (Fase 7.4): parked READ reply first, else ring ────── */
+    /* ── EP delivery: parked READ reply first, else ring ────── */
     movl  kbd_park(%rip), %eax
     testl %eax, %eax
     jz    .kbd_irq_ring
@@ -418,8 +417,8 @@ _start:
     movl  %ecx, kbd_ring_count(%rip)
     jmp   .kbd_recv
 
-/* ── Fase 13: legacy KChannel handlers retired ──────────────────
- * The HELLO/STATUS/SUBSCRIBE handlers, the .kbd_irq_legacy subscriber push and
+/* ── The retired KChannel handlers ──────────────────
+ * The HELLO/STATUS/SUBSCRIBE handlers, the .kbd_irq subscriber push and
  * .kbd_recv_err are gone — kbd serves only the endpoint (POLL/READ/PING) and
  * the IRQ notification.  Liveness is covered by clients' kbd.ep PING. */
 .kbd_bootstrap_fail:

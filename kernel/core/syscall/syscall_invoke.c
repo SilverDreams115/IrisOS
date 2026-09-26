@@ -38,7 +38,7 @@
  * Six of the seven methods that act before resolving are the blocking ones.
  * Hoisting the resolve would break precisely those, for an architectural
  * reason rather than an incidental one, so it is not scheduled: it is refused,
- * and A-32 records why.
+ * and the note there records why.
  *
  * So WHERE is the type checked?  Where it always was — inside the method, by
  * the resolver that fetches the capability with the type it requires.  A label

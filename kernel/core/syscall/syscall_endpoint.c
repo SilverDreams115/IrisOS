@@ -135,7 +135,7 @@ void ipc_msg_store_reply(struct task *t) {    /* a call: what the reply sent  */
 }
 
 /*
- * A-33 note, written where it was got wrong.
+ * A note, written where it was got wrong.
  *
  * There was an `ipc_msg_store_call` here that handed a Call's completion the
  * capability from `attached_cap`.  That is the field a SERVER's receive uses
@@ -197,7 +197,7 @@ iris_error_t ipc_stage_out(struct task *t) {
          * registers travel in registers, and anything longer needs somewhere
          * to live that somebody owns.  The kernel used to stage it in 256
          * bytes inside the TCB — memory the user did not choose, did not pay
-         * for, and could not name — and that is what ledger D-4 was about.
+         * for, and could not name — and that is what the per-thread IPC buffer was about.
          */
         return IRIS_ERR_INVALID_ARG;
     }
@@ -212,7 +212,7 @@ iris_error_t ipc_stage_out(struct task *t) {
      * buffer instead.  Every log line came out as the last reply payload the
      * service had composed, and nothing asserted on log text.
      *
-     * D-4 turned that into a refusal; A-33 removes the question.  A payload
+     * That became a refusal; registers remove the question.  A payload
      * is in the thread's registered buffer because there is nowhere else it
      * could be, and a message carries a LENGTH rather than an address.
      */
@@ -302,14 +302,14 @@ void ipc_transfer_reply(struct task *server, struct task *caller,
  * WOULD_BLOCK / endpoint close / waiter cancel / lost one-shot reply race)
  * release it and call _abort, and the sender keeps its cap.
  *
- * release: drop the refs peek took.  Ledger A-29 collapsed what used to be
+ * release: drop the refs peek took.  Copy semantics collapsed what used to be
  * two exits — a "commit" that deleted the sender's slot and an "abort" that
  * did not — into this one: the transfer is a COPY, so the sender keeps its
  * capability whether the message was delivered or not, and there is nothing
  * left for the two paths to disagree about.  Blocking paths carry the source
  * slot in task->ep_cap_src_cn / ep_cap_src_idx next to the staged object.
  *
- * Phase S4 (Step 2) ordering rule survives unchanged and is now the whole
+ * The ordering rule survives unchanged and is now the whole
  * story: DELIVER first.  The MDB parents the delivered capability to the
  * source slot, which must still be occupied at delivery time — and now stays
  * occupied afterwards, which is what makes the recorded ancestry true. */
@@ -444,10 +444,10 @@ static void ipc_stat_bump(uint32_t *c) {
  * syscall_ipc_recv_slot_declare — validate + record a receive-slot declared
  * by a recv-family syscall (EP_RECV / EP_NB_RECV / EP_CALL).
  *
- * declared == 0 or a handle value: no declaration (legacy).  Handle values are
+ * declared == 0 or a handle value: no declaration.  Handle values are
  * IGNORED, not rejected: receivers that reuse a msg buffer without zeroing
  * carry a stale *output* value in the hint field, and a handle output is
- * never a valid declaration — so no legacy pattern can accidentally declare a
+ * never a valid declaration — so no old pattern can accidentally declare a
  * slot.  (EP_CALL rejects handle values itself, keeping its historical
  * INVALID_ARG contract for that field.)
  *
@@ -521,7 +521,7 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
         if (e == IRIS_OK) {
             /*
              * Install as an MDB CHILD of the sender's
-             * source slot — real CSpace ancestry, no LEGACY_ROOT.  The TOCTOU
+             * source slot — real CSpace ancestry, no MDB_FLAG_UNPARENTED.  The TOCTOU
              * slot→handle degradation is gone (charter §3.7): an occupied or
              * raced destination slot fails the delivery instead of silently
              * landing in the handle table.
@@ -563,7 +563,7 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
             e = kcnode_slot_install_linked(
                     cn, idx, xo, (iris_rights_t)cap_rights,
                     badge, src_cn, src_idx, /*parent_expect*/xo,
-                    /*exclusive*/1, /*legacy*/0);
+                    /*exclusive*/1, /*unparented*/0);
             kobject_active_release(&cn->base);
             kobject_release(&cn->base);
             if (e == IRIS_OK) {
@@ -986,7 +986,7 @@ int kendpoint_fault_call(struct task *t, struct KEndpoint *ep,
          * A handler is already waiting WITH reply authority staged.  Both
          * halves of that condition are load-bearing: a receiver that staged no
          * reply object cannot answer a call, and handing it one anyway is the
-         * implicit-KReply fabrication Phase S1 retired.  When it has none the
+         * implicit-KReply fabrication that was retired.  When it has none the
          * fault falls through and QUEUES instead, which is the honest outcome
          * — the handler is simply not ready to answer yet.
          */
@@ -1229,7 +1229,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         irq_spinlock_unlock(&ep->lock, flags);
 
-        /* Ph68/Fase11: install sender's transferred cap.  For an EP_CALL the
+        /* Install the sender's transferred cap.  For an EP_CALL the
          * reply cap takes attached_handle, so the transferred cap is delivered
          * into the separate attached_cap field; EP_SEND keeps attached_handle.
          * A1.5: routed — honours our declared receive-slot (CPtr < 1024).

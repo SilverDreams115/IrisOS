@@ -304,7 +304,7 @@ long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
  * capability the suite fabricates.  Same rotating-pool contract as
  * it_retype_slot_alloc: delete before minting, never hold across a test. */
 /* ...and the badged form: a copy of `src_cptr` stamped with `badge`, which is
- * how one endpoint serves many clients distinguishably (A-22 uses it to say
+ * how one endpoint serves many clients distinguishably (fault delivery uses it to say
  * WHICH target a fault came from). */
 long it_cs_badge(long src_cptr, uint32_t rights, uint32_t badge) {
     uint32_t leaf = it_pool_leaf_take();
@@ -489,7 +489,7 @@ long it_wait_timeout(long notif, long out_bits_uptr, long ns) {
  * it_retype_slot_alloc; released with it_close.
  *
  * A KVMO is fabricated from kernel memory rather than retyped from an Untyped,
- * so the slot is an MDB LEGACY root — that is KVMO's own debt (ledger: FROZEN,
+ * so the slot is an unparented MDB root — that is KVMO's own debt (ledger: FROZEN,
  * memory-server), not something the slot introduces.  What changes here is
  * only WHERE the capability lives. */
 /*
@@ -548,7 +548,7 @@ long it_initrd_vmo_slot(long auth_cptr, long index) {
  *
  * A capability belongs in the rotating pool when its life is a test's, and in
  * the thread CNode when its life is a THREAD's.  `SYS_TCB_SELF` hands back a
- * fresh capability each call (an MDB LEGACY ROOT — , no ancestor,
+ * fresh capability each call (an MDB unparented root — , no ancestor,
  * unreachable by any revoke), and tests take it, use it and abandon it.  Left
  * in the thread CNode those accumulate forever, one unrevocable root per call,
  * with two of the eleven call sites inside loops: measured at +36 roots.
@@ -703,7 +703,7 @@ long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights) {
 }
 
 /* ── Native-CDT derivation helpers ─────────────────────
- * The legacy handle tree (SYS_CAP_DERIVE/SYS_CAP_REVOKE) is being retired.
+ * The retired handle tree (SYS_CAP_DERIVE/SYS_CAP_REVOKE) is being retired.
  * Its replacement is the CSpace CDT: derivation is SYS_CSPACE_MINT slot→slot
  * (a real MDB child of the source) and revocation is SYS_CSPACE_REVOKE, which
  * removes the ENTIRE descendant subtree across CNodes and processes while the

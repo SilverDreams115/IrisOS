@@ -21,9 +21,9 @@
  *      blocked wait, which is exactly what the harness verifies.
  *
  * A1.9 receive-slot mode (opt-in per run; every other label keeps the exact
- * legacy behaviour above): if the first message is LP_CMD_RSLOT_RECV, the
+ * old behaviour above): if the first message is LP_CMD_RSLOT_RECV, the
  * child performs a SECOND recv on the command endpoint declaring the
- * receive-slot the parent chose in words[0] (0 = legacy handle delivery),
+ * receive-slot the parent chose in words[0] (0 = retired handle delivery),
  * then invokes the delivered cap by whatever it received — NOTIFY_SIGNAL
  * with bits 1 for a CSpace CPtr landing, bits 2 for a handle landing — and
  * exits with the raw attached_handle discriminator so the parent can assert
@@ -51,14 +51,14 @@
 /* Exit marker the parent checks — "arbitrary but recognisable". */
 #define LP_EXIT_MARKER   0x1E57
 /* A1.9: first-message label selecting receive-slot mode (words[0] = slot to
- * declare on the second recv; 0 = legacy).  Must match iris_test. */
+ * declare on the second recv; 0 = the old form).  Must match iris_test. */
 #define LP_CMD_RSLOT_RECV      0x1099u
 /* A1.9: exit code base when the declared second recv fails; low byte = -err
  * (e.g. occupied slot → 0x0B07 = base | -IRIS_ERR_ALREADY_EXISTS). */
 #define LP_EXIT_RECV_ERR_BASE  0x0B00
 
-/* Phase 16 lifecycle-hardening modes (opt-in per run; every other label keeps
- * the legacy behaviour).  After the first recv the child immediately does a
+/* Lifecycle-hardening modes (opt-in per run; every other label keeps
+ * the old behaviour).  After the first recv the child immediately does a
  * BLOCKING send / call back on the SAME command endpoint, becoming a queued
  * sender / caller so the parent can either rendezvous with it or kill it
  * mid-block.  Must match iris_test.
@@ -69,7 +69,7 @@
 #define LP_CMD_SEND_BLOCK      0x109Au
 #define LP_CMD_CALL_BLOCK      0x109Bu
 
-/* Phase 20 fault-trigger modes (opt-in per run).  After the first recv the child
+/* Fault-trigger modes (opt-in per run).  After the first recv the child
  * performs a faulting access so the parent (a supervisor that registered a fault
  * endpoint via SYS_TCB_SET_FAULT_HANDLER) observes fault delivery.  words[0] carries
  * the target VA for READ/WRITE.  The child never returns from the faulting
@@ -87,7 +87,7 @@
 #define LP_CMD_FAULT_WRITE     0x109Du
 #define LP_CMD_FAULT_EXEC      0x109Eu
 
-/* Phase 28 multi-page fault-read: read the FIRST byte of each of `count` pages in
+/* Multi-page fault-read: read the FIRST byte of each of `count` pages in
  * a caller-chosen (possibly out-of-order) sequence, faulting on each unmapped
  * page so a file-backed pager resolves them one at a time.  Proves a SINGLE
  * target drives multi-page, out-of-order, nonzero-offset resolution (no need for
@@ -100,7 +100,7 @@
  * independent of arrival order. */
 #define LP_CMD_FAULT_READ_SEQ  0x109Fu
 
-/* Phase 28 two-offset fault-read: read the byte at base+off0 and (if count==2) at
+/* Two-offset fault-read: read the byte at base+off0 and (if count==2) at
  * base+off1 — arbitrary byte granularity, not page-aligned — XOR-accumulating
  * the low bytes and exiting LP_EXIT_MARKER ^ acc.  Lets one target verify BOTH a
  * file byte and a zero-fill byte (e.g. the tail of a partial page, or past EOF)
@@ -109,7 +109,7 @@
  *   words[0]=base VA, words[1]=count (1..2), words[2]=off0, words[3]=off1. */
 #define LP_CMD_FAULT_READ_OFFS 0x10A5u
 
-/* Phase 22 least-authority self-report: resolve well-known CPtr slots 0..15 and
+/* Least-authority self-report: resolve well-known CPtr slots 0..15 and
  * exit with a bitmask (bit i set = slot i resolves to a live cap).  Slot 3 (the
  * command endpoint, LP_CPTR_CMD_EP) is always present.  The parent mints a
  * KNOWN set of caps into the child and asserts the reported mask equals exactly
@@ -117,7 +117,7 @@
  * removing a cap removes it from the child (A15).  Must match iris_test. */
 #define LP_CMD_REPORT_SLOTS    0x10A0u
 
-/* Phase 23 compromised-driver stand-in: attempt a battery of device-authority
+/* Compromised-driver stand-in: attempt a battery of device-authority
  * escalations using only the caps the parent minted, and exit with a bitmask of
  * which ones (incorrectly) SUCCEEDED.  A contained driver exits 0 — every
  * escalation is denied by the kernel.  words[0] carries an out-of-range ioport
@@ -135,7 +135,7 @@
  * low byte = -err (0 = success).  Lets a rendezvous-then-complete run report. */
 #define LP_EXIT_IPC_BASE       0x0C00
 
-/* Phase 25 user-pager modes (opt-in per run).  The probe acts as an EXTERNAL
+/* User-pager modes (opt-in per run).  The probe acts as an EXTERNAL
  * PAGER for a target process: the parent (supervisor) mints its exact
  * authority manifest into well-known slots BEFORE start — the pager never
  * acquires anything at runtime, so LP_CMD_REPORT_SLOTS doubles as the
@@ -207,7 +207,7 @@
  * the persistent PAGER SERVICE mode is DELETED.
  *
  * It made this probe into a supervised user pager whose whole authority was a
- * manifest of target grants and VMO grants.  Phase 28 replaced it with a real
+ * manifest of target grants and VMO grants.  It was replaced with a real
  * separate binary — services/pager — and iris_test has driven that one since;
  * the code here kept compiling because nothing sent it LP_CMD_PAGER_SERVICE.
  *

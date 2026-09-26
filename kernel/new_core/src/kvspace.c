@@ -352,7 +352,7 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
  *
  * SIZE.  This used to be a guess, and a wrong one — it was sized for "a
  * handful of pages" while svc_loader maps whole images into the loader's own
- * address space.  Stage 6-pure Step 3 makes it a bound instead: the arena now
+ * address space.  It is a bound instead: the arena now
  * serves ONLY the pre-boot maps, because the root task is handed its own
  * budget the moment it can speak and everything it maps after that comes from
  * there.  Every pre-boot map is registered in

@@ -239,7 +239,7 @@ void knotification_signal(struct KNotification *n, uint64_t bits) {
              * for whoever does come to wait, rather than swallowing them. */
             atomic_fetch_or_explicit(&n->signal_bits, got, memory_order_release);
         }
-        kobject_release(&bound->base);   /* A-44 */
+        kobject_release(&bound->base);   /* held across the delivery */
     }
 }
 

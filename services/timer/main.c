@@ -16,7 +16,7 @@
  * means it can be delegated, revoked, replaced by a different implementation,
  * or simply not granted — none of which was true of a syscall number.
  *
- * ONE THREAD, because ledger A-23 made that possible.  A driver has to take
+ * ONE THREAD, because a bound notification makes that possible.  A driver has to take
  * both an interrupt and a request queue, and a thread blocked receiving on an
  * endpoint used to be deaf to signals — so this service could not have been
  * written single-threaded before the bound notification existed.  It binds its
@@ -63,7 +63,7 @@ static struct tm_entry g_timers[TMR_MAX_TIMERS];
  * How many ticks this service has been WOKEN for — a diagnostic, and not a
  * clock.
  *
- * Ledger A-27 tried to make it one, on the reasoning that a driver receiving
+ * It was nearly made one, on the reasoning that a driver receiving
  * every tick of a line does not need to be told the time.  It does: a
  * notification carries BITS, not a count, so ticks arriving while the service
  * is not scheduled COALESCE into one wake-up.  Counting wake-ups is a clock
@@ -72,7 +72,7 @@ static struct tm_entry g_timers[TMR_MAX_TIMERS];
  * was obvious.
  *
  * Deadlines are in nanoseconds from `SYS_CLOCK_GET`, which is monotonic and
- * cannot be missed.  A-27 records why that syscall stayed.
+ * cannot be missed.  The note above records why that syscall stayed.
  */
 static uint64_t g_wakes;
 

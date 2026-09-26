@@ -162,7 +162,7 @@ static void kfault_wr64(uint8_t *p, uint64_t v) {
  * registration path: a second copy is a second thing to drift.
  *
  * "Publish the thread's capability into a mailbox" is what this used to do,
- * and A-22 is why it no longer does: see the note on the record below.
+ * and faults-as-IPC is why it no longer does: see the note on the record below.
  *
  * The two cannot collide on the shared record.  A thread that has taken an
  * exception is TASK_BLOCKED_FAULT and is not running, so it cannot also be

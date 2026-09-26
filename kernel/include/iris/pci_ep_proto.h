@@ -15,7 +15,7 @@
  * device's bus mastering on, and read any device's registers — so handing that
  * capability to each driver would make "a driver reaches only what its
  * capabilities name" false again, one port range at a time.  It is exactly the
- * shape Stage 10-dma closed for DMA, and it would be silly to close that and
+ * shape DMA containment closed, and it would be silly to close that and
  * then reopen it through the config space that programs the DMA.
  *
  * So one task holds the ports and nobody else does.  A driver asks it for its

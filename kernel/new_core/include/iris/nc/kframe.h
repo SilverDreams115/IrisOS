@@ -110,7 +110,7 @@ struct KFrame *kframe_alloc_at(void *mem, uint64_t paddr, uint64_t size);
  *   IRIS_ERR_NO_MEMORY   — page-table allocation failed.
  *
  * Single-core TLB note: no TLB flush is needed on map (new PTE, no stale
- * entry).  SMP shootdown is deferred to Phase 6.
+ * entry).  SMP shootdown is deferred.
  */
 iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
                               uint64_t user_va, uint64_t map_flags);

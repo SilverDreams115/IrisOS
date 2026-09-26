@@ -113,7 +113,7 @@ static void destroy_pt_level(uint64_t table_phys, int level) {
  * answer is "only here, only for the two address spaces with no holder".
  *
  * Step 2 gave this function a `pool` argument so a USER address space
- * could charge its levels to a budget.  Stage 6-pure Step 2 stopped the
+ * could charge its levels to a budget.  That stopped the
  * kernel creating user levels at all — the holder retypes a KOBJ_PAGE_TABLE
  * and installs it — so every caller now passes the PMM path and the pooled
  * branch was dead code that still claimed the kernel could spend somebody's
@@ -441,7 +441,7 @@ void paging_init_user_pml4(uint64_t pml4_page_phys)
 
 uint64_t paging_create_user_space(void)
 {
-    /* The PMM, and only the PMM.  Stage 6-pure Step 4 made a spawned
+    /* The PMM, and only the PMM.  Retyping made a spawned
      * process's PML4 the storage of a KOBJ_VSPACE its holder retyped, so the
      * budget-funded variant this used to have had no callers left.  What comes
      * through here is the root task's address space and the kernel selftest's:

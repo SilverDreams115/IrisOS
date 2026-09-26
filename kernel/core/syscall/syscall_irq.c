@@ -46,7 +46,7 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (irq_num >= IRQ_ROUTE_MAX) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     /* The destination is a KNotification (signal route) — the
-     * legacy KChannel message route is retired. */
+     * retired KChannel message route is retired. */
     struct KObject  *ch_obj;
     iris_rights_t    ch_rights;
     /* Step 4: third occurrence of the same half-migration — the irqcap (arg0)

@@ -7,7 +7,7 @@
 /*
  * The complete ring-3 register state of a thread, as an object.
  *
- * Ledger D-1, step 3.  An event kernel has ONE kernel stack per core, which
+ * An event kernel has ONE kernel stack per core, which
  * means an interrupted thread's context cannot live on the stack the handler
  * runs on: the handler may hand the CPU to another thread, and that thread is
  * about to use the same stack.  So the context has to live somewhere that

@@ -8,7 +8,7 @@ struct KNotification;
 
 #define IRQ_ROUTE_MAX 16  /* maximum routable hardware IRQ lines (0..IRQ_ROUTE_MAX-1) */
 
-/* IRQ routing is KNotification-only — the legacy KChannel
+/* IRQ routing is KNotification-only — the retired KChannel
  * message route (IRQ_MSG_TYPE_SIGNAL / SYS_CHAN_RECV) is fully retired.  An IRQ
  * fires → knotification_signal(notif, 1<<irq); the consumer drains device state
  * via its KIoPort cap and re-arms with SYS_IRQ_ACK. */

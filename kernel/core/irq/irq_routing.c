@@ -5,7 +5,7 @@
 #include <iris/nc/spinlock.h>
 #include <iris/pic.h>
 
-/* IRQ routing is KNotification-only — the legacy KChannel
+/* IRQ routing is KNotification-only — the retired KChannel
  * message route is fully retired (KChannel is no longer an IPC mechanism). */
 /*
  * A route has no OWNER field any more.

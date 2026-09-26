@@ -93,7 +93,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     _early_putc('S'); /* raw serial: serial_init returned */
     klog_write("\n");
     klog_write("====================================\n");
-    klog_write("       IRIS KERNEL - PHASE 102\n");
+    klog_write("       IRIS KERNEL\n");
     klog_write("====================================\n");
     klog_write("[IRIS][KERNEL] firmware services: OFF\n");
 
@@ -144,7 +144,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
      * live processes at ~9 (NO_MEMORY on the 10th), which the multi-target
      * pager suite (16 concurrent targets + the pager + the supervisor + core
      * services) exceeds.  This is a kernel-object-MEMORY bound, wholly distinct
-     * from the per-process notification quota Phase 28.1 already resolved via the
+     * from the per-process notification quota already resolved via the
      * single shared fault notification — growing the arena is the honest fix for
      * a memory ceiling (16 MB is 3% of the 512 MB guest). */
     {
@@ -168,7 +168,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
         cpu_local[0].lapic_id = lapic_id();
         klog_write("[IRIS][CPU] LAPIC present (PIC/PIT remain active as timer source)\n");
     } else {
-        klog_write("[IRIS][CPU] no LAPIC (legacy PIC mode)\n");
+        klog_write("[IRIS][CPU] no LAPIC (old PIC mode)\n");
     }
 
     klog_write("[IRIS][PIC] remapping IRQs...\n");
@@ -421,7 +421,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                      * Here we only publish the existing vspace in root CNode slot
                      * BOOT_CPTR_VSPACE (slot 2).
                      *
-                     * Ref-count after this block (same as Phase 4):
+                     * Ref-count after this block (unchanged):
                      *   process->vspace lifecycle ref   → refcount=1
                      *   kcnode_mint (retain+active)     → refcount=2, active=1
                      *
@@ -461,11 +461,11 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
              *   • paging_map_checked_in: page tables for the KERNEL address
              *     space and for the root task's pre-Untyped bootstrap maps.
              *     Every other user page table is charged to an Untyped since
-             *     Stage 6 Step 2 (`paging_map_checked_in_from`).
+             *     `paging_map_checked_in_from`.
              *   • paging_create_user: 1 page per process PML4
              *
-             * Ledger D-5 took three entries off this list — kvmo_create's page
-             * array, sys_initrd_vmo's ELF copy pages, and (with D-1) the
+             * Deleting KVmo took three entries off this list — kvmo_create's page
+             * array, sys_initrd_vmo's ELF copy pages, and (with the event kernel) the
              * per-task kernel stacks.  None of them was a kernel-internal
              * allocation that a holder could not have made itself, which is
              * what the reserve is for.
@@ -477,13 +477,12 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
              * where a large block would push pmm_free_pages below the reserve;
              * that block is returned to the buddy and the drain stops.
              *
-             * Phase 3.4 (dual mode): every boot KUntyped is also inserted into
+             * Every boot KUntyped is also inserted into
              * slot (BOOT_CPTR_UNTYPED_START + drain_index) of the process's
-             * root CNode so userboot can discover it via CPtr.  The legacy
-             * handle-table insert is kept for backward compatibility.
+             * root CNode so userboot can discover it via CPtr.  The old * handle-table insert is kept for backward compatibility.
              * Rights are identical on both paths; neither reference has greater
              * authority than the other.  Boot failure on CSpace insert is
-             * non-fatal: the block remains accessible via the legacy handle.
+             * non-fatal: the block remains accessible via the retired handle.
              */
 #define IRIS_PMM_KERNEL_RUNTIME_RESERVE  4096u  /* 16 MB for kernel runtime */
             {

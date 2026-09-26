@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * entry.S — pager service entry point (Fase 27 model, promoted to its own
- * binary in Fase 28 once the initrd boot-growth fragility was fixed).
+ * entry.S — pager service entry point (its own binary once the initrd
+ * boot-growth fragility was fixed).
  *
  * RBX = 0 under the CPtr-mint bootstrap model (svc_loader delivers every cap as
  * a pre-start CSpace mint).  Aligns the stack, seeds the stack canary, passes

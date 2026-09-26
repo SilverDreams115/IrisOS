@@ -57,7 +57,7 @@
  *
  *  0x0000008000000000 - 0x000000FFFFFFFFFF  private user process window
  *    0x0000008000200000  user text base
- *    0x0000008000400000  (formerly heap base — retired Phase 20)
+ *    0x0000008000400000  (formerly heap base — retired)
  *    0x00000080FFFFF000  user stack top
  *
  *  0xFFFFFFFF80000000 - 0xFFFFFFFFFFFFFFFF  kernel space (higher half)
@@ -143,7 +143,7 @@ void     paging_map(uint64_t virt, uint64_t phys, uint64_t flags);
 uint64_t paging_virt_to_phys(uint64_t virt);
 int      paging_query_access(uint64_t virt, uint64_t *out_flags);
 uint64_t paging_create_user_space(void);
-/* Legacy best-effort mapper. Critical syscalls and rollback-sensitive paths
+/* Retired best-effort mapper. Critical syscalls and rollback-sensitive paths
  * must use paging_map_checked_in() instead. */
 void     paging_map_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags);
 int      paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags);
@@ -155,7 +155,7 @@ struct KUntyped;
  * `pml4_pooled != 0` means the PML4 page is a child of an Untyped rather than
  * a PMM page, so it is left where it is; its child entry goes back with the
  * VSpace.  The LEVELS below it are the holder's own KPageTable objects since
- * Stage 6-pure and must already have been detached from the walk
+ * Retyped by the holder, and must already have been detached from the walk
  * (kvspace_detach_tables) before this runs — what is left under
  * USER_PRIVATE_PML4_INDEX is then, by construction, only pages this file's
  * alloc_table() took from the PMM, which is exactly what may be returned to it.

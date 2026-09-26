@@ -16,7 +16,7 @@
  * buffer.  `INV_FRAME_GET_ADDRESS` is the only way ring 3 can learn any of
  * them, and is why that invocation exists.
  *
- * It is also why this driver is the one that most needs Stage 10-dma.  Those
+ * It is also why this driver is the one that most needs DMA containment.  Those
  * four addresses are supplied BY THE DRIVER, so a driver that lied would have
  * the controller write wherever it liked.  With a remapping unit the addresses
  * are translated through a table only this driver's IOSpace names, and the

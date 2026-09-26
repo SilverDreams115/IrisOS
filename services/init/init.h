@@ -2,7 +2,7 @@
 /*
  * init.h — shared primitives for the init service.
  *
- * init began as a single large main.c.  Phase 14 decomposed it into auditable
+ * init began as a single large main.c.  It was decomposed into auditable
  * modules that share this contract:
  *
  *   main.c            boot supervisor — orchestrates the healthy path + idle
@@ -56,7 +56,7 @@ static inline long init_sys1(long nr, long a0) {
  * init's own root CNode (dest 0 = own root).  The source must be a CPtr:
  * retype2 parents each created capability to the MDB slot of its source
  * untyped only when the source was named that way, so a handle source would
- * make every object an ancestorless LEGACY_ROOT.
+ * make every object an ancestorless MDB_FLAG_UNPARENTED.
  *
  * Step 4: this used to materialise the result into a handle and delete the
  * slot.  A retyped object living in a CSpace slot IS the seL4 shape — the
@@ -252,7 +252,7 @@ void init_selftest_exception(void);
  * A mint into an occupied slot DELETES the occupant, so a collision here does
  * not fail — it succeeds, over something that was in use, and the damage shows
  * up somewhere else entirely.  Three of them were found by running the system
- * during Stage 10, one of which destroyed init's loader workspace and made
+ * during the platform work, one of which destroyed init's loader workspace and made
  * every subsequent service load fail with nothing naming the slot.
  *
  * So the build checks.  Adding an init slot that shadows an IRIS_CPTR_* is now

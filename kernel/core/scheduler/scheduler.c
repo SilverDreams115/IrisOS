@@ -155,7 +155,7 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
  * `abandon` means: do not preserve this frame.  The outgoing thread is set to
  * resume at syscall_restart_trampoline on a FRESH stack, and the integer
  * context the switch would normally save is thrown away — so the kernel stack
- * of a blocked thread holds nothing, which is the property D-1 exists to get.
+ * of a blocked thread holds nothing, which is the property an event kernel exists to get.
  *
  * The FPU state is still saved into the real buffer.  The thread parked with
  * its user's SSE registers live, and losing them would corrupt a computation
@@ -551,7 +551,7 @@ static void sched_tick_global(void) {
     }
 
     /*
-     * O(N) replenishment scan — Phase 1 TODO:
+     * O(N) replenishment scan — TODO:
      *   Replace with a min-heap keyed on the next replenishment.  Current
      *   complexity: O(live threads) per tick — the walk is a list now, so it
      *   costs what the system actually has rather than a fixed 256.  The shape

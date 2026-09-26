@@ -34,7 +34,7 @@ uint32_t kcnode_live_count(void) {
     return atomic_load_explicit(&kcnode_live, memory_order_relaxed);
 }
 
-/* ── Phase S2/S3 — derivation instrumentation ────────────────────────────── */
+/* ── Derivation instrumentation ────────────────────────────── */
 
 static _Atomic uint32_t cdt_derivation_count;   /* derived installs (copy/mint/retype-child) */
 static _Atomic uint32_t cdt_derivation_hwm;     /* max live derived nodes */
@@ -384,7 +384,7 @@ void kcnode_close(struct KCNode *cn) {
  * kcnode_teardown_slots — empty every slot with DELETE semantics, without
  * waiting for the last reference.
  *
- * Stage 7-proc left this with no productive caller: a root CSpace that names
+ * The process object's removal left this with no productive caller: a root CSpace that names
  * itself now empties through its own close hook, because a self-naming slot
  * takes no ACTIVE reference and the count therefore reaches zero.  It survives
  * as the explicit form of that teardown, exercised by BC-11..BC-13 as the
@@ -466,7 +466,7 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
     uint64_t mf = irq_spinlock_lock(&mdb_lock);
 
     /*
-     * OVERWRITE semantics (legacy `kcnode_mint`): the old occupant is cleared
+     * OVERWRITE semantics (`kcnode_mint`): the old occupant is cleared
      * with full delete-with-reparent, and it happens under the SAME `mdb_lock`
      * hold as the install below.
      *
@@ -610,7 +610,7 @@ iris_error_t kcnode_slot_derive(struct KCNode *src_cn, uint32_t src_idx,
     return kcnode_slot_install_linked(dst_cn, dst_idx, obj, effective,
                                       eff_badge, src_cn, src_idx,
                                       /*parent_expect=*/obj,
-                                      /*exclusive=*/1, /*legacy=*/0);
+                                      /*exclusive=*/1, /*unparented=*/0);
 }
 
 /*
@@ -792,7 +792,7 @@ static iris_error_t kcnode_slot_delete_locked(struct KCNode *cn,
         irq_spinlock_unlock(&cn->lock, cf);
 
         /* Every occupied slot is in the graph (B.3-2); mdb_cnode is the
-         * witness (guards against a pre-MDB zeroed legacy state). */
+         * witness (guards against a pre-MDB zeroed old state). */
         if (s->mdb_cnode)
             mdb_detach_reparent(s);
         atomic_fetch_add_explicit(&cdt_delete_count, 1u, memory_order_relaxed);
@@ -927,15 +927,15 @@ iris_error_t kcnode_slot_revoke_bounded(struct KCNode *cn, uint32_t slot_idx,
     return IRIS_OK;
 }
 
-/* ── legacy-compatible wrappers (all installs are LEGACY roots) ─────────── */
+/* ── old-compatible wrappers (all installs are OLD roots) ─────────── */
 
 iris_error_t kcnode_mint(struct KCNode *cn, uint32_t slot_idx,
                           struct KObject *obj, iris_rights_t rights) {
     return kcnode_slot_install_linked(cn, slot_idx, obj, rights, 0, 0, 0, 0,
-                                      /*exclusive=*/0, /*legacy=*/1);
+                                      /*exclusive=*/0, /*unparented=*/1);
 }
 
-/* kcnode_mint_badged is gone — an OVERWRITE mint that installed a LEGACY root
+/* kcnode_mint_badged is gone — an OVERWRITE mint that installed a OLD root
  * with an explicit badge, written for the MOVE path and never called
  * by it.  Every producer of an unparented capability is one T305 has to
  * account for, so one that nothing uses is one to delete rather than
@@ -945,7 +945,7 @@ iris_error_t kcnode_mint_excl_badged(struct KCNode *cn, uint32_t slot_idx,
                                      struct KObject *obj,
                                      iris_rights_t rights, uint64_t badge) {
     return kcnode_slot_install_linked(cn, slot_idx, obj, rights, badge, 0, 0, 0,
-                                      /*exclusive=*/1, /*legacy=*/1);
+                                      /*exclusive=*/1, /*unparented=*/1);
 }
 
 iris_error_t kcnode_mint_excl(struct KCNode *cn, uint32_t slot_idx,

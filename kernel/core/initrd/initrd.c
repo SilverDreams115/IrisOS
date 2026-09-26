@@ -137,7 +137,7 @@ static const struct initrd_entry g_initrd[] = {
      * fixture.  Present but never launched at boot. */
     { _binary_services_bootfix_badelf_bin_start,
       _binary_services_bootfix_badelf_bin_end  },
-    /* [12] filebk/fbk.dat — file-backed memory content fixture (Phase 28
+    /* [12] filebk/fbk.dat — file-backed memory content fixture (the VFS work
      * Bloque B): 5 pages, byte[i]=(i*31+7)&0xFF.  Exported by VFS as "fbk.dat". */
     { _binary_services_filebk_fbk_dat_start,
       _binary_services_filebk_fbk_dat_end  },

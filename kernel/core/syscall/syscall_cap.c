@@ -17,12 +17,12 @@
 /* ── Hardware capability creation (C2: policy moved to svcmgr) ──────── */
 
 
-/* ── Phase S4 (Step 3 prep): CSpace-native device capabilities ────────────
+/* ── CSpace-native device capabilities ────────────
  *
  * SYS_CAP_CREATE_IRQCAP / _IOPORT used to be handle producers: the only way
- * to hold a KIrqCap/KIoPort was a handle, which left the legacy handle tree
+ * to hold a KIrqCap/KIoPort was a handle, which left the retired handle tree
  * (SYS_CAP_DERIVE/SYS_CAP_REVOKE) as the ONLY derive+cascade-revoke mechanism
- * for device authority — the blocker that kept Stage 3 shut.
+ * for device authority — the blocker that kept it shut.
  *
  * They now publish into a CSpace slot, and — this is the point — as an MDB
  * CHILD of the bootstrap-cap SLOT that authorised the creation.  Device
@@ -61,7 +61,7 @@ static iris_error_t dev_cap_publish(struct task *t, struct KObject *obj,
     err = kcnode_slot_install_linked(cn, dest_slot, obj, rights, 0,
                                      auth_cn, auth_idx,
                                      /*parent_expect*/auth_obj,
-                                     /*exclusive*/1, /*legacy*/0);
+                                     /*exclusive*/1, /*unparented*/0);
     kobject_active_release(&cn->base);
     kobject_release(&cn->base);
     return err;
@@ -143,7 +143,7 @@ static void dev_cap_auth_release(struct KCNode *cn, struct KObject *auth) {
  * These two allocated their object from `t->process->mem_pool`: the Untyped
  * the kernel remembered as "this process's", picked because the caller had not
  * said which of its budgets should pay.  That is the kernel choosing whose
- * memory funds an allocation, which Stage 6 Step 5 removed everywhere a
+ * memory funds an allocation, which was removed everywhere a
  * syscall had an argument to spare — these were the sites that did not.
  *
  * IRQCAP had one: arg2 was unused.  IOPORT did not, so its two 16-bit device

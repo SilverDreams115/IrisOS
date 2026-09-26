@@ -522,7 +522,7 @@ void test_t106(void) {
  * overwrite; I4 occupied slot fails/degrades per contract; I5 sender keeps
  * cap without delivery commit; I6 receiver gains nothing on failure; I7 no
  * staged-cap leak; I8 no double release; I9 reply one-shot; I10 second
- * reply keeps server cap; I11 legacy slot-0 delivery; I12 slot delivery is
+ * reply keeps server cap; I11 old slot-0 delivery; I12 slot delivery is
  * an invocable CPtr; I13 NOT_FOUND installs nothing; I14 close wakes
  * waiters; I15 death leaves no dead waiters; I16 live back to baseline;
  * I17 hwm bounded; I18 delivery counters move as expected. */
@@ -572,7 +572,7 @@ static void fz_worker(int idx) {
         iris_msg_zero(&m);
         long r = -1;
         if (op == FZ_OP_RECV) {
-            m.recv_slot = (uint32_t)c.words[1];   /* slot hint (0 = legacy) */
+            m.recv_slot = (uint32_t)c.words[1];   /* slot hint (0 = the old form) */
             r = iris_msg_recv((long)g_fz_data_ep, &m);
         } else if (op == FZ_OP_SEND_CAP) {
             m.label = c.words[3];
@@ -587,7 +587,7 @@ static void fz_worker(int idx) {
                 m.cap        = (uint32_t)c.words[1];
                 m.cap_rights = (uint32_t)c.words[2];
             }
-            m.recv_slot = (uint32_t)c.words[3]; /* reply slot (0 = legacy) */
+            m.recv_slot = (uint32_t)c.words[3]; /* reply slot (0 = the old form) */
             r = iris_msg_call((long)g_fz_data_ep, &m);
         }
         /* "did a capability arrive, and where?" is two facts now.  The
@@ -996,16 +996,16 @@ void test_t108(void) {
             }
 
         } else {
-            /* Legacy (slot 0) receiver canceled by close. */
+            /* Retired (slot 0) receiver canceled by close. */
             if (!fz_cmd(0, FZ_OP_RECV, 0, 0, 0)) { ok = 0; why = "cmd"; break; }
             it_settle(5);
             it_close(&g_fz_data_ep);
             if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
             if (ok && g_fz_res[0] != (long)IRIS_ERR_CLOSED) {
-                ok = 0; why = "legacy not CLOSED";
+                ok = 0; why = "old not CLOSED";
             }
             if (ok && g_fz_att[0] != (uint32_t)IRIS_MSG_NO_CAP) {
-                ok = 0; why = "legacy ghost cap";
+                ok = 0; why = "retired ghost cap";
             }
         }
         it_close(&g_fz_data_ep);   /* no-op on the already-closed rounds */
@@ -1265,7 +1265,7 @@ void test_t110(void) {
     /* Registered-name lookup into a declared slot: invocable, then released.
      * It used to run slotless and assert a handle >= 1024; that is retired
      * that delivery, so the destination is now explicit. */
-    #define T110_LEGACY_OK()                                                  \
+    #define T110_OLD_OK()                                                  \
         do {                                                                  \
             it_slot_delete((uint32_t)IT_LOOKUP_TMP);                          \
             if (it_lookup_name_slot(name, (uint32_t)IT_LOOKUP_TMP, &msg) != 0 ||\
@@ -1278,7 +1278,7 @@ void test_t110(void) {
                 p.label = 0x110;                                              \
                 if (iris_msg_nb_send((long)msg.got_cap, &p)                \
                             != (long)IRIS_ERR_WOULD_BLOCK) {                  \
-                    ok = 0; why = "legacy cap dead";                          \
+                    ok = 0; why = "old cap dead";                          \
                 }                                                             \
                 it_slot_delete((uint32_t)IT_LOOKUP_TMP);                      \
                 exp_slot++;                                                   \
@@ -1339,7 +1339,7 @@ void test_t110(void) {
             }
 
         } else if (pick == 2u) {
-            if (reg[i]) T110_LEGACY_OK(); else T110_NOTFOUND();
+            if (reg[i]) T110_OLD_OK(); else T110_NOTFOUND();
 
         } else if (pick == 3u) {
             /* Unregister removes authority: the very next lookup fails. */
@@ -1356,11 +1356,11 @@ void test_t110(void) {
 
         } else if (pick == 4u) {
             /* Occupied-slot lookup: fail-fast BEFORE any send (no KReply,
-             * no reply counter tick), then legacy still works. */
+             * no reply counter tick), then the old form still works. */
             if (reg[i]) {
                 if (it_lookup_name_slot(name, occ, &msg) !=
                     (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "occ not rejected"; }
-                if (ok) T110_LEGACY_OK();
+                if (ok) T110_OLD_OK();
             } else {
                 T110_NOTFOUND();
             }
@@ -1382,7 +1382,7 @@ void test_t110(void) {
                 if (r < 0) { ok = 0; why = "cycle register"; }
                 else { ids[i] = r; reg[i] = 1; }
             }
-            if (ok) T110_LEGACY_OK();
+            if (ok) T110_OLD_OK();
         }
     }
 
@@ -1396,7 +1396,7 @@ void test_t110(void) {
         }
         if (ok) T110_NOTFOUND();
     }
-    #undef T110_LEGACY_OK
+    #undef T110_OLD_OK
     #undef T110_NOTFOUND
 
     it_close(&ep_h);
@@ -2401,7 +2401,7 @@ void test_t120(void) {
 volatile long g_t121_res[3];
 /* Dedicated single-shot workers, one per blocking endpoint state.  Each blocks
  * on g_sh_ep, records its wake-up result, then self-exits.  The recv worker
- * uses the legacy (slotless) path; the receive-slot path is exercised by the
+ * uses the old (slotless) path; the receive-slot path is exercised by the
  * kill-child leg below (it_lp_cmd_rslot), so T121 covers both. */
 static void t121_recv(void) {
     struct iris_msg m; iris_msg_zero(&m);

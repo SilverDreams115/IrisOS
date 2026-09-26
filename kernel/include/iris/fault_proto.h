@@ -15,7 +15,7 @@
  *   offset 16: uint32_t error_code — CPU error code (0 if N/A for this vector)
  *   offset 20: uint32_t fault_seq  — per-process fault generation
  *              (1-based, monotonic per delivery; was _pad, written 0 before
- *              Phase 25, so a 0 here means "kernel predates fault generations")
+ *              fault generations, so a 0 here means "kernel predates fault generations")
  *   offset 24: uint64_t cr2        — fault address (#PF only; 0 otherwise)
  *
  * After sending the notification the kernel suspends the faulting task in

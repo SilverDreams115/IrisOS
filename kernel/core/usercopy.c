@@ -4,7 +4,7 @@
  * direction left.
  *
  * `user_range_readable`, `copy_from_user_checked` and `copy_user_cstr_bounded`
- * are GONE, and what removed them was ledger A-33.  A message used to be a
+ * are GONE, and what removed them was the message becoming registers.  A message used to be a
  * struct in user memory named by a pointer: the kernel validated the range and
  * copied it in, which is what a READ path was for.  A message is registers
  * now, and a bulk payload lives in a frame the thread REGISTERED — which the
@@ -78,7 +78,7 @@ int user_range_writable(uint64_t ptr, uint32_t len) {
  *
  * Before this table existed, that store faulted at CPL 0, and `idt.c` halts
  * the machine on any fault that did not come from ring 3.  Ring 3 could stop
- * the kernel.  Ledger A-37 recorded it as a divergence from seL4, which proves
+ * the kernel.  It was recorded as a divergence from seL4, which proves
  * its kernel never faults; this is the mechanism that turns the promise into a
  * property IRIS can actually hold.
  *

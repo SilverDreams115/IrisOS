@@ -7,7 +7,7 @@
 /*
  * Local APIC (LAPIC) detection and minimal interface.
  *
- * Phase 58 scope: probe CPUID / IA32_APIC_BASE, map the MMIO window,
+ * Scope: probe CPUID / IA32_APIC_BASE, map the MMIO window,
  * expose lapic_eoi() for future IRQ routing.  The PIC/PIT remain the
  * active timer and IRQ source; LAPIC timer activation and AP bringup
  * are deferred to a later phase.

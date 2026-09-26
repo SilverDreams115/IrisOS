@@ -456,7 +456,7 @@ uint64_t kuntyped_bump_alloc_phys_page(struct KUntyped *u, uint64_t size) {
      * The offset form therefore handed out unaligned "pages": a frame retyped
      * from a sub-untyped got a paddr the mapper silently masked DOWN, mapping
      * the page BEFORE the frame — overlapping whatever the sub-untyped had
-     * carved earlier.  Stage 6 Step 2 hit it because page tables are carved
+     * carved earlier.  It showed up because page tables are carved
      * this way too, and a page table at a masked-down address is somebody
      * else's memory reinterpreted as a table.
      */

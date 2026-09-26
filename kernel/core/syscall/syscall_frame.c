@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * syscall_frame.c — Phase 5 / 5.1: SYS_FRAME_MAP and SYS_FRAME_UNMAP.
+ * syscall_frame.c — SYS_FRAME_MAP and SYS_FRAME_UNMAP.
  *
  * SYS_FRAME_MAP(frame_cptr, vspace_cptr, user_va, flags):
  *   Resolves Frame and VSpace capabilities, validates flags and VA, then
@@ -27,7 +27,7 @@
  * Lifecycle invariant:
  *   frame->mapped_count must be 0 before dropping the last frame cap.
  *   kframe_obj_destroy() panics if mapped_count > 0 at destruction time.
- *   This eliminates silent stale PTEs that Phase 5 allowed.
+ *   This eliminates the silent stale PTEs this used to allow.
  *
  * TLB:
  *   Map: no flush needed (new PTE; no stale entry).
@@ -36,7 +36,7 @@
  *   tlb_shootdown_page() on the unmap path.
  *
  *   This block said "shootdown is NOT implemented; one core ... deferred to
- *   Phase 6" for as long as it had been implemented, which is Stage 9 step 2.
+ *   later" for as long as it had been implemented.
  *   A comment that describes work as pending is worse than no comment: it is
  *   read as a statement about the system by the next person to touch it.
  */

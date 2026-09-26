@@ -61,7 +61,7 @@
  * WHAT a region is, not just whether the kernel may put headers in it.
  *
  * `is_device` answers one question — may objects be carved here — and by
- * Stage 10 there were four kinds of region answering it the same way: the
+ * There used to be four kinds of region answering it the same way: the
  * framebuffer, the PCI hole, ACPI reclaimable memory and ACPI NVS.  The root
  * task has to route each to a different consumer, and it was doing it by
  * matching physical addresses against the framebuffer's base, which worked

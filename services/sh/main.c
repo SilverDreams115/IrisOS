@@ -10,13 +10,13 @@
  *
  * VFS access: endpoint-only. "vfs.ep" is resolved through the
  * svcmgr discovery endpoint; ls/cat use the stateless VFS EP protocol
- * (iris/vfs_ep_proto.h). There is no legacy KChannel fallback — if the
+ * (iris/vfs_ep_proto.h). There is no retired KChannel fallback — if the
  * endpoint is missing, ls/cat report the error instead of masking it.
  *
  * Keyboard: endpoint-only. "kbd.ep" is resolved through the
  * svcmgr discovery endpoint; the REPL pulls one key event per
  * EP_CALL(KBD_EP_OP_READ) — kbd parks the reply until a key arrives, so the
- * call doubles as the blocking wait. No legacy KChannel subscribe fallback.
+ * call doubles as the blocking wait. No retired KChannel subscribe fallback.
  *
  * Commands: help, ver, uptime, ls, cat <file>, clear
  */
@@ -51,7 +51,7 @@ static void sh_imsg_zero(struct iris_msg *msg) {
 
 /* VFS endpoint handle. Resolved once
  * after bootstrap via the svcmgr discovery endpoint; IRIS_CPTR_NULL means
- * VFS is unavailable — ls/cat fail loudly, there is no legacy fallback. */
+ * VFS is unavailable — ls/cat fail loudly, there is no old fallback. */
 static iris_cptr_t g_sh_vfs_ep_h = IRIS_CPTR_NULL;
 
 /*
@@ -72,7 +72,7 @@ static uint8_t *g_sh_buf = g_sh_ep_buf;
 
 /* Console endpoint path: sh is a pure CPtr-first client — ALL
  * console output goes through the well-known slot IRIS_CPTR_CONSOLE_EP.
- * There is no legacy console cap anymore: if the slot is broken, sh stays
+ * There is no retired console cap anymore: if the slot is broken, sh stays
  * silent and every gated "[SH] ... OK" marker is missing, which fails the
  * smoke run. The `con` parameter is kept so call sites stay unchanged. */
 static iris_cptr_t g_sh_con_ep_h = (iris_cptr_t)IRIS_CPTR_CONSOLE_EP;
@@ -261,7 +261,7 @@ static void sh_dispatch(iris_cptr_t con, const char *line) {
         return;
     }
     if (sh_word_eq(line, "ver")) {
-        sh_cout(con, "IRIS Phase 55 — pure microkernel shell\r\n"
+        sh_cout(con, "IRIS — pure microkernel shell\r\n"
                            "  kernel:   x86_64 ring-0/3, cooperative+preemptive\r\n"
                            "  services: init svcmgr kbd vfs console fb sh\r\n"
                            "  time:     a ring-3 service; the kernel cannot block on it\r\n");
@@ -290,7 +290,7 @@ static void sh_dispatch(iris_cptr_t con, const char *line) {
         return;
     }
     if (sh_word_eq(line, "ls")) {
-        /* Endpoint-only path: no legacy KChannel fallback. */
+        /* Endpoint-only path: no retired KChannel fallback. */
         if (g_sh_vfs_ep_h == IRIS_CPTR_NULL) {
             sh_cout(con, "ls: VFS endpoint unavailable\r\n");
             return;
@@ -390,7 +390,7 @@ void sh_main_c(iris_cptr_t rbx_unused) {
     /* Print banner */
     sh_cout(console_h,
         "\r\n"
-        "IRIS shell (Phase 55) — 'help' for commands\r\n"
+        "IRIS shell — 'help' for commands\r\n"
         "> ");
 
     /* REPL main loop */

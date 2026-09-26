@@ -7,7 +7,7 @@
 /*
  * cptr.h — what a capability argument IS, and the boundary that says so.
  *
- * This file was `nc/handle.h` until Stage 10-abi, and everything in it was
+ * This file was `nc/handle.h` until the ABI freeze, and everything in it was
  * named after a namespace that stopped existing.  The rename is the
  * point of that stage rather than tidiness: a 1.0 ABI that ships a type called
  * `iris_cptr_t` is telling every future caller that handles are a thing, and
@@ -18,7 +18,7 @@
  *
  * A syscall argument that names authority is a CPtr or it is
  * IRIS_ERR_INVALID_ARG.  There is no second table, no generation counter and
- * no token: the handle table is gone and Stage 7-proc deleted the last
+ * no token: the handle table is gone and so is the last
  * structure that held one.
  *
  * ── ...and the boundary that keeps it one ──────────────────────────────────

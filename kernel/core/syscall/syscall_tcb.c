@@ -28,7 +28,7 @@ static iris_error_t tcb_resolve(struct KCNode *root, iris_cptr_t cptr,
      * — "something about your argument is wrong", said by a resolver that had
      * just identified the capability exactly.  Third instance of the same
      * defect: the typed resolvers had it until the type-before-rights fix,
-     * and `dev_cap_budget` had it until D-5. */
+     * and `dev_cap_budget` had it until KVmo went. */
     iris_error_t err = cspace_resolve_only_obj(root, cptr, RIGHT_NONE,
                                                     KOBJ_TCB, &obj, rights_out);
     if (err != IRIS_OK) return err;
@@ -45,7 +45,7 @@ static iris_error_t tcb_resolve(struct KCNode *root, iris_cptr_t cptr,
  *
  * It handed a thread a capability to ITSELF, asking for no capability at all:
  * ambient authority, which seL4 does not have.  It also published an MDB
- * LEGACY ROOT — no ancestor, no revoke reaches it.
+ * unparented root — no ancestor, no revoke reaches it.
  *
  * A thread is told which thread it is by whoever CREATED it.  For the first
  * thread of a process that is IRIS_CPTR_OWN_TCB, minted by its spawner before
@@ -57,7 +57,7 @@ static iris_error_t tcb_resolve(struct KCNode *root, iris_cptr_t cptr,
 /*
  * SYS_TCB_CONFIGURE(tcb_cptr, cspace_cptr, vspace_cptr)
  *
- * The operation Phase S2 named and could not implement: a TCB retyped from an
+ * The operation named but not implemented then: a TCB retyped from an
  * Untyped is born cap-complete but inactive — no registry slot, no kernel
  * stack, no address space — and every execution syscall refuses it.  What was
  * missing was not the code but the ARGUMENTS: a thread runs in a CSpace and a
@@ -88,7 +88,7 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     /*
      * arg3 — the ROOT CSpace GUARD.
      *
-     * It named the PROCESS the thread would join until Stage 7-proc, and was
+     * It named the PROCESS the thread would join until the process object went, and was
      * reserved and ignored after that.  It carries seL4's `cspace_root_data`
      * now, which is the same argument in the same position of the same
      * operation: the guard belonging to the CSpace capability being installed.
@@ -601,7 +601,7 @@ uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      *
      * The witness used to be `saved_krsp` — a thread's entry frame was pushed
      * onto its own kernel stack, so a non-zero saved stack pointer meant "it
-     * has one".  Stage 9-evt step 3 moved that frame into the TCB, and the
+     * has one".  That frame moved into the TCB, and the
      * witness moved with it: `resume_user` is TASK_RESUME_KERNEL on a retyped
      * block and becomes TASK_RESUME_USER_FIRST exactly when WRITE_REGS runs.
      * Checking the old field after the frame stopped living there is how this
@@ -686,7 +686,7 @@ uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *
  * Until now that ceiling could only be INHERITED — `TCB_Configure` stamps the
  * configurer's `mcp` on the thread — and inheriting it is the common case, so
- * A-20 shipped with only that and recorded the gap.  What it could not express
+ * It shipped with only that, and the gap was recorded.  What it could not express
  * is LOWERING one afterwards: a supervisor that wants to hand a subtree less
  * authority than it holds had to have been configured with less, which means
  * deciding the whole hierarchy before building any of it.
@@ -694,7 +694,7 @@ uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * Same rule as the priority it bounds, and for the same reason: the new
  * ceiling may not exceed the AUTHORITY's ceiling.  Otherwise a thread could
  * raise its own MCP to 255 and then grant itself any priority — which is the
- * exact starvation A-20 closed, reached one step further round.
+ * exact starvation that closed, reached one step further round.
  *
  * `authority_cptr == 0` means "myself", which is not a loophole: a thread's
  * own ceiling bounds it, so self-authorised the operation can only ever lower

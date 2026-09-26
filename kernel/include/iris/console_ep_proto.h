@@ -9,8 +9,7 @@
  *
  * Wire format: a MessageInfo word and message registers (iris/ipc_msg.h);
  * the MessageInfo's label field is the opcode.
- * This is the ONLY console write path.  It fully replaced the legacy
- * CONSOLE_MSG_WRITE/SYNC KChannel protocol, whose header is deleted
+ * This is the ONLY console write path.  It fully replaced the old * CONSOLE_MSG_WRITE/SYNC KChannel protocol, whose header is deleted
  *.  All writers — init, sh, vfs, iris_test and svcmgr's
  * klog drain — use this endpoint.
  *
@@ -25,7 +24,7 @@
  *   Request:  no payload; a bulk payload is rejected (IRIS_ERR_INVALID_ARG).
  *   Reply OK: sent once the console has flushed all output queued at that
  *             moment.  Retained as an explicit barrier primitive; with the
- *             legacy KChannel writers gone, EP writes are already synchronous
+ *             retired KChannel writers gone, EP writes are already synchronous
  *             by construction, so a plain WRITE is self-flushing.
  *
  * IRIS_EP_OP_PING is served: reply OK.

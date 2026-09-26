@@ -343,7 +343,7 @@ void test_t329(void) {
 
 /* ── T330: a bound notification reaches a thread blocked on an endpoint ─────
  *
- * Ledger A-23, seL4's `seL4_TCB_BindNotification`, and the gap the audit
+ * seL4's `seL4_TCB_BindNotification`, and the gap the audit
  * found: *"seL4 binds a notification to a TCB so a passive server blocked on
  * an endpoint can still take signals; IRIS cannot."*
  *
@@ -1018,7 +1018,7 @@ void test_t334(void) {
  * Twenty-two resolver results used to be rewritten on their way out: sixteen
  * `WRONG_TYPE → INVALID_ARG`, three `WRONG_TYPE → ACCESS_DENIED`, and three
  * ternaries that mapped WRONG_TYPE to itself — the residue of a conversion
- * that was done three separate times and never finished (A-20's
+ * that was done three separate times and never finished (the audit's
  * type-before-rights fix, the `dev_cap_budget`, and the TCB family at Step
  * 4).  `SYS_TCB_SET_IPC_BUFFER` was the clearest symptom: one call answering
  * WRONG_TYPE for a bad arg0 and INVALID_ARG for a bad arg1, for the same kind
@@ -1586,7 +1586,7 @@ void test_t337(void) {
     /* ── 1b. the three that stay are calls that invoke NOTHING ──
      * seL4 keeps `seL4_Yield` for exactly this reason: there is no capability
      * it could be a method of.  A thread ending itself names no object either,
-     * and the clock is a counter A-27 established is unprivileged anyway. */
+     * and the clock is a counter that is unprivileged anyway. */
     if (ok && it_invoke0(0, 0) == 0) { ok = 0; why = "a null invocation succeeded"; }
     if (ok && iris_syscall4(SYS_YIELD, 0, 0, 0, 0) != 0) { ok = 0; why = "yield retired"; }
     if (ok && iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0) <= 0) {
@@ -1887,7 +1887,7 @@ static void t339_sender(void) {
  *
  * A transfer is a COPY, and the copy is installed as an MDB CHILD of
  * the sender's source slot — which is what gives a delivered capability real
- * ancestry instead of making it a LEGACY_ROOT.
+ * ancestry instead of making it a MDB_FLAG_UNPARENTED.
  *
  * Staging records WHERE that source was: a CNode and a slot index, captured
  * when the send is made.  The delivery happens LATER, at the rendezvous, and

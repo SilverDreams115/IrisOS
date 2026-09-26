@@ -81,13 +81,13 @@ long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
 struct svc_mint {
     uint64_t      slot;    /* destination CPtr slot in the child root CNode */
     iris_cptr_t   src_h;   /* source cap in the CALLER's handle table
-                            * (legacy path: SYS_PROC_CSPACE_MINT) */
+                            * (retired path: SYS_PROC_CSPACE_MINT) */
     uint64_t      src_cptr;/* Source cap in the CALLER's CSpace.  When
                             * non-zero it WINS over src_h and the mint goes
                             * through SYS_CSPACE_MINT_INTO, so the child's cap
                             * becomes an MDB child of OUR slot — the delegation
                             * stays revocable from the supervisor.  The handle
-                            * path is legacy and retires with the dual
+                            * path is old and retires with the dual
                             * namespace. */
     iris_rights_t rights;  /* rights mask (reduced against src rights) */
     uint64_t      badge;   /* Sender badge for the minted cap
@@ -105,7 +105,7 @@ struct svc_mint {
  * `ws` packs the untyped to carve a second-level CNode from (low 32 bits) and
  * the root slot that holds it (high 32).  A spawn needs eleven capabilities
  * alive at once and no spawning service has eleven free root slots; one slot
- * plus 256 leaves does.  ws == 0 keeps the legacy handle path.
+ * plus 256 leaves does.  ws == 0 keeps the retired handle path.
  *
  * It is a parameter and not loader state on purpose: userboot is a flat binary
  * with no writable .data, so anything the loader remembered between calls
@@ -138,8 +138,8 @@ struct svc_mint {
  * observing a child's death names the thread that dies, so a supervisor that
  * means to wait for its child keeps the TCB it retyped for it.
  *
- * `keep_vspace_dest` is the same for the child's ADDRESS SPACE (Stage 7
- * Step 15).  Mapping into a child used to go through SYS_PROCESS_VSPACE, out
+ * `keep_vspace_dest` is the same for the child's ADDRESS SPACE.
+ * Mapping into a child used to go through SYS_PROCESS_VSPACE, out
  * of which the kernel read `child->vspace` — the same shape as the CSpace case
  * above, one object over.  Keeping it has a COST the other two do not: a
  * VSpace capability keeps that address space, and every page table in it,

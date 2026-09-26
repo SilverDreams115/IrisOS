@@ -13,7 +13,7 @@
  *
  * It handed the caller a capability to its own address space, asking for NO
  * capability at all: ambient authority, which seL4 does not have.  It also
- * published an MDB LEGACY ROOT — a capability with no ancestor, which no
+ * published an MDB unparented root — a capability with no ancestor, which no
  * revoke can reach.
  *
  * A thread is given its address space by whoever configured it.  Every service
@@ -213,13 +213,13 @@ uint64_t sys_frame_size(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
-/* ── Initrd/spawn syscalls: retired Phase 29 ─────────────────────── */
+/* ── Initrd/spawn syscalls: retired ─────────────────────── */
 
 /* SYS_INITRD_LOOKUP(41) and SYS_SPAWN_ELF(42) are permanently retired.
  * Ring-3 loaders use SYS_INITRD_VMO(55) + SYS_PROCESS_CREATE(56) +
  * SYS_VMO_MAP_INTO(57) + SYS_THREAD_START(58) + SYS_HANDLE_INSERT(59). */
 
-/* ── Phase 29 composable spawn primitives ────────────────────────── */
+/* ── Composable spawn primitives ────────────────────────── */
 
 /*
  * sys_initrd_vmo is DELETED.

@@ -4,7 +4,7 @@
  *
  * ── Why this exists at all ─────────────────────────────────────────────────
  *
- * Stage 10 lists "performance" among the things a general-purpose platform
+ * The platform work lists "performance" among the things a general-purpose platform
  * needs.  There was no benchmark in this tree and therefore no number: nobody
  * could say whether a change made the system slower, only whether it still
  * worked.  A microkernel's cost is dominated by the operations everything else
@@ -69,7 +69,7 @@ void test_t356(void) {
     const char *why = "performance";
 
     /*
-     * The clock is the timer SERVICE's, because A-24 made time a service and
+     * The clock is the timer SERVICE's, because time is a service and
      * there is no syscall that answers it for an ordinary task.  A machine
      * whose timer did not start cannot be measured, and saying so is better
      * than reporting zeroes.

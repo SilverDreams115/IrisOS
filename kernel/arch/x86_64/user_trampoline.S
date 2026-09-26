@@ -47,7 +47,7 @@ user_entry_trampoline:
 
     /* Restore ring-3 SWAPGS state unconditionally.
      *
-     * Fase 2 ABI: ring-3 must have GS_BASE=0, KGS_BASE=&cpu_local[this core]
+     * ABI: ring-3 must have GS_BASE=0, KGS_BASE=&cpu_local[this core]
      * so the next SYSCALL's SWAPGS yields GS_BASE=&cpu_local for the kernel.
      *
      * The movw above sets GS_BASE=0 (GDT[3] base=0).  KGS_BASE could be 0 if

@@ -57,7 +57,7 @@ static inline uint64_t syscall_ok_u64(uint64_t value) {
 }
 
 /* User_kchanmsg_* / copy_kchanmsg_* helpers retired with the
- * KChannel object.  Ledger A-24 took timeout_ns_to_deadline_ticks with the
+ * KChannel object.  Moving waiting out of the kernel took timeout_ns_to_deadline_ticks with the
  * timed-block machinery it existed for. */
 
 static inline int copy_u32_to_user_checked(uint64_t dst_uptr, uint32_t value) {
@@ -262,7 +262,7 @@ static inline iris_error_t syscall_publish_slot(struct task *t,
     err = kcnode_slot_install_linked(cn, dest_slot, obj, rights, 0,
                                      parent_cn, parent_idx, parent_expect,
                                      /*exclusive*/1,
-                                     /*legacy*/parent_cn ? 0 : 1);
+                                     /*unparented*/parent_cn ? 0 : 1);
     kobject_active_release(&cn->base);
     kobject_release(&cn->base);
     kobject_release(obj);          /* the slot holds its own refs */
@@ -323,7 +323,7 @@ iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_cptr
                                                struct KCNode **out_src_cn,
                                                uint32_t *out_src_idx);
 /* End of staging, delivered or not: release the CNode refs peek took and
- * leave the source slot alone.  Ledger A-29 merged the old commit/abort pair
+ * leave the source slot alone.  The copy semantics merged the old commit/abort pair
  * here — transfer is a COPY, so the sender keeps its capability either way and
  * the delivered cap stays a true MDB child of a slot that still exists. */
 void syscall_ipc_stage_cap_release(struct KCNode *src_cn);
@@ -340,7 +340,7 @@ void syscall_ipc_stage_cap_release(struct KCNode *src_cn);
  *
  * Src_cn/src_idx are the sender's source slot.  A slot
  * delivery installs the cap as an MDB CHILD of that slot (real CSpace
- * ancestry) instead of a LEGACY_ROOT; the source must still be occupied at
+ * ancestry) instead of a MDB_FLAG_UNPARENTED; the source must still be occupied at
  * delivery time, so a cap revoked while staged is never delivered. */
 iris_error_t syscall_ipc_recv_slot_declare(struct task *t, uint32_t declared);
 uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
@@ -467,13 +467,13 @@ uint64_t sys_ioport_out32(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                           uint64_t arg3);
 uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2);         /* Phase S2 */
+uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2);         
 
 /* ── Forward declarations — Block 4+5 untyped memory ───── */
 uint64_t sys_untyped_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
-                             uint64_t arg3);                               /* Phase S1 */
-uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2);   /* Phase S1 */
+                             uint64_t arg3);                               
+uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2);   
 uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — Block 9 frame capabilities ── */

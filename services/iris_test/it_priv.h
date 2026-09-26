@@ -219,8 +219,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 #define IT_FZ_CTL_SLOT      81u
 /* The loader's workspace CNode.  svc_load_minted_ws publishes the
  * child's process capability, its ELF/segment/stack VMOs and its own working
- * caps into leaves of this CNode instead of returning handles — the legacy
- * arity (no workspace) exists only for callers that had nowhere to put them,
+ * caps into leaves of this CNode instead of returning handles — the old * arity (no workspace) exists only for callers that had nowhere to put them,
  * and this suite was the last one.  Slot 82 is free: the S1 scratch pool ends
  * at 79 and the object CNode + fuzz control take 80/81. */
 #define IT_LOADER_WS_SLOT   82u
@@ -507,7 +506,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * (minting INTO the child) still goes through the child's ROOT CNODE, because
  * that is a different object and a different authority.  What used to make
  * this one test — "the process capability answers all of it" — is precisely
- * what Stage 7 took apart. */
+ * what the process object's removal took apart. */
 
 #define T081_SLOT_PROC  21L               /* child TCB: READ|WRITE|MANAGE|DUP  */
 #define T081_SLOT_RO    22L               /* child TCB: READ only              */
@@ -556,7 +555,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * receiver reads the CPtr back in `msg.got_cap`.  A sender thread EP_SENDs the same endpoint cap twice (WRITE,
  * TRANSFER-consumed dups): recv #1 declares slot 36 → attached_handle == 36
  * and EP_NB_SEND by that CPtr resolves (WOULD_BLOCK = resolution + rights
- * OK, no receiver on that ep); recv #2 declares nothing → legacy handle
+ * OK, no receiver on that ep); recv #2 declares nothing → retired handle
  * >= 1024, exactly as before A1.5. */
 
 #define T084_SLOT  36u
@@ -618,8 +617,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 
 /* ── T090: LOOKUP into a client reply receive-slot (A1.6) ───────────────────
  * The looked-up cap lands in the CLIENT's CSpace as a CPtr; an occupied
- * reply-slot fails fast (ALREADY_EXISTS, endpoint untouched) and legacy
- * lookup keeps working after it; a failed lookup (NOT_FOUND) with a declared
+ * reply-slot fails fast (ALREADY_EXISTS, endpoint untouched) and old * lookup keeps working after it; a failed lookup (NOT_FOUND) with a declared
  * slot leaves the slot empty. */
 #define T090_SLOT   48u
 #define T090_SLOT_B 49u
@@ -644,17 +642,17 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 #define IT_SI_PROCLIVE 11u   /* KProcess objects live */
 #define IT_SI_REAPHWM  12u   /* Deferred-reap queue depth hwm */
 
-/* Phase 17 ext2 scheduler-hardening words (offsets 96..108, 4 uint32).  A
+/* Scheduler-hardening words (ext2) (offsets 96..108, 4 uint32).  A
  * pre-Phase-17 kernel clamps SYS_SCHED_INFO to 96 bytes and leaves these zero —
- * they are additive and never required by a legacy assert. */
+ * they are additive and never required by a old assert. */
 #define IT_S2_RQHWM   0u   /* run-queue depth high-water */
 #define IT_S2_DUPENQ  1u   /* duplicate-enqueue guard trips (invariant S4) */
 #define IT_S2_SCLIVE  2u   /* live KSchedContext objects (invariants S8/S9) */
 #define IT_S2_YIELD   3u   /* task_yield() entries (monotonic progress) */
 
-/* Phase 18 ext3 authority words (offsets 112..128, 5 uint32 live per-type
+/* Authority words (ext3) (offsets 112..128, 5 uint32 live per-type
  * counts).  A pre-Phase-18 kernel clamps SYS_SCHED_INFO to 112 bytes and leaves
- * these zero — additive, never required by a legacy assert. */
+ * these zero — additive, never required by a old assert. */
 #define IT_S3_UNTYPED 0u   /* KUntyped objects live */
 #define IT_S3_FRAME   1u   /* KFrame objects live   */
 #define IT_S3_EP      2u   /* KEndpoint objects live */
@@ -671,16 +669,16 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 #define IT_KOBJ_FRAME         15u
 #define IT_KOBJ_VSPACE        14u
 
-/* Phase 19 ext4 VM/VSpace words (offsets 136..152, 5 uint32). */
+/* VM/VSpace words (ext4) (offsets 136..152, 5 uint32). */
 #define IT_S4_VSLIVE  0u   /* KVSpace objects live */
 #define IT_S4_MAPLIVE 1u   /* KFrameMapping nodes live */
 #define IT_S4_MAPOK   2u   /* successful maps (cumulative) */
 #define IT_S4_UNMAPOK 3u   /* explicit unmaps (cumulative) */
 #define IT_S4_TLB     4u   /* local invlpg count (cumulative) */
 
-/* Phase 20 ext5 fault-model words (offsets 160..176, 5 uint32).  A pre-Phase-20
+/* Fault-model words (ext5) (offsets 160..176, 5 uint32).  An older
  * kernel clamps SYS_SCHED_INFO to 160 bytes and leaves these zero — additive,
- * never required by a legacy assert. */
+ * never required by a old assert. */
 #define IT_S5_DELIVER 0u   /* faults handed to a registered handler (cumulative) */
 #define IT_S5_NOHAND  1u   /* faults with no handler → task killed (cumulative)  */
 #define IT_S5_RESUME  2u   /* SYS_EXCEPTION_RESUME action 0 (cumulative)         */
@@ -760,7 +758,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * iris_ipc_stat_toctou_fallbacks must stay at a structural 0. */
 #define T094_SLOT 51L
 
-/* ── A1.8: legacy handle producer cleanup (T097–T098) ───────────────────────
+/* ── A1.8: retired handle producer cleanup (T097–T098) ───────────────────────
  * SYS_HANDLE_TRANSFER, SYS_HANDLE_INSERT and SYS_VMO_SHARE are all retired
  * (NOT_SUPPORTED).  The ONLY cross-process placement is SYS_PROC_CSPACE_MINT
  * into a destination CSpace slot.
@@ -798,14 +796,14 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * test; each leaves the process KTcb handle behind by design — the
  * per-test live delta documents it. */
 #define FZ_OP_EXIT       0u
-#define FZ_OP_RECV       1u   /* w1 = receive-slot declaration (0 = legacy) */
+#define FZ_OP_RECV       1u   /* w1 = receive-slot declaration (0 = the old form) */
 #define FZ_OP_SEND_CAP   2u   /* w1 = handle (0 = none), w2 = rights, w3 = label */
 #define FZ_OP_CALL       3u   /* w1 = attached_cap (0 = none), w2 = rights, w3 = reply slot */
 
 /* ── T107: randomized receive-slot IPC stress ───────────────────────────────
  * 48 PRNG-driven iterations over one endpoint and one worker mixing
  * EP_SEND / EP_NB_SEND / EP_RECV with notification AND endpoint caps into
- * fresh slots, occupied slots, invalid slots, legacy slot-0 and rights-
+ * fresh slots, occupied slots, invalid slots, old slot-0 and rights-
  * degraded staging.  Invariants: I1-I8, I11, I12, I16-I18. */
 #define T107_SEED  0xA1110107u
 #define T107_ITERS 48u
@@ -813,7 +811,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 /* ── T108: randomized close/cancel staged-cap stress ────────────────────────
  * 16 PRNG-driven rounds; each round creates a FRESH endpoint, parks one or
  * two workers on it (blocking send with staged cap, EP_CALL with staged cap,
- * declared-slot recv, legacy recv) and closes the endpoint mid-flight.
+ * declared-slot recv, old recv) and closes the endpoint mid-flight.
  * Every waiter must wake with CLOSED, every staged source cap must survive
  * with its owner (release exactly once — a double release would corrupt the
  * books), a canceled declared slot must stay empty and reusable, and no
@@ -827,7 +825,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * 20 PRNG-driven EP_CALLs from one worker; the main thread serves each one
  * and ALWAYS attempts a second reply.  Mix: plain reply + second reply WITH
  * a cap (the A1.10 T105 case), cap reply into a declared fresh slot, cap
- * reply into legacy slot 0, and a call declaring an OCCUPIED reply slot
+ * reply into old slot 0, and a call declaring an OCCUPIED reply slot
  * (fail-fast before any send — the server never even sees a message).
  * The reply-caps counter must balance EXACTLY: one KReply per rendezvous,
  * none for the fail-fast rounds.  Caller-death/close during a call is
@@ -839,9 +837,9 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * 18 PRNG-driven rounds over THREE temporary service names whose expected
  * registration state is tracked exactly: register / re-register (BUSY, the
  * rejected cap closed by svcmgr) / slot lookup (fresh slot, invocable CPtr)
- * / legacy lookup (handle >= 1024) / NOT_FOUND lookup with a declared slot
+ * / old lookup (handle >= 1024) / NOT_FOUND lookup with a declared slot
  * (the SAME reusable slot every time — it must stay empty) / occupied-slot
- * lookup (fail-fast, then legacy still works) / unregister + full
+ * lookup (fail-fast, then the old form still works) / unregister + full
  * re-register cycle (svcmgr's CSpace pool frees and reuses, no ghost from
  * the previous generation).  The reply-caps counter balances EXACTLY: one
  * KReply per svcmgr rendezvous PLUS one per served lookup — svcmgr_log()
@@ -1062,7 +1060,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * cleanup exactly once: the child's KVSpace is destroyed and every one of its
  * mappings is swept, so live-VSpace and live-mapping counts return to baseline
  * — with no interaction bug against the deferred reaper, and process/task
- * counters back to baseline.  Connects Phase 16 (death) + Phase 19 (VSpace).
+ * counters back to baseline.  Connects death and VSpace.
  * Invariants: V15, V16, V17, V18. */
 #define T136_ROUNDS 4u
 
@@ -1189,7 +1187,7 @@ struct it_snap {
  * A lifecycle_probe child is parked in each blocking primitive, then torn down
  * by every cancellation route, and the books must balance every time.  This
  * re-proves, under one roof and a seeded resolution mix, the cancellation
- * contracts that Phase 16/20 established: EP_RECV / EP_SEND / EP_CALL and the
+ * the death and fault contracts: EP_RECV / EP_SEND / EP_CALL and the
  * fault-pending state all wake-or-die on process kill / endpoint close /
  * handler drop, leaving no dead waiter, no KReply, no live-count drift.
  * Invariants: X11, X14, X15, X16, X20, X21. */
@@ -1329,7 +1327,7 @@ struct it_snap {
  *   frame cap           READ[/WRITE] — the one page it may install
  *   fault notification  WAIT         — the delivery wake-up
  *
- * Four Phase 25 additive kernel extensions are exercised here:
+ * Four additive kernel extensions are exercised here:
  *   SYS_PROCESS_VSPACE(107)  MANAGE holder → target VSpace cap;
  *   FAULT_OFF_SEQ            per-process fault generation in the record;
  *   EXCEPTION_RESUME 2/3     seq-checked resume/kill (stale → NOT_FOUND);
@@ -1376,7 +1374,7 @@ struct t25_tgt {
 };
 
 /* ── T189: pager restart preserves least authority ──────────────────────────
- * The Phase 24 ↔ Phase 25 junction.  A crashing pager is supervised under an
+ * The pager-supervision junction.  A crashing pager is supervised under an
  * explicit restart limit: two generations die before resolving and the
  * budget is spent — the pager service is DEGRADED, the loop STOPS (P17).
  * The fault meanwhile stays pending and resolvable.  A post-crash generation
@@ -1387,7 +1385,7 @@ struct t25_tgt {
 #define T189_LIMIT 2u
 
 /* ── T190: deterministic user pager stress ──────────────────────────────────
- * Seeded mixed-operation rounds over the whole Phase 25 surface.  Every round
+ * Seeded mixed-operation rounds over the whole pager surface.  Every round
  * holds TWO concurrent pending faults (the shared-IST regression stays
  * covered under pager traffic) and resolves them through a seed-chosen path:
  * external pager map+resume / kill, pager death + supervisor takeover,
@@ -1401,11 +1399,11 @@ struct t25_tgt {
 
 /* ── Granted-memory policy (T191–T200) ─────────────────────────────
  *
- * Phase 25 fixed the pager AUTHORITY contract; the page source was a raw frame.
- * Phase 26 made the source a first-class MEMORY OBJECT — a KVmo defended by
+ * The pager AUTHORITY contract was fixed; the page source was a raw frame.
+ * The source became a first-class MEMORY OBJECT — a KVmo defended by
  * policy: logical range, size, offsets, rights, mappings, cleanup.
  *
- * Ledger D-5 took the object away again, and the reason is worth stating
+ * Deleting KVmo took the object away again, and the reason is worth stating
  * because it is not that the policy was wrong.  Every rule the VMO enforced
  * was a real rule.  It enforced them over a REGION THE KERNEL OWNED, allocating
  * its pages lazily on a schedule the holder did not choose and range-checking
@@ -1457,7 +1455,7 @@ struct t25_tgt {
 #define T26_AT(v, off)  T26_PAGE((v), (uint32_t)((off) >> 12))
 
 /* ── T200: deterministic memory-object stress ────────────────────────────────
- * Seeded mixed-operation rounds over the whole Phase 26 surface: create VMOs,
+ * Seeded mixed-operation rounds over the whole memory-object surface: create VMOs,
  * derive reduced caps, map at offsets, VMO-back a fault, resolve or refault,
  * kill target, kill/restart pager, revoke (close) with mapping live, unmap,
  * inject failures.  After every round: no pending fault, no zombie, VMO/frame/
@@ -1468,7 +1466,7 @@ struct t25_tgt {
 
 /* ── Service Pager Integration (T201–T210) ──────────────────────────
  *
- * Phase 25/26 made the pager a MODEL and a page SOURCE.  Phase 27 makes it a
+ * The pager became a MODEL and a page SOURCE.  Then it became a
  * SERVICE: a distinct supervised image ("pager", initrd index 10 — NOT
  * iris_test, NOT lifecycle_probe), registered in svcmgr, driven request/reply
  * over a control endpoint, resolving faults strictly inside a capability
@@ -1482,7 +1480,7 @@ struct t25_tgt {
  * Invariants G1–G30 live in docs/architecture/service-pager-integration.md. */
 
 #define PGR_SLOT_CTRL_EP    LP_CPTR_CMD_EP   /* slot 3: the pager's control endpoint */
-/* Phase 28.1 manifest layout (must match services/pager/pager_proto.h): ONE
+/* Manifest layout (must match services/pager/pager_proto.h): ONE
  * shared fault notification at slot 5 for ALL targets (bit i = target i),
  * targets at 20 + i*2 (proc/vs only — the per-target notification column is
  * gone; that is what makes 16 concurrent targets cost ONE notification
@@ -1518,7 +1516,7 @@ struct t25_tgt {
 #define PGR_SUP_CLASS       IT_SUP_OPTIONAL_RESTART
 #define PGR_RESTART_LIMIT   3u
 
-/* Phase 27 fault/scratch VAs (clear of the T25/T26 windows). */
+/* Fault/scratch VAs (clear of the T25/T26 windows). */
 #define T27_VA_A    0x8098000000ULL
 #define T27_VA_B    0x8099000000ULL
 #define T27_PAT     0x27C0DE27u
@@ -1535,7 +1533,7 @@ struct t27_pager {
  * A pager that dies right after start is respawned exactly `limit` times, then
  * the supervisor STOPS and marks the service degraded — no infinite loop, no
  * leak per attempt.  The target's fault meanwhile stays pending and observable;
- * the supervisor resolves it with its own authority.  Mirrors the Phase 24
+ * the supervisor resolves it with its own authority.  Mirrors the
  * crash-loop policy, now for the pager service.  Invariants: G18, G19, G23. */
 #define T206_LIMIT PGR_RESTART_LIMIT
 
@@ -1551,7 +1549,7 @@ struct t27_pager {
 
 /* ── Bloque A: boot-growth hardening (T211–T216) ─────────────────────
  *
- * The Phase 27 "wedge on the 10th image" was NOT a memory/alignment/allocator
+ * The "wedge on the 10th image" was NOT a memory/alignment/allocator
  * bug: it was an over-strict boot assertion.  userboot required the kernel
  * initrd count to EQUAL a hardcoded catalog size and, on any mismatch, exited
  * before loading init — so adding ANY image (even a 256-byte blob, with
@@ -1642,7 +1640,7 @@ struct t27_pager {
 #define LP_CMD_FAULT_WRITE_M  0x109Du   /* mirror of LP_CMD_FAULT_WRITE */
 #define LP_CMD_FAULT_READ_OFFS_M 0x10A5u   /* mirror of lifecycle_probe */
 
-/* Phase 28 region VAs (clear of all prior windows). */
+/* Region VAs (clear of all prior windows). */
 #define T28_VA_A   0x809A000000ULL
 #define T28_VA_B   0x809B000000ULL
 #define T28_VA_C   0x809C000000ULL
@@ -1753,7 +1751,7 @@ struct it_utq_objects {
 /*
  * The MDB/CDT gauge block, mirrored so the suite can OBSERVE it.
  *
- * `mdb_unparented_roots` is documented in the ABI as "must → 0": a LEGACY_ROOT is
+ * `mdb_unparented_roots` is documented in the ABI as "must → 0": a MDB_FLAG_UNPARENTED is
  * a capability sitting in a CSpace with no parent in the derivation tree, so
  * revoking anything can never reach it.  Charter A9 — every derived capability
  * is traceable to its ancestor — is a claim about exactly this number, and
@@ -1766,7 +1764,7 @@ struct it_utq_mdb {
     uint32_t sc_live, sc_hwm, sc_retyped, sc_destroyed;
     uint32_t cdt_derivation_count, cdt_derivation_hwm, cdt_revoke_count,
              cdt_delete_count, cdt_cross_cnode_descendants,
-             cdt_ipc_transfer_count, legacy_handle_derivation_migrated;
+             cdt_ipc_transfer_count, retired_derivation_migrated;
     uint32_t tcb_registry_active, tcb_registry_hwm,
              tcb_registry_exhaustions, tcb_registry_generation_mismatch;
     uint32_t mdb_nodes_live, mdb_nodes_hwm, mdb_unparented_roots,
@@ -1779,7 +1777,7 @@ struct it_utq_mdb {
                                   ((uint64_t)(uint32_t)(sz) << 32)))
 
 /* ── T238: deterministic file-authority and multi-target stress ───────────────
- * A seeded round-robin over the whole Phase 28.1 surface: open/derive/read a
+ * A seeded round-robin over the whole VFS surface: open/derive/read a
  * grant, hostile wrong-backing and wrong-name attempts, revoke + generation
  * change, and a multi-target fault batch that dies in arbitrary order.  Every
  * round: no unauthorized read, no stale success, no target mix, notification
@@ -1795,9 +1793,9 @@ struct it_utq_mdb {
  * CLEANLY — the spawner's Untyped, the loader's leaf range, or TASK_MAX, all
  * of them derived from something somebody allocated.
  *
- * Stage 7-mem restated the accounting half.  It used to read the loader's own
+ * The memory-server work restated the accounting half.  It used to read the loader's own
  * `vmos_usage` and assert it did not grow ~4x per child, because the child
- * image VMOs were charged to each CHILD's resource domain (the Phase 28.1
+ * image VMOs were charged to each CHILD's resource domain (the VFS work's
  * caller-charged bug, fixed).  There is no per-process domain any more: what
  * an image costs comes out of the per-child BUDGET svc_loader carves, and the
  * property that replaces "not charged to the loader" is stronger and easier to
@@ -1823,7 +1821,7 @@ struct it_utq_mdb {
  * migrated object (Endpoint / Notification / Reply / CNode) is born from an
  * explicit Untyped via SYS_UNTYPED_RETYPE2, its storage IS the retyped
  * region, its capability appears directly in CSpace, and its region becomes
- * reusable after destruction + RESET.  Legacy create paths are retired.
+ * reusable after destruction + RESET.  Retired create paths are retired.
  * ════════════════════════════════════════════════════════════════════════ */
 
 
@@ -1853,7 +1851,7 @@ struct it_utq_taskobj {
     uint32_t tcb_live, tcb_hwm, tcb_retyped, tcb_destroyed;
     uint32_t sc_live, sc_hwm, sc_retyped, sc_destroyed;
     uint32_t cdt_deriv, cdt_deriv_hwm, cdt_revoke, cdt_delete,
-             cdt_cross, cdt_ipc, legacy_handle_deriv_migrated;
+             cdt_cross, cdt_ipc, retired_derivation_migrated;
     /* Must mirror kernel struct iris_untyped_query_taskobj. */
     uint32_t tcb_registry_active, tcb_registry_hwm,
              tcb_registry_exhaustions, tcb_registry_generation_mismatch;
@@ -1957,7 +1955,7 @@ struct it_utq_taskobj {
  * SYS_PROCESS_CREATE used to make those carves, and got the order wrong: the
  * page first, then the header, so a failure in between left a PML4 the cleanup
  * path believed was PMM memory and returned to the buddy allocator while its
- * Untyped still owned the region.  Stage 6-pure Step 4 moved the carves into
+ * Untyped still owned the region.  Retyping from Untyped moved the carves into
  * RETYPE2(KOBJ_VSPACE), where the holder makes the address space itself — so
  * this test moved with them.  What it pins is unchanged, because the shape of
  * the mistake is unchanged:
@@ -1980,10 +1978,10 @@ struct it_utq_taskobj {
 #define T301_MAX_PAGES  6u
 
 /* ── T302: a page table is a capability ────────────
- * Stage 6 charged page tables to a budget, which answered who pays.  It left
+ * Charging page tables to a budget, which answered who pays.  It left
  * the kernel deciding WHEN a table exists and WHERE it goes — carving one
  * silently on whichever map first needed it — so the holder paid for an object
- * it could not name, count, delegate or reclaim.  Ledger D-5.
+ * it could not name, count, delegate or reclaim, so KVmo was deleted.
  *
  * A paging level is retyped like every other object now, and installed by an
  * explicit invocation (seL4_X86_PageTable_Map).  Asserted here:
@@ -2011,7 +2009,7 @@ struct it_utq_taskobj {
  *
  * Step 3.  KPROCESS_MAX_LIVE refused the 65th process — a number the
  * kernel picked, of the same class as the page quota Step 2 removed and the
- * notification quota Phase S1 removed.  Since Stage 6 Step 4 a KProcess is a
+ * notification quota that was removed.  A KProcess is a
  * child block of an Untyped its creator named, so what bounds how many exist
  * is how much memory somebody delegated; refusing at 64 on top of that told a
  * holder with a large budget it had run out when it had not.
@@ -2044,13 +2042,13 @@ struct it_utq_taskobj {
 #define T304_MAX       80u          /* > 64, and 127 leaves are addressable */
 #define T304_TARGET    65u          /* the first count the old ceiling refused */
 
-/* The boot path's own roots, measured.  A-14 took it from 43 to 32 by giving
- * every object retyped from a second-level Untyped its MDB parent; A-18 took
+/* The boot path's own roots, measured.  One change took it from 43 to 32 by giving
+ * every object retyped from a second-level Untyped its MDB parent; retiring the SELF syscalls took
  * it to 23 by retiring the three SELF syscalls, each of which published an
- * unparented capability every time it was called.  A-20 adds ONE back: the
+ * unparented capability every time it was called.  the authority audit adds ONE back: the
  * SchedControl capability boot mints for the root task, which is a boot-path
  * root like every other authority in BootInfo — seL4's are roots too.  Every
- * delegation of it downward is a child, so it costs exactly one.  A-21 adds
+ * delegation of it downward is a child, so it costs exactly one.  the ASID pool adds
  * ONE more for the same reason: ASIDControl, the authority to carve
  * address-space identifier pools.  The POOL userboot carves from it is NOT a
  * root — it is retyped from an Untyped and parented there, which is the whole
@@ -2070,7 +2068,7 @@ struct it_utq_taskobj {
  * the hardware behind them may write to.  A system that hands out the first
  * two without the third has handed out all of memory.
  *
- * STAGE 10 adds five more, and they are a different shape worth naming: the
+ * The platform work adds five more, and they are a different shape worth naming: the
  * kernel now publishes the firmware's own memory — the regions ACPI's tables
  * live in — as device Untypeds, so that ring 3 can read the description of the
  * machine it is running on.  This one has five such regions.  They are roots
@@ -2096,7 +2094,7 @@ struct it_utq_taskobj {
  * to, so "unparented" is a fact about when it was made and not about an
  * ancestry that was lost.  A root appearing anywhere else is a defect, and the
  * ceiling is what makes the difference visible. */
-#define IT_MDB_LEGACY_ROOT_CEILING 33u
+#define IT_MDB_UNPARENTED_ROOT_CEILING 33u
 
 /* ── T309: a passive server serves a LOOP on donated time ───
  *
@@ -2129,7 +2127,7 @@ struct it_utq_taskobj {
  * blocked on the event kernel, because a preemptible delete needs somewhere to
  * park a continuation.
  *
- * Stage 9-evt step 1 built that somewhere, and revoke is the first thing to
+ * The event kernel built that somewhere, and revoke is the first thing to
  * use it.  This test builds a derivation subtree WIDER than one slice and
  * asserts two things that together mean "preemptible" rather than "still
  * atomic, just slower":
@@ -2279,14 +2277,14 @@ struct it_utq_taskobj {
  * the one measured here.  What this asserts is that the KERNEL's pool does not
  * pay, and the old behaviour would have shown up as 2 pages per thread exactly.
  *
- * Invariants: M3, and ledger D-1. */
+ * Invariants: M3. */
 #define T318_THREADS 8u
 
 /* ── T322: an object exists exactly while a capability to it exists ────
  * seL4's lifetime rule, stated so it can be checked rather than described.
  * There is no reference count in seL4: an object is alive because a capability
  * names it, and its memory comes back when its Untyped is reset.  IRIS reaches
- * the same answer through two counters, and the ledger's D-7 row records three
+ * the same answer through two counters, and the object-lifetime row records three
  * separate incidents where the counters and the capability graph disagreed.
  *
  * So the property is asserted directly, for EVERY type RETYPE2 can make, and
@@ -2308,7 +2306,7 @@ struct t322_case { uint32_t type; long arg; const char *name; };
 
 /* ── T323: the counter and the capability graph, over many shapes ─────
  * T322 asserts seL4's lifetime rule on the simplest shape there is — one
- * object, two capabilities.  The three incidents D-7 records were not that
+ * object, two capabilities.  The three recorded incidents were not that
  * shape: they were a slot naming its own CNode, a cycle through another, and a
  * process object emptying a CSpace pre-emptively.  What they have in common is
  * that IRIS decides liveness with a COUNTER while seL4 reads the derivation
@@ -2334,7 +2332,7 @@ struct t322_case { uint32_t type; long arg; const char *name; };
  * `KNOTIF_WAITERS_MAX` was 4 — a fixed array inside the object, and a fifth
  * waiter got IRIS_ERR_BUSY.  The kernel was deciding how many threads may wait
  * on a notification: a number it invented, of the same class as the
- * per-process quotas Stage 7 removed.  seL4 queues waiters intrusively through
+ * per-process quotas that were removed.  seL4 queues waiters intrusively through
  * the TCB and has no such limit, and so did IRIS's ENDPOINTS all along — the
  * same kernel answered the same question two ways.
  *
@@ -2366,7 +2364,7 @@ struct t322_case { uint32_t type; long arg; const char *name; };
 
 
 /* ── T328: an address space has to be NAMED before a thread can enter it ────
- * Ledger A-21, and the gauge for it.
+ * The ASID pool, and the gauge for it.
  *
  * IRIS used to hand every VSpace a hardware identifier out of a kernel-global
  * bitmap the moment it was retyped.  Nobody could name that bitmap, nobody
@@ -2434,7 +2432,7 @@ struct t322_case { uint32_t type; long arg; const char *name; };
 
 /* ── T334: a transfer is a COPY, and what the receiver got is a CHILD ───────
  *
- * Ledger A-29.  Sending a capability over an endpoint used to EMPTY the
+ * Sending a capability over an endpoint used to EMPTY the
  * sender's slot, and the reason that survived so long is that nothing here
  * ever asked the question — every caller in the system happened to be giving
  * the capability away, so a move and a copy-then-delete looked identical from

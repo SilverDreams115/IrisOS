@@ -36,7 +36,7 @@ void ktcb_object_init(struct task *t);
  * INACTIVE: configured = 0, no registry slot, no kstack, no process — a full
  * capability citizen (GET_INFO / SET_PRIORITY / delete / transfer) that cannot
  * execute until TCB_CONFIGURE exists (roadmap Step 5/6; the execution path
- * for now remains SYS_THREAD_CREATE, ledger: ACTIVE_LEGACY).  Execution
+ * for now remains SYS_THREAD_CREATE).  Execution
  * syscalls on an unconfigured TCB fail NOT_SUPPORTED without side effects.
  */
 struct task *ktcb_alloc_at(void *mem);
@@ -44,7 +44,7 @@ struct task *ktcb_alloc_at(void *mem);
 /* Object destructor hook (called by task_lifecycle when refcount hits 0) — see
  * task_backing_free_on_destroy in task_lifecycle.c. */
 
-/* Phase 18/S2 — object/execution/registry gauges (SYS_UNTYPED_QUERY kind 4). */
+/* Object/execution/registry gauges (SYS_UNTYPED_QUERY kind 4). */
 uint32_t ktcb_live_count(void);              /* live KTCB objects (incl. terminated-with-caps) */
 void     ktcb_stats(uint32_t *live, uint32_t *hwm,
                     uint32_t *retyped, uint32_t *destroyed);

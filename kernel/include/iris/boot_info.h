@@ -31,7 +31,7 @@
 /* Well-known boot capability slots.
  * BOOT_CPTR_BOOTSTRAP_CAP occupies slot 1 in the root CNode of userboot.
  * BOOT_CPTR_VSPACE occupies slot 2 — the initial VSpace capability.
- * The legacy bootstrap_cap_h handle (arg0) remains valid in dual mode. */
+ * The old bootstrap_cap_h handle (arg0) remains valid in dual mode. */
 /* Slot 1 held the MONOLITHIC KBootstrapCap until split it into
  * one capability per authority.  It is permanently reserved and permanently
  * EMPTY: there is no capability with more than one authority left to put

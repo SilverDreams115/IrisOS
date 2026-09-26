@@ -232,9 +232,9 @@ uint64_t            kernel_cr3      = 0;
  * one entry per call, from `sched_resume`'s dispatch point and from
  * `scheduler_tick()`.
  *
- * (Roadmap review: this said "the top of every task_yield()".  Stage 9-evt
+ * (Roadmap review: this said "the top of every task_yield()".  The event kernel
  * step 3 deleted `task_yield`; the two call sites above are where the reaper
- * actually runs, and D-12 leans on that, so it is worth being exact.)
+ * actually runs, and the teardown bound leans on that, so it is worth being exact.)
  *
  * CAPACITY IS DERIVED, not guessed.  A task enters this queue by dying, and a
  * task dies on the CPU it was running on — so between two reap calls there can
@@ -612,7 +612,7 @@ uint8_t initial_fpu_state[512] __attribute__((aligned(16)));
  *
  * It used to be the IDLE LOOP, and that is why IRIS had an idle task at all:
  * every "nobody else can run" answer had to be a switch to a thread, and a
- * thread needs a stack.  Stage 9-evt step 3 made the answer a `hlt` on the
+ * thread needs a stack.  The event kernel made the answer a `hlt` on the
  * core's own stack, so nothing schedules this and nothing ever enters it —
  * `kernel_main` enters the dispatcher directly instead of falling into here.
  * Reaching it would mean the run queue handed out a task it excludes.
@@ -1648,6 +1648,6 @@ void task_exit_current(void) {
  * It was the body of SYS_PROCESS_KILL: a sweep of the whole task registry for
  * threads whose process pointer matched.  Nothing else called it, and nothing
  * could — the only way to name "every thread of that process" without holding
- * any of them is to scan the kernel's registry, which is the shape Stage 7
+ * any of them is to scan the kernel's registry, which is the shape the process object
  * spent its whole length removing.  A supervisor stops the threads it holds.
  */

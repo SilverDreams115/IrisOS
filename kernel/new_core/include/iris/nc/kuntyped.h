@@ -184,7 +184,7 @@ iris_error_t kuntyped_alloc_children_atomic(struct KUntyped *u,
 void kuntyped_unbump_exact(struct KUntyped *u, uint64_t start_used,
                            uint64_t end_used);
 
-/* Phase S1 instrumentation — global untyped/retype counters (testable via
+/* Instrumentation — global untyped/retype counters (testable via
  * SYS_UNTYPED_QUERY).  All monotonic except live gauges. */
 struct kuntyped_stats {
     uint64_t retype_count;        /* successful RETYPE/RETYPE2 object creations */

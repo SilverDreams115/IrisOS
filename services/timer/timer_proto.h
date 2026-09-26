@@ -72,10 +72,10 @@
  * answers with the same monotonic nanoseconds `SYS_CLOCK_GET` reports, from the
  * task that owns the timer line.
  *
- * Ledger A-27 records why the syscall itself stayed: on x86 `rdtsc` is an
+ * the note below records why the syscall itself stayed: on x86 `rdtsc` is an
  * unprivileged instruction, so a monotonic read cannot be gated by anything —
  * retiring the syscall would have moved the same ungated read into an
- * instruction.  What is gateable is WAITING, and A-24 gated it.
+ * instruction.  What is gateable is WAITING, and it is gated.
  */
 #define TMR_OP_UPTIME     0x544D5203ull   /* 'TMR' 3 */
 

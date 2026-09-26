@@ -48,7 +48,7 @@ static void kendpoint_obj_close(struct KObject *obj) {
      * work is unbounded with interrupts off, on the lock every IPC on
      * this endpoint needs.
      *
-     * Stage 2 wrote the rule down — "releasing the last ref on a CNode runs a
+     * The rule was written down — "releasing the last ref on a CNode runs a
      * destructor that tears down every slot, which must not happen under
      * `ep->lock`" — and applied it to the staged capability three lines
      * above while this branch broke it.

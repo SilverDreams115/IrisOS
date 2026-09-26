@@ -278,13 +278,13 @@ void test_t082(void) {
 
     /* Cross-CSpace placement: the destination CNODE by CPtr, into the child's
      * CSpace.  SYS_VMO_SHARE and SYS_HANDLE_INSERT covered this by writing the
-     * child's HANDLE TABLE and are retired; Stage 7 Step 9 retired naming the
+     * child's HANDLE TABLE and are retired, as is naming the
      * child's PROCESS to reach a CSpace the caller did not hold.  The property
      * under test — a destination named by CPtr really is resolved — is now
      * asserted against the thing being written. */
     if (ok && it_invoke2(T082_SLOT_VMO, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T080_DST_SLOT), (long)(RIGHT_READ | RIGHT_WRITE)) != 0) ok = 0;
 
-    /* Authority not relaxed.  Stage 7 Step 9 moved the target from the process
+    /* Authority not relaxed.  The target moved from the process
      * to the address space, so the denial moved with it: a VSpace capability
      * without RIGHT_WRITE cannot receive a mapping, and a PROCESS capability
      * is refused outright because it is not an address space at all. */
@@ -680,7 +680,7 @@ void test_t086(void) {
     IT_AWAIT(g_t086_done, 200);
     if (!g_t086_done || g_t086_s1 != 0) ok = 0;
 
-    it_xfer_release((long)g_t086_cap);   /* A-29 */
+    it_xfer_release((long)g_t086_cap);
     it_close(&n_h);
     it_close(&g_t086_cmd_ep);
 
@@ -930,7 +930,7 @@ void test_t088(void) {
  * stores REGISTER caps in its own CSpace (pool slots 64..255) and clients
  * receive LOOKUP caps into declared reply-slots.  Test slots here: 48..50. */
 
-/* LOOKUP `name` over svcmgr.ep declaring `reply_slot` (0 = legacy). */
+/* LOOKUP `name` over svcmgr.ep declaring `reply_slot` (0 = the old form). */
 long it_lookup_name_slot(const char *name, uint32_t reply_slot,
                                 struct iris_msg *msg) {
     uint32_t len = it_stage_path(name);
@@ -955,7 +955,7 @@ long it_unregister_id(uint32_t id) {
 
 /* ── T089: svcmgr CSpace-backed registration lifecycle (A1.6) ───────────────
  * The REGISTER cap now lands in svcmgr's CSpace via its declared
- * receive-slot.  A legacy client (no reply-slot) must observe identical
+ * receive-slot.  A old client (no reply-slot) must observe identical
  * behavior end to end: register → lookup returns a working handle (>= 1024)
  * duplicated from the CSpace-held master → unregister releases the pool slot
  * (lookup → NOT_FOUND) → the same name registers again (slot reuse). */
@@ -1142,7 +1142,7 @@ int it_sched_ext(uint32_t w[14]) {
     uint8_t buf[96];
     /* Request 96 bytes so the two lifecycle words (offsets 84/88)
      * land too; a pre-Phase-16 kernel clamps to 88 and leaves w[11..13] zero —
-     * the extra words are additive, never required by legacy asserts. */
+     * the extra words are additive, never required by old asserts. */
     long r = it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 96);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 14u; i++) {
@@ -1704,7 +1704,7 @@ void test_t096(void) {
     if (ok) it_pass("T096"); else it_fail("T096", "lookup+release residue");
 }
 
-/* ── T097: PROC_CSPACE_MINT replaces the legacy handle insert path ──────────
+/* ── T097: PROC_CSPACE_MINT replaces the retired handle insert path ──────────
  * The canonical placement covers what SYS_HANDLE_TRANSFER used to do, with
  * CSpace-canonical delivery: mint lands in the child's root CNode (no handle
  * produced in the destination table), an occupied slot fails fast, authority
@@ -1751,13 +1751,13 @@ void test_t097(void) {
         }
     }
     /* Wrong-type destination (the slot-30 KNotification fixture).  The
-     * destination is a CNODE, and A-30 stopped the flattening: a non-CNode
+     * destination is a CNODE, and the flattening stopped: a non-CNode
      * named there is WRONG_TYPE, because the resolver identified it exactly
      * and "something about your argument is wrong" was a weaker answer than
      * the kernel already had. */
     if (ok && it_invoke2(vmo, INV_CSPACE_MINT, IT_MINT_INTO((long)IRIS_CPTR_TEST_FIX_A, T097_DST_SLOT2), (long)RIGHT_READ) !=
         (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong type"; }
-    /* The retired legacy producer is gone: NOT_SUPPORTED, nothing placed. */
+    /* The retired old producer is gone: NOT_SUPPORTED, nothing placed. */
     if (ok && it_sys3(SYS_HANDLE_TRANSFER, vmo, (long)proc_h,
                       (long)RIGHT_READ) !=
         (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "transfer not retired"; }
@@ -2027,7 +2027,7 @@ void test_t099(void) {
  * Four concurrent registrations served into distinct client reply-slots;
  * unregister under pressure; a post-unregister lookup with a declared slot
  * fails WITHOUT installing anything (the same slot then serves the
- * re-registered service — proof it stayed genuinely empty); legacy lookup
+ * re-registered service — proof it stayed genuinely empty); old lookup
  * confirms the final NOT_FOUND. */
 void test_t100(void) {
     uint32_t before[14], after[14];
@@ -2089,7 +2089,7 @@ void test_t100(void) {
     }
     if (ok) {
         if (it_lookup_name_slot("t100.a", 0u, &msg) != 0 ||
-            msg.label != IRIS_EP_REPLY_ERR) { ok = 0; why = "final legacy"; }
+            msg.label != IRIS_EP_REPLY_ERR) { ok = 0; why = "final retired path"; }
     }
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
