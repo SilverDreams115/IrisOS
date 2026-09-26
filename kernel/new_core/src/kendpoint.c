@@ -30,6 +30,35 @@ static void kendpoint_obj_close(struct KObject *obj) {
      * CNode runs a destructor that tears down every slot recursively, and
      * this walk holds ep->lock.  Ownership passes to the woken sender, which
      * aborts its own staging right after task_yield() returns. */
+    /*
+     * Ledger A-46 — the kills happen AFTER this lock, not under it.
+     *
+     * A fault caller is killed rather than woken (A-22 below), and
+     * `task_kill_external` on a thread that is not on a processor runs the
+     * WHOLE teardown right here: it releases the thread's CSpace root, and
+     * the last reference on a CNode runs a destructor that empties every slot
+     * — taking `mdb_lock`, which is rank 1, while this walk holds `ep->lock`,
+     * which is rank 2.  That is the hierarchy inverted, and
+     * `scripts/check_lock_order.py` cannot see it because the destructor is
+     * reached through `ops->destroy`, a function pointer, which §9.1 says
+     * outright that the analysis does not follow.
+     *
+     * A thread queued on an endpoint is off-CPU by definition, so this is not
+     * a corner: it is what the fault-caller branch does every time.  And the
+     * work is unbounded (D-12) with interrupts off, on the lock every IPC on
+     * this endpoint needs.
+     *
+     * Stage 2 wrote the rule down — "releasing the last ref on a CNode runs a
+     * destructor that tears down every slot, which must not happen under
+     * `ep->lock`" — and applied it to the staged capability three lines
+     * above while this branch broke it.
+     *
+     * The deferral costs nothing: these threads are leaving the queue anyway,
+     * so `ep_next` is free to chain them, and the reference the queue holds
+     * on each (A-44) is what keeps them alive until the kill.
+     */
+    struct task *kill_head = 0;
+
     struct task *t = ep->queue_head;
     while (t) {
         struct task *nxt = t->ep_next;
@@ -52,16 +81,12 @@ static void kendpoint_obj_close(struct KObject *obj) {
         if (t->ep_fault_call) {
             t->ep_fault_call = 0u;
             t->ep_call_mode  = 0u;
-            kfault_resolve(t, /*killed=*/1);
-            task_kill_external(t);
+            t->ep_next       = kill_head;   /* off the queue; onto the list */
+            kill_head        = t;           /* keeps A-44's reference */
         } else {
             task_wakeup(t);
+            kobject_release(&t->base);      /* A-44: the queue's */
         }
-        /* A-44: the queue's reference, given back last.  It is also what
-         * makes the kill above safe to call from here: an off-CPU thread is
-         * torn down synchronously by that call, and until this release it
-         * cannot reach a refcount of zero while this walk still holds it. */
-        kobject_release(&t->base);
         t = nxt;
     }
     ep->queue_head = 0;
@@ -69,6 +94,16 @@ static void kendpoint_obj_close(struct KObject *obj) {
     ep->ep_state   = EP_STATE_IDLE;
 
     irq_spinlock_unlock(&ep->lock, flags);
+
+    /* Outside the lock: each of these can tear a whole address space down. */
+    while (kill_head) {
+        struct task *k = kill_head;
+        kill_head = k->ep_next;
+        k->ep_next = 0;
+        kfault_resolve(k, /*killed=*/1);
+        task_kill_external(k);
+        kobject_release(&k->base);          /* A-44: the queue's */
+    }
 }
 
 /* ── Untyped-backed variant (Ph78; Phase S1: the ONLY variant) ─────

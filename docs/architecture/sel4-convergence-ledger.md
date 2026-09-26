@@ -171,6 +171,45 @@ UT-TOP-1..5 and T298.
 
 ## Structural divergences from seL4
 
+### A-46 — endpoint close inverted the lock hierarchy, where the stage that wrote the rule had applied it  ✅ CLOSED
+
+**Found by the roadmap review's second pass — reading a closed stage's
+ARGUMENT rather than checking that its citations resolve.**
+
+Stage 2 states the rule: "releasing the last ref on a CNode runs a destructor
+that tears down every slot, which must not happen under `ep->lock`."  It
+applies it to the staged capability, which `kendpoint_close` deliberately
+leaves set for the woken sender to drop.  Three lines below, the fault-caller
+branch broke it.
+
+`task_kill_external` on a thread that is not on a processor does not defer to
+the reaper — it runs the whole teardown on the spot, releasing the thread's
+CSpace root, and the last reference on a CNode empties every slot, which takes
+`mdb_lock`.  `mdb_lock` is rank 1 and `ep->lock` is rank 2, so that is the
+hierarchy inverted.  **A thread queued on an endpoint is off-CPU by
+definition**, so this was not a corner case: it was what the branch did every
+time it ran.
+
+`scripts/check_lock_order.py` reported no inversions throughout, and
+correctly — §9.1 says the analysis follows calls three hops deep and that "a
+lock taken through a function pointer slips through".  The destructor is
+reached through `ops->destroy`.  The checker was not wrong; the inversion was
+in the shape it documents itself as unable to see.
+
+Whether it can deadlock today is a separate question from whether it is wrong.
+Nothing currently takes `ep->lock` while holding `mdb_lock` — revoke is
+careful to do its lifecycle releases outside — so the ABBA has one arm.  What
+is NOT conditional is the latency: an unbounded teardown (D-12) with
+interrupts off, on the lock every IPC through that endpoint needs, reachable
+by closing an endpoint that has a fault caller queued on it.
+
+**The repair** costs nothing, because these threads are leaving the queue
+anyway: the fault callers are chained onto a local list through the `ep_next`
+the walk is already clearing, and killed after the unlock.  The reference the
+queue holds on each of them (A-44) is exactly what keeps them alive across the
+deferral — the two fixes fit together, and this one would have needed its own
+lifetime argument without it.
+
 ### A-45 — retype handed out memory it had not cleared  ✅ CLOSED
 
 **Found by the roadmap review, checking a property seL4 guarantees and no row
