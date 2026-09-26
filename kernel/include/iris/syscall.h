@@ -150,11 +150,17 @@ static inline long iris_syscall0(long nr) {
  * IRIS_ERR_NOT_SUPPORTED.  File I/O uses the VFS service over its KEndpoint
  * ("vfs.ep", iris/vfs_ep_proto.h). */
 #define SYS_OPEN    4
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED: reading is a protocol a server speaks over an endpoint, not a kernel call. */
 #define SYS_READ    5
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED: closing is deleting the capability that names the thing. */
 #define SYS_CLOSE   6
 /* SYS_BRK 7 retired in Phase 20 — permanently reserved, returns IRIS_ERR_NOT_SUPPORTED.
  * All heap memory must be managed via SYS_VMO_CREATE + SYS_VMO_MAP. */
 #define SYS_BRK     7
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (A-24): the kernel cannot block a thread on time; waiting is a ring-3 timer service. */
 #define SYS_SLEEP   8   /* modern/conforming: returns 0 on success */
 /* legacy: removed from user-space dispatch; internal use only */
 /* SYS_IPC_CREATE  9  (retired) */
@@ -167,6 +173,8 @@ static inline long iris_syscall0(long nr) {
 #define SYS_CHAN_CREATE  12  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 #define SYS_CHAN_SEND    13  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 #define SYS_CHAN_RECV    14  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (Stage 4): the handle namespace is gone; deleting the slot is what closing was. */
 #define SYS_HANDLE_CLOSE 15  /* (handle) → 0 or negative iris_error_t */
 /*
  * Virtual Memory Objects — RETIRED (ledger D-5).
@@ -212,6 +220,8 @@ static inline long iris_syscall0(long nr) {
 #define SYS_NOTIFY_SIGNAL 20 /* (handle, bits) → 0 or negative iris_error_t */
 #define SYS_NOTIFY_WAIT   21 /* (handle, *out_bits) → 0 or negative iris_error_t */
 /* modern/conforming: handle management */
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (Stage 4): it produced a second handle.  A slot-to-slot derive makes the copy an MDB child, so it is revocable. */
 #define SYS_HANDLE_DUP      22  /* (src_handle, new_rights) → new_handle_id or negative iris_error_t
                                  *   Requires RIGHT_DUPLICATE on src_handle.
                                  *   new_rights must be a subset of existing rights.
@@ -537,6 +547,8 @@ static inline long iris_syscall0(long nr) {
  *   expires before any signal arrives.  bits_uptr receives the consumed bits on
  *   success (same as SYS_NOTIFY_WAIT).  Requires RIGHT_WAIT on notify_h.
  */
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (A-24): a timed wait put the CLOCK in the kernel; the timer service signals the notification instead. */
 #define SYS_NOTIFY_WAIT_TIMEOUT 64
 
 /*
@@ -619,6 +631,8 @@ static inline long iris_syscall0(long nr) {
 /* Numbers 24, 25 permanently reserved; dispatch returns IRIS_ERR_NOT_SUPPORTED.
  * Service discovery uses svcmgr IPC over its KEndpoint (endpoint_proto.h). */
 #define SYS_NS_REGISTER     24
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (P1): discovery lives in user space; a name is resolved by a server somebody holds. */
 #define SYS_NS_LOOKUP       25
 
 /* Boot capability kinds — ONE CAPABILITY, ONE AUTHORITY (Stage 5 Step 2).
@@ -669,6 +683,8 @@ static inline long iris_syscall0(long nr) {
  *   uses it (T080/T082/T098 keep it covered).  New code uses
  *   SYS_PROC_CSPACE_MINT into a destination CSpace slot instead.
  */
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (Stage 4): it published into the child's HANDLE table.  SYS_PROC_CSPACE_MINT into a destination slot is the CSpace form. */
 #define SYS_VMO_SHARE  46
 
 /*
@@ -717,6 +733,8 @@ static inline long iris_syscall0(long nr) {
  * arrangement, and it makes "resume" and "destroy" two different authorities
  * instead of two values of one argument.
  */
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (A-22): the paragraph above is its obituary -- a reply capability is the authority and the one-shot at once. */
 #define SYS_EXCEPTION_RESUME   66
 
 /*
@@ -790,6 +808,8 @@ static inline long iris_syscall0(long nr) {
  *   one tick sleep for exactly one tick.  Passing 0 returns immediately (no sleep).
  *   Does not return IRIS_ERR_INTERRUPTED; always sleeps the full requested duration.
  */
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (A-24): the kernel cannot block a thread on time.  Waiting is a ring-3 timer service holding a capability. */
 #define SYS_CLOCK_NANOSLEEP 70
 
 /*
@@ -860,7 +880,11 @@ static inline long iris_syscall0(long nr) {
  * same KObject, 0 if they do not, or negative iris_error_t on failure.
  *   This is identity comparison only; it does not compare rights.
  */
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (Stage 4): the block above describes a handle table that no longer exists.  SYS_CAP_IDENTIFY answers for a CPtr. */
 #define SYS_HANDLE_TYPE        52
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (Stage 4): the handle namespace is gone.  SYS_CAP_SAME_OBJECT asks the same question of two CPtrs. */
 #define SYS_HANDLE_SAME_OBJECT 53
 
 /*
@@ -906,6 +930,8 @@ static inline long iris_syscall0(long nr) {
  *   Non-blocking receive: returns IRIS_ERR_WOULD_BLOCK immediately if no sender
  *   is already waiting.  Otherwise identical to SYS_EP_RECV.
  */
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (Phase S1): an endpoint is RETYPED from an Untyped somebody holds, like every other object. */
 #define SYS_ENDPOINT_CREATE 73
 #define SYS_EP_SEND         74
 #define SYS_EP_RECV         75
@@ -939,8 +965,14 @@ static inline long iris_syscall0(long nr) {
  *   Uses 4-arg syscall ABI (new_rights via r10).
  */
 #define SYS_CAP_DERIVE    78
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (Phase S4 / Stage 3): the parallel handle derivation tree is gone.  SYS_CSPACE_REVOKE walks the one MDB. */
 #define SYS_CAP_REVOKE    79
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED: a CNode is RETYPED from an Untyped somebody holds, like every other object. */
 #define SYS_CNODE_CREATE  80
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED: it installed a LEGACY_ROOT.  SYS_CSPACE_MINT derives from a source slot, so the copy has a parent. */
 #define SYS_CNODE_MINT    81
 
 /*
@@ -976,6 +1008,8 @@ static inline long iris_syscall0(long nr) {
  *   from user space (SYS_THREAD_SET_SC is the self-bind).
  */
 #define SYS_THREAD_PRIORITY 82  /* RETIRED (A5/A-20) → IRIS_ERR_NOT_SUPPORTED */
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED: a scheduling context is RETYPED from an Untyped somebody holds. */
 #define SYS_SC_CREATE       83
 #define SYS_SC_CONFIGURE    84
 #define SYS_THREAD_SET_SC   85
@@ -1080,7 +1114,11 @@ struct iris_iommu_fault_info {
  *   slot_a must not equal slot_b (returns IRIS_ERR_INVALID_ARG if they match).
  *   No capability references change — only slot pointers are exchanged.
  */
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (Stage 4); see syscall_cnode_ops.c.  SYS_CSPACE_MOVE relocates the MDB node. */
 #define SYS_CNODE_MOVE    89
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (Stage 4); see syscall_cnode_ops.c. */
 #define SYS_CNODE_FETCH   90
 #define SYS_CNODE_DELETE  91
 #define SYS_CNODE_SWAP    92
@@ -1134,6 +1172,8 @@ struct iris_iommu_fault_info {
  *   is empty.  Returns IRIS_ERR_INVALID_ARG if the cptr exhausts all CNode
  *   levels without reaching a leaf.
  */
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (Stage 4).  The description above is PRE-Stage-4 and describes materialising a handle-table entry; there is no handle table.  Resolution is what every capability argument already does. */
 #define SYS_CSPACE_RESOLVE 95
 
 /*
@@ -1237,6 +1277,8 @@ struct iris_iommu_fault_info {
  * child's death.  For the caller's own address space, SYS_VSPACE_SELF — which
  * this syscall's IRIS_CPTR_NULL case was always documented as equivalent to.
  */
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (Stage 7-proc): there is no KProcess.  A thread's address space is a capability it was configured with. */
 #define SYS_PROCESS_VSPACE 107
 
 /*
@@ -1305,6 +1347,8 @@ struct iris_iommu_fault_info {
  *   Returns IRIS_ERR_INVALID_ARG   — no budget named, or it is not an Untyped.
  *   Returns IRIS_ERR_NO_MEMORY     — object alloc or the target's quota is full.
  */
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (D-5): there is no KVmo.  Memory is a FRAME, retyped by the holder. */
 #define SYS_VMO_CREATE_FOR 109
 
 /*
@@ -1317,6 +1361,8 @@ struct iris_iommu_fault_info {
  * process, plus global failed-charge / rollback / kslab counters.  Additive,
  * size-validated, versioned.
  */
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED: it reported a KProcess's per-type quotas, and both the object and the quotas are gone. */
 #define SYS_RESOURCE_INFO 110
 
 /*
@@ -1402,6 +1448,8 @@ struct iris_iommu_fault_info {
  */
 #define SYS_CSPACE_MINT      114
 #define SYS_CSPACE_REVOKE    115
+/* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
+ *   RETIRED (Stage 4). */
 #define SYS_CSPACE_MINT_INTO 116
 
 /*

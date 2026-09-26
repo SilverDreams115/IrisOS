@@ -171,6 +171,47 @@ UT-TOP-1..5 and T298.
 
 ## Structural divergences from seL4
 
+### A-47 — the frozen ABI declared twenty-four retired numbers as live  ✅ CLOSED
+
+**Found by the roadmap review's second pass, and closed the way Stage 10-abi
+says to close things.**
+
+That stage's own opening lesson is "a description nothing checks is a
+description that goes stale".  It applied it to the label space: **AB-1**
+sweeps every number the dispatcher can see and asserts `NOT_SUPPORTED`, so the
+BEHAVIOUR of a retired number is pinned.  Nothing pinned the DECLARATION, and
+twenty-four numbers in `iris/syscall.h` drifted — unreachable in fact,
+documented as live.
+
+The behaviour was never wrong; a caller got `NOT_SUPPORTED` from all of them.
+What was wrong is the file a service author reads to learn the surface:
+
+- `SYS_CSPACE_RESOLVE` (95) still described "materializes the leaf capability
+  into a new flat handle-table entry and returns the handle_id" — a handle
+  table deleted in Stage 4.
+- `SYS_RESOURCE_INFO` (110) described taking "a KProcess cap" and reporting
+  per-type quotas.  Both the object and the quotas are gone.
+- `SYS_ENDPOINT_CREATE` (73) sat under a comment block describing a different
+  syscall's non-blocking receive.
+- `SYS_HANDLE_TYPE` (52) was documented as returning the type of "a live
+  handle in the caller's table".
+- Three had no retirement note anywhere in the tree.
+
+**The gate**, `scripts/check_abi_declared.sh`, fails if a `SYS_*` number that
+the numbered dispatcher cannot reach, that has no `INV_` label and no
+`sys_<name>()` handler, does not declare itself retired.  It runs from
+`check-purity`, which CI already invokes — the lane list is fixed, and that is
+the textual gate nearest in kind.
+
+**Writing the gate found two bugs in the gate**, which is worth recording
+because both are the ordinary way a checker lies.  The first version searched
+fifteen lines above each `#define` and passed a define whose marker had been
+deleted, because it borrowed `SYS_HANDLE_TYPE`'s from the line above.  Scoping
+it to the define's own block then failed eighteen legitimate ones, because
+this header also marks retirement INLINE (`#define SYS_HANDLE_TRANSFER 23  /*
+RETIRED A1.8 ... */`).  It is verified to catch a deleted marker, which is the
+only way to know a gate of this kind works at all.
+
 ### A-46 — endpoint close inverted the lock hierarchy, where the stage that wrote the rule had applied it  ✅ CLOSED
 
 **Found by the roadmap review's second pass — reading a closed stage's

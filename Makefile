@@ -284,7 +284,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_main.c
 TEST_UNIT_BIN   := $(BUILD_DIR)/test_unit
 
-.PHONY: all dirs run run-headless clean help check check-purity smoke smoke-runtime smoke-runtime-selftests smoke-persist smoke-screen config-sync test-unit
+.PHONY: all dirs run run-headless clean help check check-abi check-purity smoke smoke-runtime smoke-runtime-selftests smoke-persist smoke-screen config-sync test-unit
 
 all: config-sync $(BOOT_APP) $(KERNEL_DST)
 
@@ -886,7 +886,12 @@ check: config-sync $(KERNEL_ELF)
 
 # seL4 purity charter guard: the legacy handle-table / kslab consumers are
 # frozen in scripts/purity_allowlist.txt (it can only shrink).
-check-purity:
+check-abi:
+	bash scripts/check_abi_declared.sh
+
+# check-abi rides here because CI's lane list is fixed and this is the
+# textual gate nearest in kind: both freeze a declaration against drift.
+check-purity: check-abi
 	bash scripts/check_purity.sh
 
 # The lock hierarchy of the SMP roadmap (§9.1).  Checked statically because a
