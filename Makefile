@@ -757,7 +757,10 @@ $(BUILD_DIR)/net_entry.o: services/net/entry.S | dirs
 $(BUILD_DIR)/net_main.o: services/net/main.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_NET_ELF): $(BUILD_DIR)/net_entry.o $(BUILD_DIR)/net_main.o $(STACK_GUARD_OBJ)
+$(BUILD_DIR)/net_e1000.o: services/net/e1000.c | dirs
+	gcc $(SERVICE_CFLAGS) -c $< -o $@
+
+$(SERVICE_NET_ELF): $(BUILD_DIR)/net_entry.o $(BUILD_DIR)/net_main.o $(BUILD_DIR)/net_e1000.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 
 $(KERNEL_NET_BIN_OBJ): $(SERVICE_NET_ELF) | dirs

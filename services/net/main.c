@@ -37,85 +37,29 @@
 #include <iris/endpoint_proto.h>
 #include <iris/pci_ep_proto.h>
 #include <iris/net_ep_proto.h>
+#include "netdev.h"
 
 static void net_msg_zero(struct iris_msg *m) {
     uint8_t *b = (uint8_t *)m;
     for (uint32_t i = 0; i < (uint32_t)sizeof(*m); i++) b[i] = 0;
 }
 
-#define NET_VA_BAR   0x80A0000000ULL
-#define NET_VA_RING  0x80A1000000ULL
-#define NET_VA_RX    0x80A2000000ULL
-#define NET_VA_TX    0x80A3000000ULL
 
 /* ── e1000 registers, as much as moving a frame needs ────────────────────── */
-#define E1000_CTRL    0x0000u
-#define E1000_STATUS  0x0008u
-#define E1000_ICR     0x00C0u
-#define E1000_IMC     0x00D8u
-#define E1000_RCTL    0x0100u
-#define E1000_TCTL    0x0400u
-#define E1000_TIPG    0x0410u
-#define E1000_RDBAL   0x2800u
-#define E1000_RDBAH   0x2804u
-#define E1000_RDLEN   0x2808u
-#define E1000_RDH     0x2810u
-#define E1000_RDT     0x2818u
-#define E1000_TDBAL   0x3800u
-#define E1000_TDBAH   0x3804u
-#define E1000_TDLEN   0x3808u
-#define E1000_TDH     0x3810u
-#define E1000_TDT     0x3818u
-#define E1000_MTA     0x5200u
-#define E1000_RAL     0x5400u
-#define E1000_RAH     0x5404u
-
-#define CTRL_SLU      (1u << 6)    /* set link up */
-#define CTRL_ASDE     (1u << 5)    /* auto-speed detect */
-
-#define RCTL_EN       (1u << 1)
-#define RCTL_BAM      (1u << 15)   /* accept broadcast */
-#define RCTL_SECRC    (1u << 26)   /* strip the ethernet CRC */
-#define RCTL_BSIZE1024 (1u << 16)  /* with BSEX clear: 1024-byte buffers */
-
-#define TCTL_EN       (1u << 1)
-#define TCTL_PSP      (1u << 3)    /* pad short packets */
-#define TCTL_CT_SHIFT 4u
-#define TCTL_COLD_SHIFT 12u
-
-#define TXD_CMD_EOP   (1u << 0)
-#define TXD_CMD_IFCS  (1u << 1)    /* insert the frame check sequence */
-#define TXD_CMD_RS    (1u << 3)    /* report status */
-#define TXD_STAT_DD   (1u << 0)
-#define RXD_STAT_DD   (1u << 0)
 #define RXD_STAT_EOP  (1u << 1)
 
 /* How long a transmit may take before the card is called unresponsive.
  * Generous on purpose: the cost of being wrong the other way is a frame
  * reported lost that the card was about to acknowledge. */
-#define NET_TX_MS     1000u
 
-#define NET_RING_LEN  8u           /* RDLEN must be a multiple of 128 bytes,
-                                    * and a descriptor is 16 — so eight is the
-                                    * smallest ring the hardware will take. */
-#define RING_BYTES    (NET_RING_LEN * 16u)
-#define RX_RING_OFF   0x000u
-#define TX_RING_OFF   0x200u       /* clear of the RX ring, 16-byte aligned */
-
-static volatile uint32_t *reg(uint32_t off) {
-    return (volatile uint32_t *)(uintptr_t)(NET_VA_BAR + off);
-}
-static uint32_t rd(uint32_t off)             { return *reg(off); }
-static void     wr(uint32_t off, uint32_t v) { *reg(off) = v; }
 
 /* ── state ───────────────────────────────────────────────────────────────── */
 static uint32_t g_ready;
 static uint16_t g_source_id;
 static uint32_t g_contained;
-static uint64_t g_mac;
-static uint64_t g_ring_phys, g_rx_phys[NET_RX_FRAMES], g_tx_phys;
-static uint32_t g_rx_next;        /* the descriptor we will look at next */
-static uint64_t g_rx_count;
+/* Everything the chosen backend is given.  The service fills it in; the
+ * backend reads it and owns the cursors inside it. */
+static struct net_hw g_hw;
 
 /* ── the bus ─────────────────────────────────────────────────────────────── */
 static long net_pci(uint64_t op, uint64_t a0, uint64_t a1,
@@ -150,24 +94,35 @@ static long net_pci(uint64_t op, uint64_t a0, uint64_t a1,
  * difference is the whole question of what to write next. */
 #define CLASS_ETHERNET 0x02000000u
 
-/* Intel 82540EM / 82545EM: the e1000 this driver was written and tested
- * against.  A device outside this list may well be an e1000 too; it is not one
- * anybody has run this code on, and guessing is what the paragraph above is
- * about. */
-#define E1000_VENDOR 0x8086u
-static int e1000_known(uint32_t device) {
-    return device == 0x100Eu || device == 0x100Fu;
-}
+/*
+ * The table.  One row per family somebody has actually run this against, and
+ * adding hardware is adding a row and a file -- not an edit to anything here.
+ */
+static const struct net_backend *const NET_BACKENDS[] = {
+    &net_backend_e1000,
+};
+#define NET_BACKEND_COUNT (sizeof(NET_BACKENDS) / sizeof(NET_BACKENDS[0]))
 
 /* What was seen and refused, so the machine can say so. */
 static uint32_t g_seen_eth;
 static uint32_t g_seen_vd;
+static const struct net_backend *g_drv;
 uint32_t net_seen_eth(void);
 uint32_t net_seen_eth(void) { return g_seen_eth; }
 
+static const struct net_backend *net_pick(uint32_t vd) {
+    for (uint32_t b = 0; b < NET_BACKEND_COUNT; b++) {
+        const struct net_backend *d = NET_BACKENDS[b];
+        if ((vd & 0xFFFFu) != d->vendor) continue;
+        if (d->matches && !d->matches((vd >> 16) & 0xFFFFu)) continue;
+        return d;
+    }
+    return 0;
+}
+
 static int net_find(uint32_t *out_index) {
     struct iris_msg r;
-    g_seen_eth = 0u; g_seen_vd = 0u;
+    g_seen_eth = 0u; g_seen_vd = 0u; g_drv = 0;
     if (net_pci(PCI_OP_COUNT, 0, 0, 0, &r) != 0) return 0;
     uint32_t n = (uint32_t)r.words[0];
     int found = 0;
@@ -175,13 +130,18 @@ static int net_find(uint32_t *out_index) {
         if (net_pci(PCI_OP_INFO, i, 0, 0, &r) != 0) continue;
         if (((uint32_t)r.words[1] & 0xFFFF0000u) != CLASS_ETHERNET) continue;
         uint32_t vd = (uint32_t)r.words[0];
+        /* Counted whether or not anything drives it: the count and the first
+         * vendor:device are what the report uses to say "there is a card here
+         * and no backend speaks to it", which is a different fact from "there
+         * is no card" and the one that says what to write next. */
         g_seen_eth++;
         if (!g_seen_vd) g_seen_vd = vd;
         if (found) continue;
-        if ((vd & 0xFFFFu) != E1000_VENDOR) continue;
-        if (!e1000_known((vd >> 16) & 0xFFFFu)) continue;
+        const struct net_backend *d = net_pick(vd);
+        if (!d) continue;
         *out_index  = i;
         g_source_id = (uint16_t)r.words[2];
+        g_drv       = d;
         found = 1;
     }
     return found;
@@ -213,10 +173,10 @@ static int net_contain(void) {
 
     uint64_t at[2u + NET_RX_FRAMES];
     uint32_t slot[2u + NET_RX_FRAMES];
-    at[0] = g_ring_phys; slot[0] = NET_SLOT_RING;
-    at[1] = g_tx_phys;   slot[1] = NET_SLOT_TXBUF;
+    at[0] = g_hw.ring_phys; slot[0] = NET_SLOT_RING;
+    at[1] = g_hw.tx_phys;   slot[1] = NET_SLOT_TXBUF;
     for (uint32_t i = 0; i < NET_RX_FRAMES; i++) {
-        at[2u + i] = g_rx_phys[i]; slot[2u + i] = NET_SLOT_RXBUF(i);
+        at[2u + i] = g_hw.rx_phys[i]; slot[2u + i] = NET_SLOT_RXBUF(i);
     }
     for (uint32_t w = 0; w < 2u + NET_RX_FRAMES; w++) {
         for (uint32_t i = 0; i < 3u; i++) {
@@ -253,10 +213,10 @@ static void net_bring_up(void) {
                        IRIS_CPTR_OWN_UNTYPED, NET_SLOT_PT,
                        NET_VA_BAR, r.words[1], 1ull | 4ull) != 0) return;
 
-    if (net_frame(NET_SLOT_RING,  &g_ring_phys) != 0) return;
+    if (net_frame(NET_SLOT_RING,  &g_hw.ring_phys) != 0) return;
     for (uint32_t i = 0; i < NET_RX_FRAMES; i++)
-        if (net_frame(NET_SLOT_RXBUF(i), &g_rx_phys[i]) != 0) return;
-    if (net_frame(NET_SLOT_TXBUF, &g_tx_phys)   != 0) return;
+        if (net_frame(NET_SLOT_RXBUF(i), &g_hw.rx_phys[i]) != 0) return;
+    if (net_frame(NET_SLOT_TXBUF, &g_hw.tx_phys)   != 0) return;
 
     /* Decide what the card may reach BEFORE telling it any address. */
     g_contained = (uint32_t)net_contain();
@@ -276,159 +236,14 @@ static void net_bring_up(void) {
         for (uint32_t i = 0; i < 4096u; i++) z[i] = 0;
     }
 
-    /* Interrupts off: this driver polls, and a card raising an interrupt
-     * nobody has routed is a line that stays asserted. */
-    wr(E1000_IMC, 0xFFFFFFFFu);
-    (void)rd(E1000_ICR);
-
-    /* Link up, and the multicast table filter cleared — whatever the firmware
-     * left in it would otherwise decide which frames this interface sees. */
-    wr(E1000_CTRL, rd(E1000_CTRL) | CTRL_SLU | CTRL_ASDE);
-    for (uint32_t i = 0; i < 128u; i++) wr(E1000_MTA + i * 4u, 0u);
-
-    /* The MAC the card came with.  QEMU programs RAL/RAH from the command
-     * line, so reading them is both simpler and more correct than walking the
-     * EEPROM — the address that matters is the one the card will answer to. */
-    {
-        uint32_t lo = rd(E1000_RAL), hi = rd(E1000_RAH);
-        g_mac = (uint64_t)lo | ((uint64_t)(hi & 0xFFFFu) << 32);
-        /* Address Valid.  A card whose receive address is not marked valid
-         * filters every unicast frame, including the replies to its own. */
-        wr(E1000_RAH, hi | (1u << 31));
-    }
-
-    /* Receive ring: eight descriptors, each pointing at a 256-byte buffer, all
-     * eight inside the one frame the NIC was granted. */
-    {
-        volatile uint64_t *rxd = (volatile uint64_t *)(uintptr_t)(NET_VA_RING + RX_RING_OFF);
-        for (uint32_t i = 0; i < NET_RING_LEN; i++) {
-            /* Descriptor i takes the i'th buffer, which lives in frame
-             * i/4 at offset (i%4)*1024 — the ring is longer than one page. */
-            rxd[i * 2u]      = g_rx_phys[i / NET_RX_PER_FRAME] +
-                               (uint64_t)(i % NET_RX_PER_FRAME) * NET_FRAME_BYTES;
-            rxd[i * 2u + 1u] = 0u;
-        }
-        wr(E1000_RDBAL, (uint32_t)(g_ring_phys + RX_RING_OFF));
-        wr(E1000_RDBAH, (uint32_t)((g_ring_phys + RX_RING_OFF) >> 32));
-        wr(E1000_RDLEN, RING_BYTES);
-        wr(E1000_RDH, 0u);
-        /* The tail is the last descriptor the card may WRITE INTO, so it
-         * trails the head by one — a tail equal to the head means the ring is
-         * full and nothing is received. */
-        wr(E1000_RDT, NET_RING_LEN - 1u);
-        wr(E1000_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC | RCTL_BSIZE1024);
-    }
-
-    /* Transmit ring: same size, one buffer, because this driver sends one
-     * frame at a time and waits for it. */
-    {
-        volatile uint64_t *txd = (volatile uint64_t *)(uintptr_t)(NET_VA_RING + TX_RING_OFF);
-        for (uint32_t i = 0; i < NET_RING_LEN; i++) { txd[i * 2u] = 0; txd[i * 2u + 1u] = 0; }
-        wr(E1000_TDBAL, (uint32_t)(g_ring_phys + TX_RING_OFF));
-        wr(E1000_TDBAH, (uint32_t)((g_ring_phys + TX_RING_OFF) >> 32));
-        wr(E1000_TDLEN, RING_BYTES);
-        wr(E1000_TDH, 0u);
-        wr(E1000_TDT, 0u);
-        wr(E1000_TIPG, 0x0060200Au);            /* the spec's IEEE 802.3 values */
-        wr(E1000_TCTL, TCTL_EN | TCTL_PSP |
-                       (0x10u << TCTL_CT_SHIFT) | (0x40u << TCTL_COLD_SHIFT));
-    }
-
-    g_ready = 1u;
+    /* Everything above is the same for any card.  Everything the card's own
+     * registers need is the backend's, and it is only reached once its memory
+     * is retyped, mapped and contained. */
+    g_hw.bar_len = r.words[1];
+    g_ready = (uint32_t)(g_drv && g_drv->bring_up(&g_hw));
 }
 
 /* ── moving a frame ──────────────────────────────────────────────────────── */
-
-static uint32_t net_send(uint32_t len) {
-    if (len == 0u || len > NET_FRAME_BYTES) return 0;
-    volatile uint32_t *txd = (volatile uint32_t *)(uintptr_t)(NET_VA_RING + TX_RING_OFF);
-    uint32_t tail = rd(E1000_TDT) % NET_RING_LEN;
-
-    ((volatile uint64_t *)txd)[tail * 2u] = g_tx_phys;
-    txd[tail * 4u + 2u] = (uint32_t)len |
-                          ((uint32_t)(TXD_CMD_EOP | TXD_CMD_IFCS | TXD_CMD_RS) << 24);
-    txd[tail * 4u + 3u] = 0u;
-
-    wr(E1000_TDT, (tail + 1u) % NET_RING_LEN);
-
-    /*
-     * Bounded by TIME, not by a count of reads.
-     *
-     * A driver that spins for ever on a card that never reports is a service
-     * that stops answering -- but two million register reads is a different
-     * amount of patience on every machine, and it was chosen against the only
-     * one this ran on.  An emulated card completes a transmit before the loop
-     * begins; a real one at the far end of a PCI bridge, with the link
-     * negotiating, does not.
-     *
-     * A clock that will not answer leaves this unbounded rather than
-     * instantaneous: the failure being guarded is a card that never replies,
-     * and treating a missing clock as an expired deadline turns a working card
-     * into a broken one.
-     */
-    {
-        long t0 = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
-        for (;;) {
-            if (txd[tail * 4u + 3u] & TXD_STAT_DD) return len;
-            long now = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
-            if (t0 > 0 && now > 0 &&
-                (uint64_t)(now - t0) > (uint64_t)NET_TX_MS * 1000000ull) break;
-        }
-    }
-    return 0;
-}
-
-/*
- * The oldest descriptor the card has finished with, or nothing.
- *
- * `g_rx_next` walks the ring rather than reading RDH, because the head is
- * where the card will write NEXT and says nothing about which descriptors the
- * driver has already consumed.
- */
-static uint32_t g_rx_skipping;    /* mid-way through a frame too big to hold */
-
-static uint32_t net_recv(uint32_t *out_off) {
-    volatile uint32_t *rxd = (volatile uint32_t *)(uintptr_t)(NET_VA_RING + RX_RING_OFF);
-    uint32_t i = g_rx_next;
-    uint32_t status = (rxd[i * 4u + 3u] >> 0) & 0xFFu;
-    uint32_t len    = rxd[i * 4u + 2u] & 0xFFFFu;
-    if (!(status & RXD_STAT_DD)) return 0;
-
-    /*
-     * A frame longer than one buffer is SPLIT across descriptors by the card,
-     * and only the last of them carries EOP.  Dropping the pieces without EOP
-     * is not enough: the last piece has EOP and a plausible length, so it
-     * would be handed up as if it were a frame — a tail with no Ethernet
-     * header, which is a worse failure than losing the frame, because it is
-     * one the layer above has no way to recognise.
-     *
-     * So a split frame is dropped WHOLE: once a piece arrives without EOP,
-     * every piece up to and including the next EOP is discarded.
-     */
-    if (g_rx_skipping) {
-        if (status & RXD_STAT_EOP) g_rx_skipping = 0u;
-        len = 0;
-    } else if (!(status & RXD_STAT_EOP)) {
-        g_rx_skipping = 1u;
-        len = 0;
-    } else if (len == 0u || len > NET_FRAME_BYTES) {
-        len = 0;
-    }
-
-    /* Where the caller finds it: the frame index and the offset inside it,
-     * because the ring no longer fits in one page. */
-    *out_off = (i / NET_RX_PER_FRAME) * 4096u +
-               (i % NET_RX_PER_FRAME) * NET_FRAME_BYTES;
-
-    /* Hand the descriptor back: clear its status, then move the tail to it so
-     * the card may write into it again.  In that order — a tail moved first
-     * offers the card a descriptor still marked done. */
-    rxd[i * 4u + 3u] = 0u;
-    wr(E1000_RDT, i);
-    g_rx_next = (i + 1u) % NET_RING_LEN;
-    if (len) g_rx_count++;
-    return len;
-}
 
 /* ── the service loop ────────────────────────────────────────────────────── */
 
@@ -458,7 +273,7 @@ void net_main(iris_cptr_t bootstrap_ch_h) {
              * controllers were seen and the first one's vendor:device.
              */
             rep.words[0]   = g_ready;
-            rep.words[1]   = g_mac;
+            rep.words[1]   = g_hw.mac;
             rep.words[2]   = g_source_id;
             rep.words[3]   = (g_contained ? 1u : 0u) |
                              ((uint64_t)(g_seen_eth & 0xFFu) << 8) |
@@ -476,7 +291,7 @@ void net_main(iris_cptr_t bootstrap_ch_h) {
             rep.cap        = (long)NET_SLOT_TXBUF;
             rep.cap_rights = RIGHT_READ | RIGHT_WRITE;
         } else if (m.label == NET_OP_SEND && g_ready) {
-            uint32_t sent = net_send((uint32_t)m.words[0]);
+            uint32_t sent = g_drv->send(&g_hw, (uint32_t)m.words[0]);
             if (sent) {
                 rep.label      = NET_REP_OK;
                 rep.words[0]   = sent;
@@ -484,10 +299,10 @@ void net_main(iris_cptr_t bootstrap_ch_h) {
             }
         } else if (m.label == NET_OP_RECV && g_ready) {
             uint32_t off = 0;
-            uint32_t len = net_recv(&off);
+            uint32_t len = g_drv->recv(&g_hw, &off);
             rep.label      = NET_REP_OK;
             rep.words[0]   = len;
-            rep.words[1]   = g_rx_count;
+            rep.words[1]   = g_hw.rx_count;
             rep.words[2]   = off;
             rep.word_count = 3u;
             if (len) {
