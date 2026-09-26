@@ -1701,11 +1701,28 @@ with it the last things `KProcess` is for.
   live-VMO count joined the per-type gauges in `SYS_SCHED_INFO`, which makes
   the suite's leak checks GLOBAL where the per-process form only ever caught
   the caller's own.
-- **`KIrqCap` and `KIoPort` stop being objects.**  seL4 has no kernel object
-  behind an interrupt or an I/O port — an IRQHandler capability names a line,
-  and x86 I/O port access is a capability over a port RANGE with no allocation
-  at all.  This is D-5's deeper half and it removes the last two `kslab`
-  producers outside the boot path.
+- ✅ **`KIrqCap` and `KIoPort` stop being kslab producers — and stay objects,
+  DECIDED.**  *(Roadmap review: this bullet was the only one here left
+  unticked, which read as an open seL4 item inside a closed stage.  It was
+  decided afterwards and the decision is in the ledger.)*  The `kslab` half is
+  done: both are carved from a budget the caller NAMES
+  (`kuntyped_alloc_child_top`), so neither produces from the kernel heap. The
+  FORM half was argued rather than done, and the argument is that it is seL4's
+  arrangement: they come into existence through
+  `SYS_CAP_CREATE_IRQCAP`/`IOPORT`, which is how seL4 makes an IRQHandler —
+  `IRQControl_Get`, not a retype.  The two object types that ARE IRIS's own are
+  `KInitrdEntry` and `KBootstrapCap`, which seL4 would express as capability
+  types with no backing object, and the ledger records them as that.
+
+  What the exit criterion below asked for IS met, and the review checked it
+  rather than taking it: every remaining `kslab_alloc` in the allowlist is
+  reachable only from boot — `kuntyped_create` from `kernel_main` alone,
+  `kvspace_alloc` and `kcnode_alloc` from the root task's construction, and
+  `kframe_alloc` only through `bootstrap_kframe_map`, whose own header says not
+  to call it from a syscall path.  (Two of those looked dead on a first pass
+  and were not: `kbootcap_alloc_ports` is reached by `kbootcap_alloc`, and
+  `kframe_alloc` by `bootstrap_kframe_map`, both in the file that defines them
+  — which a caller search that excludes that file will not show.)
 - **Delete `KProcess`.**  What is left of it after the above is the
   constructor (`SYS_PROCESS_CREATE`) and `SYS_TCB_CONFIGURE`'s identity check.
   In seL4 a process is a TCB plus a CNode plus a VSpace, and
@@ -2514,6 +2531,17 @@ up as one.  Saying so now is cheaper than discovering it in a ledger row later.
 
 **The deadlock direction is untestable until step 3.**  A lock-order inversion
 cannot happen on one core, so §9.1 is enforced by review until there are two.
+
+**What step 5 aims at, and what it does not.**  *(Added by the roadmap
+review.)*  T347 aims four cores at the reply object and the endpoint queue —
+four callers, one server, each owed its own answer.  Three real defects lived
+in exactly those two objects and survived it (A-43, A-44, A-46), because all
+three need a different adversary: not another CALLER, but a supervisor running
+`TCB_EXIT` on a thread that is BLOCKED on the endpoint or bound into the reply.
+A blocked thread is off-CPU, and `task_kill_external` on an off-CPU thread
+tears it down synchronously on the killer's core — so the race is between a
+rendezvous and a teardown, and the suite has no test that pairs those two.
+Aiming cores at one object is not the same as aiming a killer at a waiter.
 
 ## Stage 10-dma — device authority must be containable  ← ALL 6 STEPS DONE
 

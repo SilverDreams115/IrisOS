@@ -2057,8 +2057,9 @@ exists.
   - **3 enumerators reserved and dead**: `KOBJ_PROCESS` (Stage 7-proc),
     `KOBJ_VMO` (D-5), `KOBJ_CHANNEL` (Phase 13).  No live capability carries
     any of them.
-  - **299 runtime tests, 27 host suites, 27417 host assertions, 36 of 36
-    charter invariants MET**, and the purity gate clean over the transitive
+  - **323 runtime tests, 29 host suites, 27886 host assertions, 36 of 36
+    charter invariants MET** (the counts were 299/27/27417 when written; the
+    roadmap review re-read them rather than carrying them), and the purity gate clean over the transitive
     closure with zero exemptions.
 
 **The honest summary.**  IRIS has seL4's authority model, seL4's object model
