@@ -129,9 +129,11 @@ void syscall_save_user_ctx(struct syscall_frame *f) {
  * it from the top is equivalent to resuming it — which is what an event kernel
  * does and what a per-thread kernel stack currently makes unnecessary.
  *
- * Today the reschedule happens through task_yield() from inside this frame, so
- * the frame is still parked on the thread's kernel stack: this step does not
- * yet remove the stack, it removes the REASON the stack has to be kept.  Once
+ * When this was written the reschedule happened through `task_yield()` from
+ * inside this frame, so the frame was still parked on the thread's kernel
+ * stack: the step did not yet remove the stack, it removed the REASON the
+ * stack had to be kept.  Both have since happened — step 2 abandons the frame
+ * and step 3 deleted `task_yield` along with the per-thread stack.  Once
  * every blocking path is restart-safe, step 2 abandons the frame here instead
  * of yielding through it, and step 3 makes the stack per-core.
  *

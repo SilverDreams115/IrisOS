@@ -402,10 +402,14 @@ iris_error_t cspace_resolve_only_cnode(struct KCNode   *root,
  * DUAL_RESOLVE_IPC — generates cspace_resolve_only_{endpoint,reply,notification}.
  *
  * Returns lifecycle-only ref.  The CSpace path calls cspace_resolve_cap (which
- * gives active+lifecycle), then releases the active ref before returning — IPC
- * callers must not hold active_refs across task_yield() because that would
- * suppress the close callback that wakes blocked tasks.  The handle-table fallback
- * gives lifecycle-only by construction; no active_retain is added.
+ * gives active+lifecycle), then releases the active ref before returning — an
+ * IPC caller must not hold an active ref across the point where it PARKS,
+ * because that would suppress the close callback that wakes blocked tasks.
+ *
+ * This used to say "across task_yield()", a function Stage 9-evt step 3
+ * deleted; the boundary is the park-and-re-execute point now, and the
+ * constraint is the same one.  The sentence about a handle-table fallback
+ * went with Stage 4 — there is one namespace.
  *
  * Caller releases with: kobject_release(&(*out)->base)
  */

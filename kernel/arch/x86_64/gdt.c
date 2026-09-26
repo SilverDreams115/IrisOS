@@ -253,7 +253,9 @@ void gdt_init_ap(uint32_t cpu_id) {
 }
 
 void tss_set_rsp0(uint64_t rsp0) {
-    /* cpu_self() safe: always called from task_yield() which runs post-gdt_init()
-     * ring-0 with GS_BASE = &cpu_local[cpu_id]. Updates THIS CPU's TSS.rsp0. */
+    /* cpu_self() safe: every caller runs post-gdt_init() in ring 0 with
+     * GS_BASE = &cpu_local[cpu_id].  Updates THIS CPU's TSS.rsp0.
+     * (It used to say "always called from task_yield()", which Stage 9-evt
+     * step 3 deleted; core_dispatch_init is the caller now, once per core.) */
     kernel_tss[cpu_self()->cpu_id].rsp0 = rsp0;
 }

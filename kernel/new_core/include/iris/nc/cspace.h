@@ -251,9 +251,12 @@ iris_error_t cspace_resolve_only_cnode(struct KCNode   *root,
  * keeps its shape and its refcount contract, not its second namespace.
  *
  * Ref-count contract: ACTIVE + LIFECYCLE (same as cspace_resolve_only_cnode).
- * KUntyped operations (INFO/RETYPE/RESET) never block across task_yield(); holding
- * active_refs during the operation is safe.  KUntyped's close callback is a no-op,
- * so there is no IPC-style "wake blocked tasks" concern.
+ * KUntyped operations (INFO/RETYPE/RESET) never PARK; holding active_refs
+ * across one is safe.  (This said "across task_yield()" until the roadmap
+ * review: Stage 9-evt step 3 deleted that function, and the boundary an
+ * invariant like this is written against is the park point.)  KUntyped's
+ * close callback is a no-op, so there is no IPC-style "wake blocked tasks"
+ * concern.
  *
  * Caller MUST release both:
  *   kobject_active_release(&(*out)->base);
@@ -274,8 +277,9 @@ iris_error_t cspace_resolve_only_untyped(struct KCNode    *root,
  * way: they return only a lifecycle retain (kobject_release), NOT an
  * active_retain.
  *
- * Reason: IPC operations (EP_SEND/RECV/CALL, REPLY, NOTIFY_WAIT) can block
- * across task_yield().  Holding active_refs > 0 during blocking would prevent
+ * Reason: IPC operations (EP_SEND/RECV/CALL, REPLY, NOTIFY_WAIT) can PARK —
+ * "block across task_yield()" until Stage 9-evt step 3 deleted that function,
+ * the same boundary under a new name.  Holding active_refs > 0 across it would prevent
  * the close callback from firing when the capability is closed.  For KEndpoint,
  * that close callback (kendpoint_obj_close) is the only mechanism that wakes
  * tasks blocked on a destroyed endpoint.  Holding active_retain would stall

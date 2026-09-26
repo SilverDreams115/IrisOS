@@ -560,7 +560,18 @@ declared CPtr and is classified as a CPtr; occupied deep slot fails fast),
 T295 (aliases rejected on invoke / identify / mint-source / receive-slot
 paths), and host cases in `tests/kernel/test_cspace.c`.
 
-### Step 6c — the test suite  ← REMAINING
+### Step 6c — the test suite  ✅ DONE
+
+**Superseded note (roadmap review).**  This step was marked REMAINING while the
+rest of Stage 4 was marked CLOSED, and the two could not both be true.  It
+closed the way the step itself said it would: the 57 tests whose SUBJECT was
+the handle namespace were "deleted WITH the mechanism, not before", and the
+mechanism is gone.  Nothing in `services/` names a bridge helper, the handle
+syscalls are numbers that reach no method, and `tests/kernel/test_abi.c` AB-1
+sweeps every number the dispatcher can see asserting `NOT_SUPPORTED` — so the
+retirement is enforced mechanically rather than asserted here.  The plan below
+is kept as the record of how it was done; what follows it describes the state
+at the time and not the state now.
 
 `iris_test` is what keeps Stage 4 open, and it is not one migration.  All 268
 tests classified against a single rule — a test whose SUBJECT is the handle
@@ -628,10 +639,10 @@ tracks to zero, and rewriting it with `SYS_CSPACE_MINT` would assert the
 opposite of what it exists to pin.  T125 now splits deliberately: it identifies
 the four families with a CSpace birth through their slots and the two without
 two through the handles the LEGACY `SYS_UNTYPED_RETYPE` produced.  That leg is
-not an oversight: 87 is still live for `KFrame` / `KUntyped` / `KSchedContext`,
-so something has to keep exercising it until it retires.  `RETYPE2` accepts
-both types into a slot already, so that leg is a deletion when 87 goes, not a
-rewrite.
+not an oversight: 87 was still live for `KFrame` / `KUntyped` /
+`KSchedContext` when this was written, so something had to keep exercising it
+until it retired.  **It has**: `SYS_UNTYPED_RETYPE` (87) is RETIRED and
+`RETYPE2` is the only retype, so that leg is gone rather than split.
 
 Nothing remains of the bridge outside the suite: svcmgr's delivered-cap path
 and the `pager` / `lifecycle_probe` manifest oracles all moved to

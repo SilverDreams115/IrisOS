@@ -226,11 +226,15 @@ uint64_t            kernel_cr3      = 0;
 /*
  * Dead-task reap queue — replaces the old single-pointer pending_reap_task.
  *
- * A dying task cannot free its own stack (it's still executing on it).
- * Instead it sets TASK_DEAD and loops on task_yield(), which enqueues the
- * task here after context-switching away.  reap_pending_dead_task() dequeues
- * and frees one entry per call; it is invoked at the top of every task_yield()
- * and every scheduler_tick().
+ * A dying task cannot free its own storage while it is still standing on it.
+ * It marks itself TASK_DEAD and gives the CPU up, and the dispatcher enqueues
+ * it here once it is off-CPU.  `reap_pending_dead_task()` dequeues and frees
+ * one entry per call, from `sched_resume`'s dispatch point and from
+ * `scheduler_tick()`.
+ *
+ * (Roadmap review: this said "the top of every task_yield()".  Stage 9-evt
+ * step 3 deleted `task_yield`; the two call sites above are where the reaper
+ * actually runs, and D-12 leans on that, so it is worth being exact.)
  *
  * CAPACITY IS DERIVED, not guessed.  A task enters this queue by dying, and a
  * task dies on the CPU it was running on — so between two reap calls there can

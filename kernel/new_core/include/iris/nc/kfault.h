@@ -86,8 +86,24 @@ struct KFrame;
  * IRIS_ERR_BAD_HANDLE because teardown has already been claimed.  Test and act
  * under one lock hold; see kprocess.c for why a separate flag read is not a
  * gate.  Every path that gives a thread a process goes through this. */
-/* Phase S1: kprocess_quota_{acquire,release}_notification retired (Untyped is
- * the budget for notifications).  VMO/page quotas remain for legacy objects. */
+/*
+ * Phase S1: kprocess_quota_{acquire,release}_notification retired (Untyped is
+ * the budget for notifications).
+ *
+ * **Roadmap review correction.**  This used to end "VMO/page quotas remain for
+ * legacy objects".  They do not.  `KVmo` is deleted (D-5), no path charges a
+ * quota, no path refuses on one, and there is no `IRIS_ERR_QUOTA`.  What
+ * bounds an allocation is the budget it was given, with no second ceiling
+ * anywhere — which is the whole of charter M3.
+ *
+ * The two gauges below are what is left, and they are PERMANENTLY ZERO:
+ * `kquota_failed_charges` is never incremented and
+ * `kfault_quota_stat_rollback` is never called.  They stay because the query
+ * struct that carries them is part of the frozen ABI (Stage 10-abi) and
+ * removing a field is not a thing a frozen surface may do.  A reader must not
+ * take them for a measurement: zero here means "nothing counts this", not "no
+ * exhaustion has occurred".
+ */
 /* Phase 29 — global resource-accounting gauges (SYS_RESOURCE_INFO). */
 uint32_t         kfault_quota_failed_count(void);
 uint32_t         kfault_quota_rollback_count(void);

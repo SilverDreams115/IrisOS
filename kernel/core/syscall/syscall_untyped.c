@@ -801,6 +801,11 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             q.kslab_used_bytes      = kslab_used_bytes();
             q.kslab_total_bytes     = kslab_total_bytes();
             q.kslab_failed_allocs   = kslab_fail_count();
+            /* Roadmap review: both are PERMANENTLY ZERO.  The quota they
+             * counted is retired — nothing charges one and nothing refuses on
+             * one — and the fields stay only because this struct is frozen
+             * ABI (Stage 10-abi).  Zero here means "nothing counts this", not
+             * "no exhaustion occurred"; see kfault.h. */
             q.global_failed_charges = kfault_quota_failed_count();
             q.global_rollbacks      = kfault_quota_rollback_count();
             q.syscall_restarts      = syscall_restart_count();
