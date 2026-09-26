@@ -32,7 +32,7 @@
  * BOOT_CPTR_BOOTSTRAP_CAP occupies slot 1 in the root CNode of userboot.
  * BOOT_CPTR_VSPACE occupies slot 2 — the initial VSpace capability.
  * The legacy bootstrap_cap_h handle (arg0) remains valid in dual mode. */
-/* Slot 1 held the MONOLITHIC KBootstrapCap until Stage 5 Step 2 split it into
+/* Slot 1 held the MONOLITHIC KBootstrapCap until split it into
  * one capability per authority.  It is permanently reserved and permanently
  * EMPTY: there is no capability with more than one authority left to put
  * there, and the root task reads what it holds from BootInfo. */

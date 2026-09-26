@@ -85,7 +85,7 @@ struct iris_service_catalog_entry {
                                      *     With own_service_ep=1: an endpoint server
                                      *.
                                      *     With own_service_ep=0: a pure CPtr-first
-                                     *     client (Phase 8: sh — empty bootstrap bag,
+                                     *     client (sh — empty bootstrap bag,
                                      *     ready when proc_h is alive). */
     uint32_t       client_eps;      /* Bitmask (IRIS_SVC_CLIENT_EP_*) of the
                                      *     core client endpoints this service actually

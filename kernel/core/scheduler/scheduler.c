@@ -46,7 +46,7 @@ static inline uint64_t sched_ticks_load(void) {
  * used by the T119/T122 selftests to prove cooperative tasks actually reach
  * the scheduler (no lost/stuck worker).  It never influences scheduling.
  *
- * It counted `task_yield()` entries until Stage 9-evt step 3, when a yield
+ * It counted `task_yield()` entries until step 3, when a yield
  * stopped being how a thread reaches the scheduler: SYS_YIELD parks and the
  * DISPATCHER makes the decision, on the core's stack.  Counting both entry
  * points keeps the signal meaning what the tests read it as — "the scheduler

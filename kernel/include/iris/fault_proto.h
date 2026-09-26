@@ -13,14 +13,14 @@
  *              delivered into the handler's mailbox, not by this number)
  *   offset  8: uint64_t rip        — instruction pointer at fault
  *   offset 16: uint32_t error_code — CPU error code (0 if N/A for this vector)
- *   offset 20: uint32_t fault_seq  — Phase 25: per-process fault generation
+ *   offset 20: uint32_t fault_seq  — per-process fault generation
  *              (1-based, monotonic per delivery; was _pad, written 0 before
  *              Phase 25, so a 0 here means "kernel predates fault generations")
  *   offset 24: uint64_t cr2        — fault address (#PF only; 0 otherwise)
  *
  * After sending the notification the kernel suspends the faulting task in
  * TASK_BLOCKED_FAULT state.  The handler must call SYS_EXCEPTION_RESUME(66)
- * with action=0 (resume) or action=1 (kill) to unblock the task.  Phase 25:
+ * with action=0 (resume) or action=1 (kill) to unblock the task.
  * action 2 (resume) / 3 (kill) additionally carry the expected fault_seq in
  * bits [63:32] of the action argument — the kernel refuses (NOT_FOUND) when
  * the pending fault of that task is a different generation, so a stale

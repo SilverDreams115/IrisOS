@@ -7,7 +7,7 @@
  * in memory it owns, contain the NIC's DMA when the machine can, and move
  * Ethernet frames.
  *
- * ── Why a network card is the clearest case for Stage 10-dma ───────────────
+ * ── Why a network card is the clearest case ───────────────
  *
  * A NIC does not read a buffer when you ask it to.  It reads a RING of
  * descriptors, continuously, at physical addresses the driver wrote into two

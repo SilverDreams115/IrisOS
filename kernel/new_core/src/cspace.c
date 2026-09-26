@@ -320,7 +320,7 @@ TYPED_RESOLVE(cspace_resolve_frame,       struct KFrame,       KOBJ_FRAME)
  * so every live handle is >= 1024 and every direct CPtr argument is < 1024.
  * Before this split the dual resolvers fed handle values straight into
  * cspace_resolve_cap, whose radix walk MASKS the index (cptr & slot_count-1)
- * — a handle like 1027 silently aliased root slot 3 once Phase 8 populated
+ * — a handle like 1027 silently aliased root slot 3 once populated
  * the low slots (wrong-object IPC / WRONG_TYPE hard stops).  The split makes
  * the documented ABI real:
  *   value <  1024 → CSpace namespace ONLY (no handle-table fallback; a
@@ -409,7 +409,7 @@ iris_error_t cspace_resolve_only_cnode(struct KCNode   *root,
  * This used to say "across task_yield()", a function Stage 9-evt step 3
  * deleted; the boundary is the park-and-re-execute point now, and the
  * constraint is the same one.  The sentence about a handle-table fallback
- * went with Stage 4 — there is one namespace.
+ * went with the handle namespace — there is one namespace.
  *
  * Caller releases with: kobject_release(&(*out)->base)
  */

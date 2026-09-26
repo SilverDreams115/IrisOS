@@ -266,7 +266,7 @@ void ipc_transfer_bulk(struct task *sender, struct task *receiver,
  * A server WITH a registered buffer takes the same shortcut for free and more
  * safely: its payload is already in a frame the kernel can read from any
  * address space, so a reply's payload is read from the server's registered
- * buffer exactly as a send's is (A-33: there is no address to ignore, on
+ * buffer exactly as a send's is (there is no address to ignore, on
  * send.
  */
 void ipc_transfer_reply(struct task *server, struct task *caller,
@@ -399,7 +399,7 @@ void syscall_ipc_stage_cap_release(struct KCNode *src_cn) {
  * only at its delivery point. */
 
 /* A1.7 diagnostic counters (relaxed atomics; no behavior depends on them).
- * slot/handle/toctou partition every transferred-cap delivery.  Since Stage 4
+ * slot/handle/toctou partition every transferred-cap delivery.  Since the handle namespace went
  * only the SLOT partition can be non-zero: handle materialization is retired
  * (see below) and the TOCTOU degradation went in Step 2, so both are
  * structural zeros kept as retirement witnesses.
@@ -768,7 +768,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_ok_u64(0);
     }
 
-    /* No receiver: stage cap in task and block.  A1.10 / Phase S4: the source
+    /* No receiver: stage cap in task and block.  A1.10 / the source
      * SLOT rides along un-consumed (with its CNode refs); the receiver
      * commits it at take time, cancel paths abort it. */
     ep->ep_state     = EP_STATE_SEND;
@@ -795,7 +795,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * SYNCHRONOUSLY on its own core -- the storage goes back to its Untyped
      * while the other core still holds the pointer.  The same defect
      * sys_tcb_exit fixed for itself (T350, "resurrect from refcount 0") and
-     * the reply binding fixed in A-43.
+     * the reply binding fixed.
      *
      * So being queued is being held.  Whoever takes it off the queue inherits
      * the reference and gives it back after its last touch.

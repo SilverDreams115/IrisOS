@@ -1115,7 +1115,7 @@ void test_t164(void) {
      * A range outside the AUTHORITY cannot be created.
      *
      * This used to read "outside the kernel's whitelist", and the difference
-     * is the whole of Stage 5's last row.  The kernel had a table of four port
+     * is the whole of the last row.  The kernel had a table of four port
      * ranges that applied to every holder equally, so it could not express the
      * only useful restriction — that one component may claim a serial port and
      * another may not.  The bound now travels on the capability, so the test
@@ -1195,7 +1195,7 @@ void test_t164(void) {
  * cannot forge a port or IRQ cap (no HW_ACCESS), cannot cross its port range,
  * and cannot ack an IRQ it holds no cap for.  The probe exits 0 (contained).
  * A control run WITH the spawn cap proves the probe genuinely attempts each
- * escalation (teeth).  This closes the loop with Phase 22: kbd already has no
+ * escalation (teeth).  This closes the loop with kbd already has no
  * peer client caps; now its hardware authority is shown bounded too.
  * Invariants: D7, D15, D17, D18. */
 void test_t165(void) {
@@ -2343,7 +2343,7 @@ void test_t181(void) {
               != (long)IRIS_ERR_ACCESS_DENIED) {
         ok = 0; why = "no-write not denied";
     }
-    /* ...and something that is not an address space is not one.  Ledger D-5:
+    /* ...and something that is not an address space is not one.
      * the answer is WRONG_TYPE.  SYS_VMO_MAP_INTO flattened it to INVALID_ARG
      * — a resolver that knew exactly what the caller named, reporting only
      * that something was wrong — and SYS_FRAME_MAP says which. */

@@ -9,7 +9,7 @@
 #include <stdint.h>
 
 /*
- * iris_cptr_t — capability pointer (formal type for Phase 3).
+ * iris_cptr_t — capability pointer (formal type).
  *
  * Encodes a path through a process's CNode tree.  Each CNode level consumes
  * log2(slot_count) bits from the LSB; traversal stops when remaining bits
@@ -278,7 +278,7 @@ iris_error_t cspace_resolve_only_untyped(struct KCNode    *root,
  * active_retain.
  *
  * Reason: IPC operations (EP_SEND/RECV/CALL, REPLY, NOTIFY_WAIT) can PARK —
- * "block across task_yield()" until Stage 9-evt step 3 deleted that function,
+ * "block across task_yield()" until deleted that function,
  * the same boundary under a new name.  Holding active_refs > 0 across it would prevent
  * the close callback from firing when the capability is closed.  For KEndpoint,
  * that close callback (kendpoint_obj_close) is the only mechanism that wakes

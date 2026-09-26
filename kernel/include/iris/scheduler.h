@@ -53,7 +53,7 @@ uint32_t sched_reap_queue_hwm(void);
  *   it is bounded, not necessarily zero.
  * sched_yield_count: monotonic count of times a thread REACHED the scheduler
  *   — a progress signal proving cooperative tasks get there (T119/T122).  It
- *   counted `task_yield()` entries until Stage 9-evt step 3 deleted that
+ *   counted `task_yield()` entries until deleted that
  *   function; it counts both of today's entry points, for the reason spelled
  *   out where it is defined: the signal means "the scheduler ran", not "a
  *   particular function was called".

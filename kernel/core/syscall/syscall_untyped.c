@@ -9,7 +9,7 @@
  *   reserved and answers NOT_SUPPORTED.  It was the LEGACY single-object
  *   retype that published the new capability as a HANDLE.  Phase S1 already
  *   refused the migrated family (Endpoint / Notification / Reply / CNode) on
- *   it; Stage 4 refuses the remaining three (KUntyped sub-regions, KFrame,
+ *   it; the CSpace form refuses the remaining three (KUntyped sub-regions, KFrame,
  *   KSchedContext) too, because RETYPE2 accepts all of them into a CSpace
  *   slot.  There is now exactly ONE way to create an object from an Untyped,
  *   and it puts the result where the object model says capabilities live.
@@ -125,7 +125,7 @@ _Static_assert(IRIS_KOBJ_TCB           == (uint32_t)KOBJ_TCB,           "KOBJ AB
  * kernel object header carved from an MMIO window would put a spinlock and a
  * refcount where loads and stores reach a device, and zero-filling the block
  * would drive that write into the device's registers.  Their sidecar headers
- * stay on the kernel slab — which is what a device region cost before Stage 6
+ * stay on the kernel slab — which is what a device region cost
  * and still costs, because charging is for memory a holder can spend and a
  * device window is not that.
  */

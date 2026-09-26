@@ -145,7 +145,7 @@
  *   slot  9: (T184 only) victim VSpace cap, deliberately under-privileged
  *   slot 12: target process cap  (READ for fault info, MANAGE for resume)
  *   slot 13: target VSpace cap   (WRITE — the map-into-target authority)
- *   slot 14: page source cap    (a KFrame — ledger D-5: which page a pager
+ *   slot 14: page source cap    (a KFrame — which page a pager
  *                                may install is which capability it holds) — the
  *            page the pager may install
  *   slot 15: fault notification  (WAIT — the delivery wake-up)
@@ -204,7 +204,7 @@
 #define LP_PGR_ERR_CR2         0x7Du   /* cr2 does not match expectation */
 
 /*
- * Phase 27's persistent PAGER SERVICE mode is DELETED.
+ * the persistent PAGER SERVICE mode is DELETED.
  *
  * It made this probe into a supervised user pager whose whole authority was a
  * manifest of target grants and VMO grants.  Phase 28 replaced it with a real

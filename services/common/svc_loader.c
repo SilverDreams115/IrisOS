@@ -32,7 +32,7 @@
 
 /* ── Freestanding syscall helpers ─────────────────────────────────── */
 
-/* Release a capability: delete its slot.  Stage 4 removed the handle branch —
+/* Release a capability: delete its slot.  The handle branch is gone —
  * every capability the loader creates is published into its workspace. */
 static inline void sl_close_cap(iris_cptr_t h) {
     if (h == IRIS_CPTR_NULL) return;
@@ -653,7 +653,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
              * that owned the address space and the CSpace and existed so a
              * supervisor had something to name.  A supervisor names the
              * THREAD now (kill, watch, exit code, faults, liveness are all
-             * thread operations since Stage 7), and threads sharing a CSpace
+             * thread operations), and threads sharing a CSpace
              * and a VSpace are what a process IS, so there is nothing left for
              * a third object to be.
              *
@@ -1023,7 +1023,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          *
          * Four steps, and every one names a capability: retype the TCB out of
          * the child's budget, configure it with the child's CSpace and VSpace,
-         * say where it starts, start it.  RBX = 0 (Track I: no bootstrap
+         * say where it starts, start it.  RBX = 0 (no bootstrap
          * channel; every cap is a CSpace mint).
          */
         {

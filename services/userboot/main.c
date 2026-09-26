@@ -110,7 +110,7 @@ static int ub_untyped_matches(const struct iris_bootinfo_untyped *e) {
 void iris_userboot_main(uint64_t bootinfo_va) {
     /* RBX carries the address of the BootInfo page.
      *
-     * It carried a bootstrap HANDLE until Stage 4 deleted that namespace, then
+     * It carried a bootstrap HANDLE until that namespace was deleted, then
      * 0 until this page existed.  What arrives now is not authority — the page
      * is mapped read-only and every capability it names is already installed
      * in this task's CSpace — it is the answer to "what did the kernel give
@@ -482,7 +482,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * Say where ACPI is, and that it is REACHABLE.
          *
          * Two separate claims, and the second is the one that was not true
-         * before Stage 10: the bootloader found a root pointer, and the
+         * before the bootloader found a root pointer, and the
          * capability that names the memory it points into has been handed to
          * ring 3.  Checked by containment rather than by reading, because
          * reading would consume part of a region somebody else is about to be

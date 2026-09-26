@@ -273,7 +273,7 @@ static void svcmgr_close_handle_if_valid(iris_cptr_t *h) {
  * Receive bootstrap messages from the bootstrap channel.
  * init sends one message before svcmgr starts:
  *   SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP — hardware/spawn authority cap.
- * (Phase 13/Track I: KIND_CONSOLE_CAP retired — svcmgr logs over console.ep.)
+ * (KIND_CONSOLE_CAP retired — svcmgr logs over console.ep.)
  *
  * Returns 1 once SPAWN_CAP has been received.
  */
@@ -765,7 +765,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
             /* The transfer SOURCE is a CSpace slot, never a
              * handle.  Mint the master into svcmgr's scratch slot and hand the
              * CPtr to the kernel; the delivered cap becomes an MDB child of
-             * that slot, so this grant is revocable from svcmgr.  Ledger A-29:
+             * that slot, so this grant is revocable from svcmgr.
              * the transfer is a COPY, so the scratch slot survives the reply
              * and svcmgr drops it itself once the reply has landed. */
             (void)iris_invoke1(0, INV_CNODE_DELETE, SVCMGR_XFER_SLOT);
@@ -967,7 +967,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
 
     {
         int64_t rr = iris_msg_reply((long)reply_h, &reply);
-        /* Reply-cap contract, ledger A-29: the transfer is a COPY, so the
+        /* Reply-cap contract, the transfer is a COPY, so the
          * scratch slot holds svcmgr's own capability whether the reply landed
          * or not.  Drop it here on every path.  Delivered or not, what the
          * client got (if anything) is a derivation CHILD and survives this
@@ -1133,7 +1133,7 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
     }
     /* The builder writes one entry per manifest kind, and the array is sized
      * for all of them.  Asserted rather than counted by a reader: this grew by
-     * one in A-27 and the bound had been a comment nobody re-derived. */
+     * one and the bound had been a comment nobody re-derived. */
     if (n > SVCMGR_CORE_MINT_MAX) svcmgr_log(sm_str_mint_overflow);
     return n;
 }

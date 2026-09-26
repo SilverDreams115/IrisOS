@@ -484,7 +484,7 @@ long it_wait_timeout(long notif, long out_bits_uptr, long ns) {
 }
 
 
-/* A KVMO published into a CSpace slot instead of a handle (Stage 4: arg2 of
+/* A KVMO published into a CSpace slot instead of a handle (arg2 of
  * SYS_VMO_CREATE is a destination slot).  Same rotating-pool contract as
  * it_retype_slot_alloc; released with it_close.
  *

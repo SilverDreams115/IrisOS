@@ -196,7 +196,7 @@ static inline long iris_vspace_map(unsigned long label, long a0, long a1,
  *              space was built from.
  *   pt_dest/pt_slot:  scratch for the level capability (RETYPE2 dest packing,
  *              and the CPtr it names).
- *   vs_dest/vs_slot:  unused since Stage 7 Step 9 — SYS_VMO_MAP_INTO names
+ *   vs_dest/vs_slot:  unused — SYS_VMO_MAP_INTO names
  *              the address space itself, so there is no VSpace to borrow out
  *              of a process any more.  Kept in the signature while callers
  *              still pass them.

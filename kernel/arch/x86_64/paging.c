@@ -109,7 +109,7 @@ static void destroy_pt_level(uint64_t table_phys, int level) {
 }
 
 /*
- * Where an intermediate page table comes from — and by Stage 6-pure, the
+ * Where an intermediate page table comes from — and, the
  * answer is "only here, only for the two address spaces with no holder".
  *
  * Step 2 gave this function a `pool` argument so a USER address space

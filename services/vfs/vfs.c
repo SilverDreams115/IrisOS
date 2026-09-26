@@ -102,7 +102,7 @@ static inline int64_t vfs_invoke2(uint64_t c, unsigned long l, uint64_t a1, uint
 static long vfs_self_vs(void) {
     static int ready = 0;
     if (!ready) {
-        /* D-6/A5: derived from the address space the spawner delegated. */
+        /* derived from the address space the spawner delegated. */
         if (iris_invoke2((long)IRIS_CPTR_OWN_VSPACE, INV_CSPACE_MINT,
                          (long)((uint64_t)VFS_SLOT_SELF_VS << 32),
                          (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)

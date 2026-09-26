@@ -455,7 +455,7 @@ void test_t302(void) {
  * capability, and the scheduler that is running it.  A pool-born thread got
  * the scheduler's reference from ktcb_object_init — its refcount of 1 WAS the
  * scheduler's.  A RETYPED thread's refcount of 1 belongs to the CSpace slot
- * the retype published it into, so until Stage 7 the slot was the only owner:
+ * the retype published it into, so until the slot was the only owner:
  * SYS_TCB_CONFIGURE built the execution state without taking a reference for
  * the scheduler that would run it.
  *
@@ -1329,7 +1329,7 @@ void test_t311(void) {
 
 /* ── T312: the ROOT CSpace capability carries a guard too ──
  *
- * Guards below the root landed in Stage 8-cap and live in the SLOT, because a
+ * Guards below the root landed and live in the SLOT, because a
  * KCSlot is the capability.  The root is the one capability a thread does not
  * reach through a slot — it is a structural pointer — so its guard lives on
  * the thread, installed by SYS_TCB_CONFIGURE's arg3, which is seL4's
@@ -1620,7 +1620,7 @@ void test_t313(void) {
     }
 
     /* ── 4. no buffer, no payload ────────────────────────────────────────
-     * The closing half of D-4, and the assertion that replaced its opposite.
+     * The closing half, and the assertion that replaced its opposite.
      *
      * This leg used to check that giving the buffer up fell back to the
      * kernel's 256 bytes of staging — the memory inside every TCB that the
@@ -1916,7 +1916,7 @@ void test_t316(void) {
     if (ok && q.total_bytes == 0u) { ok = 0; why = "empty device region"; }
 
     /* ── 2. fb REALLY retyped the framebuffer out of it ──────────────────
-     * The end-to-end proof that D-5's last memory object is gone.  fb used to
+     * The end-to-end proof that the last memory object is gone.  fb used to
      * receive a KVMO the kernel fabricated inside SYS_FRAMEBUFFER_VMO; it now
      * retypes one frame covering the whole region out of this Untyped, so the
      * region reads as consumed and carries a child.  A migration that had

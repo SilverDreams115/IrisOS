@@ -44,7 +44,7 @@
  * the resolver that fetches the capability with the type it requires.  A label
  * sent to the wrong kind of capability answers `IRIS_ERR_WRONG_TYPE`, which
  * names what is wrong, and which the kernel only became able to say
- * consistently at A-30.  seL4 answers `IllegalOperation` for the same mistake.
+ * consistently.  seL4 answers `IllegalOperation` for the same mistake.
  */
 #include "syscall_priv.h"
 #include <iris/invoke.h>

@@ -26,7 +26,7 @@
  * top-carved child block of the same Untyped, exactly as KFrame does it, and
  * for the same reason: the header must not live inside the page, because that
  * page is walked by the MMU.  That IRIS needs a header at all is the residue
- * of D-5 that this step does not close (seL4 has no object behind a frame or
+ * that this step does not close (seL4 has no object behind a frame or
  * a page table); what it closes is the part that mattered — the user decides
  * that the table exists, and holds the capability to it.
  */

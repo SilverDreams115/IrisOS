@@ -134,7 +134,7 @@ struct svc_mint {
  * returning (READ|WRITE), in the cnode|slot<<32 packing every publishing
  * syscall uses.
  *
- * `keep_tcb_dest` is the same for the child's first THREAD.  Stage 7 Step 10:
+ * `keep_tcb_dest` is the same for the child's first THREAD.
  * observing a child's death names the thread that dies, so a supervisor that
  * means to wait for its child keeps the TCB it retyped for it.
  *

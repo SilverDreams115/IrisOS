@@ -505,7 +505,7 @@ void test_t084(void) {
             (long)IRIS_ERR_WOULD_BLOCK) ok = 0;   /* resolves via CSpace */
     }
 
-    /* recv #2: NO declaration.  Stage 4 retired handle materialization, so the
+    /* recv #2: NO declaration.  Handle materialization is retired, so the
      * message arrives WITHOUT the capability — the same fail-closed shape a
      * raced or occupied slot has had since Step 2.  The sender is not left
      * hanging and nothing is half-transferred; a receiver that wants the cap
@@ -646,7 +646,7 @@ void test_t086(void) {
     if (iris_msg_recv((long)g_t086_cmd_ep, &r) !=
         (long)IRIS_ERR_ALREADY_EXISTS) ok = 0;
 
-    /* A CPtr whose path cannot be walked → INVALID_ARG.  Stage 4 made the
+    /* A CPtr whose path cannot be walked → INVALID_ARG.  That made the
      * declaration a full CPtr, so 300 is no longer "past the end of the root
      * CNode": it is root slot 44 (300 & 255) followed by index 1, and slot 44
      * holds no CNode to descend into.  Rejected either way, and deliberately
@@ -1092,7 +1092,7 @@ void test_t091(void) {
 
 /* ── T092: a client that declares no slot gets no capability ────────────────
  * This used to assert the opposite — that a slotless client still received the
- * vfs.ep cap, materialised as a handle.  Stage 4 retired that materialisation:
+ * vfs.ep cap, materialised as a handle.  That materialisation is retired:
  * it was the last place a capability entered a process through the handle
  * namespace, and the receiver never asked for it there.
  *
@@ -1265,7 +1265,7 @@ int it_setup_self_vspace(void) {
      * it used to arrive as a handle that had to be minted onward and closed. */
     /* Derived from the address space the spawner delegated, not fabricated by
      * SYS_VSPACE_SELF — so IT_VS is a child of the loader's slot and a revoke
-     * there reaches it, which is the whole of D-6. */
+     * there reaches it, which is the whole. */
     long r = it_invoke2((long)IRIS_CPTR_OWN_VSPACE, INV_CSPACE_MINT, IT_MINT_SELF(IRIS_CPTR_TEST_VSPACE), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
     if (r != 0) return 0;
     g_it_vspace_ready = 1;
@@ -1579,7 +1579,7 @@ void test_t094(void) {
         ok = 0; why = "source consumed on failed delivery";
     }
     if (ok) it_slot_delete((uint32_t)xsrc);
-    /* The slot keeps exactly the race winner: nB, a notification.  Stage 4:
+    /* The slot keeps exactly the race winner: nB, a notification.
      * both sides are slots, so identity is compared where it lives. */
     if (ok) {
         long rh = it_invoke0(T094_SLOT, INV_CAP_IDENTIFY);
@@ -1602,7 +1602,7 @@ void test_t094(void) {
 /* ── T095: handle high-water smoke (A1.7) ───────────────────────────────────
  * By this point the suite has exercised every creator, every transfer, every
  * spawn and every death.  Read the extended diagnostics, log the real numbers,
- * and assert what Stage 4 set out to make true: the handle namespace is empty.
+ * and assert what this set out to make true: the handle namespace is empty.
  *
  * Three retirement witnesses live here.  Handle-live must be ZERO — no
  * capability the suite holds is addressed by a handle.  Handle-delivery must
@@ -1762,7 +1762,7 @@ void test_t097(void) {
                       (long)RIGHT_READ) !=
         (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "transfer not retired"; }
     /*
-     * A dead destination, re-derived for Stage 7 Step 9.
+     * A dead destination, re-derived.
      *
      * "Minting into a dead process fails" was a property of naming the
      * PROCESS: the kernel looked it up, found it torn down, and refused.  The
@@ -1856,7 +1856,7 @@ void test_t098(void) {
             it_close(&rdh);
         }
     }
-    /* A dead destination, Stage 7 Step 9: the CNode outlives the process whose
+    /* A dead destination, the CNode outlives the process whose
      * root it was, so the mint lands — in a CSpace no thread resolves in.
      * What teardown guarantees, and what the old "the process is dead" refusal
      * was standing in for, is that the child's own slots were EMPTIED. */

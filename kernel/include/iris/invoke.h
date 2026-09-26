@@ -36,7 +36,7 @@
  * the resolver that fetches the capability with the type it requires.  A label
  * sent to the wrong kind of capability gets `IRIS_ERR_WRONG_TYPE` — which says
  * what is actually wrong, and which the kernel only became able to say
- * consistently at A-30.  That is a better answer than seL4's
+ * consistently.  That is a better answer than seL4's
  * `IllegalOperation` for the same mistake, and it costs nothing extra because
  * the check was already being made.
  *

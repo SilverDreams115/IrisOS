@@ -113,7 +113,7 @@
  * children the suite has live and delegable at once is two (T183, T184).
  */
 /* Mint into a slot of MY OWN root CSpace.  SYS_CSPACE_MINT's dest_cnode of 0
- * has meant "the caller's root" since Phase S3 — which is why minting into
+ * has meant "the caller's root" — which is why minting into
  * yourself never needed a capability to your own process, and why the
  * process-shaped variants had nothing to offer this case. */
 #define IT_MINT_SELF(slot)   ((long)((uint64_t)(slot) << 32))
@@ -389,7 +389,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * rather than hanging — is T010's, on SYS_NOTIFY_WAIT_TIMEOUT, which is the
  * mechanism a user-space futex would sleep on.
  *
- * The Stage 4 rule, unchanged: a test whose SUBJECT is the retired mechanism
+ * The rule, unchanged: a test whose SUBJECT is the retired mechanism
  * dies with it; one asserting a property that survives is rewritten. */
 
 /* ── T024: SYS_REPLY transfers an attached cap to the EP_CALL caller ────── */
@@ -432,10 +432,10 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * Receives the SPAWN_CAP bootstrap cap from init (serial/test loading).
  * Timeout-bounded so a missing message degrades to IRIS_CPTR_NULL — the
  * dependent tests then FAIL loudly instead of hanging boot or being
- * silently skipped.  (Phase 8: the discovery endpoint no longer arrives
+ * silently skipped.  (the discovery endpoint no longer arrives
  * here; it is the well-known slot IRIS_CPTR_SVCMGR_EP.)
  */
-/* it_recv_bootstrap retired — Phase 13/Track I: the spawn cap is the
+/* it_recv_bootstrap retired — the spawn cap is the
  * IRIS_CPTR_PROC_CONTROL pre-start mint, not a bootstrap KChannel message. */
 
 /* ── T079: VMO map by CPtr (A1 Increment 1) ─────────────────────────────────
@@ -450,7 +450,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * map flags → ACCESS_DENIED). */
 
 /* Dynamic slots for this fixture, and they must be slots NOBODY ELSE writes.
- * They were 16/17/18: 18 became IRIS_CPTR_OWN_VSPACE when D-6 delegated a
+ * They were 16/17/18: 18 became IRIS_CPTR_OWN_VSPACE when delegated a
  * service its own address space, so "never minted — must not resolve" stopped
  * being true and this test kept passing because a VSpace answers WRONG_TYPE,
  * which is also negative.  A slot's emptiness is a claim about the whole
@@ -550,7 +550,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 #define T083_SLOT_SC_RO   35L             /* SchedContext: READ only    */
 
 /* ── T084: IPC receive-slot — basic endpoint cap delivery (A1.5) ────────────
- * A receiver declares an empty own-CSpace slot in `msg.recv_slot` (A-33: its
+ * A receiver declares an empty own-CSpace slot in `msg.recv_slot` (its
  * own argument register, where it used to share a field with two other
  * meanings): a capability the sender attaches lands IN THAT SLOT and the
  * receiver reads the CPtr back in `msg.got_cap`.  A sender thread EP_SENDs the same endpoint cap twice (WRITE,
@@ -865,7 +865,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  *   2 kill before delivery: child killed while blocked with a declared
  *     slot — no dead waiter remains (NB probe), the sender's cap survives
  *     the attempted delivery;
- *   3 slot 0 (no destination): Stage 4 retired handle materialisation, so
+ *   3 slot 0 (no destination): The handle namespace retired materialisation, so
  *     the child receives the message WITHOUT the capability, exits 0, and no
  *     cross-boundary signal can occur — the parent proves that by timing out
  *     on the notification instead of blocking on it.
@@ -1863,7 +1863,7 @@ struct it_utq_taskobj {
 #define T289_TSLOT 200u    /* free slot in IRIS_CPTR_TEST_PROC's root CNode */
 
 /* ── T294: a receive slot below the root CNode ───────────────────────────
- * Until Stage 4 a receive slot had to be a DIRECT index into the root CNode,
+ * A receive slot had to be a DIRECT index into the root CNode,
  * so a process whose root was full could not receive a capability at all —
  * and this suite's root IS full (six slots free before the second-level CNode
  * at 80 was added).  The declaration is a full CPtr now, walked by
@@ -2474,7 +2474,7 @@ struct t322_case { uint32_t type; long arg; const char *name; };
  *     slot.  This one did, and it found one: T308's scheduling context, killed
  *     by the donation-return path handing a borrowed SC back to a lender after
  *     the borrower had already released it (fixed in kreply.c).  A capability
- *     graph and a reference count disagreeing is D-7's whole subject, and this
+ *     graph and a reference count disagreeing is the whole subject, and this
  *     is the assertion that makes the disagreement visible.
  *
  * (2) OCCUPANCY IS BOUNDED.  A ceiling, not zero, and the difference is
@@ -2492,7 +2492,7 @@ struct t322_case { uint32_t type; long arg; const char *name; };
  * that recycles.  It goes down as they are paid.
  */
 /*
- * 26 → 28 at A-30, and the reason is arithmetic rather than tolerance.  T335
+ * 26 → 28, and the reason is arithmetic rather than tolerance.  T335
  * was written using the rotating pool and moved to fixed scratch slots, which
  * removed four rotations from the run.  Held went 21 → 25 and evictions went
  * 9 → 5: 21+9 and 25+5 are the same thirty capabilities, so nothing new is

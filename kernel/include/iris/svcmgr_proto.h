@@ -174,7 +174,7 @@
  */
 
 #define SVCMGR_MSG_SPAWN_SERVICE  0x0001u /* retired compatibility */
-/* 0x0002 retired (Phase 19: SVCMGR_MSG_PHASE3_PROBE removed with SYS_SPAWN) */
+/* 0x0002 retired (SVCMGR_MSG_PHASE3_PROBE removed with SYS_SPAWN) */
 #define SVCMGR_MSG_LOOKUP         0x0003u
 #define SVCMGR_MSG_STATUS         0x0004u
 #define SVCMGR_MSG_DIAG           0x0005u

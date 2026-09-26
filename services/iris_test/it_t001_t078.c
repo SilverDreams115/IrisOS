@@ -917,7 +917,7 @@ uint32_t it_stage_path(const char *path) {
  * instead of materialising a handle — the same authority, addressed the way
  * every other capability in this process is.  The slot lives in the
  * second-level CNode because the root has no room, which is exactly what
- * Stage 4's multi-level receive slots exist for.
+ * multi-level receive slots exist for.
  *
  * Returns the CPtr on success, or a negative error.  The slot is deleted
  * first, so a re-run (or a stale occupant) is clean. */

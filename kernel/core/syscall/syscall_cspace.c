@@ -271,7 +271,7 @@ uint64_t sys_cspace_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * kernel object the sender held, not a copy of its rights.  Until now the
  * only way to ask either was to materialize the slot into a handle
  * (SYS_CSPACE_RESOLVE) and interrogate the handle, which is precisely the
- * bridge Stage 4 retires.  Every remaining productive use of that bridge —
+ * bridge that retires with it.  Every remaining productive use of that bridge —
  * svcmgr's delivered-cap dispatch — is one of these two questions.
  *
  * Why they are not new authority.  Both are strictly WEAKER than the bridge

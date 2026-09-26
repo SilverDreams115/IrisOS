@@ -82,7 +82,7 @@ static void kendpoint_obj_close(struct KObject *obj) {
             t->ep_fault_call = 0u;
             t->ep_call_mode  = 0u;
             t->ep_next       = kill_head;   /* off the queue; onto the list */
-            kill_head        = t;           /* keeps A-44's reference */
+            kill_head        = t;           /* keeps the reference */
         } else {
             task_wakeup(t);
             kobject_release(&t->base);      /* The queue's */

@@ -27,7 +27,7 @@ static iris_error_t tcb_resolve(struct KCNode *root, iris_cptr_t cptr,
     /* WRONG_TYPE is reported as WRONG_TYPE.  This flattened it to INVALID_ARG
      * — "something about your argument is wrong", said by a resolver that had
      * just identified the capability exactly.  Third instance of the same
-     * defect: the typed resolvers had it until A-20's type-before-rights fix,
+     * defect: the typed resolvers had it until the type-before-rights fix,
      * and `dev_cap_budget` had it until D-5. */
     iris_error_t err = cspace_resolve_only_obj(root, cptr, RIGHT_NONE,
                                                     KOBJ_TCB, &obj, rights_out);
@@ -128,7 +128,7 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
      * The process argument survives this step for one reason, and it is not
      * authority: teardown still counts threads (`thread_count`), and that
      * count is what reclaims an address space when the last one exits.  Moving
-     * reclamation off it is the remaining content of Stage 7-proc — attempting
+     * reclamation off it is the remaining content — attempting
      * both at once produced a kernel where every spawned thread faulted on its
      * own entry point, because a thread with no process is a thread whose
      * address space nothing reclaims and whose syscall guards all fail.
@@ -678,7 +678,7 @@ uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 /*
  * sys_tcb_set_mcpriority(tcb_cptr, mcp, authority_cptr)
- *   ledger A-20's other half — seL4's `seL4_TCB_SetMCPriority`.
+ *   the other half — seL4's `seL4_TCB_SetMCPriority`.
  *
  * A thread's MCP is the CEILING on what it may grant: `TCB_SetPriority` reads
  * the authority's `mcp` and refuses anything above it, so a supervisor given

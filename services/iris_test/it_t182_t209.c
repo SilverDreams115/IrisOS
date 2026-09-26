@@ -946,7 +946,7 @@ int t26_page_word(iris_cptr_t page, uint32_t *val, int write) {
  *
  * What did NOT survive is the size CONTRACT — "the region is as big as you
  * asked for" — because a granted page is one page by construction and there is
- * no second number to disagree with.  The Stage 4 rule: a property that only
+ * no second number to disagree with.  The rule: a property that only
  * existed because of the mechanism dies with it; one that outlives it moves.
  * Invariants: M1, M2, M9, M10, M11, M12, M23. */
 void test_t191(void) {

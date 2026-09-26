@@ -177,7 +177,7 @@ uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         /* The null capability is the UNBIND path, handled below; anything else
          * is a CPtr and is resolved as one.  The comment here used to say
          * "dual resolver (CPtr slot or handle)", which described a namespace
-         * Stage 4 deleted.  WRONG_TYPE travels. */
+         * Deleted.  WRONG_TYPE travels. */
         iris_error_t err = cspace_resolve_only_obj(t->cspace_root, sc_h,
                                      RIGHT_NONE, KOBJ_SCHED_CONTEXT, &obj, &rights);
         if (err != IRIS_OK) return syscall_err(err);

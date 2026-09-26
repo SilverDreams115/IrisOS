@@ -378,7 +378,7 @@ void test_t125(void) {
         }
         /* No object leaked through any failure path. */
         if (ok && !it_sched_ext3(f1)) { ok = 0; why = "ext3 fail-after"; }
-        /* 6 words since Stage 7-mem: the live-VMO count joined the per-type
+        /* 6 words since the live-VMO count joined the per-type
          * gauges, so a failure path that leaked one is caught here too. */
         for (uint32_t i = 0; ok && i < 6u; i++)
             if (f1[i] != f0[i]) { ok = 0; why = "failure leaked object"; }
@@ -1111,7 +1111,7 @@ void test_t136(void) {
  *   - frame destroy is impossible while mapped — only after unmap does closing
  *     the last cap destroy it (a clean close proves mapped_count == 0);
  *   - no stale PTE and no stale cap remain.
- * Invariants: V17, V18 (+ U10/U13 from Phase 18). */
+ * Invariants: V17, V18 (+ U10/U13). */
 void test_t137(void) {
     uint32_t s3b[6];
     uint32_t v0[5], v1[5];
@@ -2248,13 +2248,13 @@ void test_t148(void) {
     /* Holes in 0..107 (every number NOT routed by syscall_dispatch). */
     /* Holes plus the routed-but-RETIRED numbers, which are indistinguishable
      * from a hole at the ABI: both answer NOT_SUPPORTED and touch nothing.
-     * 43 = SYS_IOPORT_RESTRICT and 90 = SYS_CNODE_FETCH joined them in Stage 4
+     * 43 = SYS_IOPORT_RESTRICT and 90 = SYS_CNODE_FETCH joined them
      * (both were handle producers with no CSpace form and no callers), and
-     * 45 = SYS_BOOTCAP_RESTRICT in Stage 5. */
+     * 45 = SYS_BOOTCAP_RESTRICT. */
     static const long retired[] = {
         0, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 18, 23, 24, 25, 30, 31, 34,
         37, 38, 41, 42, 43, 44, 46, 59, 63, 72, 78, 79, 80, 90,
-        /* Stage 4 closeout: the handle namespace's own surface. */
+        /* Closeout: the handle namespace's own surface. */
         15, 22, 52, 53, 81, 87, 89, 95,
         /* 45 = SYS_BOOTCAP_RESTRICT.  Narrowing a boot
          * capability by cloning a weaker copy of it has no meaning once each
@@ -2285,9 +2285,9 @@ void test_t148(void) {
         }
     }
     /* High/unassigned range 114..400 (111 = SYS_UNTYPED_RETYPE2, 112 =
-     * SYS_UNTYPED_QUERY, Phase S2's 113 = SYS_SC_BIND are live; 107..110 remain
+     * SYS_UNTYPED_QUERY, the 113 = SYS_SC_BIND are live; 107..110 remain
      * live from Fases 25/26/29). */
-    /* 114-116 are SYS_CSPACE_MINT/REVOKE/MINT_INTO.  Phase S4/Stage 4:
+    /* 114-116 are SYS_CSPACE_MINT/REVOKE/MINT_INTO.
      * 117-118 are SYS_CAP_IDENTIFY/SYS_CAP_SAME_OBJECT — the CSpace-native
      * introspection that replaces SYS_HANDLE_TYPE/SAME_OBJECT.  Stage 5
      * Step 4: 119-121 are SYS_CSPACE_SELF / SYS_TCB_CONFIGURE /
@@ -2314,7 +2314,7 @@ void test_t148(void) {
      * of objects carved from it (MMIO is not storage), so the holder names the
      * RAM that pays for them.  The first UNASSIGNED number moves
      * 133 is SYS_FRAMEBUFFER_INFO — the geometry alone, separated
-     * from the VMO its predecessor fabricated in the same call.  Stage 6/D-5:
+     * from the VMO its predecessor fabricated in the same call.
      * 134 is SYS_INITRD_FRAME — a boot image as a FRAME rather than a KVMO,
      * which is how the loader and vfs stopped speaking a second memory ABI to
      * read a file the kernel already had.  135 is

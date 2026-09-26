@@ -17,7 +17,7 @@
 static const char init_stage_exception[] = "[USER][INIT][S8] exception delivery OK\n";
 
 /* The invalid-userptr selftest now exercises the kernel's
- * user-pointer validation over a KNotification (A-24: SYS_NOTIFY_POLL, with a
+ * user-pointer validation over a KNotification (SYS_NOTIFY_POLL, with a
  * bogus out_bits pointer → IRIS_ERR_INVALID_ARG) instead of a KChannel. */
 void init_runtime_probe_invalid_userptr(void) {
     long n = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
@@ -70,7 +70,7 @@ void init_selftest_exception(void) {
      * silent non-test. */
     uint64_t entry = (uint64_t)(uintptr_t)s8_ud2_fn;
     uint64_t rsp   = (uint64_t)(uintptr_t)(s8_thread_stack + sizeof(s8_thread_stack));
-    /* D-6/A5: init's own CSpace and address space are DELEGATED by its
+    /* init's own CSpace and address space are DELEGATED by its
      * spawner (userboot, through svc_loader) at the well-known slots.  They
      * used to be fabricated by SYS_CSPACE_SELF / SYS_VSPACE_SELF — capabilities
      * handed over on request, with no capability asked for and no ancestor to
@@ -87,7 +87,7 @@ void init_selftest_exception(void) {
     }
     /*
      * Point the thread's faults at the endpoint above.  It moved
-     * below the retype in Stage 7 Step 12 for the reason it stays there: there
+     * below the retype for the reason it stays there: there
      * is no thread to name before it.
      */
     if (iris_invoke((long)INIT_SLOT_S8_TCB, INV_TCB_SET_FAULT_HANDLER, (long)INIT_SLOT_S8_FAULT_EP, 0, 0) != 0) {

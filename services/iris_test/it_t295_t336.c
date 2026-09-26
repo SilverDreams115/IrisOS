@@ -343,7 +343,7 @@ void test_t329(void) {
 
 /* ── T330: a bound notification reaches a thread blocked on an endpoint ─────
  *
- * Ledger A-23, seL4's `seL4_TCB_BindNotification`, and the gap A-20's audit
+ * Ledger A-23, seL4's `seL4_TCB_BindNotification`, and the gap the audit
  * found: *"seL4 binds a notification to a TCB so a passive server blocked on
  * an endpoint can still take signals; IRIS cannot."*
  *
@@ -1019,7 +1019,7 @@ void test_t334(void) {
  * `WRONG_TYPE → INVALID_ARG`, three `WRONG_TYPE → ACCESS_DENIED`, and three
  * ternaries that mapped WRONG_TYPE to itself — the residue of a conversion
  * that was done three separate times and never finished (A-20's
- * type-before-rights fix, D-5's `dev_cap_budget`, and the TCB family at Step
+ * type-before-rights fix, the `dev_cap_budget`, and the TCB family at Step
  * 4).  `SYS_TCB_SET_IPC_BUFFER` was the clearest symptom: one call answering
  * WRONG_TYPE for a bad arg0 and INVALID_ARG for a bad arg1, for the same kind
  * of mistake.

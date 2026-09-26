@@ -104,7 +104,7 @@ void kfault_resolve(struct task *ft, int killed) {
         atomic_fetch_add_explicit(&kfault_cleanup, 1u, memory_order_relaxed);
     }
     irq_spinlock_unlock(&ft->obj_lock, irqfl);
-    /* Unconditional, as it has been since Phase 20: this counts RESOLUTIONS —
+    /* Unconditional, as it has been since this counts RESOLUTIONS —
      * how many times a handler answered — not how many records existed to
      * clear.  A second call for an already-resolved fault is still an answer. */
     atomic_fetch_add_explicit(killed ? &kfault_kill : &kfault_resume, 1u,

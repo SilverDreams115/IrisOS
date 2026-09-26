@@ -58,7 +58,7 @@ static inline long fb_invoke2(long c, unsigned long l, long a1, long a2) { retur
 static long fb_self_vs(void) {
     static int ready = 0;
     if (!ready) {
-        /* D-6/A5: derived from the address space the spawner delegated. */
+        /* derived from the address space the spawner delegated. */
         if (iris_invoke2((long)IRIS_CPTR_OWN_VSPACE, INV_CSPACE_MINT,
                          (long)((uint64_t)FB_SLOT_SELF_VS << 32),
                          (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)

@@ -263,7 +263,7 @@ int init_spawn_pci(void) {
     }
 }
 
-/* ── ip spawn (Stage 10: a protocol stack is a service, not part of a driver) */
+/* ── ip spawn (a protocol stack is a service, not part of a driver) */
 
 /*
  * ARP, IPv4 and UDP.
@@ -424,7 +424,7 @@ int init_spawn_ip(void) {
     return 1;
 }
 
-/* ── fs spawn (Stage 10: a filesystem that survives the power going off) ─── */
+/* ── fs spawn (a filesystem that survives the power going off) ─── */
 
 /*
  * The persistent filesystem.
@@ -788,7 +788,7 @@ static int init_net_arp_probe(void) {
      * milliseconds of wall clock to appear even though nothing is far away.
      *
      * `SYS_CLOCK_GET` is one of the four syscalls that survived the ABI freeze
-     * (A-27: the counter is unprivileged on this architecture anyway).
+     * (the counter is unprivileged on this architecture anyway).
      */
     long t0 = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
     for (;;) {
@@ -838,7 +838,7 @@ static int init_net_arp_probe(void) {
     return 0;
 }
 
-/* ── blk spawn (Stage 10: storage is a driver, and the driver is in ring 3) ── */
+/* ── blk spawn (storage is a driver, and the driver is in ring 3) ── */
 
 /*
  * The AHCI disk service.
@@ -1627,7 +1627,7 @@ void init_spawn_iris_test(iris_cptr_t sm_h) {
          * And the authority over what a DEVICE may reach, at a
          * slot of the suite's own for the reason the one above has one.
          *
-         * The suite is given it deliberately: Stage 10-dma's claim is that a
+         * The suite is given it deliberately: the claim is that a
          * device reaches only what somebody mapped for it, and a test that
          * cannot bind an IOSpace can only check that the hardware is switched
          * on — a statement about the kernel's boot, not its capability model.

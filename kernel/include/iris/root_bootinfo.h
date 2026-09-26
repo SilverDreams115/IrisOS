@@ -19,7 +19,7 @@
  * The kernel writes one page of this and maps it read-only, non-executable
  * into the root task's address space; the virtual address arrives in RBX
  * (the register that used to carry a bootstrap HANDLE, and carried 0 from the
- * close of Stage 4 until this page existed).
+ * close of that work until this page existed).
  *
  * THE PAGE IS NOT AUTHORITY.  Charter §3.5 forbids an address standing in for
  * a capability, and nothing here does: every `cptr` field names a slot the

@@ -164,7 +164,7 @@ static void sh_write_u32(iris_cptr_t con, uint32_t v) {
 
 /* ── VFS endpoint path ────────────────────────────────── */
 
-/* (Phase 8: sh_svc_ep_lookup removed — sh discovers nothing at runtime;
+/* (sh_svc_ep_lookup removed — sh discovers nothing at runtime;
  * every core service cap is a well-known CSpace slot.) */
 
 /*

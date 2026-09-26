@@ -35,7 +35,7 @@
  * the first time a physical address computed this way was handed to HARDWARE:
  * a VT-d root entry pointing at a context table, where bits 63:39 are reserved
  * and a remapping unit answers a non-zero one with fault reason 10 and refuses
- * every device on the bus.  Stage 10-dma's driver test found it (§10.2 step 6)
+ * every device on the bus.  The driver test found it (§10.2 step 6)
  * and it is the reason the constant exists rather than the mask being written
  * out at each site.
  *

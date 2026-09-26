@@ -6,7 +6,7 @@
  * KEndpoint (seL4-style synchronous IPC) rather than KChannel ring buffers.
  *
  * Protocol model (labels on SYS_INVOKE; a MessageInfo word plus
- * message registers since A-33):
+ * message registers):
  *   - Clients EP_Call the service endpoint to send a request and block.
  *   - Servers loop on EP_Recv, process requests, then Reply on the reply
  *     object the receive delivered.
@@ -154,7 +154,7 @@
  *
  * The spawner mints capabilities into the child's root CNode with
  * CSpace_Mint; the child invokes them directly by CPtr — e.g. an EP_Call on
- * IRIS_CPTR_SVCMGR_EP — with no bootstrap transfer of any kind.  Stage 4
+ * IRIS_CPTR_SVCMGR_EP — with no bootstrap transfer of any kind.
  * deleted the handle table, so there is one authority namespace: an argument
  * is a CPtr or it is INVALID_ARG.  Slot 0 is the null slot.
  *
@@ -488,7 +488,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * free only if it is outside every declared RANGE as well as unnamed by every
  * constant, and three of the four checks above failed on a range.
  *
- * The suite is given this one deliberately.  Stage 10-dma's claim is that a
+ * The suite is given this one deliberately.  The claim is that a
  * device reaches only what somebody mapped for it, and a test that cannot bind
  * an IOSpace can only check that the hardware is switched on — which is a
  * statement about the kernel's boot, not about its capability model.

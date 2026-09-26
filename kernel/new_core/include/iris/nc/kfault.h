@@ -34,7 +34,7 @@ struct KFrame;
  *   - the PCID pool (1..4094) when PCID is enabled, which is hardware.
  *
  * kprocess_live_count() survives as INSTRUMENTATION, exposed through
- * SYS_SCHED_INFO — the same fate the notification quota had in Phase S1 and
+ * SYS_SCHED_INFO — the same fate the notification quota had and
  * the page quota had in Step 2.  What is gone is the refusal.
  */
 /* KPROCESS_NOTIFICATION_QUOTA retired — the capacity to create

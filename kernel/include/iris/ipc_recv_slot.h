@@ -5,7 +5,7 @@
  *
  * A receiver may declare, per receive operation, an empty slot of its CSpace:
  * "if this receive delivers a transferred cap, install it there."  Since
- * Stage 4 the declaration is a full CPtr, not a direct root index, so a
+ * The declaration is a full CPtr, not a direct root index, so a
  * process whose root CNode is full can still receive capabilities — into a
  * second-level CNode, the way a real CSpace hierarchy works.
  *
@@ -18,7 +18,7 @@
  * What a receiver gets back is `msg.got_cap` — a CPtr, or `IRIS_MSG_NO_CAP`
  * when nothing travelled.  There is no second outcome any more: handle
  * materialization was the fallback for a receiver that declared nothing, and
- * Stage 4 retired it along with the handle table.  A receive that declares no
+ * It was retired along with the handle table.  A receive that declares no
  * slot is delivered the MESSAGE without the capability, which is the same
  * fail-closed shape an occupied or broken slot has.
  *

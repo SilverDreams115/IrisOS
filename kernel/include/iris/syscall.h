@@ -456,7 +456,7 @@ static inline long iris_syscall0(long nr) {
  * Framebuffer VMO claim — modern/conforming (iris_error_t).
  *
  * SYS_FRAMEBUFFER_VMO(auth, info_uptr, dest) → vmo_handle, or 0 when dest
- *   names a slot, or negative iris_error_t   (Stage 4 destination slot in
+ *   names a slot, or negative iris_error_t   (destination slot in
  *   arg2, RETYPE2 packing — see SYS_VSPACE_SELF)
  *   auth_h:    the framebuffer control capability (IRIS_BOOTCAP_FB_CONTROL).
  *   info_uptr: user pointer to struct iris_fb_params (see iris/fb_info.h);
@@ -1024,7 +1024,7 @@ static inline long iris_syscall0(long nr) {
  *
  * SYS_UNTYPED_RETYPE — RETIRED.  It was the single-object retype that returned
  *   a HANDLE, kept during Phase S1 for the types that had not migrated yet.
- *   Stage 4 deleted the handle table and there is nothing left for it to
+ *   The handle table is gone and there is nothing left for it to
  *   return; every type is born the same way now, into a CSpace slot.  The one
  *   retype is `INV_UNTYPED_RETYPE`, which is what
  *   SYS_UNTYPED_RETYPE2 became.
@@ -1199,7 +1199,7 @@ struct iris_iommu_fault_info {
  *
  * SYS_FRAME_MAP(frame_cptr, vspace_cptr, user_va, flags) → 0 or negative iris_error_t
  *   frame_cptr:  KOBJ_FRAME with RIGHT_READ (+ RIGHT_WRITE if flags bit 0 set).
- *   vspace_cptr: KOBJ_VSPACE with RIGHT_WRITE to install the PTE.  Phase 25:
+ *   vspace_cptr: KOBJ_VSPACE with RIGHT_WRITE to install the PTE.
  *                dual resolver (CPtr < 1024 or handle), same as the frame —
  *                a SYS_PROCESS_VSPACE handle works directly.
  *   user_va:     page-aligned target virtual address in the VSpace's address space.
@@ -1224,7 +1224,7 @@ struct iris_iommu_fault_info {
  *   shootdown is SMP roadmap §9.3 step 2 and does not exist yet.
  *
  *   frame_cptr:  KOBJ_FRAME with RIGHT_READ.
- *   vspace_cptr: KOBJ_VSPACE with RIGHT_WRITE (dual resolver since Phase 25).
+ *   vspace_cptr: KOBJ_VSPACE with RIGHT_WRITE (dual resolver).
  *   user_va:     page-aligned VA that was previously mapped via SYS_FRAME_MAP.
  *
  *   Returns IRIS_ERR_NOT_FOUND   — user_va has no PTE in this VSpace.
@@ -1617,7 +1617,7 @@ struct iris_iommu_fault_info {
  *
  * Not yet expressible: a guard on the ROOT CNode capability.  A thread reaches
  * its root through a structural pointer rather than a slot, so there is no
- * capability to carry the guard.  That is the remaining half of D-2.
+ * capability to carry the guard.  That is the remaining half.
  */
 #define SYS_CSPACE_SET_GUARD 127
 
@@ -1737,7 +1737,7 @@ struct iris_iommu_fault_info {
  *               non-inverted and CONTAINED in the authority's own range, so a
  *               narrowing can only ever narrow
  *   budget_cptr the KUntyped the object is carved from.  Required, like every
- *               other device capability since Stage 7 Step 14: a narrowed
+ *               other device capability since a narrowed
  *               control capability is memory, and a syscall that let ring 3
  *               spend the KERNEL's would open a charter M3 hole in the same
  *               change that closed a policy one
@@ -1841,7 +1841,7 @@ struct iris_iommu_fault_info {
  * This is what lets a server multiplex an interrupt and a request queue on ONE
  * thread, which every real driver needs and IRIS had no way to express: a
  * service holding both an IRQ notification and a control endpoint had to
- * choose which one to block on, or spend a second thread.  A-20's audit found
+ * choose which one to block on, or spend a second thread.  The audit found
  * the absence; the timer service is the first thing that needed it.
  *
  * At most one notification per thread and one thread per notification: a
@@ -2201,7 +2201,7 @@ struct iris_untyped_query_global {
      * traffic rather than migration.  It exists because that
      * migration fails silently by construction: a caller that was never
      * converted keeps working, every test passes, and nothing says which door
-     * it took.  D-4's IPC-buffer migration had exactly this shape and the
+     * it took.  The IPC-buffer migration had exactly this shape and the
      * first service tried was quietly not migrated — which is why this counter
      * is here from the conversion's first commit rather than from the day
      * somebody wondered.
@@ -2275,7 +2275,7 @@ struct iris_untyped_query_taskobj {
  * in the owning process's handle table automatically.
  *
  * SYS_TCB_SELF(dest) → handle_id, or 0 when dest names a slot, or negative
- *   iris_error_t   (Stage 4 destination slot in arg0, RETYPE2 packing —
+ *   iris_error_t   (destination slot in arg0, RETYPE2 packing —
  *   see SYS_VSPACE_SELF)
  *   Returns a new handle to the calling thread's KTcb with
  *   RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.

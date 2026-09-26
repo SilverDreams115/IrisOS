@@ -123,7 +123,7 @@ void init_close(iris_cptr_t *h) {
 
 /* ── VFS endpoint client + S5/S6 boot-health checks ─────────────────────── */
 
-/* Moved to init_bootstrap.c — Phase 14: init_ep_lookup_name[_slot] (svcmgr.ep
+/* Moved to init_bootstrap.c — init_ep_lookup_name[_slot] (svcmgr.ep
  * discovery, incl. the A1.6 reply receive-slot), init_vfs_ep_call, and the
  * S5/S6 LIST/STAT/READ_AT validation with their retry waits. */
 
@@ -306,7 +306,7 @@ void init_main(iris_cptr_t rbx_unused) {
         init_exit(5);
     }
 
-    /* Phase 13: the legacy KChannel diagnostics + dynamic-registry
+    /* the legacy KChannel diagnostics + dynamic-registry
      * self-tests were retired; their coverage now lives in the endpoint suite
      * (EP_DIAG → T067, cap-backed REGISTER/LOOKUP/UNREGISTER → T054/T063–T066). */
 

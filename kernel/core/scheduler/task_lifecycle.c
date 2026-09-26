@@ -120,7 +120,7 @@ static int task_registry_alloc(struct task *t) {
     }
     /* The test used to be OUTSIDE this hold, so two callers could both
      * pass it and both splice `t` into the list, losing whichever links the
-     * second overwrote.  A-41's claim is what keeps that unreachable today;
+     * second overwrote.  The claim is what keeps that unreachable today;
      * the test belongs under the lock that does the linking regardless. */
     t->sched_prev = 0;
     t->sched_next = sched_thread_list;

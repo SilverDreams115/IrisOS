@@ -79,7 +79,7 @@ void test_t101(void) {
 /* ── T102: a child that declares no slot receives no capability ─────────────
  * This used to assert the opposite — that a child receiving with slot 0 got
  * the transferred cap as a handle and could invoke it across the process
- * boundary.  Stage 4 retired that delivery, and the guarantee that replaces it
+ * boundary.  That delivery is retired, and the guarantee that replaces it
  * is asserted here across a REAL process boundary, which is where it matters:
  * a receiver that names no destination gets the message and not the
  * capability, its exit code says so, and nothing is left half-transferred —
@@ -818,7 +818,7 @@ void test_t107(void) {
                 (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ep touched"; }
 
         } else if (pick == 5u) {
-            /* Slot 0 = no destination.  Stage 4 retired handle
+            /* Slot 0 = no destination.  The handle namespace retired
              * materialisation, so the receive SUCCEEDS and carries no
              * capability (I1).  The send is not an error — the failure is
              * closed at delivery, exactly like an occupied slot — and the
@@ -1210,7 +1210,7 @@ void test_t109(void) {
     /* I16: exact balance; +1 = the worker's KTcb handle. */
     if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
     /* Reply BINDINGS balance EXACTLY: one per rendezvous, zero per fail-fast
-     * (Phase S1: the counter tracks bindings of the reusable reply object). */
+     * (the counter tracks bindings of the reusable reply object). */
     if (ok && after[IT_SI_REPLY] != before[IT_SI_REPLY] + exp_reply) {
         ok = 0; why = "reply count";
     }
@@ -1263,7 +1263,7 @@ void test_t110(void) {
     struct iris_msg msg;
 
     /* Registered-name lookup into a declared slot: invocable, then released.
-     * It used to run slotless and assert a handle >= 1024; Stage 4 retired
+     * It used to run slotless and assert a handle >= 1024; that is retired
      * that delivery, so the destination is now explicit. */
     #define T110_LEGACY_OK()                                                  \
         do {                                                                  \
@@ -1453,7 +1453,7 @@ static int t111_round(uint32_t kind, uint32_t *exp_slot, uint32_t *exp_hand,
     if (ok && (kind == 0u || kind == 3u)) {
         /* Deliver a notification cap.  kind 0 declares a slot: the child
          * invokes the cap through it (bits 1) and its exit code reports the
-         * CPtr.  kind 3 declares NOTHING: Stage 4 retired handle
+         * CPtr.  kind 3 declares NOTHING: The handle namespace retired
          * materialisation, so the child receives the message without the
          * capability, exits 0, and nobody signals — the parent must not
          * block waiting for a signal that cannot come. */

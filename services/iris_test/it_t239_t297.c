@@ -187,7 +187,7 @@ void test_t240(void) {
  * one every other allocation asks: do I hold RIGHT_WRITE on that Untyped,
  * which T299 and T300 assert.
  *
- * The Stage 4 rule, unchanged: a test whose SUBJECT is the retired mechanism
+ * The rule, unchanged: a test whose SUBJECT is the retired mechanism
  * dies with it; one asserting a property that survives is rewritten. */
 
 
@@ -199,7 +199,7 @@ void test_t240(void) {
  * survives (a shared mapping does not double-spend a budget) is structural
  * now rather than enforced, and the budget drift checks in T299 measure it.
  *
- * The Stage 4 rule, unchanged: a test whose SUBJECT is the retired mechanism
+ * The rule, unchanged: a test whose SUBJECT is the retired mechanism
  * dies with it; one asserting a property that survives is rewritten. */
 
 
@@ -210,7 +210,7 @@ void test_t240(void) {
  * answer fixed at creation and there is no second party to get it wrong.  The
  * per-VSpace mapping nodes this also covered are asserted by T135.
  *
- * The Stage 4 rule, unchanged: a test whose SUBJECT is the retired mechanism
+ * The rule, unchanged: a test whose SUBJECT is the retired mechanism
  * dies with it; one asserting a property that survives is rewritten. */
 
 
@@ -331,7 +331,7 @@ void test_t245(void) {
  * ceiling somebody delegated is the only ceiling — including that the refusal,
  * when the budget ends, is clean.
  *
- * The Stage 4 rule, unchanged: a test whose SUBJECT is the retired mechanism
+ * The rule, unchanged: a test whose SUBJECT is the retired mechanism
  * dies with it; one asserting a property that survives is rewritten. */
 
 
@@ -342,7 +342,7 @@ void test_t245(void) {
  * RIGHT_WRITE on that Untyped and the monotonicity question is the general one
  * about rights the MDB already answers (T288-T290).
  *
- * The Stage 4 rule, unchanged: a test whose SUBJECT is the retired mechanism
+ * The rule, unchanged: a test whose SUBJECT is the retired mechanism
  * dies with it; one asserting a property that survives is rewritten. */
 
 
@@ -552,7 +552,7 @@ void test_t251(void) {
         { IRIS_KOBJ_UNTYPED,       4096, IRIS_HANDLE_TYPE_UNTYPED },
         { IRIS_KOBJ_REPLY,         0,    IRIS_HANDLE_TYPE_REPLY },
         { IRIS_KOBJ_FRAME,         4096, IRIS_HANDLE_TYPE_FRAME },
-        /* Stage 0: the TCB joins the canonical family. */
+        /* the TCB joins the canonical family. */
         { IRIS_KOBJ_TCB,           0,    IRIS_HANDLE_TYPE_TCB },
         /* A paging level is a retyped object now, so it
          * belongs in the manifest of what CAN exist.  Its region is always
@@ -770,7 +770,7 @@ void test_t254(void) {
             it_slot_delete(IT_SCRATCH_0);
         }
     }
-    /* Destination that is not a CNode (the notification at S1_SLOT_A) — A-30:
+    /* Destination that is not a CNode (the notification at S1_SLOT_A) —
      * WRONG_TYPE, because that is what the resolver found. */
     if (ok && it_invoke(su, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_ENDPOINT | (1ULL << 32)), (long)((uint64_t)S1_SLOT_A | ((uint64_t)S1_SLOT_B << 32)), 0) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "bad dest cnode"; }
     /* Released untyped cap: delete the slot, then retype through the dead

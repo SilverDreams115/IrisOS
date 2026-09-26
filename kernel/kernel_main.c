@@ -682,7 +682,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                  * for any OTHER device cannot reach its registers at all — a
                  * PCI device is programmed through its BARs, and a BAR is an
                  * MMIO address.  So "user-space drivers" stopped at the one
-                 * device whose region was hard-coded, and Stage 10-dma's claim
+                 * device whose region was hard-coded, and the claim
                  * that a device's DMA is contained could never be DEMONSTRATED,
                  * because nothing under IRIS's control could issue any.
                  *
@@ -799,7 +799,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
              * last untyped are the ones the kernel did not use.  The page is
              * mapped read-only and non-executable — it is a statement of fact,
              * not a channel — and its address travels in RBX, the register
-             * that carried a bootstrap HANDLE until Stage 4 deleted the handle
+             * that carried a bootstrap HANDLE until the deletion of the handle
              * namespace and left it carrying 0.
              *
              * Failure here is FATAL for the same reason the bootstrap cap
