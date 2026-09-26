@@ -7,6 +7,28 @@ The [ledger](sel4-convergence-ledger.md) maps every transitional mechanism to
 its retirement stage. No stage may be declared closed while its productive
 path still depends on the mechanism it retires (charter §3.10).
 
+## How to read a closed stage
+
+**A stage's body describes the system as it was when that stage closed, and a
+later stage may have deleted what it describes.**  The stages are ordered by
+dependency and written as they were done, so Stage 6-pure explains a CSpace
+being passed to `SYS_PROCESS_CREATE` and Stage 7-proc then deletes both the
+syscall and the object it named; Stage 4 discusses the handle table it is in
+the middle of removing.  Thirty-nine such references are in this file, and
+they are the record of how the work went rather than claims about today.
+
+**The STATUS table and the per-stage headings are the present tense.**  Where
+a body and a later stage disagree, the later stage wins — that is what
+ordering by dependency means.  When something in a body is load-bearing and
+has since changed, it carries a note where it stands rather than being
+rewritten, because rewriting it would destroy the only account of why the
+change was needed.
+
+Added by the roadmap review that also found Stage 4 marked CLOSED with a step
+inside it marked REMAINING: without this convention written down, a reader has
+no way to tell a stale sentence from a current one, and the review's own
+findings were mostly of exactly that shape.
+
 ## Where this is, in one paragraph
 
 **Every convergence stage in this document is closed.**  The authority model,
