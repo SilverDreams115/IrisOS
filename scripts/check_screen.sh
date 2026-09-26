@@ -246,7 +246,25 @@ fail() { echo "[screen] $1"; echo "--- what the screen said ---"; cat "$best"; e
 # 1. the marker line, which is what a dead boot leaves behind.  It is checked
 #    first and checked whole: a prefix of it is a boot that stopped, and the
 #    point of the line is to say WHERE.
-head -1 "$best" | grep -q "^KFSBPGg" || fail "the boot markers are not on the top line"
+if ! head -1 "$best" | grep -q "^KFSBPGg"; then
+  # Self-diagnosing, because this assertion has now fired once in CI on a
+  # commit that passed the same lane on two other branches and three times
+  # locally -- so the interesting question is not "did it fail" but WHICH of
+  # the three ways it can.  The frame was SELECTED by decode_rows() at 48
+  # columns and is ASSERTED by fbcon_ocr.py at the full width; a disagreement
+  # between the two is one cause, a console that scrolled is another, and a
+  # torn capture is the third.  Saying which costs four lines.
+  echo "[screen] row 0 as the assertion decoder read it:"
+  echo "         |$(head -1 "$best")|"
+  echo "[screen] row 0 as the SELECTION decoder read it:"
+  python3 -c "
+import sys; sys.path.insert(0, 'scripts')
+import fbcon_ocr as ocr
+w, h, d = ocr.read_ppm('$first_ppm')
+print('         |' + ocr.decode_line(w, h, d, 0, 48) + '|') if hasattr(ocr, 'decode_line') else print('         (selection decoder is inline in this script)')
+" 2>/dev/null || echo "         (could not re-run the selection decoder)"
+  fail "the boot markers are not on the top line"
+fi
 # 2. the kernel identified itself
 grep -q "IRIS KERNEL" "$best" || fail "the banner is not on the screen"
 # 3. a NUMBER made it through.  Numbers take a different path into the log than
