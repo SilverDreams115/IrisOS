@@ -79,6 +79,9 @@ void test_knotification(void) {
     struct task waiter;
     for (uint32_t i = 0; i < sizeof(waiter); i++) ((uint8_t *)&waiter)[i] = 0;
     waiter.state = TASK_BLOCKED_IRQ;          /* simulate a blocked waiter */
+    /* A-44: installed by hand, so held by hand — the queue's reference is
+     * what wake-all gives back below. */
+    test_task_object_init(&waiter);
     n4->queue_head = n4->queue_tail = &waiter;
     n4->waiter_count = 1u;
     /* Fire the close op (active_refs → 0): wake-all must empty the queue. */

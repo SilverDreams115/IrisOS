@@ -41,6 +41,14 @@ static iris_error_t knotif_waiters_enqueue(struct KNotification *n, struct task 
     else               n->queue_head = t;
     n->queue_tail = t;
     n->waiter_count++;
+    /*
+     * Ledger A-44 — a wait queue holds what it names, here as on the endpoint.
+     *
+     * The two early returns above are deliberately NOT counted: a task already
+     * on this queue is already held, and a second reference would never be
+     * given back.
+     */
+    kobject_retain(&t->base);
     return IRIS_OK;
 }
 
@@ -53,6 +61,7 @@ static void knotif_waiters_remove(struct KNotification *n, struct task *t) {
         if (n->queue_tail == w) n->queue_tail = prev;
         w->notif_next = 0;
         if (n->waiter_count) n->waiter_count--;
+        kobject_release(&w->base);   /* A-44: the queue's */
         return;
     }
 }
@@ -71,6 +80,7 @@ static int knotif_waiters_wake_one(struct KNotification *n) {
         w->notif_next = 0;
         if (n->waiter_count) n->waiter_count--;
         task_wakeup(w);
+        kobject_release(&w->base);   /* A-44: the queue's */
         return 1;
     }
     return 0;
@@ -101,6 +111,8 @@ static void knotif_waiters_wake_all(struct KNotification *n) {
             w->ipc_ep_closed = 1u;
             task_wakeup(w);
         }
+        /* A-44: every waiter left the queue above, woken or not. */
+        kobject_release(&w->base);
         w = next;
     }
 }

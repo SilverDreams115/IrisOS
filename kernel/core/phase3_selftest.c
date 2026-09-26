@@ -68,6 +68,15 @@ static struct KNotification *p3_notif_fixture(void) {
  * table-full behaviour) is asserted of CSpace slots by the host cspace/mdb
  * suites and by iris_test's CDT tests, against the namespace that stays. */
 
+
+/* A-44: the fake waiters below are hand-installed into a notification queue,
+ * which now holds a reference on what it names.  They are statics that outlive
+ * the check, so the destructor only has to exist. */
+static void selftest_waiter_destroy(struct KObject *o) { (void)o; }
+static const struct KObjectOps selftest_waiter_ops = {
+    .close = 0, .destroy = selftest_waiter_destroy
+};
+
 static int phase3_notification_selftest(void) {
     struct KNotification *n = p3_notif_fixture();
     struct task fake_waiter;
@@ -83,6 +92,10 @@ static int phase3_notification_selftest(void) {
 
     for (uint32_t i = 0; i < sizeof(fake_waiter); i++) ((uint8_t *)&fake_waiter)[i] = 0;
     fake_waiter.state = TASK_BLOCKED_IRQ;
+    /* A-44: this installs a waiter WITHOUT going through the enqueue, so it
+     * has to stand in for the reference the enqueue would have taken -- the
+     * wake-all below gives one back for every waiter it empties. */
+    kobject_init(&fake_waiter.base, KOBJ_TCB, &selftest_waiter_ops);
     n->queue_head = n->queue_tail = &fake_waiter;
     n->waiter_count = 1;
     kobject_active_retain(&n->base);
@@ -95,6 +108,7 @@ static int phase3_notification_selftest(void) {
     n->closed = 0;
     for (uint32_t i = 0; i < sizeof(cancelled_waiter); i++) ((uint8_t *)&cancelled_waiter)[i] = 0;
     cancelled_waiter.state = TASK_BLOCKED_IRQ;
+    kobject_init(&cancelled_waiter.base, KOBJ_TCB, &selftest_waiter_ops);  /* A-44 */
     n->queue_head = n->queue_tail = &cancelled_waiter;
     n->waiter_count = 1;
     knotification_cancel_waiter(&cancelled_waiter);

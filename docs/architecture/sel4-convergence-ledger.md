@@ -229,10 +229,27 @@ made, but the row it produced blamed an undocumented task reference model; the
 actual defect was an enumeration that stopped at a file boundary.  **A
 grep-derived surface is only as complete as its path argument.**
 
+**The NOTIFICATION queue had the same defect and is fixed with it.**  Applying
+the lesson rather than the patch: its surface was enumerated across the whole
+tree first, which showed it is entirely contained in `knotification.c` -- one
+enqueue and three removals (signal-one, cancel, and the wake-all on close) --
+while the two `notif_next` writes in `syscall_endpoint.c` only borrow the link
+field for a local list and are not that queue at all.  One retain, three
+releases.  The enqueue's two "already queued" early returns take nothing,
+because a task already on the queue is already held and the second reference
+would never come back.
+
+**A queue that holds references makes hand-installed waiters illegal.**  Two
+places install a waiter directly instead of calling the enqueue -- the ring-0
+notification self-check and a host test for close-with-a-waiter -- and both
+now initialise the fake waiter as a real KObject, because the wake-all they
+are testing gives a reference back for every waiter it empties.
+
 **Tests**: `tests/kernel/` initialises its `struct task` fixtures as real
 KObjects (`test_task_object_init`), because a queue that holds references
 makes a bare `struct task { 0 }` underflow on the first release.  The host
-suite caught exactly that, twice, which is how the fixture gap surfaced.
+suite caught exactly that, three times, which is how every fixture gap
+surfaced.
 
 ### A-43 — a reply binding named a thread it did not hold  ✅ CLOSED
 
