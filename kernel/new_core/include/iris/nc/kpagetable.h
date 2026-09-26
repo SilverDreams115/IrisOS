@@ -3,7 +3,7 @@
 #define IRIS_NC_KPAGETABLE_H
 
 /*
- * kpagetable.h — a page table as a capability (Stage 6-pure, Step 1).
+ * kpagetable.h — a page table as a capability.
  *
  * WHAT CHANGES, AND WHY IT IS NOT COSMETIC
  *

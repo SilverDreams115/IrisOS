@@ -3,7 +3,7 @@
 #define IRIS_NC_KIOSPACE_H
 
 /*
- * kiospace.h — a DEVICE's address space (Stage 10-dma, §10.2 step 4).
+ * kiospace.h — a DEVICE's address space.
  *
  * Every other address space in IRIS bounds what a THREAD may reach.  This one
  * bounds what a DEVICE may reach, and it is the same idea with the same

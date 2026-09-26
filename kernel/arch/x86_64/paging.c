@@ -503,7 +503,7 @@ int paging_query_access_in(uint64_t cr3, uint64_t virt, uint64_t *out_flags) {
 /* Local TLB invalidation counter (additive diagnostics).  Every
  * paging_unmap_in issues one invlpg on the current CPU; the count lets VM tests
  * confirm local invalidation happened (V21).  This counts LOCAL invalidations
- * only — cross-CPU shootdown exists (Stage 9 step 2, kernel/core/tlb) and is
+ * only — cross-CPU shootdown exists and is
  * counted separately by tlb_shootdown_count(); the sentence that used to be
  * here said shootdown was not implemented, which stopped being true. */
 static _Atomic uint32_t paging_tlb_invlpg;

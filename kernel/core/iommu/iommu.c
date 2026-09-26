@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * iommu.c — finding the DMA remapping units (Stage 10-dma, §10.2 step 1).
+ * iommu.c — finding the DMA remapping units.
  *
  * See iris/iommu.h for why the kernel reads this table at all and why it reads
  * no PCI.  This step FINDS the units and stops: nothing is mapped, nothing is

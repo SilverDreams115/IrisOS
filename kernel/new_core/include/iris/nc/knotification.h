@@ -36,7 +36,7 @@
  * intrusive list through the TCB and has no such limit.
  *
  * So does IRIS, and it always did: KEndpoint has queued its waiters that way
- * since Phase 9 (`queue_head`/`queue_tail` + `task.ep_next`).  The same kernel
+ * (`queue_head`/`queue_tail` + `task.ep_next`).  The same kernel
  * was answering the same question two ways, and the unbounded answer was in
  * the file next door.
  */

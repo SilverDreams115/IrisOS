@@ -33,7 +33,7 @@ void    irq_routing_register_notification(uint8_t irq,
  */
 uint32_t irq_routing_active_count(void);
 
-/* irq_routing_register (KChannel) retired — Phase 13/Track G.  Routes are
+/* irq_routing_register (KChannel) retired — .  Routes are
  * registered via irq_routing_register_notification; teardown clears them via
  * irq_routing_unregister_owner. */
 

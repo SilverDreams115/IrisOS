@@ -23,7 +23,7 @@
  *   - kvspace_invalidate() zeroes cr3, clears valid, and auto-unmaps all
  *     KFrame mappings before page table reap.
  *
- * KFrame back-reference model (Phase 6 / 6.3):
+ * KFrame back-reference model:
  *   - kframe_map_page() allocates a KFrameMapping node (kslab), retains the
  *     frame, and prepends the node to the singly-linked mappings list.
  *   - kframe_unmap_page() finds the node by (frame,va), unlinks it, frees it,

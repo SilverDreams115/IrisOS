@@ -114,7 +114,7 @@ static long vfs_self_vs(void) {
 
 
 
-/* g_vfs_console_h retired — Phase 13/Track G (console.ep only). */
+/* g_vfs_console_h retired — (console.ep only). */
 /* Console endpoint: the well-known slot IRIS_CPTR_CONSOLE_EP,
  * verified with a PING after bootstrap; pre-verification boot lines are
  * dropped (vfs no longer receives a legacy console cap). */

@@ -11,7 +11,7 @@
  * instead of on the CSpace, and it had no callers.
  *
  * `SYS_TCB_SET_PRIORITY` is the capability-based call that already did this
- * properly, and since A-20 it also takes an AUTHORITY and refuses to grant a
+ * properly, and it also takes an AUTHORITY and refuses to grant a
  * priority above that authority's ceiling — which is what seL4 means by
  * setting a priority.  The number stays permanently reserved.
  */
@@ -63,7 +63,7 @@ uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 }
 
 /*
- * SYS_SC_BIND (arg0 = sc_cptr, arg1 = tcb_cptr) → 0 | error   (Phase S2, B4)
+ * SYS_SC_BIND (arg0 = sc_cptr, arg1 = tcb_cptr) → 0 | error
  *
  * Binds a SchedulingContext one-to-one to a TCB, both by CPtr, both live.
  * Fails BUSY if the SC is already bound to another task or the TCB already
@@ -213,7 +213,7 @@ uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * SYS_SC_CONSUMED(sc_cptr, out_uptr) — ledger A-28.
+ * SYS_SC_CONSUMED(sc_cptr, out_uptr) — .
  *
  * seL4's `seL4_SchedContext_Consumed`.  MCS gave IRIS the machinery to say what
  * a context is OWED — the refill queue — and nothing to say what it SPENT.  A
@@ -253,7 +253,7 @@ uint64_t sys_sc_consumed(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * SYS_SC_YIELD_TO(sc_cptr, out_uptr) — ledger A-28.
+ * SYS_SC_YIELD_TO(sc_cptr, out_uptr) — .
  *
  * seL4's `seL4_SchedContext_YieldTo`: give the rest of this turn to the thread
  * bound to that context.  Not donation — an endpoint Call donates a scheduling

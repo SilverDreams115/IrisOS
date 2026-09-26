@@ -54,10 +54,10 @@ struct KFrame;
  * per-process VMO ceiling and the page counter went with the owner relation.
  * A VMO's accounting is the Untyped it was carved from. */
 /* RETIRED.  The per-process page ceiling was a number the kernel
- * invented; since Stage 6-pure a VMO's pages come from an Untyped the caller
+ * invented; a VMO's pages come from an Untyped the caller
  * named, and exhausting THAT is what running out means.  phys_pages_limit
  * reports 0 — "no kernel ceiling" — the way the notification quota did when it
- * retired in Phase S1.  The constant is kept only so the retirement is legible. */
+ * retired.  The constant is kept only so the retirement is legible. */
 
 
 /*

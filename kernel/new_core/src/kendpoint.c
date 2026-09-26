@@ -33,7 +33,7 @@ static void kendpoint_obj_close(struct KObject *obj) {
     /*
      * The kills happen AFTER this lock, not under it.
      *
-     * A fault caller is killed rather than woken (A-22 below), and
+     * A fault caller is killed rather than woken, and
      * `task_kill_external` on a thread that is not on a processor runs the
      * WHOLE teardown right here: it releases the thread's CSpace root, and
      * the last reference on a CNode runs a destructor that empties every slot
@@ -106,7 +106,7 @@ static void kendpoint_obj_close(struct KObject *obj) {
     }
 }
 
-/* ── Untyped-backed variant (Ph78; The ONLY variant) ─────
+/* ── Untyped-backed variant ─────
  * The kslab-backed kendpoint_alloc is retired: every KEndpoint payload
  * lives inside the KUntyped region it was retyped from (S2/S14). */
 

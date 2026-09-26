@@ -117,7 +117,7 @@ struct iris_root_bootinfo {
     uint64_t cap_iospace_control;/* What a DEVICE may reach */
 
     /*
-     * v9: WHICH ABI this kernel implements (Stage 10-abi, iris/abi.h).
+     * v9: WHICH ABI this kernel implements.
      *
      * Here rather than behind an invocation because it is a fact about the
      * KERNEL and not about any capability — there is nothing to invoke it on,

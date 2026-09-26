@@ -33,7 +33,7 @@ struct idt_descriptor {
 } __attribute__((packed));
 
 /* The frame isr_common builds IS a thread's user context; one definition,
- * shared with struct task (ledger D-1 step 3). */
+ * shared with struct task. */
 #define full_frame iris_user_ctx
 
 static struct idt_entry idt[IDT_ENTRIES];

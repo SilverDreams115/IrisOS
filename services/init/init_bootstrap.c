@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * init_bootstrap.c — initial-authority wiring for init (Phase 14 extraction).
+ * init_bootstrap.c — initial-authority wiring for init.
  *
  * Everything here is MOVED VERBATIM from main.c (no functional change):
  *   - boot capability acquisition (the IRIS_CPTR_PROC_CONTROL
@@ -11,7 +11,7 @@
  *   - the S5/S6 VFS endpoint boot-health validation (LIST / STAT / READ_AT)
  *     with their retry waits.
  *
- * S5/S6 live HERE, not in init_test.c (Phase 14 decision): they are
+ * S5/S6 live HERE, not in init_test.c: they are
  * boot-GATING checks — main.c exits (codes 9/10) if they fail, and their
  * retry loops double as the "wait until VFS is up" boot synchronization —
  * while init_test.c holds post-healthy-path probes that never gate boot.

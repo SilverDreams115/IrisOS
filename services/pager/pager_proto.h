@@ -6,7 +6,7 @@
 
 /*
  * pager_proto.h — wire contract between the pager service and its supervisor
- * (Phase 27 model, own binary since Phase 28, file grants + multi-target since
+ * (Phase 27 model, own binary, file grants + multi-target since
  * Phase 28.1).  Shared by services/pager/main.c and the iris_test supervisor
  * so the two never drift.
  *
@@ -163,7 +163,7 @@
 #define PGR_OP_TARGET_RESET      12u   /* words[1] = tidx: drop the target's regions
                                         * and its pending fault bit (death cleanup) */
 
-/* ── Phase 28 file-backed subsystem (grant-based since Phase 28.1) ────────────
+/* ── Phase 28 file-backed subsystem (grant-based.1) ────────────
  * The pager reads file bytes EXCLUSIVELY through VFS file grants
  * (VFS_EP_OP_GRANT_READ_AT over its badged session cap).  A backing is
  * registered by the supervisor as (grant_idx, backing_id, generation,

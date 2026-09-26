@@ -9,7 +9,7 @@
  * Wire layout (KChanMsg.data[64]):
  *   offset  0: uint32_t vector     — x86 exception vector (0-31)
  *   offset  4: uint32_t task_id    — task id of the faulting task (diagnostic;
- *              since Stage 7 Step 7 the thread is NAMED by the capability
+ *              the thread is NAMED by the capability
  *              delivered into the handler's mailbox, not by this number)
  *   offset  8: uint64_t rip        — instruction pointer at fault
  *   offset 16: uint32_t error_code — CPU error code (0 if N/A for this vector)

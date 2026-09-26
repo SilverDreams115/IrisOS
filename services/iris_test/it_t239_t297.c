@@ -602,7 +602,7 @@ void test_t251(void) {
         }
     }
     /* Retirement witness: the legacy handle-publishing path refuses every
-     * type now (Stage 4 retired 87 outright), not just the migrated family. */
+     * type now, not just the migrated family. */
     static const uint32_t migrated[] = { IRIS_KOBJ_ENDPOINT, IRIS_KOBJ_NOTIFICATION,
                                          IRIS_KOBJ_CNODE, IRIS_KOBJ_REPLY,
                                          IRIS_KOBJ_TCB /* Step 0 */ };

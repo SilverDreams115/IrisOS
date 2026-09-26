@@ -358,7 +358,7 @@ uint64_t sys_ioport_control_narrow(uint64_t arg0, uint64_t arg1,
     }
 
     /* The object comes out of a budget the caller NAMED, like every other
-     * device capability since Stage 7 Step 14.  A narrowed control capability
+     * device capability.  A narrowed control capability
      * is memory, and a syscall that let ring 3 spend the kernel's would be a
      * hole in charter M3 opened by the very change that closed a policy one. */
     struct KUntyped *pool;

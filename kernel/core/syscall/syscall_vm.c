@@ -9,7 +9,7 @@
 
 
 /*
- * sys_vspace_self — RETIRED (ledger D-6 / charter A5).
+ * sys_vspace_self — RETIRED.
  *
  * It handed the caller a capability to its own address space, asking for NO
  * capability at all: ambient authority, which seL4 does not have.  It also
@@ -26,7 +26,7 @@
 
 /*
  * SYS_PROCESS_VSPACE — hand a RIGHT_MANAGE holder a capability to the target
- * process's address space (Phase 25, user-pager groundwork).
+ * process's address space.
  *
  * Authority: RIGHT_MANAGE over the process cap — the same authority that
  * already implies address-space control via SYS_VMO_MAP_INTO.  The returned
@@ -421,7 +421,7 @@ uint64_t sys_framebuffer_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * sys_asid_pool_assign(pool_cptr, vspace_cptr) — ledger A-21.
+ * sys_asid_pool_assign(pool_cptr, vspace_cptr) — .
  *
  * seL4's `seL4_X86_ASIDPool_Assign`.  An address space is a page and a header
  * until somebody who holds a pool gives it a hardware identifier; a thread

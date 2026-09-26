@@ -85,7 +85,7 @@ struct KCSlot {
  * ctzll(slot_count) bits per level.
  */
 /*
- * `is_root` REMOVED (Stage 7-proc cleanup).
+ * `is_root` REMOVED.
  *
  * It marked a CNode as some process's root CSpace and made the claim
  * exclusive, because teardown was per-process: `thread teardown` emptied a
@@ -194,7 +194,7 @@ int kcnode_slot_holds(struct KCNode *cn, uint32_t slot_idx,
                       const struct KObject *obj);
 
 /*
- * `parent_expect` — ledger A-40.  A parent is named by IDENTITY, not by
+ * `parent_expect` — .  A parent is named by IDENTITY, not by
  * location.  A slot is a reusable place: the caller reads it, decides what it
  * is allowed to do, and only then installs, and on SMP another thread of the
  * same process can empty that slot and mint something unrelated into it in

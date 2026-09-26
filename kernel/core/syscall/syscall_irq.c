@@ -97,7 +97,7 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * Authority: irqcap_handle — KOBJ_IRQ_CAP with RIGHT_ROUTE.
  */
 /*
- * sys_irq_clear(irqcap_cptr) — ledger A-28, seL4's `seL4_IRQHandler_Clear`.
+ * sys_irq_clear(irqcap_cptr) — , seL4's `seL4_IRQHandler_Clear`.
  *
  * The counterpart `SYS_IRQ_ROUTE_REGISTER` never had: a route could be
  * installed and only ever taken back by destroying the notification it pointed

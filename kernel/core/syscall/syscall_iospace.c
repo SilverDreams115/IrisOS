@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * syscall_iospace.c — what a DEVICE may reach (Stage 10-dma, §10.2 steps 4/5).
+ * syscall_iospace.c — what a DEVICE may reach.
  *
  * Four invocations, and between them they are the whole of the stage's claim.
  * An IOSpace names one device; page-table levels the holder paid for build its

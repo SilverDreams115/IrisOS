@@ -2067,7 +2067,7 @@ void test_t069(void) {
 
 /* ── Retired SYS_CHAN ABI (T070) ─────────────────────── */
 
-/* T070: the ENTIRE SYS_CHAN_* ABI is retired in Track G — KChannel is no longer
+/* T070: the ENTIRE SYS_CHAN_* ABI is retired — KChannel is no longer
  * a productive IPC mechanism.  Every channel syscall number falls through the
  * dispatch to IRIS_ERR_NOT_SUPPORTED.  Args are irrelevant: the dispatch rejects
  * the syscall number before touching them.  Locks the reservation. */
@@ -2085,7 +2085,7 @@ void test_t070(void) {
     if (ok) it_pass("T070"); else it_fail("T070", "retired SYS_CHAN ABI");
 }
 
-/* ── T071: cascade revoke over the NATIVE CDT (Phase S4, Step 3) ────────────
+/* ── T071: cascade revoke over the NATIVE CDT ────────────
  *
  * Runtime coverage for recursive revocation.  Until Phase S4 this exercised the
  * legacy handle tree (SYS_CAP_DERIVE/SYS_CAP_REVOKE); that tree is retired and
@@ -2135,7 +2135,7 @@ void test_t071(void) {
 
 /* ── T072: derivation rights reduction + revoke failure paths ───────────────
  *
- * Native-CDT form (Phase S4, Step 3).  Proves (a) a cap derived with reduced
+ * Native-CDT form.  Proves (a) a cap derived with reduced
  * rights cannot itself be a derivation source once RIGHT_DUPLICATE is dropped
  * (ACCESS_DENIED — no rights escalation), (b) revoking an EMPTY slot fails
  * cleanly (negative error, no panic), and (c) a valid revoke tears down the

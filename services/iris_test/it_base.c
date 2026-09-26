@@ -548,7 +548,7 @@ long it_initrd_vmo_slot(long auth_cptr, long index) {
  *
  * A capability belongs in the rotating pool when its life is a test's, and in
  * the thread CNode when its life is a THREAD's.  `SYS_TCB_SELF` hands back a
- * fresh capability each call (an MDB LEGACY ROOT — ledger D-6, no ancestor,
+ * fresh capability each call (an MDB LEGACY ROOT — , no ancestor,
  * unreachable by any revoke), and tests take it, use it and abandon it.  Left
  * in the thread CNode those accumulate forever, one unrevocable root per call,
  * with two of the eleven call sites inside loops: measured at +36 roots.
@@ -780,7 +780,7 @@ void it_fail(const char *id, const char *reason) {
 
 /* ── Message helpers ────────────────────────────────────────────────────── */
 
-/* it_chan_msg_zero retired — Phase 13/Track I (no KChannel tests remain). */
+/* it_chan_msg_zero retired — (no KChannel tests remain). */
 
 /* iris_msg_zero lives in common/iris_msg.h now, with the message. */
 /* Release a capability the suite holds, whichever namespace names it.

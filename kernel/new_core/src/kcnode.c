@@ -936,7 +936,7 @@ iris_error_t kcnode_mint(struct KCNode *cn, uint32_t slot_idx,
 }
 
 /* kcnode_mint_badged is gone — an OVERWRITE mint that installed a LEGACY root
- * with an explicit badge, written for the Phase 9 MOVE path and never called
+ * with an explicit badge, written for the MOVE path and never called
  * by it.  Every producer of an unparented capability is one T305 has to
  * account for, so one that nothing uses is one to delete rather than
  * keep available. */

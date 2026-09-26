@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * syscall_reply.c — Block 7 (Ph85-87): seL4-style reply capabilities.
+ * syscall_reply.c — Block 7: seL4-style reply capabilities.
  *
  * SYS_EP_CALL: send message on endpoint + block waiting for reply via KReply.
  *   - If a receiver is already waiting: rendezvous immediately, deliver KReply
@@ -120,7 +120,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
     t->ipc_msg.attached_cap = IRIS_MSG_NO_CAP;
 
-    /* Stage send bulk payload (D-4: from the registered frame if there is one). */
+    /* Stage send bulk payload. */
     if (ipc_stage_out(t) != IRIS_OK) {
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -476,7 +476,7 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * SYS_REPLY_RECV (129) — Stage 8-mcs, seL4's seL4_ReplyRecv.
+ * SYS_REPLY_RECV (129) — , seL4's seL4_ReplyRecv.
  *
  * Answer the outstanding call and wait for the next one with no scheduling
  * point in between.  See the contract in <iris/syscall.h> for why that gap is

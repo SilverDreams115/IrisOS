@@ -746,7 +746,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 #define IT_IPCBUF_CPTR(leaf) ((uint32_t)(((leaf) << 8) | IT_IPCBUF_CNODE_SLOT))
 #define IT_IPCBUF_MAX        96u
 
-/* ── T094: receive-slot TOCTOU degradation is RETIRED (Phase S4, Step 2) ────
+/* ── T094: receive-slot TOCTOU degradation is RETIRED ────
  * A receiver declares slot 51 and blocks; before the sender delivers, the
  * process fills slot 51 itself (self-mint via the own-process cap).
  *
@@ -917,7 +917,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * PROCESS count both return exactly to baseline — no zombie counted alive, no
  * double-decrement, no task pending reap left occupying a slot — with the
  * deferred reap queue staying well within its bound.  (Each thread leaves a
- * documented +1 KTcb HANDLE by design — Ph96 — so handle-live is not asserted
+ * documented +1 KTcb HANDLE by design —  — so handle-live is not asserted
  * flat here; task-live and process-live are the invariants.)
  * Invariants: I15, I16, I17. */
 #define T118_ROUNDS 10u
@@ -936,7 +936,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  *
  * In-process worker threads are retyped TCBs, created with
  * task id (not a handle) and leaves one KTcb HANDLE in this process's table by
- * design (Ph96, exactly as T118 notes).  So these tests assert TASK-live and
+ * design.  So these tests assert TASK-live and
  * PROCESS-live return to baseline, never handle-live — the KTcb handle id is
  * never surfaced to ring 3 and cannot be closed.  Thread counts are budgeted to
  * stay far below HANDLE_TABLE_MAX. */
@@ -1499,8 +1499,8 @@ struct t25_tgt {
 #define PGR_GRANT_BASE      86u
 #define PGR_PSLOT(j, p)     (PGR_GRANT_BASE + (j) * PGR_GRANT_PAGES + (p))
 #define PGR_REPORT_GRANT    (1u << 22)
-/* The pager service is the lifecycle_probe image in persistent service mode
- *: a real, separate, supervised image (NOT iris_test).  The control
+/* The pager service is the lifecycle_probe image in persistent service mode:
+ * a real, separate, supervised image (NOT iris_test).  The control
  * endpoint lands in the probe's command slot; the manifest slots above match
  * services/lifecycle_probe/main.c's LP_PS_* layout. */
 #define PGR_OP_PING         1u
@@ -2186,7 +2186,7 @@ struct it_utq_taskobj {
 #define T313_SRV_VA  0x807B000000ULL
 #define T313_LEN     600u    /* deliberately > IRIS_IPC_BUF_SIZE (256) */
 
-/* ── T314: an interrupted thread's context lives in its TCB (D-1 step 3) ──
+/* ── T314: an interrupted thread's context lives in its TCB ──
  *
  * The last step of the event kernel is ONE kernel stack per core, and the
  * first analysis of it missed what makes it hard.  It is not enough for
@@ -2256,7 +2256,7 @@ struct it_utq_taskobj {
 #define T317_PAGES 4u
 #define T317_SIZE  (T317_PAGES * 4096u)
 
-/* ── T318: kernel memory does not scale with thread count (D-1 step 3) ───
+/* ── T318: kernel memory does not scale with thread count ───
  *
  * The claim the event kernel was for, stated as a number.
  *

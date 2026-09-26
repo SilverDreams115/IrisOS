@@ -53,7 +53,7 @@ struct iris_cpu_local {
     /*
      * syscall_kstack / syscall_user_cr3 — kept in sync by syscall_set_kstack()
      * and syscall_set_user_cr3() in syscall_dispatch.c.  syscall_entry.S reads
-     * them GS-relative after SWAPGS at syscall entry (Phase 1 complete):
+     * them GS-relative after SWAPGS at syscall entry:
      *   movq %gs:48, %rsp   → kernel stack top
      *   movq %gs:56, %r8    → user CR3
      * They had RIP-relative shadow copies in syscall_entry.S .data, "kept for

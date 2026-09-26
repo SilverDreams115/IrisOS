@@ -98,7 +98,7 @@ void irq_routing_ack(uint8_t irq) {
  * interrupt stops being delivered to an object nobody can reach.
  */
 /*
- * irq_routing_clear — ledger A-28, seL4's `seL4_IRQHandler_Clear`.
+ * irq_routing_clear — , seL4's `seL4_IRQHandler_Clear`.
  *
  * A route could be installed and never taken back except by destroying the
  * notification: the binding is the notification's, so the only way to stop

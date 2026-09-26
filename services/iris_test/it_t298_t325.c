@@ -634,7 +634,7 @@ void test_t304(void) {
  *     are roots too; this class is legitimate and permanent.
  *   - KVmo publishes: a VMO is fabricated from kernel memory rather than
  *     retyped from an Untyped, so it has no capability ancestor to name.
- *     Retires with the object (ledger D-5, memory server).
+ *     Retires with the object.
  *   - fault delivery: the faulting thread's capability published into a
  *     mailbox.  This one is NOT legitimate — its natural ancestor is the TCB
  *     slot the registrant named when it armed the handler, exactly as an
@@ -1327,7 +1327,7 @@ void test_t311(void) {
     if (ok) it_pass("T311"); else it_fail("T311", why);
 }
 
-/* ── T312: the ROOT CSpace capability carries a guard too (D-2 complete) ──
+/* ── T312: the ROOT CSpace capability carries a guard too ──
  *
  * Guards below the root landed in Stage 8-cap and live in the SLOT, because a
  * KCSlot is the capability.  The root is the one capability a thread does not

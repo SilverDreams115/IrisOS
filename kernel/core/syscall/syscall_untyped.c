@@ -887,7 +887,7 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * SYS_UNTYPED_SET_DEVICE_BUDGET — ledger D-9.
+ * SYS_UNTYPED_SET_DEVICE_BUDGET — .
  *
  * See the ABI note in syscall.h for why a device Untyped needs a RAM one at
  * all.  What is worth saying here is the ordering rule the pairing exists to

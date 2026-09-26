@@ -41,7 +41,7 @@
 #include <iris/paging.h>
 
 #define PAGE_SIZE             0x1000ULL
-/* WAIT_ANY_MAX_CHANNELS retired with SYS_WAIT_ANY — Phase 13/Track G */
+/* WAIT_ANY_MAX_CHANNELS retired with SYS_WAIT_ANY —  */
 
 /* ── Shared helper functions ─────────────────────────────────────────
  * All static inline to avoid unused-function warnings when a given
@@ -182,15 +182,15 @@ uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 uint64_t sys_tcb_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — IPC ──────────────────────────────────── */
-/* sys_chan_call retired — Phase 13/Track G */
+/* sys_chan_call retired —  */
 uint64_t sys_notify_signal(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-/* sys_wait_any / sys_wait_any_timeout retired — Phase 13/Track G */
+/* sys_wait_any / sys_wait_any_timeout retired —  */
 
 /* ── Forward declarations — VM ───────────────────────────────────── */
 /* The sys_vmo_* declarations are gone with the KVMO: no definition, no caller,
- * and no label reaches them.  A frame is retyped and mapped as a whole
- *, which is what made the VMO's page-at-a-time surface
+ * and no label reaches them.  A frame is retyped and mapped as a whole,
+ * which is what made the VMO's page-at-a-time surface
  * unnecessary. */
 uint64_t sys_frame_size(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_frame_get_address(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -285,7 +285,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
-/* ── Forward declarations — Block 7 reply caps (Ph85-87) ────────── */
+/* ── Forward declarations — Block 7 reply caps ────────── */
 uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
@@ -363,7 +363,7 @@ extern uint32_t iris_ipc_stat_toctou_fallbacks;
 extern uint32_t iris_ipc_stat_reply_caps;
 extern uint32_t iris_cspace_stat_resolves;        /* syscall_cspace.c */
 
-/* ── Forward declarations — CSpace (Ph70-72, Ph82-84) ─────── */
+/* ── Forward declarations — CSpace ─────── */
 uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cnode_swap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* CSpace-only MDB/CDT derivation surface. */
@@ -447,7 +447,7 @@ uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                             uint64_t arg3);
 uint64_t sys_cspace_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
-/* ── Forward declarations — Block 3 scheduler (Ph73-75) ─────────── */
+/* ── Forward declarations — Block 3 scheduler ─────────── */
 /* Domains: seL4's seL4_DomainSet_Set.  In syscall_tcb.c, because it resolves a
  * TCB and the resolver for that lives there. */
 uint64_t sys_domain_set(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -469,19 +469,19 @@ uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2);         /* Phase S2 */
 
-/* ── Forward declarations — Block 4+5 untyped memory (Ph76-81) ───── */
+/* ── Forward declarations — Block 4+5 untyped memory ───── */
 uint64_t sys_untyped_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                              uint64_t arg3);                               /* Phase S1 */
 uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2);   /* Phase S1 */
 uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
-/* ── Forward declarations — Block 9 frame capabilities (Phase 5 / 5.1) ── */
+/* ── Forward declarations — Block 9 frame capabilities ── */
 uint64_t sys_frame_map  (uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_frame_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
-/* ── Forward declarations — TCB caps (Ph96-101) ──────────────────── */
+/* ── Forward declarations — TCB caps ──────────────────── */
 uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -500,7 +500,7 @@ void ipc_msg_load(struct task *t);        /* argument words → staging  */
 void ipc_msg_store(struct task *t);        /* a receive → return words  */
 void ipc_msg_store_reply(struct task *t);  /* a call's completion       */
 
-/* ── The invocation door (ledger A-32, syscall_invoke.c) ─────────── */
+/* ── The invocation door ─────────── */
 uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
                         uint64_t a1, uint64_t a2, uint64_t a3,
                         uint64_t a4, uint64_t a5, uint64_t a6,

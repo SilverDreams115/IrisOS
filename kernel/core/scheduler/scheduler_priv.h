@@ -148,7 +148,7 @@ extern void context_switch(struct cpu_context *old,
                             uint8_t  *old_fpu,
                             uint8_t  *new_fpu);
 
-/* kstack.c is GONE (ledger D-1, step 3).  A thread owned two pages of kernel
+/* kstack.c is GONE.  A thread owned two pages of kernel
  * stack plus a guard page and every kernel entry landed on them; entries land
  * on the CORE's stack now, so there was a file, an allocator, a free, a fatal
  * reporter and a reserved virtual region left over with nothing calling any of

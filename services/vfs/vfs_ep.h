@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * vfs_ep.h — VFS endpoint-protocol dispatcher (Phase 7.1; grants Phase 28.1).
+ * vfs_ep.h — VFS endpoint-protocol dispatcher.
  *
  * The dispatcher is a pure function over (state, request) → reply with no
  * syscalls inside, so the host unit-test harness (tests/kernel) can exercise

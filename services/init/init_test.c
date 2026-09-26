@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * init_test.c — init runtime probes + S8 exception selftest (Phase 14/Inc 2).
+ * init_test.c — init runtime probes + S8 exception selftest.
  *
  * Extracted verbatim from main.c: the boot supervisor calls these after the
  * healthy path is up.  No boot-order, launch, or grant logic lives here — only

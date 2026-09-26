@@ -26,7 +26,7 @@ uint64_t sys_notify_signal(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 
 /*
- * SYS_NOTIFY_POLL(notif_cptr, out_bits) — ledger A-24, seL4's `seL4_Poll`.
+ * SYS_NOTIFY_POLL(notif_cptr, out_bits) — , seL4's `seL4_Poll`.
  *
  * Take whatever is pending and return; never block.  It exists because
  * SYS_NOTIFY_WAIT_TIMEOUT is retired: a caller that used a zero timeout to ask

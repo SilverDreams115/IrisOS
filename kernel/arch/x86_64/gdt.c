@@ -47,7 +47,7 @@ struct gdt_descriptor {
 } __attribute__((packed));
 
 /*
- * Per-CPU TSS and IST stacks (Phase 2.1 groundwork).
+ * Per-CPU TSS and IST stacks.
  *
  * Arrays are indexed by cpu_id.  gdt_init() initialises [0] for the BSP and
  * wires the GDT TSS descriptor to &kernel_tss[0].  tss_set_rsp0() and

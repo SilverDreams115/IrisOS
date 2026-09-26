@@ -21,7 +21,7 @@
 
 .section .text
 /*
- * fpu_save_to / fpu_restore_from — Stage 9-evt step 3.
+ * fpu_save_to / fpu_restore_from — .
  *
  * context_switch has always done these as part of a switch, because a switch
  * was the only way the CPU changed hands.  A thread resumed from its TCB

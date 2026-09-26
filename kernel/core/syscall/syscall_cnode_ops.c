@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * syscall_cnode_ops.c — Block 6 (Ph82-84): CNode slot operations.
+ * syscall_cnode_ops.c — Block 6: CNode slot operations.
  *
  * SYS_CNODE_DELETE: clear a CNode slot, releasing its capability reference.
  * SYS_CNODE_SWAP:   swap two slots within the same CNode (no refcount change).

@@ -187,7 +187,7 @@
 #define INV_IOSPACE_FAULT                  72u  /* who was refused, and why */
 
 /*
- * ── KOBJ_IOPORT, the other two widths (Stage 10-dma §10.2 step 6) ─────────
+ * ── KOBJ_IOPORT, the other two widths ─────────
  *
  * seL4 has seL4_X86_IOPort_In8/In16/In32 and the three Out methods, and this
  * is the same family for the same reason: a port is not a byte.  PCI

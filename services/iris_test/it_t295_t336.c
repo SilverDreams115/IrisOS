@@ -722,7 +722,7 @@ static void t333_victim(void) {
  *  1. `TCB_ReadRegisters` — a supervisor could point a thread anywhere and
  *     never ask where it was.  RIGHT_READ, because observing is not changing,
  *     and refused for a RUNNING thread, whose registers are in the CPU rather
- *     than the TCB (D-1 step 3) — handing back the stale frame would be a lie
+ *     than the TCB — handing back the stale frame would be a lie
  *     a debugger acts on.
  *  2. `CNode_Move` across CNodes.  Within one, a move was a swap against an
  *     empty slot; between them the only route was mint-then-delete, which for
@@ -1511,7 +1511,7 @@ void test_t295(void) {
 #define T337_EP     IT_SCRATCH_2
 #define T337_RO     IT_SCRATCH_3
 
-/* ── T337: two doors, one set of rooms (ledger A-32, stage A) ──────────────
+/* ── T337: two doors, one set of rooms ──────────────
  *
  * The syscall number is being retired as the thing that selects a method.  In
  * its place: `SYS_INVOKE(cptr, label, …)`, which resolves the capability,

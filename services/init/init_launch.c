@@ -13,7 +13,7 @@
 #define INIT_TEST_WATCHDOG_NS 120000000000ull
 
 /*
- * init_launch.c — service launch for init (Phase 14 extraction).
+ * init_launch.c — service launch for init.
  *
  * Everything here is MOVED VERBATIM from main.c (no functional change): the
  * fb / console / svcmgr / iris_test spawns — initrd loads via
@@ -86,7 +86,7 @@ static const char init_console_ioport_fail[] = "[INIT] console ioport FAILED\r\n
 static const char init_console_chan_fail[] = "[INIT] console ep FAILED\r\n";
 static const char init_fb_load_fail[] = "[INIT] fb load FAILED\r\n";
 
-/* ── fb spawn (Phase 30: ring-3 framebuffer painter) ────────────────────── */
+/* ── fb spawn ────────────────────── */
 
 /* Slot 42 held fb's FRAMEBUFFER-restricted clone between its construction and
  * the pre-start mint.  Stage 5 Step 2 deleted the construction: fb is minted
@@ -138,7 +138,7 @@ void init_spawn_fb(void) {
 }
 
 
-/* ── pci spawn (Stage 10: the bus is a service) ─────────────────────────── */
+/* ── pci spawn ─────────────────────────── */
 
 /*
  * The one task that may reach PCI configuration space.
@@ -588,7 +588,7 @@ int init_spawn_fs(void) {
     }
 }
 
-/* ── net spawn (Stage 10: a network card is a driver too) ───────────────── */
+/* ── net spawn ───────────────── */
 
 /* Defined below: the boot check that asks whether the network actually works,
  * rather than whether a card came up.  Declared here because the spawn calls
@@ -1019,7 +1019,7 @@ int init_spawn_blk(void) {
     }
 }
 
-/* ── timer spawn (ledger A-24: waiting is a service, not a syscall) ──────── */
+/* ── timer spawn ──────── */
 
 /*
  * The kernel cannot block a thread on TIME any more, so somebody in ring 3 has
@@ -1104,7 +1104,7 @@ int init_spawn_timer(void) {
     return r >= 0;
 }
 
-/* ── console spawn (Phase 30: ring-3 serial console service) ────────────── */
+/* ── console spawn ────────────── */
 
 /* Console is endpoint-only and CPtr-provisioned — its
  * endpoint recv side (IRIS_CPTR_OWN_EP) and its 0x3F8 UART KIoPort
@@ -1229,7 +1229,7 @@ fail:
     return 0;
 }
 
-/* ── svcmgr spawn (Phase 29: ring-3 loader; Also sends console) ── */
+/* ── svcmgr spawn ── */
 
 /* Init owns svcmgr's discovery endpoint ("svcmgr.ep").  It
  * creates the endpoint, mints the recv+mint side into svcmgr (IRIS_CPTR_OWN_EP)

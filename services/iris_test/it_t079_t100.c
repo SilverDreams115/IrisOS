@@ -395,7 +395,7 @@ void test_t083(void) {
     if (ok && it_invoke0((long)IRIS_CPTR_TEST_FIX_A, INV_TCB_SUSPEND) !=
               (long)IRIS_ERR_WRONG_TYPE) ok = 0;
 
-    /* ── SchedContext (Phase S2: SYS_SC_CREATE retired → RETYPE2) ── */
+    /* ── SchedContext ── */
     if (ok && it_sys0(SYS_SC_CREATE) != (long)IRIS_ERR_NOT_SUPPORTED) ok = 0;
     long sc = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
     if (sc < 0) ok = 0;
@@ -1206,7 +1206,7 @@ int it_sched_ext4(uint32_t w4[5]) {
  * it cannot know.
  */
 /*
- * The DMA containment tier (Stage 10-dma §10.2 step 3).
+ * The DMA containment tier.
  *
  *   [0] units       remapping units the DMAR named
  *   [1] usable      ...that are what the kernel needs
@@ -1295,7 +1295,7 @@ long it_map_fixup(long nr, long a0, long a1, long a2, long a3) {
 }
 
 long it_cspace_self(void) {
-    /* Delegated, not fabricated (ledger D-6/A5).  `SYS_CSPACE_SELF` handed a
+    /* Delegated, not fabricated.  `SYS_CSPACE_SELF` handed a
      * thread its own root CNode on request, asking for no capability at all —
      * ambient authority, and an MDB root nothing could revoke.  The loader
      * holds this CSpace: it made it, and it mints it at IRIS_CPTR_OWN_CSPACE
@@ -1670,7 +1670,7 @@ void test_t095(void) {
  * return exactly to its starting value.
  *
  * It used to run slotless, which made it a test of the handle-materialising
- * delivery — retired in Stage 4.  What it actually measures is that the
+ * delivery — retired.  What it actually measures is that the
  * delivery path has no per-cycle residue, and reusing one slot 32 times is a
  * sharper version of that: a leaked reference would leave the slot occupied
  * and the second lookup would fail ALREADY_EXISTS. */

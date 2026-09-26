@@ -59,9 +59,9 @@ static void ub_boot_panic(uint64_t ioport_control_cptr, uint64_t ioport_slot,
     }
 }
 
-/* ub_msg_zero retired — Phase 13/Track I (no KChannel bootstrap message). */
+/* ub_msg_zero retired — (no KChannel bootstrap message). */
 
-/* ub_send_spawn_cap retired — Phase 13/Track I (init's spawn cap is a pre-start
+/* ub_send_spawn_cap retired — (init's spawn cap is a pre-start
  * IRIS_CPTR_PROC_CONTROL mint now, no KChannel SPAWN_CAP send). */
 
 static void ub_park_root_bootstrap(uint64_t boot_untyped_c, uint64_t own_cnode_c,

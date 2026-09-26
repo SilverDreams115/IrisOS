@@ -49,7 +49,7 @@ static void sh_imsg_zero(struct iris_msg *msg) {
     for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
 }
 
-/* VFS endpoint handle (Phase 7.1; mandatory since Phase 7.2). Resolved once
+/* VFS endpoint handle. Resolved once
  * after bootstrap via the svcmgr discovery endpoint; IRIS_CPTR_NULL means
  * VFS is unavailable — ls/cat fail loudly, there is no legacy fallback. */
 static iris_cptr_t g_sh_vfs_ep_h = IRIS_CPTR_NULL;

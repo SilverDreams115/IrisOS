@@ -115,8 +115,8 @@ struct svc_mint {
 
 /* `child_budget` (bytes, 0 = the default) is the Untyped the child's KERNEL
  * memory is carved from: its address space, its process state, and the segment
- * and stack VMOs the loader charges to it.  It is recycled when the child dies
- *, so it bounds concurrent cost rather than accumulating —
+ * and stack VMOs the loader charges to it.  It is recycled when the child dies,
+ * so it bounds concurrent cost rather than accumulating —
  * which is why the spawner, who knows what it is launching, chooses the size. */
 /*
  * `own_budget_slot`: the slot to mint the child a

@@ -356,7 +356,7 @@ void test_t125(void) {
         /* non-power-of-two CNode slot count (RETYPE2 — the canonical path). */
         if (ok && it_retype2_at(IT_UT, IT_KOBJ_CNODE, 240u, 1u, 3) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad cnode slots"; }
         /* The LEGACY handle-publishing retype (87) is retired for
-         * EVERY type, not just the migrated family it refused since Phase S1.
+         * EVERY type, not just the migrated family it refused.
          * There is one way to create an object from an Untyped, and it puts
          * the result in a CSpace slot. */
         if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0)     != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy ep not retired"; }
@@ -1102,7 +1102,7 @@ void test_t136(void) {
     }
 }
 
-/* ── T137: mapped frame revoke interaction (closes the Phase 18 T128 gap) ─────
+/* ── T137: mapped frame revoke interaction (closes the T128 gap) ─────
  * A retyped frame is MAPPED, then a derived handle is revoked while the frame
  * is live in the address space.  This demonstrates the real contract:
  *   - SYS_CAP_REVOKE is cap-scoped: it kills the derived handle but does NOT
@@ -1670,7 +1670,7 @@ void test_t141(void) {
 }
 
 /* ── T142: write-protection fault on a read-only mapping ────────────────────
- * Closes the Phase 19 T138 gap: write-enforcement is now asserted at the
+ * Closes the T138 gap: write-enforcement is now asserted at the
  * HARDWARE level, not only at the rights layer.  The child's own code pages
  * are mapped r-x by the loader (PF flags → map flags → PTE), so:
  *   - a READ of its own text completes (child exits normally, no fault);

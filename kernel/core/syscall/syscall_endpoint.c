@@ -1234,7 +1234,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
          * into the separate attached_cap field; EP_SEND keeps attached_handle.
          * A1.5: routed — honours our declared receive-slot (CPtr < 1024).
          * Deliver first — the delivered cap is an MDB child
-         * of the sender's source slot (A-29: which the sender keeps).  Outside
+         * of the sender's source slot.  Outside
          * ep->lock: installing into a slot can fire object close callbacks
          * that take endpoint locks (cn->lock → ep->lock must not invert). */
         t->ipc_msg.attached_cap = IRIS_MSG_NO_CAP;
@@ -1355,7 +1355,7 @@ static uint64_t ep_recv_complete(struct task *t) {
 }
 
 /*
- * SYS_EP_CANCEL_BADGED_SENDS(ep_cptr, badge) — ledger A-25.
+ * SYS_EP_CANCEL_BADGED_SENDS(ep_cptr, badge) — .
  *
  * seL4's `seL4_CNode_CancelBadgedSends`, and the half of revocation IRIS was
  * missing.  Revoking a badged capability stops a client sending anything NEW;
@@ -1525,7 +1525,7 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     /* A1.5: routed — receiver's declared receive-slot or handle table.
      * Deliver first, so the delivered cap is an MDB child
-     * of the source slot (A-29: the sender keeps it). */
+     * of the source slot. */
     if (xfer_obj) {
         uint32_t new_h = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
                                                         xfer_rights, xfer_badge,

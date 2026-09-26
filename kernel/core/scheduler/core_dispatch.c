@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * core_dispatch.c — the per-core dispatcher (Stage 9-evt, step 3).
+ * core_dispatch.c — the per-core dispatcher.
  *
  * ── What this is for ────────────────────────────────────────────────────────
  *

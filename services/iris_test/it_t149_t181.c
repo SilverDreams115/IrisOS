@@ -1100,7 +1100,7 @@ void test_t164(void) {
         it_close(&wo);
     }
 
-    /* Stale cap (Phase S4 shape): mint into a slot, DELETE the slot, use → fails.
+    /* Stale cap: mint into a slot, DELETE the slot, use → fails.
      * The pre-S4 form dup'd a handle; device caps no longer have one. */
     if (ok) {
         long d = it_dev_mint((long)io, IT_DEV_MINT_A, RIGHT_SAME_RIGHTS);

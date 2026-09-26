@@ -73,7 +73,7 @@
  *   Note (buffer reuse): the request payload (path) and the reply payload
  *   (data) both live in the caller's registered IPC buffer, which is one page
  *   per thread — there is no buf_uptr to point one of them elsewhere,
- *   and since A-33 no pointer on the message path at all.  The client must
+ *   and no pointer on the message path at all.  The client must
  *   re-stage the path before every call.
  */
 #define VFS_EP_OP_READ_AT  UINT64_C(0x0103)

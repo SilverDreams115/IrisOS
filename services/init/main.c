@@ -61,13 +61,13 @@ void init_log(const char *s) {
 static const char init_stage_lookup[]    = "[USER][INIT][S1] service lookup\n";
 static const char init_stage_vfs_list[]  = "[USER][INIT][S5] vfs ep list\n";
 static const char init_stage_vfs_rw[]    = "[USER][INIT][S6] vfs ep rw\n";
-/* init_stage_hello (S2) / init_stage_subscribe (S7) retired — Phase 13/Track I */
+/* init_stage_hello (S2) / init_stage_subscribe (S7) retired —  */
 /* init_stage_exception (S8) lives in init_test.c — Phase 14/Inc 2 */
-/* init_stage_seal/init_stage_rights (S9/S10) retired — Phase 13/Track F */
+/* init_stage_seal/init_stage_rights (S9/S10) retired —  */
 static const char init_stage_healthy[]   = "[USER][INIT][BOOT] healthy path OK\n";
 /* Readdup/writedup/boot_ioport/boot_service fail strings
  * retired with the legacy console KChannel bootstrap.  The console/fb spawn
- * fail strings moved to init_launch.c with their users — Phase 14. */
+ * fail strings moved to init_launch.c with their users — . */
 
 void init_exit(long code) {
     init_sys1(SYS_EXIT, code);
@@ -91,7 +91,7 @@ void init_close(iris_cptr_t *h) {
     *h = IRIS_CPTR_NULL;
 }
 
-/* init_msg_zero retired — Phase 13/Track I (no KChannel messages in init). */
+/* init_msg_zero retired — (no KChannel messages in init). */
 
 /* Runtime probes + S8 exception selftest extracted to init_test.c — Phase 14/Inc 2. */
 
@@ -102,13 +102,13 @@ void init_close(iris_cptr_t *h) {
 
 /* ── iris_test spawn + wait ──────────────────────────────────────────────── */
 
-/* init_spawn_iris_test moved to init_launch.c — Phase 14. */
+/* init_spawn_iris_test moved to init_launch.c — . */
 
-/* init_retry_pause / init_recv_spawn_cap moved to init_bootstrap.c — Phase 14. */
+/* init_retry_pause / init_recv_spawn_cap moved to init_bootstrap.c — . */
 
 /* ── Legacy channel send/recv helper (retired) ──────────────────────────── */
 
-/* init_chan_send_recv retired — Phase 13/Track I (kbd HELLO/STATUS was its
+/* init_chan_send_recv retired — (kbd HELLO/STATUS was its
  * only caller; kbd is endpoint-only now). */
 
 /* ── fb / console / svcmgr spawns moved to init_launch.c — Phase 14 ──────── */
@@ -306,7 +306,7 @@ void init_main(iris_cptr_t rbx_unused) {
         init_exit(5);
     }
 
-    /* Phase 13 (Track E/F): the legacy KChannel diagnostics + dynamic-registry
+    /* Phase 13: the legacy KChannel diagnostics + dynamic-registry
      * self-tests were retired; their coverage now lives in the endpoint suite
      * (EP_DIAG → T067, cap-backed REGISTER/LOOKUP/UNREGISTER → T054/T063–T066). */
 

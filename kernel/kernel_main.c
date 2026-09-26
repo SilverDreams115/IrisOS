@@ -217,7 +217,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     (void)acpi_parse_madt(saved_boot_info.acpi_rsdp);
 
     /*
-     * And where the DMA remapping units are (Stage 10-dma §10.2 step 1).
+     * And where the DMA remapping units are.
      *
      * Read here because it comes off the same RSDP, from the same table set,
      * which stops existing at ExitBootServices.  Then each unit's capability
@@ -710,7 +710,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                  * devices, and the kernel enumerates no PCI — so a window the
                  * firmware assigned to some device's BAR is inside it, which
                  * is the whole point: that is how a ring-3 driver gets a frame
-                 * over its own registers (Stage 10-dma §10.2 step 6).  It also
+                 * over its own registers.  It also
                  * means the holder is the one that has to know what is there.
                  * The VGA aperture is the live example: its BAR decodes 16 MiB
                  * from the framebuffer's base, while the framebuffer Untyped
@@ -873,7 +873,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     }
 
     /*
-     * ── 8b. Contain DMA (Stage 10-dma §10.2 step 3) ─────────────────
+     * ── 8b. Contain DMA ─────────────────
      *
      * LAST, and after the first user task is built, deliberately.  From this
      * call on, every DMA request from every device is refused by the hardware

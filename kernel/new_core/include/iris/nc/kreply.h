@@ -11,7 +11,7 @@
 struct task; /* forward — avoids circular include with task.h */
 
 /*
- * KReply — seL4-style reply object (Ph85; Explicit MCS-style).
+ * KReply — seL4-style reply object.
  *
  * Reply objects are canonical kernel objects.  They are created
  * ONLY via SYS_UNTYPED_RETYPE2 (storage inside the source KUntyped) and the

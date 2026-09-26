@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * kpagetable.c — the page table as a retyped object (Stage 6-pure, Step 1).
+ * kpagetable.c — the page table as a retyped object.
  *
  * See kpagetable.h for what this changes and why.  The lifecycle here is
  * deliberately thin: a KPageTable is storage plus the record of where it is

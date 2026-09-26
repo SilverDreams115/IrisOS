@@ -134,7 +134,7 @@ static const struct initrd_entry g_initrd[] = {
     { _binary_services_pager_pager_elf_start,
       _binary_services_pager_pager_elf_end  },
     /* [11] bootfix/badelf — invalid-ELF blob: boot-growth + loader failure-path
-     * fixture (Phase 28 T211-T216).  Present but never launched at boot. */
+     * fixture.  Present but never launched at boot. */
     { _binary_services_bootfix_badelf_bin_start,
       _binary_services_bootfix_badelf_bin_end  },
     /* [12] filebk/fbk.dat — file-backed memory content fixture (Phase 28

@@ -815,7 +815,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * fault" since it was written, and `task_lifecycle.c` honours it.  This
          * loader did not: it retyped the full `USER_STACK_SIZE` and mapped it
          * at `USER_STACK_BASE`, so the page the constant reserves was mapped
-         * and writable.  Every service spawned since Stage 7 comes through
+         * and writable.  Every service spawned comes through
          * here, which means no service had the guard its own header promised —
          * and what sits directly below the stack is `USER_VMO_TOP`, so an
          * overflow walked into the service's own mappings silently instead of

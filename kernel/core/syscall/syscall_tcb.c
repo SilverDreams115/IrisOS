@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * syscall_tcb.c — Block 8 (Ph96-101): TCB capability syscalls.
+ * syscall_tcb.c — Block 8: TCB capability syscalls.
  *
  * D2: the KTCB IS `struct task` (KObject at offset 0).  A KOBJ_TCB
  * capability resolves directly to the task; there is no wrapper indirection.
@@ -41,7 +41,7 @@ static iris_error_t tcb_resolve(struct KCNode *root, iris_cptr_t cptr,
 }
 
 /*
- * sys_tcb_self — RETIRED (ledger A-18 / charter A5).
+ * sys_tcb_self — RETIRED.
  *
  * It handed a thread a capability to ITSELF, asking for no capability at all:
  * ambient authority, which seL4 does not have.  It also published an MDB
@@ -224,12 +224,12 @@ uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 }
 
 /*
- * SYS_TCB_READ_REGS(tcb_cptr, out_uptr) — ledger A-28.
+ * SYS_TCB_READ_REGS(tcb_cptr, out_uptr) — .
  *
  * seL4's `seL4_TCB_ReadRegisters`, and the other half of an asymmetry: a
  * supervisor could point a thread anywhere it liked and never ask where it
- * was.  A fault handler gets the rip and the faulting address in the message
- *; which REGISTER held the bad pointer was unreachable from ring 3 by
+ * was.  A fault handler gets the rip and the faulting address in the message;
+ * which REGISTER held the bad pointer was unreachable from ring 3 by
  * any means.
  *
  * RIGHT_READ deliberately.  Observing a thread is not changing it, and a
@@ -253,7 +253,7 @@ uint64_t sys_tcb_read_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }
     /*
-     * A RUNNING thread's registers are in the CPU, not the TCB (D-1 step 3):
+     * A RUNNING thread's registers are in the CPU, not the TCB:
      * the saved frame is whatever it looked like when it last left a core, and
      * handing that back as "the current state" would be a lie a debugger acts
      * on.  Reading YOURSELF is the same situation and is refused for the same
@@ -290,7 +290,7 @@ uint64_t sys_tcb_read_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * forever — a supervisor that lost the race still learns the answer.
  */
 /*
- * SYS_TCB_SET_FAULT_HANDLER(tcb_cptr, ep_cptr) — ledger A-22.
+ * SYS_TCB_SET_FAULT_HANDLER(tcb_cptr, ep_cptr) — .
  *
  * Point a thread's faults at an ENDPOINT.  When it faults, the thread CALLS
  * that endpoint: the handler receives the record as an ordinary message, gets
@@ -395,7 +395,7 @@ uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 }
 
 /*
- * SYS_TCB_SET_TIMEOUT_HANDLER (128) — Stage 8-mcs.
+ * SYS_TCB_SET_TIMEOUT_HANDLER (128) — .
  *
  * Arms the thread's TIMEOUT fault handler: when its scheduling context runs
  * out of budget, the thread is suspended and the handler is told, instead of
@@ -416,7 +416,7 @@ uint64_t sys_tcb_set_timeout_handler(uint64_t arg0, uint64_t arg1,
 }
 
 /*
- * SYS_TCB_BIND_NOTIFICATION(tcb_cptr, notif_cptr) — ledger A-23.
+ * SYS_TCB_BIND_NOTIFICATION(tcb_cptr, notif_cptr) — .
  *
  * seL4's `seL4_TCB_BindNotification`.  A thread blocked receiving on an
  * endpoint is otherwise deaf to signals — it is in the endpoint's queue and
@@ -875,7 +875,7 @@ uint64_t sys_tcb_get_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * SYS_TCB_SET_IPC_BUFFER(tcb_cptr, frame_cptr, uvaddr) — ledger D-4.
+ * SYS_TCB_SET_IPC_BUFFER(tcb_cptr, frame_cptr, uvaddr) — .
  *
  * seL4's `seL4_TCB_SetIPCBuffer`, and the reason IRIS needs it: a message's
  * bulk payload is staged today in 256 bytes that live INSIDE every TCB.  The

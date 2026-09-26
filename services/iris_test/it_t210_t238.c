@@ -801,7 +801,7 @@ void test_t217(void) {
      * + target proc/vs presence (20/21). */
     if (ok) {
         long mask = t27_pager_call(f.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
-        /* 15 = the pager's own VSpace, a capability since Stage 4. */
+        /* 15 = the pager's own VSpace, a capability. */
         /* Step 2 adds slot 12: the budget the pager's own
          * address space was built from.  It MAPS, and the kernel no longer
          * creates paging levels, so it must be able to retype one. */
@@ -2025,7 +2025,7 @@ void test_t236(void) {
         if (t28_reg_backing_raw(f.ctrl_ep, 1, gr.idx, gr.bid, stale_gen, (uint64_t)sz)
             != -(long)FBK_ERR_GRANT) { ok = 0; why = "stale-epoch backing accepted"; }
     }
-    /* The already-installed mapping still holds (Phase 28 contract, A16): the
+    /* The already-installed mapping still holds: the
      * target already exited reading the correct byte above; re-reading is not
      * possible (a resolved target completed), so the mapping-survival property
      * is the successful resolution itself plus a clean baseline. */
@@ -2164,7 +2164,7 @@ static int t28_multi_wait_exit(struct t28_multi *m, uint32_t i) {
  * sharing ONE fault notification.  Each target faults on its own file page and
  * reads the correct byte; faults are interleaved (all triggered before any is
  * resolved); the supervisor's notification books return to baseline.  Proves
- * the quota problem is SOLVED, not avoided (Phase 28 could only run 1 target).
+ * the quota problem is SOLVED, not avoided.
  * Invariants: A19, A20, A21, A22, A23, A25. */
 static int t237_run(uint32_t nt, const char **why) {
     struct t28_multi m;

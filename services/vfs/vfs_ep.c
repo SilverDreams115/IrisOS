@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * vfs_ep.c — VFS endpoint-protocol dispatcher (Phase 7.1; grants Phase 28.1).
+ * vfs_ep.c — VFS endpoint-protocol dispatcher.
  *
  * Pure request → reply logic for the VFS protocol
  * (iris/vfs_ep_proto.h). No syscalls, no globals: unit-testable on the host

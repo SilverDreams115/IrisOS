@@ -4,7 +4,7 @@
 #include <iris/invoke.h>
 
 /*
- * iris_vspace.h — supplying your own paging levels (Stage 6-pure, Step 2).
+ * iris_vspace.h — supplying your own paging levels.
  *
  * The kernel stopped creating page tables.  A map into an address space whose
  * holder has a budget answers IRIS_ERR_MISSING_TABLE when the walk for that
@@ -49,7 +49,7 @@
  *
  * Deriving the pair from `dest` rather than decoding the leaf CPtr is not a
  * tidy-up.  The decode it replaces was `slot_c & 0xFF` / `slot_c >> 8`, which
- * hard-codes a 256-slot root CNode — and since Stage 6-pure Step 5 the spawner
+ * hard-codes a 256-slot root CNode — and the spawner
  * CHOOSES its child's CSpace width, so a child with a 64-slot root resolves
  * CPtrs on a 6-bit radix and that decode names a different CNode and a
  * different slot.  Not a failure: a successful delete of somebody else's

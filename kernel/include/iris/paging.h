@@ -102,7 +102,7 @@
  * The address is NOT a contract with userland: the root task receives it in
  * RBX and validates the magic, so moving this constant moves the page. */
 #define USER_BOOTINFO_BASE  (USER_PRIVATE_BASE + 0x00100000ULL)
-/* USER_HEAP_BASE and USER_HEAP_MAX retired in Phase 20 — SYS_BRK removed.
+/* USER_HEAP_BASE and USER_HEAP_MAX retired — SYS_BRK removed.
  * Heap memory is now managed via SYS_VMO_CREATE + SYS_VMO_MAP. */
 
 /* user VMO mappings — caller-chosen virtual addresses must stay inside this
@@ -120,7 +120,7 @@
 #define IDENTITY_MAP_END    (64ULL * 1024 * 1024)  /* 64 MB */
 #define PHYS_WINDOW_END     (4ULL * 1024 * 1024 * 1024) /* 4 GB */
 
-/* The KERNEL STACK VIRTUAL REGION is gone (ledger D-1, step 3).
+/* The KERNEL STACK VIRTUAL REGION is gone.
  *
  * It reserved three pages per task above the physmap window — a guard page and
  * two stack pages — so that a kernel stack overflow hit an unmapped page

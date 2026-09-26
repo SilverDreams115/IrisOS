@@ -5,7 +5,7 @@
  * This header defines the wire protocol for services that communicate via
  * KEndpoint (seL4-style synchronous IPC) rather than KChannel ring buffers.
  *
- * Protocol model (labels on SYS_INVOKE since A-32; a MessageInfo word plus
+ * Protocol model (labels on SYS_INVOKE; a MessageInfo word plus
  * message registers since A-33):
  *   - Clients EP_Call the service endpoint to send a request and block.
  *   - Servers loop on EP_Recv, process requests, then Reply on the reply
@@ -119,7 +119,7 @@
  * can use IRIS_SVCMGR_EP_LOOKUP_NAME for EP-based service discovery.
  * Coexists with the legacy SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP / VFS_CAP etc.
  */
-/* RETIRED in Phase 8: the discovery endpoint now arrives as the pre-start
+/* RETIRED: the discovery endpoint now arrives as the pre-start
  * CSpace mint IRIS_CPTR_SVCMGR_EP.  Kind value reserved; do not reuse. */
 #define SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP  UINT32_C(0x20)
 
@@ -131,7 +131,7 @@
  * respawned.  Clients obtain the send side via service-name lookup of
  * "<image_name>.ep" (see below).
  */
-/* RETIRED in Phase 8: the service's own endpoint recv side now arrives as
+/* RETIRED: the service's own endpoint recv side now arrives as
  * the pre-start CSpace mint IRIS_CPTR_OWN_EP.  Reserved; do not reuse. */
 #define SVCMGR_BOOTSTRAP_KIND_SERVICE_EP UINT32_C(0x21)
 
@@ -145,12 +145,12 @@
  * master, so the anti-spoof rule (no runtime registration of ".ep" names)
  * holds for the console too.
  */
-/* RETIRED in Phase 8: init now mints the console endpoint send side into
+/* RETIRED: init now mints the console endpoint send side into
  * svcmgr's root CNode at IRIS_CPTR_CONSOLE_EP.  Reserved; do not reuse. */
 #define SVCMGR_BOOTSTRAP_KIND_CONSOLE_EP UINT32_C(0x22)
 
 /*
- * Well-known CSpace slots (Phase 8: CPtr-first bootstrap handoff).
+ * Well-known CSpace slots.
  *
  * The spawner mints capabilities into the child's root CNode with
  * CSpace_Mint; the child invokes them directly by CPtr — e.g. an EP_Call on
@@ -356,7 +356,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
 /* A device/authority cap (the spawn KBootstrapCap) minted into a
  * CPtr slot, proving device caps resolve via CSpace (cspace_resolve_only_obj)
  * and are invocable by CPtr — the prerequisite for KChannel-free bootstrap. */
-/* Slot 26 is IRIS_CPTR_IOPORT_CONTROL since Stage 5 Step 2 (see above).
+/* Slot 26 is IRIS_CPTR_IOPORT_CONTROL (see above).
  * IRIS_CPTR_TEST_SPAWN — a second cap to the monolithic boot capability —
  * is retired: what it existed to prove is now proven with a capability that
  * authorises exactly one thing. */
@@ -533,7 +533,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
 #define IRIS_CPTR_DEVICE_UNTYPED ((uint64_t)64)
 /*
  * The OTHER device Untyped: the 32-bit PCI hole, MMIO that no kernel driver
- * claims (Stage 10-dma §10.2 step 6).
+ * claims.
  *
  * The framebuffer got its own slot because exactly one consumer wanted it and
  * that consumer is `fb`.  Everything else with a BAR — an NVMe controller, a

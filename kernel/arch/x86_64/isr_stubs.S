@@ -249,7 +249,7 @@ isr_common:
 
 .section .text
 /*
- * core_dispatch_enter(struct task *outgoing) — Stage 9-evt step 3.
+ * core_dispatch_enter(struct task *outgoing) — .
  *
  * Leave whatever stack we are on and enter the dispatcher on the CORE's.
  *

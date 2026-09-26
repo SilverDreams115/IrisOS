@@ -83,7 +83,7 @@ struct iris_service_catalog_entry {
                                      *     SERVICE/REPLY kinds; lookups by the service's
                                      *     endpoint ids fail.
                                      *     With own_service_ep=1: an endpoint server
-                                     *     (Phase 7.5: vfs — ready when ep_h exists).
+                                     *.
                                      *     With own_service_ep=0: a pure CPtr-first
                                      *     client (Phase 8: sh — empty bootstrap bag,
                                      *     ready when proc_h is alive). */

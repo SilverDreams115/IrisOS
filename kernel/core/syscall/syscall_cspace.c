@@ -15,7 +15,7 @@ uint32_t iris_cspace_stat_resolves = 0u;
  * ════════════════════════════════════════════════════════════════════════ */
 
 /* CSpace-only source guard: cspace_only_cptr lives in syscall_priv.h — the
- * IPC transfer path (Phase S4/Step 2) enforces the same rule. */
+ * IPC transfer path enforces the same rule. */
 
 /* Resolve the caller's root CNode with active+lifecycle refs (retype2's
  * dest_cnode == 0 convention).  Shared with syscall_cap.c (device-cap
@@ -38,7 +38,7 @@ iris_error_t cspace_own_root(struct KCNode *root, struct KCNode **out) {
 }
 
 /*
- * SYS_CSPACE_MOVE(src_cptr, dest) — ledger A-28.
+ * SYS_CSPACE_MOVE(src_cptr, dest) — .
  *
  * seL4's `seL4_CNode_Move`.  IRIS could move a capability within one CNode
  * (swap against an empty slot) and not between them; across CNodes the only
@@ -49,7 +49,7 @@ iris_error_t cspace_own_root(struct KCNode *root, struct KCNode **out) {
  *
  * `kcnode_slot_move` relocates the MDB node itself: parent, siblings and
  * children travel with it, so the tree after is the tree before with one slot
- * renamed.  It has been in the tree since Phase S3 with host coverage and no
+ * renamed.  It has been in the tree with host coverage and no
  * way for ring 3 to reach it.
  */
 uint64_t sys_cspace_move(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
@@ -315,7 +315,7 @@ uint64_t sys_cap_identify(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * sys_cspace_self — RETIRED (ledger D-6 / charter A5).
+ * sys_cspace_self — RETIRED.
  *
  * It handed the caller a capability to its own root CSpace, asking for NO
  * capability at all: ambient authority, which seL4 does not have.  It also

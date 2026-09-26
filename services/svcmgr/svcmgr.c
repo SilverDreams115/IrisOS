@@ -61,12 +61,12 @@ struct svcmgr_service_state {
     iris_cptr_t public_h;
     iris_cptr_t reply_h;
     iris_cptr_t proc_h;
-    /* Service-owned KEndpoint master (Phase 7.1; manifest own_service_ep=1).
+    /* Service-owned KEndpoint master.
      * Created once at first boot and kept across restarts so client caps
      * stay valid; recv side goes to the child at bootstrap (kind 0x21) and
      * the send side is published as "<image_name>.ep". */
     uint32_t    ep_c;   /* CPtr slot, 0 = absent */
-    /* IRQ KNotification master (Phase 7.6; manifest irq_notify=1). Created
+    /* IRQ KNotification master. Created
      * once and kept across restarts; the kernel signals it per IRQ and the
      * WAIT side goes to the child at bootstrap (kind 0x23). */
     uint32_t    irq_notif_c;   /* CPtr slot, 0 = absent */
@@ -277,7 +277,7 @@ static void svcmgr_close_handle_if_valid(iris_cptr_t *h) {
  *
  * Returns 1 once SPAWN_CAP has been received.
  */
-/* int svcmgr_recv_bootstrap_caps retired — Phase 13/Track I (legacy KChannel LOOKUP / bootstrap recv). */
+/* int svcmgr_recv_bootstrap_caps retired — (legacy KChannel LOOKUP / bootstrap recv). */
 
 /*
  * Request hardware capabilities from the kernel using the spawn cap as authority.
@@ -405,7 +405,7 @@ static const struct iris_service_catalog_entry *svcmgr_catalog_find_name(const c
     return 0;
 }
 
-/* *svcmgr_dynamic_find_endpoint retired — Phase 13/Track I */
+/* *svcmgr_dynamic_find_endpoint retired —  */
 
 static struct svcmgr_dynamic_service *svcmgr_dynamic_find_name(struct svcmgr_state *state,
                                                                const char *name) {
@@ -600,7 +600,7 @@ static void svcmgr_dynamic_clear(struct svcmgr_dynamic_service *svc, int seal) {
     for (uint32_t i = 0; i < SVCMGR_SERVICE_NAME_CAP; i++) svc->name[i] = '\0';
 }
 
-/* svcmgr_reduce_lookup_rights retired — Phase 13/Track I */
+/* svcmgr_reduce_lookup_rights retired —  */
 
 
 /* Svcmgr_send_spawn_cap retired — the initrd spawn cap is
@@ -639,7 +639,7 @@ static uint8_t *g_ep_buf = g_ep_recv_buf;
 static uint32_t svcmgr_ready_service_count(const struct svcmgr_state *state);
 static uint32_t svcmgr_active_slot_count(const struct svcmgr_state *state);
 
-/* Liveness of a catalog service per the kernel (Phase 10 STATUS oracle). */
+/* Liveness of a catalog service per the kernel. */
 static int svcmgr_service_alive(struct svcmgr_state *state, uint32_t service_id) {
     struct svcmgr_service_state *svc = svcmgr_service_state(state, service_id);
     if (!svc || svc->proc_h == IRIS_CPTR_NULL) return 0;
@@ -655,7 +655,7 @@ static int svcmgr_service_alive(struct svcmgr_state *state, uint32_t service_id)
             info.state != SVCMGR_TASK_DEAD);
 }
 
-/* Resolve a name to its current {alive, generation} (Phase 10 STATUS).
+/* Resolve a name to its current {alive, generation}.
  * Returns 1 on found. Handles ".ep"/catalog names and dynamic registrations. */
 static int svcmgr_name_status(struct svcmgr_state *state, const char *name,
                               uint32_t *alive_out, uint32_t *gen_out) {
@@ -791,7 +791,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
         break;
     }
     case IRIS_EP_OP_PING:
-        /* Health check (Phase 8: also the CPtr-first discovery probe).
+        /* Health check.
          * PING convention: echo the kernel-stamped sender badge. */
         reply.label      = IRIS_EP_REPLY_OK;
         reply.words[0]   = 0u;
@@ -1138,7 +1138,7 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
     return n;
 }
 
-/* int64_t svcmgr_send_lookup_reply retired — Phase 13/Track I (legacy KChannel LOOKUP / bootstrap recv). */
+/* int64_t svcmgr_send_lookup_reply retired — (legacy KChannel LOOKUP / bootstrap recv). */
 
 
 static uint32_t svcmgr_ready_service_count(const struct svcmgr_state *state) {
@@ -1405,9 +1405,9 @@ static void svcmgr_autostart_services(struct svcmgr_state *state) {
     }
 }
 
-/* void svcmgr_handle_lookup retired — Phase 13/Track I (legacy KChannel LOOKUP / bootstrap recv). */
+/* void svcmgr_handle_lookup retired — (legacy KChannel LOOKUP / bootstrap recv). */
 
-/* void svcmgr_handle_lookup_name retired — Phase 13/Track I (legacy KChannel LOOKUP / bootstrap recv). */
+/* void svcmgr_handle_lookup_name retired — (legacy KChannel LOOKUP / bootstrap recv). */
 
 static void svcmgr_release_service(struct svcmgr_state *state,
                                    uint32_t service_id,

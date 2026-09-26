@@ -3,7 +3,7 @@
  * kfault.c — delivering a fault to the handler a thread named, and the two
  * counters that make quota exhaustion and fault handling observable.
  *
- * This file was kprocess.c.  `struct KProcess` was deleted in Stage 7-proc and
+ * This file was kprocess.c.  `struct KProcess` was deleted and
  * the name stayed for four stages, pointing readers at an object that does not
  * exist.
  *
@@ -265,7 +265,7 @@ int ktimeout_notify_fault(struct task *t) {
                           /*timeout=*/1);
 }
 
-/* Ordering: emit_exit_watch (Track B: a KNotification signal) fires before
+/* Ordering: emit_exit_watch fires before
  * handle_table_close_all so the exit_code is already set when watchers wake.
  * teardown_complete provides idempotency; this function is called from both
  * task_exit_current (normal exit) and the object destructor (fallback path). */

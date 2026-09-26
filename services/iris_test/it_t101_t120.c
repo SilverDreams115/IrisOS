@@ -890,7 +890,7 @@ void test_t107(void) {
     it_close(&g_fz_data_ep);
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
-    /* I16: exact balance; +1 = the worker's KTcb handle (Ph96, A1.10 note). */
+    /* I16: exact balance; +1 = the worker's KTcb handle. */
     if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
     /* I18: directional counter deltas (>=: background services also count). */
     if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + exp_slot) {
@@ -1667,7 +1667,7 @@ void it_quiesce_reaper(void) {
 /* ── Lifecycle/process hardening (T113–T118) ───────────────────────
  * The A1.11 deferred-reap fix (task.awaiting_reap) closed the one real bug in
  * this area; T113–T118 LOCK the surviving lifecycle contracts so a future
- * regression fails loudly.  Instrumentation: the Phase 16 SCHED_INFO words —
+ * regression fails loudly.  Instrumentation: the SCHED_INFO words —
  * live TASK count (it_task_live), live PROCESS count (IT_SI_PROCLIVE) and the
  * deferred-reap queue high-water (IT_SI_REAPHWM).  Because a killed/exited
  * child's KProcess stays live until the PARENT closes its proc handle, every

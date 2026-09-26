@@ -71,7 +71,7 @@
 #define IRIS_BOOTCAP_DOMAIN_CONTROL (1u << 9)  /* Domain_Set */
 
 /*
- * Authority to name a DEVICE at all — Stage 10-dma, seL4's `seL4_IOSpace`.
+ * Authority to name a DEVICE at all — , seL4's `seL4_IOSpace`.
  *
  * Every other capability in IRIS bounds what a THREAD may reach.  This one
  * bounds what a DEVICE may reach, which is the one thing an I/O port or IRQ

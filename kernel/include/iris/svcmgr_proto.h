@@ -210,12 +210,12 @@
 #define SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP 5u /* KIoPort capability for I/O port access */
 #define SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP 6u /* retired: writers
                                               * log over console.ep. Do not reuse. */
-/* 9u (KBD_CAP) retired in Phase 7.4: sh pulls key events via "kbd.ep".
+/* 9u (KBD_CAP) retired: sh pulls key events via "kbd.ep".
  * Do not reuse this kind value. */
-/* 10u/11u (VFS_CAP / VFS_REPLY_CAP) retired in Phase 7.5: vfs is endpoint_only.
+/* 10u/11u (VFS_CAP / VFS_REPLY_CAP) retired: vfs is endpoint_only.
  * Do not reuse these kind values. */
 #define SVCMGR_BOOTSTRAP_KIND_INITRD_CAP 12u /* KBootstrapCap (SPAWN_SERVICE) for initrd access */
-/* 0x23 (IRQ_NOTIFY) RETIRED in Phase 8: the IRQ KNotification
+/* 0x23 (IRQ_NOTIFY) RETIRED: the IRQ KNotification
  * WAIT side now arrives as the pre-start CSpace mint IRIS_CPTR_IRQ_NOTIFY
  * (slot 7).  Reserved; do not reuse this kind value. */
 #define SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY 0x23u

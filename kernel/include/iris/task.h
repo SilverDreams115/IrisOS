@@ -189,7 +189,7 @@ struct task {
      * The CSpace this thread resolves CPtrs in, held by the
      * THREAD.
      *
-     * SYS_TCB_CONFIGURE has named the CSpace as a capability since Stage 5
+     * SYS_TCB_CONFIGURE has named the CSpace as a capability
      * Step 4, and then the kernel resolved every CPtr through
      * `t->process->cspace_root` anyway — so the argument described the truth
      * without being it, and a thread's most basic authority was a property of
@@ -418,7 +418,7 @@ struct task {
     /*
      * The syscall's arguments, kept where a restart can find them.
      *
-     * An array since A-33, because the message ABI addresses them by POSITION
+     * An array, because the message ABI addresses them by POSITION
      * — `ipc_msg.h` says which word of an invocation carries the MessageInfo
      * and which carry the message registers, and one definition of that map is
      * the ABI.  sc_arg[0] is the invoked capability, sc_arg[1] the method, and
@@ -477,7 +477,7 @@ struct task {
      * IPC wait's. */
     uint64_t          wake_tick;
 
-    /* Synchronous endpoint IPC staging (Ph66+). */
+    /* Synchronous endpoint IPC staging. */
     struct ipc_stage      ipc_msg;         /* 64-byte staging/delivery buffer */
     uint32_t            ipc_msg_ready;   /* set by sender on successful rendezvous */
     uint32_t            ipc_ep_closed;   /* set by kendpoint_close while task was blocked */
@@ -674,7 +674,7 @@ struct task {
     int32_t        reg_slot;     /* 1 while on the scheduler list, else -1 */
     struct task   *sched_prev;   /* intrusive links for that list */
     struct task   *sched_next;
-    /* `kstack_slot` is GONE with the per-thread kernel stack (D-1, step 3).
+    /* `kstack_slot` is GONE with the per-thread kernel stack.
      * It recorded which slot of the KSTACK_VIRT_BASE region a thread owned;
      * after the region went, two sites still set it to -1 and nothing ever
      * read it. */
