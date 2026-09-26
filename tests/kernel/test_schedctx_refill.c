@@ -206,7 +206,9 @@ void test_schedctx_refill(void) {
         ASSERT_NOT_NULL(sc);
         memset(&reply, 0, sizeof(reply));
         memset(&client, 0, sizeof(client));
+        test_task_object_init(&client);   /* A-44: queues and donations hold it */
         memset(&server, 0, sizeof(server));
+        test_task_object_init(&server);   /* A-44: queues and donations hold it */
 
         client.sched_ctx = sc;
         server.sched_ctx = NULL;              /* passive */
@@ -241,6 +243,7 @@ void test_schedctx_refill(void) {
         ASSERT_NOT_NULL(sc);
         memset(&reply, 0, sizeof(reply));
         memset(&server, 0, sizeof(server));
+        test_task_object_init(&server);   /* A-44: queues and donations hold it */
 
         server.sched_ctx = sc;
         kreply_note_donation(&reply, sc, &server);
@@ -261,7 +264,9 @@ void test_schedctx_refill(void) {
         ASSERT_NOT_NULL(sc);
         memset(&reply, 0, sizeof(reply));
         memset(&client, 0, sizeof(client));
+        test_task_object_init(&client);   /* A-44: queues and donations hold it */
         memset(&server, 0, sizeof(server));
+        test_task_object_init(&server);   /* A-44: queues and donations hold it */
 
         server.sched_ctx = sc;
         kreply_note_donation(&reply, sc, &server);

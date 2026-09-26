@@ -201,6 +201,24 @@ void knotification_signal(struct KNotification *n, uint64_t bits) {
     atomic_fetch_or_explicit(&n->signal_bits, bits, memory_order_release);
     int woke = knotif_waiters_wake_one(n);
     struct task *bound = woke ? 0 : n->bound_tcb;
+    /*
+     * A-44 — held across the unlock, because the claim below is about the
+     * BITS and the hazard is about the THREAD.
+     *
+     * `bound` is walked after this lock is dropped: the delivery dequeues it
+     * from its endpoint, writes a message into it and wakes it.  The binding
+     * itself stores no reference on purpose (it would be a cycle: the thread
+     * names the notification back), and teardown breaks it from the thread's
+     * side -- but clearing `n->bound_tcb` does nothing about the copy already
+     * in this local.  A bound thread is blocked on an endpoint, so it is
+     * off-CPU, and TCB_EXIT on an off-CPU thread tears it down synchronously
+     * on the caller's core.  This function also runs from IRQ context, so the
+     * window is open on every core at any time.
+     *
+     * A reference taken here and dropped after the delivery is not the cycle
+     * the binding avoids: it lives for one delivery, not for the binding.
+     */
+    if (bound) kobject_retain(&bound->base);
     spinlock_unlock(&n->base.lock);
 
     /*
@@ -221,6 +239,7 @@ void knotification_signal(struct KNotification *n, uint64_t bits) {
              * for whoever does come to wait, rather than swallowing them. */
             atomic_fetch_or_explicit(&n->signal_bits, got, memory_order_release);
         }
+        kobject_release(&bound->base);   /* A-44 */
     }
 }
 

@@ -188,9 +188,10 @@ void kreply_return_donation(struct KReply *r, struct task *back_to) {
     struct task          *to = r->donated_to;
     r->donated_sc = 0;
     r->donated_to = 0;
+    if (to) kobject_retain(&to->base);   /* A-44: written through below */
     irq_spinlock_unlock(&r->lock, flags);
 
-    if (!sc) return;
+    if (!sc) { if (to) kobject_release(&to->base); return; }
     /* Close the server's accounting run before the SC leaves it, so the time
      * it actually used earns its replenishment against the period it was used
      * in rather than the next holder's. */
@@ -224,6 +225,7 @@ void kreply_return_donation(struct KReply *r, struct task *back_to) {
     to->sched_ctx = 0;
     if (back_to && !back_to->sched_ctx) back_to->sched_ctx = sc;
     else                                kobject_release(&sc->base);
+    kobject_release(&to->base);          /* A-44 */
 }
 
 void kreply_cancel_caller(struct KReply *r) {

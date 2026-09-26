@@ -92,11 +92,15 @@ uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (tcb_cptr == 0u) {
         uint64_t f = irq_spinlock_lock(&sc->lock);
         struct task *bound = sc->bound_task;
+        /* A-44: this pointer is WRITTEN THROUGH after the unlock, and the
+         * thread it names can be torn down on another core in between. */
+        if (bound) kobject_retain(&bound->base);
         irq_spinlock_unlock(&sc->lock, f);
         if (bound && bound->sched_ctx == sc) {
             bound->sched_ctx = 0;
             kobject_release(&sc->base);   /* task's SC ref */
         }
+        if (bound) kobject_release(&bound->base);   /* A-44 */
         kschedctx_unbind(sc, 0);
         kobject_release(sc_obj);
         return 0;
@@ -275,19 +279,35 @@ uint64_t sys_sc_yield_to(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (err != IRIS_OK) return syscall_err(err);
 
     struct KSchedContext *sc = (struct KSchedContext *)obj;
+    /*
+     * A-44: read under the SC's own lock and HELD across the checks below.
+     *
+     * It used to be read with no lock at all and then dereferenced three
+     * times.  The `terminal || TASK_DEAD` test is not a substitute: it is the
+     * same guard `task_wakeup` uses, and it passes on a slot that has already
+     * been destroyed and retyped into a different live thread.
+     */
+    uint64_t scf = irq_spinlock_lock(&sc->lock);
     struct task *target = sc->bound_task;
+    if (target) kobject_retain(&target->base);
+    irq_spinlock_unlock(&sc->lock, scf);
+
     if (!target || target == t) {
+        if (target) kobject_release(&target->base);
         kobject_release(obj);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
     if (target->priority > t->mcp) {
+        kobject_release(&target->base);
         kobject_release(obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
     if (target->terminal || target->state == TASK_DEAD) {
+        kobject_release(&target->base);
         kobject_release(obj);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }
+    kobject_release(&target->base);   /* A-44: not touched again below */
 
     uint64_t spent = 0;
     if (t->sched_ctx) {

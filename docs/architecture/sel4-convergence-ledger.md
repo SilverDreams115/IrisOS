@@ -239,6 +239,34 @@ releases.  The enqueue's two "already queued" early returns take nothing,
 because a task already on the queue is already held and the second reference
 would never come back.
 
+**And then the whole class, enumerated properly.**  The general question
+behind A-43 and A-44 is *which kernel objects store a `struct task *`*, so
+that was asked directly of the headers.  Seven fields, and after the two
+queues and `KReply::caller` three were left, all with the same shape — a raw
+pointer read, a lock dropped, the thread walked afterwards:
+
+- `KNotification::bound_tcb` (A-23).  Its delivery runs OUTSIDE the
+  notification lock deliberately, to avoid a lock-order inversion with the
+  endpoint, and the comment defending that says "nothing between the unlock
+  and the delivery can invalidate it — the bits are already set".  That is
+  true of the BITS.  The thread is what gets dequeued, written into and woken,
+  and a bound thread is blocked on an endpoint, so it is off-CPU and can be
+  torn down synchronously by another core.  `knotification_signal` also runs
+  from IRQ context, so the window is open on every core at any time.  The
+  binding stores no reference on purpose — the thread names the notification
+  back, so that would be a cycle — but a reference that lives for ONE delivery
+  is not that cycle.
+- `KSchedContext::bound_task`, twice.  The unbind path reads it under the SC
+  lock and then WRITES THROUGH it after the unlock.  `sys_sched_yield_to` read
+  it with **no lock at all** and dereferenced it three times; its
+  `terminal || TASK_DEAD` test is not a substitute, being the same guard
+  `task_wakeup` uses and passing on a slot already retyped into another live
+  thread.
+- `KReply::donated_to`, the server running on a donated scheduling context,
+  read under `r->lock` and written through after it.
+
+All four now hold a reference for exactly as long as they walk the thread.
+
 **A queue that holds references makes hand-installed waiters illegal.**  Two
 places install a waiter directly instead of calling the enqueue -- the ring-0
 notification self-check and a host test for close-with-a-waiter -- and both
