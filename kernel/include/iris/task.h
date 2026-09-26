@@ -616,6 +616,30 @@ struct task {
      * this thread is a KOBJ_TCB cap on &base.  `configured`/`terminal` flag
      * the object/execution state; `reg_slot` is the registry witness. */
     uint8_t        configured;   /* Phase S2: TCB_CONFIGURE committed */
+    /*
+     * The CLAIM on configuring this thread (ledger A-41).
+     *
+     * `configured` cannot be that claim: it is the EXECUTION gate seven other
+     * places read as "this thread may be written to and run", so setting it
+     * early would open the thread to TCB_WRITE_REGS and TCB_RESUME while it
+     * is still half-built.  So the claim is its own flag, and `configured`
+     * still means what it meant.
+     *
+     * This is `terminal`'s mirror and has the same reason.  Teardown is
+     * claimed with an exchange because four cores calling Exit on one thread
+     * all passed an unlocked test and all tore it down.  Construction had the
+     * identical hole and no claim: two cores passing `if (t->configured)` both
+     * installed a CSpace and a VSpace over each other's, leaking the first
+     * pair beyond any reach, taking the execution reference twice so the TCB
+     * could never be destroyed, counting the thread twice in
+     * `sched_live_count`, and registering it twice in the list the tick walks.
+     * The interleaving could also leave the CSpace of one call with the VSpace
+     * of the other -- a pairing neither caller asked for.
+     *
+     * Cleared again on the two failure paths that run before any state is
+     * touched, so a legitimate retry after NO_MEMORY still works.
+     */
+    _Atomic uint8_t configuring;
     uint8_t        started;      /* Stage 5: has been made runnable at least
                                   * once — after that its kernel stack holds
                                   * live state and the entry frame must not be

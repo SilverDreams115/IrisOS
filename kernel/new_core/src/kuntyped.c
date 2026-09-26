@@ -354,8 +354,19 @@ iris_error_t kuntyped_alloc_children_atomic(struct KUntyped *u,
     if (total > KUNTYPED_RETYPE_MAX_BYTES) return IRIS_ERR_INVALID_ARG;
 
     uint64_t flags = irq_spinlock_lock(&u->lock);
-    if (u->used + total + u->used_top > u->total_size ||
-        u->used + total < u->used) {
+    /*
+     * Room by SUBTRACTION, like the other two watermark tests.
+     *
+     * This one was written as `used + total + used_top > total_size` with a
+     * wrap guard on the first addition only, and it is safe today because
+     * `total` is capped by KUNTYPED_RETYPE_MAX_BYTES and both watermarks are
+     * bounded by the region.  That is safety by a chain of facts held
+     * elsewhere, which is precisely the reasoning that failed in the sibling
+     * test: subtraction cannot wrap, so it needs no chain.
+     */
+    if (u->used > u->total_size ||
+        u->used_top > u->total_size - u->used ||
+        total > u->total_size - u->used - u->used_top) {
         irq_spinlock_unlock(&u->lock, flags);
         return IRIS_ERR_NO_MEMORY;
     }

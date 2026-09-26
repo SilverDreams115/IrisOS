@@ -30,6 +30,10 @@ RANK = {
     't->obj_lock': 6, 'target->obj_lock': 6, 'sc->lock': 6, 'r->lock': 6,
     'dom_lock': 7,          # the domain schedule's cursor
     'rq->lock': 8,          # leaf: nothing may be taken under it
+    # A-39's CNode teardown queue.  A leaf, and BELOW rq->lock on purpose: it
+    # is only ever taken with nothing held, so anything taken under it — the
+    # mdb_lock the drain needs most of all — goes up the list and is reported.
+    'cascade_lock': 9,
 }
 
 LOCK   = re.compile(r'(?:irq_)?spinlock_lock\(&\s*([\w\->\.\[\]]+)')

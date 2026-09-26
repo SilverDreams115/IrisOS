@@ -171,6 +171,56 @@ UT-TOP-1..5 and T298.
 
 ## Structural divergences from seL4
 
+### A-41 — teardown was claimed against concurrent callers; construction was not  ✅ CLOSED
+
+**Found by audit, by reading the fix that was already there and looking for
+its mirror.**
+
+`terminal` is `_Atomic uint8_t` and teardown claims it with an exchange, and
+the comment on it says exactly why: it used to be a plain byte tested at the
+top of teardown, "an unlocked read that four cores calling Exit on one thread
+all pass, so all four tore the same thread down."
+
+`ktcb_configure` had the identical hole at the other end of the lifecycle and
+no claim at all.  It opened with `if (t->configured || t->terminal) return
+ALREADY_EXISTS;` and set `t->configured = 1` ninety lines later, with no lock
+anywhere in between.  Two cores holding `RIGHT_WRITE` on the same unconfigured
+TCB — which is what a spawner with two worker threads has — both pass the
+test and both build the thread:
+
+- `t->cspace_root` and `t->vspace` are each assigned and then retained, so the
+  second call overwrites the first's pointers.  **The first CSpace and VSpace
+  pair is leaked past any reach**: nothing holds a pointer to it, so teardown
+  cannot release it and the Untyped that paid for it can never be reset.
+- `kobject_retain(&t->base)` — the EXECUTION reference — is taken twice and
+  dropped once, so the TCB is never destroyed.
+- `sched_live_count` is incremented twice and decremented once.  The comment
+  three lines above it warns that a thread which skipped the increment would
+  underflow the counter; the inverse breaks it just as thoroughly.
+- `task_registry_alloc` runs twice, which can put one thread twice into the
+  list the tick walks.
+- And the two calls interleave field by field, so the thread can end with the
+  CSpace of one and the VSpace of the other — **a pairing neither caller
+  asked for**.
+
+None of it needs two principals.  One principal racing two of its own threads
+on one TCB it owns leaks a CNode, a VSpace and a TCB permanently, repeatably,
+and nothing — not revoke, not `SYS_UNTYPED_RESET` — reclaims any of it.
+
+**The repair** is the precedent, applied at the other end: `configuring`, an
+atomic claim taken with an exchange at the top.  It is a separate flag rather
+than `configured` itself, because `configured` is the execution gate that
+seven other places read as "this thread may be written to and run" — claiming
+it early would open a half-built thread to `TCB_WRITE_REGS` and `TCB_RESUME`.
+The claim is released again on the two failure paths that run before any state
+is touched, so a retry after `NO_MEMORY` still works.
+
+**No targeted regression test.**  `task_lifecycle.c` is not in the host suite
+and pulling it in would drag the scheduler with it, and a race is not
+something a single-threaded test can express in any case.  What is asserted is
+the shape: the claim is initialised where `configured` is, the four lanes are
+green, and the reasoning is the one already written down for `terminal`.
+
 ### A-40 — a derivation named its parent by location, and a slot is reusable  ✅ CLOSED
 
 **Found by audit while checking the CDT for use-after-free, fixed and gated in

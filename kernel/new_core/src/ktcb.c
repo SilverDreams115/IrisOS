@@ -94,6 +94,7 @@ struct task *ktcb_alloc_at(void *mem) {
     t->mcp        = 0;
     t->reg_slot   = -1;                     /* no scheduler identity */
     t->configured = 0;                      /* execution gate: stays closed */
+    atomic_store_explicit(&t->configuring, 0u, memory_order_relaxed);
     t->started    = 0;                      /* never runnable yet */
 
     ktcb_live_inc();
