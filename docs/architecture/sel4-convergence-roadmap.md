@@ -1412,7 +1412,9 @@ process was standing in for the thread.
 
 `SYS_TCB_SET_FAULT_HANDLER` (126) arms the thread, named by capability.  The
 registration state moved onto `struct task` with the record Step 6 put there —
-`fault_notif`, `fault_bits`, `fault_cspace`, `fault_slot`, `fault_seq_counter`
+`fault_notif`, `fault_bits`, `fault_cspace`, `fault_slot` (and `fault_seq_counter`
+in the plan; roadmap review: four of the five went, that one STAYED and is live —
+`kfault.c` increments it to stamp each fault's `fault_seq`)
 — so two threads of one process can have two handlers, or one and none.
 Everything Step 7 established carries over unchanged: the mailbox is named by
 the REGISTRANT (a supervisor arming a target's faults delivers into a CNode it
@@ -1795,9 +1797,16 @@ Three defects surfaced doing it, each of which had been silent:
    ran budgeted or not depending on which side of the rendezvous arrived
    first.  All three now go through one helper.
 
-Not seL4's yet: `refill_max` is a compile-time constant (8 entries) rather than
-a per-SC configuration chosen at retype.  At tick granularity with a coalescing
-flush it has not been reachable; recorded rather than claimed closed.
+~~Not seL4's yet: `refill_max` is a compile-time constant (8 entries) rather
+than a per-SC configuration chosen at retype.~~  **Corrected by the roadmap
+review: it IS chosen at retype.**  `RETYPE2(KOBJ_SCHED_CONTEXT)` reads the
+refill depth out of `obj_arg` — the comment at that site calls it "seL4's
+`refill_max`" — bounds it to `KSCHEDCTX_REFILL_MIN`..`KSCHEDCTX_REFILL_LIMIT`
+(2..64), and `KSCHEDCTX_REFILL_DEFAULT` (8) applies only when the caller passes
+0.  The struct carries `refill_max` per object with the ring as a flexible
+array.  This note outlived its own fix, and it is the one place in this file
+found UNDERSTATING convergence rather than overstating it — worth recording,
+because a stale pessimistic claim also stops somebody looking.
 
 ## Stage 8-cap — the capability model's last gaps  ← CLOSED (D-2, D-8 and D-4 closed; D-3 decided and registered as a permanent divergence)
 
