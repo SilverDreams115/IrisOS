@@ -57,6 +57,11 @@ static void kendpoint_obj_close(struct KObject *obj) {
         } else {
             task_wakeup(t);
         }
+        /* A-44: the queue's reference, given back last.  It is also what
+         * makes the kill above safe to call from here: an off-CPU thread is
+         * torn down synchronously by that call, and until this release it
+         * cannot reach a refcount of zero while this walk still holds it. */
+        kobject_release(&t->base);
         t = nxt;
     }
     ep->queue_head = 0;
@@ -112,12 +117,18 @@ void kendpoint_cancel_waiter(struct task *t) {
 
     uint64_t flags = irq_spinlock_lock(&ep->lock);
 
+    /* A-44: whether this call is the one that TOOK it off the queue.  The walk
+     * below finds nothing when a rendezvous on another core got there first,
+     * and only the remover may give the queue's reference back. */
+    int removed = 0;
+
     if (ep->queue_head == t) {
         ep->queue_head = t->ep_next;
         if (!ep->queue_head) {
             ep->queue_tail = 0;
             ep->ep_state   = EP_STATE_IDLE;
         }
+        removed = 1;
     } else {
         struct task *prev = ep->queue_head;
         while (prev && prev->ep_next != t)
@@ -128,6 +139,7 @@ void kendpoint_cancel_waiter(struct task *t) {
                 ep->queue_tail = prev;
             if (!ep->queue_head)
                 ep->ep_state = EP_STATE_IDLE;
+            removed = 1;
         }
     }
 
@@ -156,5 +168,18 @@ void kendpoint_cancel_waiter(struct task *t) {
     if (staged_cn) {
         kobject_active_release(&staged_cn->base);
         kobject_release(&staged_cn->base);
+    }
+
+    /*
+     * A-44 — last, and only if this call is what took it off the queue.
+     *
+     * This runs from the thread's own teardown, so the reference being given
+     * back here cannot be the one keeping it alive; the execution reference
+     * outlives it.  What matters is that it is given back exactly once: a
+     * rendezvous that dequeued it first owns it instead, and releasing here
+     * as well would drop a count nobody took.
+     */
+    if (removed) {
+        kobject_release(&t->base);
     }
 }

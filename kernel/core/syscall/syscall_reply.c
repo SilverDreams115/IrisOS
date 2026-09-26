@@ -220,6 +220,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                 /* Defensive: claim lost (last cap dropped while blocked).
                  * Wake receiver (message already delivered) but fail the call. */
                 task_wakeup(receiver);
+                kobject_release(&receiver->base);   /* A-44: the queue's */
                 kobject_release(&ep->base);
                 return syscall_err(IRIS_ERR_CLOSED);
             }
@@ -227,6 +228,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         /* Receiver is ready; caller blocks waiting for reply. */
         task_wakeup(receiver);
+        kobject_release(&receiver->base);           /* A-44: the queue's */
         t->state        = TASK_BLOCKED_REPLY;
         /* Stage 9-evt Step 1: park and be re-executed, rather than holding
          * this frame across the server's whole turn — which is the longest
@@ -255,6 +257,11 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         if (ep->queue_tail) { ep->queue_tail->ep_next = t; ep->queue_tail = t; }
         else                { ep->queue_head = t; ep->queue_tail = t; }
+        /* A-44: queued is held.  This file enqueues on the SAME endpoint queue
+         * syscall_endpoint.c does, which is the enumeration the first attempt
+         * at this missed -- a waiter queued here and dequeued there had a
+         * reference released that nobody ever took. */
+        kobject_retain(&t->base);
 
         t->state = TASK_BLOCKED_SEND;
         irq_spinlock_unlock(&ep->lock, flags);

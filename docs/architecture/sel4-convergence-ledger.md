@@ -171,60 +171,68 @@ UT-TOP-1..5 and T298.
 
 ## Structural divergences from seL4
 
-### A-44 — an endpoint wait queue names threads it does not hold  ⚠️ OPEN
+### A-44 — an endpoint wait queue named threads it did not hold  ✅ CLOSED
 
-**Found by extending A-43.  Mechanism proven, reachability proven, fix
-attempted and REVERTED.  This row is what the next attempt needs.**
+**Found by extending A-43.  Fixed on the second attempt; the first was
+reverted, and why it failed is the useful part.**
 
 `KEndpoint`'s wait queue is an intrusive list of raw `struct task *` through
-`t->ep_next`, and nothing on it holds a reference.  The core that takes a
-waiter off the queue keeps walking it after `ep->lock` is dropped — it wakes
+`t->ep_next`, and nothing on it held a reference.  The core that takes a
+waiter off the queue keeps walking it after `ep->lock` is dropped: it wakes
 it, and on several paths writes to it first.
 
-**Why that is reachable, which is the part worth keeping.**  A blocked thread
-is off-CPU, and `sys_tcb_exit` on an off-CPU target does NOT defer to the
-reaper: it falls through to `task_execution_teardown_off_cpu(t)` and runs the
-whole teardown **synchronously on the killer's core**.  So a supervisor on one
-core can free a waiter's storage back to its Untyped while another core, mid
-rendezvous, still holds the pointer.  `task_wakeup` refuses a `terminal` or
-`TASK_DEAD` task, which guards against enqueueing the dead — not against a
-slot already retyped into a different live thread.
+**Why that is reachable.**  A blocked thread is off-CPU, and `sys_tcb_exit` on
+an off-CPU target does NOT defer to the reaper — it falls through to
+`task_execution_teardown_off_cpu(t)` and runs the whole teardown
+**synchronously on the killer's core**.  So a supervisor on one core frees a
+waiter's storage back to its Untyped while another core, mid-rendezvous, still
+holds the pointer.  `task_wakeup` refuses a `terminal` or `TASK_DEAD` task,
+which guards against enqueueing the dead — not against a slot already retyped
+into a different live thread.
 
-It is the same defect as A-43 and as the one `sys_tcb_exit` fixed for itself
-(T350, `kobject_retain: resurrect from refcount 0` on an object whose type
-field read 0).  `kendpoint_close` has it too, and worse: it calls
-`task_kill_external(t)` while holding `ep->lock`, and clears `t->blocking_ep`
-first — so a concurrent `kendpoint_cancel_waiter(t)` reads that field BEFORE
-taking the lock, sees 0, returns without ever blocking, and teardown proceeds.
+`kendpoint_close` had it too, and worse: it calls `task_kill_external(t)` while
+holding `ep->lock`, and clears `t->blocking_ep` first — so a concurrent
+`kendpoint_cancel_waiter(t)` reads that field BEFORE taking the lock, sees 0,
+returns without ever blocking, and teardown proceeds.
 
-**The surface**: three enqueues (`sys_ep_send`, the call-mode sender, and the
-receiver), and ten removals — the two fastpaths, the fault-call delivery's two
-branches, the notification-to-blocked-receiver path, both `ep_recv` rendezvous,
-`sys_ep_cancel_badged_sends`, `kendpoint_close`, and `kendpoint_cancel_waiter`
-(which must release only when it is the caller that actually dequeued).
+**The repair**: being queued is being held.  Four enqueues take a reference and
+every removal gives it back after its last touch — the two fastpaths, the
+fault-call delivery's two branches, the notification-to-blocked-receiver path,
+both `ep_recv` rendezvous, the reply path's own rendezvous,
+`sys_ep_cancel_badged_sends`, `kendpoint_close`, and `kendpoint_cancel_waiter`,
+which releases only when it is the caller that actually dequeued.  A call-mode
+sender that stays blocked is released here too: the REPLY binding holds it from
+then on (A-43).
 
-**Why the obvious one-line fix does not work.**  Making `sys_tcb_exit` always
-defer to the reaper would close every site at once, because nothing dispatches
-between a dequeue and its wakeup.  But the reap ring's capacity is DERIVED —
-"a task dies on the CPU it was running on, so at most one new entry per CPU
-between reap calls" — and enqueuing off-CPU threads from a killer core breaks
-that bound.  Its overflow path drops the slot silently.
+**The first attempt, and the lesson.**  It enumerated the queue's enqueues and
+removals **by grepping one file**, `syscall_endpoint.c`.  `syscall_reply.c`
+manipulates the same queue — it enqueues a caller at its own park and dequeues
+a receiver at its own rendezvous — and was missed entirely.  A waiter queued
+there and dequeued in the other file had a reference released that nobody ever
+took, so a live thread's refcount reached zero and it was destroyed with
+`terminal == 0`.  The ring-3 run panicked with `sched_resume: kernel resume
+with no entry`: a zeroed slot, woken and then dispatched.
 
-**What the reverted attempt got wrong.**  Retain at each enqueue, release after
-each removal's last touch; the pairing was 1:1 and the host suite went green
-at 27877, but the ring-3 run panicked with `sched_resume: kernel resume with
-no entry` — the signature of a task resumed after its storage was zeroed, i.e.
-one release too many somewhere. A retains-only build then failed differently
-(ring 3 never reached the ACPI probe), which says the task reference model has
-paths this analysis did not account for: pool-born threads whose `refcount == 1`
-IS the execution reference, retyped threads that carry a separate one, and the
-Stage 9-evt re-execution paths where a parked syscall re-enters from the top.
-Closing this needs that model written down FIRST, not inferred from the sites.
+It was NOT localised by bisection, which cost three runs and pointed nowhere.
+It was localised by instrumenting: one probe at the assert printing the broken
+task (`id=0 state=1 resume=0 ref=0 type=0` — `type=0` being the same
+zero-filled signature T350 recorded), and one in the TCB destructor printing
+`term=0`, which said the destruction was not a teardown at all but an
+over-release.  A `grep` for queue writes across the WHOLE tree then named the
+missing file in one line.
 
-**What already landed toward it**: `tests/kernel/` now initialises its
-`struct task` fixtures as real KObjects (`test_task_object_init`), because a
-queue that holds references makes a bare `struct task { 0 }` underflow on the
-first release.  That is a prerequisite and it is in.
+**Two things that wasted runs and are worth not repeating.**  The first probes
+used `klog_write`, which does not reach the serial log on that path — the
+panic's own messages use `serial_write`, and so must anything meant to be read
+beside them.  And "revert and register" was the right call at the point it was
+made, but the row it produced blamed an undocumented task reference model; the
+actual defect was an enumeration that stopped at a file boundary.  **A
+grep-derived surface is only as complete as its path argument.**
+
+**Tests**: `tests/kernel/` initialises its `struct task` fixtures as real
+KObjects (`test_task_object_init`), because a queue that holds references
+makes a bare `struct task { 0 }` underflow on the first release.  The host
+suite caught exactly that, twice, which is how the fixture gap surfaced.
 
 ### A-43 — a reply binding named a thread it did not hold  ✅ CLOSED
 

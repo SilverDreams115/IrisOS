@@ -610,6 +610,7 @@ static int ep_send_fastpath(struct task *t, struct KEndpoint *ep) {
 
     irq_spinlock_unlock(&ep->lock, fl);
     task_wakeup(receiver);
+    kobject_release(&receiver->base);   /* A-44: the queue's */
     kobject_release(&ep->base);
     return 1;
 }
@@ -641,6 +642,7 @@ static int ep_recv_fastpath(struct task *t, struct KEndpoint *ep) {
 
     irq_spinlock_unlock(&ep->lock, fl);
     task_wakeup(sender);
+    kobject_release(&sender->base);   /* A-44: the queue's */
     return 1;
 }
 
@@ -761,6 +763,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         /* Wake receiver only after all data is consistent. */
         task_wakeup(receiver);
+        kobject_release(&receiver->base);   /* A-44: the queue's */
         kobject_release(&ep->base);
         return syscall_ok_u64(0);
     }
@@ -781,6 +784,23 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (ep->queue_tail) { ep->queue_tail->ep_next = t; ep->queue_tail = t; }
     else                { ep->queue_head = t; ep->queue_tail = t; }
+
+    /*
+     * Ledger A-44 — a wait queue HOLDS what it names.
+     *
+     * These links are raw task pointers, and the core that later takes one off
+     * the queue goes on walking it after `ep->lock` is dropped: it wakes it,
+     * and on some paths writes to it first.  A blocked thread is off-CPU, and
+     * a supervisor running TCB_EXIT on an off-CPU thread tears it down
+     * SYNCHRONOUSLY on its own core -- the storage goes back to its Untyped
+     * while the other core still holds the pointer.  The same defect
+     * sys_tcb_exit fixed for itself (T350, "resurrect from refcount 0") and
+     * the reply binding fixed in A-43.
+     *
+     * So being queued is being held.  Whoever takes it off the queue inherits
+     * the reference and gives it back after its last touch.
+     */
+    kobject_retain(&t->base);
 
     t->state = TASK_BLOCKED_SEND;
     irq_spinlock_unlock(&ep->lock, flags);
@@ -990,6 +1010,7 @@ int kendpoint_fault_call(struct task *t, struct KEndpoint *ep,
             receiver->ipc_msg.attached_handle = reply_attach;
             t->state = TASK_BLOCKED_REPLY;
             task_wakeup(receiver);
+            kobject_release(&receiver->base);   /* A-44: the queue's */
             return 1;
         }
         /* The staged reply object went away between the check and the bind.
@@ -997,6 +1018,7 @@ int kendpoint_fault_call(struct task *t, struct KEndpoint *ep,
          * unanswerable, which is reported as "no handler" rather than left as
          * a thread blocked on a reply nobody holds. */
         task_wakeup(receiver);
+        kobject_release(&receiver->base);   /* A-44: the queue's */
         t->ep_fault_call = 0u;
         return 0;
     }
@@ -1008,6 +1030,7 @@ int kendpoint_fault_call(struct task *t, struct KEndpoint *ep,
     t->blocking_ep = ep;
     if (ep->queue_tail) { ep->queue_tail->ep_next = t; ep->queue_tail = t; }
     else                { ep->queue_head = t; ep->queue_tail = t; }
+    kobject_retain(&t->base);          /* A-44: queued is held */
     t->state = TASK_BLOCKED_SEND;
     irq_spinlock_unlock(&ep->lock, flags);
     return 1;
@@ -1068,6 +1091,7 @@ int kendpoint_deliver_notification(struct task *t, uint64_t bits) {
 
     irq_spinlock_unlock(&ep->lock, flags);
     task_wakeup(t);
+    kobject_release(&t->base);   /* A-44: the queue's */
     return 1;
 }
 
@@ -1256,6 +1280,9 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         } else {
             task_wakeup(sender);
         }
+        /* A-44: off the queue either way.  A call-mode sender stays blocked,
+         * but it is the REPLY binding that holds it now (A-43). */
+        kobject_release(&sender->base);   /* A-44: the queue's */
 
         ep_recv_reply_unstage(t);   /* plain send: staged reply stays unused */
         kobject_release(&ep->base);
@@ -1273,6 +1300,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (ep->queue_tail) { ep->queue_tail->ep_next = t; ep->queue_tail = t; }
     else                { ep->queue_head = t; ep->queue_tail = t; }
+    kobject_retain(&t->base);          /* A-44: queued is held */
 
     t->state = TASK_BLOCKED_RECV;
     irq_spinlock_unlock(&ep->lock, flags);
@@ -1408,6 +1436,7 @@ uint64_t sys_ep_cancel_badged_sends(uint64_t arg0, uint64_t arg1, uint64_t arg2)
             kobject_release(&src_cn->base);
         }
         task_wakeup(w);
+        kobject_release(&w->base);   /* A-44: the queue's */
     }
 
     kobject_release(&ep->base);
@@ -1508,6 +1537,7 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     task_wakeup(receiver);
+    kobject_release(&receiver->base);   /* A-44: the queue's */
     kobject_release(&ep->base);
     return syscall_ok_u64(0);
 }
@@ -1634,6 +1664,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     } else {
         task_wakeup(sender);
     }
+    kobject_release(&sender->base);   /* A-44: the queue's */
 
     ep_recv_reply_unstage(t);   /* plain send: staged reply stays unused */
     kobject_release(&ep->base);
