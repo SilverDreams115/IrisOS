@@ -292,9 +292,15 @@ dead code (A-31 notes, item 5).
    which is exactly why they went unnoticed: `seL4_TCB_ReadRegisters`/`CopyRegisters` (a supervisor can
    write a thread's registers but not read them),
    `seL4_SchedContext_YieldTo`/`Consumed`, `seL4_IRQHandler_Clear`, and
-   cross-CNode `seL4_CNode_Move` (IRIS moves within a CNode with
-   `SYS_CNODE_SWAP`; across CNodes it is a mint-then-delete, which reaches the
-   same place with a different derivation shape).
+   cross-CNode `seL4_CNode_Move`.  *(Roadmap review: the parenthetical here
+   used to say that across CNodes a mint-then-delete "reaches the same place
+   with a different derivation shape".  It does not reach the same place, and
+   `sys_cspace_move`'s own comment is the better account: a copy is a CHILD of
+   its source, so mint-then-delete records a delegation that never happened
+   for as long as the two calls take, and a revoke arriving in that window
+   reaches something the mover meant to keep.  `SYS_CSPACE_MOVE` relocates the
+   MDB node itself — parent, siblings and children travel with it — so the
+   tree after is the tree before with one slot renamed.)*
 5. **`kprocess.c` is misnamed.**  ***Closed: it is `kfault.c` now, and
    `context_switch.S` — which has held only the FPU save/restore since Stage
    9-evt deleted the switch — is `fpu_switch.S`.***  `struct KProcess` was
@@ -1832,7 +1838,14 @@ differently.
   the delta across a spawn/kill and a mint/revoke cycle, which is the shape a
   new productive producer would have.  Nothing is left for this stage to do on
   D-6.
-- **D-4 — a per-thread IPC buffer.**  🔶 **MECHANISM LANDED; BLOCKED ON D-5/D-6.**
+- **D-4 — a per-thread IPC buffer.**  ✅ **CLOSED.**  *(Superseded note, roadmap
+  review: this read "🔶 MECHANISM LANDED; BLOCKED ON D-5/D-6" while the STATUS
+  table above recorded D-4 closed, and the two could not both be true.  Both
+  blockers closed — D-5 with `KVmo`, D-6's defect class at the head of this
+  list — and `ipc_kbuf` is DELETED, which `task.h` states at the field where
+  it used to be.  There is no kernel-side buffer left for a service to still
+  be on, so "until every service is across" resolved itself by the mechanism
+  going away.  The paragraph below describes the state at the time.)*
   `SYS_TCB_SET_IPC_BUFFER` is seL4's `seL4_TCB_SetIPCBuffer`: a thread registers
   a FRAME it retyped and mapped, and the kernel moves payloads between the two
   ends' frames through its own physical window.  The size stops being a kernel
