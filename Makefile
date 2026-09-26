@@ -264,6 +264,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_kasidpool.c \
     tests/kernel/test_kframe.c \
     tests/kernel/test_mdb.c \
+    tests/kernel/test_cnode_depth.c \
     tests/kernel/test_root_bootinfo.c \
     tests/kernel/test_pagetable.c \
     tests/kernel/test_cnode_guard.c \

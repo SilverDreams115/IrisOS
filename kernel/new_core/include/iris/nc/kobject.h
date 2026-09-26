@@ -74,6 +74,26 @@ struct KObject {
      * twin by one call, and the two drifted: the shape of the release protocol
      * had to be re-derived seven times. */
     uint32_t                  ut_block_bytes;
+    /*
+     * Ledger A-39 — the link that makes CNode teardown iterative.
+     *
+     * Emptying a CNode slot that names another CNode ends that CNode's last
+     * active reference, which runs ITS close hook, which empties ITS slots.
+     * That is recursion, and ring 3 chose its depth: capabilities nest as deep
+     * as untyped memory allows, and a core has ONE 4 KiB stack with nothing
+     * mapped below it.  Measured at 177 bytes of stack per link, a chain of 23
+     * exhausted the stack and a chain of 24 wrote into the next core's.
+     *
+     * So close does not recurse.  A cascade already in progress takes the
+     * CNode onto this list instead, and the loop that owns the cascade empties
+     * it.  Depth is now constant no matter how deep the capabilities nest.
+     *
+     * Valid ONLY while the object sits on that list, and an object reaches it
+     * at most once because close fires exactly once (active_refs 1 -> 0).  The
+     * list holds a reference of its own, so a queued object cannot be
+     * destroyed before the loop reaches it.
+     */
+    struct KObject           *destroy_next;
 };
 
 /*

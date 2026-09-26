@@ -241,19 +241,115 @@ iris_error_t mdb_badge_derive(uint64_t src_badge, uint64_t requested,
 
 /* ── object lifecycle callbacks ─────────────────────────────────────────── */
 
-static void kcnode_obj_close(struct KObject *obj) {
-    struct KCNode *cn = (struct KCNode *)obj;
-    /* Teardown uses DELETE semantics per slot: descendants living in other
-     * CNodes survive, reparented to surviving ancestors (G.2/G.3).  The
-     * primitive releases object refs outside the MDB lock, so a cascading
-     * CNode destruction re-enters safely. */
+/*
+ * Empty every slot of one CNode.  Teardown uses DELETE semantics per slot:
+ * descendants living in other CNodes survive, reparented to surviving
+ * ancestors (G.2/G.3).  The primitive releases object refs outside the MDB
+ * lock, so this is safe to call with no lock held.
+ *
+ * This is the WORK.  Who calls it, and how deep the stack gets while it runs,
+ * is kcnode_cascade's problem.
+ */
+static void kcnode_empty_slots(struct KCNode *cn) {
     for (uint32_t i = 0u; i < cn->slot_count; i++)
         (void)kcnode_slot_delete(cn, i);
 }
 
+/*
+ * ── Ledger A-39: CNode teardown is iterative ────────────────────────────
+ *
+ * Emptying a slot that names another CNode drops that CNode's last active
+ * reference, which runs its close hook, which empties ITS slots.  Written as
+ * plain recursion the depth is the depth of the capability chain, and ring 3
+ * picks that: nothing caps how deep CNodes nest.  CSPACE_MAX_DEPTH bounds
+ * WALKING a CPtr, not nesting — a chain is built bottom-up with every CNode
+ * at depth 1 in the builder's own CSpace, so no walk ever goes past one level
+ * while the object graph goes as deep as untyped memory allows.
+ *
+ * A core has ONE 4 KiB stack (CORE_STACK_BYTES) and nothing mapped below it,
+ * so the overflow does not fault — it writes into the next core's stack.
+ * Measured on the real object code: 177 bytes per link, 23 links to the
+ * bottom.
+ *
+ * So the recursion is unrolled into a list.  The first CNode to start a
+ * cascade owns it and runs the loop; every close that fires underneath hands
+ * its CNode over and returns, which makes the stack depth constant and
+ * independent of the chain.  The list holds a reference on each CNode it
+ * carries, so nothing on it can be destroyed before the loop arrives.
+ *
+ * The flag is global rather than per-core on purpose: a second core entering
+ * teardown hands its work to the core already draining instead of opening a
+ * second stack's worth of depth.  The drain re-checks the list under the lock
+ * before clearing the flag, so work enqueued at the last moment is not lost.
+ */
+/*
+ * The list terminator is a sentinel rather than NULL so that `destroy_next`
+ * answers "is this object already queued?" on its own.  Close can fire twice
+ * on one object — a core installs a fresh capability to it while another core
+ * is tearing the last one down — and without that question a second enqueue
+ * would overwrite the first link and cut the list in half.
+ */
+#define CASCADE_END ((struct KObject *)(uintptr_t)1u)
+
+static irq_spinlock_t  cascade_lock;
+static struct KObject *cascade_head;      /* intrusive via obj->destroy_next */
+static int             cascade_running;
+
+static void kcnode_cascade(struct KCNode *cn) {
+    uint64_t f = irq_spinlock_lock(&cascade_lock);
+    if (cascade_running) {
+        /* Somebody else owns the loop.  Hand this CNode over, with a
+         * reference so it survives until they reach it, and get off the
+         * stack.  Already queued: they will empty it, and taking a second
+         * reference for the same pass would leak one. */
+        if (cn->base.destroy_next == 0) {
+            kobject_retain(&cn->base);
+            cn->base.destroy_next = cascade_head ? cascade_head : CASCADE_END;
+            cascade_head = &cn->base;
+        }
+        irq_spinlock_unlock(&cascade_lock, f);
+        return;
+    }
+    cascade_running = 1;
+    irq_spinlock_unlock(&cascade_lock, f);
+
+    kcnode_empty_slots(cn);
+
+    for (;;) {
+        f = irq_spinlock_lock(&cascade_lock);
+        struct KObject *o = cascade_head;
+        if (!o) {
+            cascade_running = 0;   /* checked and cleared under one hold */
+            irq_spinlock_unlock(&cascade_lock, f);
+            return;
+        }
+        struct KObject *nx = o->destroy_next;
+        cascade_head    = (nx == CASCADE_END) ? 0 : nx;
+        o->destroy_next = 0;       /* off the list: queueable again */
+        irq_spinlock_unlock(&cascade_lock, f);
+
+        kcnode_empty_slots((struct KCNode *)o);
+        kobject_release(o);        /* the reference taken when it was queued */
+    }
+}
+
+static void kcnode_obj_close(struct KObject *obj) {
+    kcnode_cascade((struct KCNode *)obj);
+}
+
 static void kcnode_obj_destroy(struct KObject *obj) {
     struct KCNode *cn = (struct KCNode *)obj;
-    kcnode_obj_close(obj);
+    /*
+     * Not kcnode_obj_close: destroy must finish HERE.  Deferring it would put
+     * the object on a list the drain reaches by releasing it — and releasing
+     * an object whose refcount already reached zero is where destroy came
+     * from, so it would never end.
+     *
+     * Emptying directly is safe because it is bounded by the same machinery
+     * one level down: any CNode this frees defers instead of recursing.  In
+     * the ordinary flow close ran first and this finds nothing left to do.
+     */
+    kcnode_empty_slots(cn);
     atomic_fetch_sub_explicit(&kcnode_live, 1u, memory_order_relaxed);
     kobject_storage_free(obj, KCNODE_ALLOC_SIZE(cn->slot_count), 0);
 }
@@ -310,7 +406,11 @@ void kcnode_close(struct KCNode *cn) {
  */
 void kcnode_teardown_slots(struct KCNode *cn) {
     if (!cn) return;
-    kcnode_obj_close(&cn->base);
+    /* Inline, not kcnode_cascade: the contract is that THIS CNode is empty
+     * when this returns, and a cascade already running elsewhere would take
+     * the work and finish it later.  Depth is bounded anyway — every nested
+     * CNode freed underneath goes through the cascade. */
+    kcnode_empty_slots(cn);
 }
 
 /* ── canonical slot primitives ──────────────────────────────────────────── */

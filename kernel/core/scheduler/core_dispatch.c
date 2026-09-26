@@ -53,6 +53,42 @@
 static uint8_t core_stacks[MAX_CPUS][CORE_STACK_BYTES]
     __attribute__((aligned(16)));
 
+/*
+ * The canary at the bottom of each core stack.
+ *
+ * These stacks are a plain .bss array, so core N's grows down into core N-1's
+ * — into the live end of it.  An overflow therefore does not fault; it
+ * silently rewrites another processor's return addresses, which is a worse
+ * outcome than a crash and an invisible one.  Nothing below a stack can be
+ * unmapped cheaply here because the kernel image is mapped with 2 MiB pages.
+ *
+ * So the lowest eight bytes of every stack hold a known value, and the
+ * dispatcher checks its own before doing anything else.  The core that
+ * overflowed writes through its OWN canary first, on its way out of its
+ * region, so the panic names the core that did it and not the victim.
+ *
+ * This is the "find out why" the comment above asks for: it does not widen
+ * the stack and it does not make an overflow survivable.  It makes one
+ * announce itself instead of being absorbed by a neighbour.
+ */
+#define CORE_STACK_CANARY 0x5354414b47554152ull   /* "STAKGUAR" */
+
+static uint64_t *core_stack_canary(uint32_t cpu_id) {
+    return (uint64_t *)(void *)core_stacks[cpu_id];
+}
+
+static void core_stack_canary_arm(uint32_t cpu_id) {
+    if (cpu_id >= MAX_CPUS) return;
+    *core_stack_canary(cpu_id) = CORE_STACK_CANARY;
+}
+
+static void core_stack_canary_check(uint32_t cpu_id) {
+    if (cpu_id >= MAX_CPUS) return;
+    if (*core_stack_canary(cpu_id) != CORE_STACK_CANARY)
+        iris_panic("core stack overflow: this core wrote past the bottom of "
+                   "its kernel stack and into the next core's");
+}
+
 uint64_t core_stack_top_for(uint32_t cpu_id) {
     if (cpu_id >= MAX_CPUS) return 0;
     return (uint64_t)(uintptr_t)(core_stacks[cpu_id] + CORE_STACK_BYTES);
@@ -62,6 +98,7 @@ void core_dispatch_init(void) {
     struct iris_cpu_local *cl = cpu_self();
     uint64_t top = core_stack_top_for(cl->cpu_id);
     cl->core_stack_top = top;
+    core_stack_canary_arm(cl->cpu_id);
     /*
      * Every entry from ring 3 lands here from now on — the syscall path reads
      * `%gs:48` and the CPU reads TSS.RSP0, and both are this, for the life of
@@ -90,6 +127,9 @@ void core_dispatch_init(void) {
  * nothing to run; it waits for an interrupt on the stack it already has.
  */
 void core_dispatch(struct task *outgoing) {
+    /* Entered with the stack reset, so whatever the last syscall did to it is
+     * finished and its damage, if any, is measurable right here. */
+    core_stack_canary_check(cpu_self()->cpu_id);
     for (;;) {
         struct task *next = sched_pick_for_dispatch(outgoing);
         if (next) sched_resume(next, outgoing);   /* never returns */

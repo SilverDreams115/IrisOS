@@ -17,6 +17,7 @@ void kobject_init(struct KObject *obj, kobject_type_t type,
     obj->type = type;
     obj->ops  = ops;
     obj->ut_block_bytes = 0u;          /* kernel-slab storage */
+    obj->destroy_next   = 0;           /* not queued for teardown (A-39) */
     spinlock_init(&obj->lock);
     atomic_store_explicit(&obj->refcount, 1u, memory_order_relaxed);
     atomic_store_explicit(&obj->active_refs, 0u, memory_order_relaxed);

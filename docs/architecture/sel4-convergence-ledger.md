@@ -171,6 +171,73 @@ UT-TOP-1..5 and T298.
 
 ## Structural divergences from seL4
 
+### A-39 — CNode teardown recursed as deep as ring 3 nested capabilities  ✅ CLOSED
+
+**Found by audit, measured on the real object code, fixed and gated in the
+same session.**
+
+Emptying a CNode slot that names another CNode ends that CNode's last active
+reference, which runs its close hook, which empties ITS slots.  Written as
+plain recursion, the stack depth is the depth of the capability chain.
+
+Ring 3 picked that depth.  `CSPACE_MAX_DEPTH` is 8, but it bounds WALKING a
+CPtr, not nesting one CNode inside another: a chain is built bottom-up with
+every link sitting at depth 1 in the builder's own CSpace, so no walk ever
+goes past one level while the object graph goes as deep as untyped memory
+allows.  A 1-slot CNode costs about 144 bytes, so a few megabytes of untyped
+buys thousands of links.  Bringing the whole chain down takes one syscall:
+delete the single capability naming its head.
+
+A core has ONE 4 KiB stack (`CORE_STACK_BYTES`) and the stacks are a plain
+`.bss` array, so there is nothing mapped below one.  The overflow does not
+fault — core N writes down into core N-1's stack, at its live end.
+
+**The numbers.**  The recursion cycle is `kcnode_obj_close` (48 bytes) ->
+`kcnode_slot_delete` (64) -> `kcnode_slot_drop_old` (32) ->
+`kobject_active_release` (48), read off the disassembly of the object built
+with the kernel's own flags, which carry no `-O`.  Measured end to end by
+painting a stack and running the teardown in it: **177 bytes per link, 23
+links to the bottom of a core stack.**  Link 24 is in the next core's.
+
+**The repair.**  Close does not recurse.  The first CNode to start a cascade
+owns it and runs a loop; every close firing underneath hands its CNode to an
+intrusive list (`KObject::destroy_next`) and returns.  The list holds a
+reference on what it carries, so nothing on it dies before the loop arrives,
+and the link doubles as the "already queued" marker — close can fire twice on
+one object when a core installs a fresh capability while another tears the
+last one down, and without that marker the second enqueue would cut the list
+in half.  The flag is global, not per-core, so a second core entering teardown
+hands its work over rather than opening a second stack's worth of depth; the
+loop re-checks the list under the same hold that clears the flag.
+
+`kcnode_teardown_slots` stays inline instead of deferring, because its
+contract is that the CNode is empty when it returns.  It is bounded anyway —
+every nested CNode freed underneath it goes through the cascade.
+
+`kcnode_obj_destroy` empties directly for a different reason: the drain
+reaches a queued object by releasing it, and releasing an object whose
+refcount already reached zero is where destroy came from.
+
+Re-measured after: 8 links and 2000 links consume the SAME stack.  The cost
+per link is zero.
+
+**What is still true, and the second half of the fix.**  A 4 KiB stack with
+nothing below it absorbs the next bug of this shape just as silently.  The
+kernel image is mapped with 2 MiB pages, so an unmapped guard would mean
+splitting one — more surgery than this warranted with the hole already shut.
+Instead the lowest eight bytes of every core stack hold a known value and the
+dispatcher checks its own before anything else.  The core that overflows
+writes through its OWN canary on the way out of its region, so the panic names
+the core that did it rather than the victim.  That is the "find out why"
+`core_dispatch.c` already asked for: it does not widen the stack and it does
+not make an overflow survivable, it makes one announce itself.
+
+**Tests**: `tests/kernel/test_cnode_depth.c` tears down a 4-link and a
+200-link chain and compares the stack frame the deepest destructor runs in.
+Verified to FAIL (drift 34 KB) against the recursive version and pass at a
+drift under 512 bytes against this one, and to leave `kcnode_live_count()`
+where it started.
+
 ### A-38 — the message carries four words whatever the count says
 
 **Found while hardening, measured, and left open deliberately.**
@@ -477,9 +544,10 @@ that breaks the contract it exists to check is a reason the contract cannot be
 enforced, not an argument that it should not be.
 
 What is left is the mechanism: two counters where seL4 reads the tree, 8 bytes and a fence per object, and the standing possibility that they disagree again.  That possibility now has a test that reads every slot in the suite's pool every run, which is what turns "we have not seen it" into "we looked" | **NO STAGE ASSIGNED — deliberate for now, and the honest reason is cost.**  Converting to derivation-driven lifetime means implementing seL4's `finaliseCap`/zombie protocol and making every destroy path reachable from a capability walk instead of from a counter reaching zero.  That is the same class of work as D-1 (a rewrite of a cross-cutting mechanism, not an increment) and it interacts with D-1: a preemptible delete needs a place to park its continuation, which an event kernel has and a per-thread-stack kernel does not.  Sequenced AFTER Stage 9-evt for that reason.  Until then: **"IRIS uses seL4's capability model" is true of derivation, delegation and revocation, and NOT true of object lifetime**, and no document may state it unqualified |
-| D-8 | **`SYS_CSPACE_REVOKE` is not preemptible and not bounded** | `kcnode_slot_revoke` loops until the invoked capability's subtree is exhausted, re-taking the global `mdb_lock` (IRQ-off) each iteration.  Each iteration is short and lifecycle effects are correctly deferred outside the lock, but the SYSCALL does not return until the whole subtree is gone, and nothing bounds the subtree | `cteRevoke` is preemptible: it converts a capability under deletion into a ZOMBIE, returns to a preemption point, and the operation is restarted.  In-kernel latency stays bounded no matter how large the derivation subtree is | A ring-3 principal that can build a wide derivation tree can hold the CPU for as long as that tree is large.  Today the whole system runs 43 MDB roots over 335 nodes at depth 6 (T305), so it has never been reachable — but it is a latency bound the kernel does not have, in a kernel whose sibling property (D-1) is the other reason it cannot claim one | **CLOSED (Stage 9-evt).**  It was recorded as blocked on D-1, because a preemptible delete needs somewhere to park a continuation — and D-1's step 1 built exactly that.  `SYS_CSPACE_REVOKE` now revokes a bounded slice (`IRIS_REVOKE_SLICE` = 16) and asks to be re-executed while descendants remain; the dispatcher reschedules in between, which is the preemption point.  It needs no cursor and no zombie: every slice DESTROYS what it revoked, so the subtree is strictly smaller on re-entry and the same arguments mean less work each time.  The only thing carried across slices is the running total, because the caller asked once and expects one answer — T311 asserts both halves, that the restart counter advances (it really preempted) and that the reported count is the whole job rather than the last slice (the accounting mistake a sliced operation invites).  The kernel-internal callers pass `budget == 0` and stay unbounded: they run during teardown, on nobody's behalf, with nowhere to return to.  **Note what this did NOT need: zombie capabilities.**  seL4 needs them because its delete must be resumable mid-object; a revoke that destroys whole capabilities per slice leaves no half-deleted state to name |
+| D-8 | **`SYS_CSPACE_REVOKE` is not preemptible and not bounded** | `kcnode_slot_revoke` loops until the invoked capability's subtree is exhausted, re-taking the global `mdb_lock` (IRQ-off) each iteration.  Each iteration is short and lifecycle effects are correctly deferred outside the lock, but the SYSCALL does not return until the whole subtree is gone, and nothing bounds the subtree | `cteRevoke` is preemptible: it converts a capability under deletion into a ZOMBIE, returns to a preemption point, and the operation is restarted.  In-kernel latency stays bounded no matter how large the derivation subtree is | A ring-3 principal that can build a wide derivation tree can hold the CPU for as long as that tree is large.  Today the whole system runs 43 MDB roots over 335 nodes at depth 6 (T305), so it has never been reachable — but it is a latency bound the kernel does not have, in a kernel whose sibling property (D-1) is the other reason it cannot claim one | **CLOSED (Stage 9-evt).**  It was recorded as blocked on D-1, because a preemptible delete needs somewhere to park a continuation — and D-1's step 1 built exactly that.  `SYS_CSPACE_REVOKE` now revokes a bounded slice (`IRIS_REVOKE_SLICE` = 16) and asks to be re-executed while descendants remain; the dispatcher reschedules in between, which is the preemption point.  It needs no cursor and no zombie: every slice DESTROYS what it revoked, so the subtree is strictly smaller on re-entry and the same arguments mean less work each time.  The only thing carried across slices is the running total, because the caller asked once and expects one answer — T311 asserts both halves, that the restart counter advances (it really preempted) and that the reported count is the whole job rather than the last slice (the accounting mistake a sliced operation invites).  The kernel-internal callers pass `budget == 0` and stay unbounded: they run during teardown, with nowhere to return to.  **"On nobody's behalf" was too strong** and is corrected by D-11 — a ring-3 DELETE of a capability naming a large CNode tree reaches exactly this unbounded path, so the bound D-8 put on `SYS_CSPACE_REVOKE` has a sibling door it does not cover.  **Note what this did NOT need: zombie capabilities.**  seL4 needs them because its delete must be resumable mid-object; a revoke that destroys whole capabilities per slice leaves no half-deleted state to name |
 | D-9 | **A device Untyped's object headers had nowhere to come from** | Boot now publishes the framebuffer's MMIO region as a DEVICE Untyped, minted into the root task's CSpace and described in BootInfo with `is_device = 1` — the flag that had been in the ABI since v1 and had only ever been written as 0.  Before that, `kuntyped_create` was called from exactly two places (boot, always RAM, and the device branch of retype, which already required a device Untyped), so **no device Untyped could exist** and invariants U11/U12 described an object the system could not construct | seL4's BootInfo lists device Untypeds alongside RAM ones; that is how a driver is handed an MMIO region as a capability and retypes frames from it | A device region is MMIO, so it cannot hold the HEADERS of the objects carved from it: a `struct KFrame` written into a framebuffer is pixels, and read back it is whatever the display controller left there.  The old code took those headers from `kslab` — the kernel allocating on somebody's behalf, charter M3's exact prohibition — and the only reason it was not a live hole is that nothing could reach it | **CLOSED (Stage 6).**  `SYS_UNTYPED_SET_DEVICE_BUDGET` pairs a device Untyped with a RAM one that pays for its headers, and an UNPAIRED device Untyped refuses to retype rather than falling back to kernel memory: the kernel does not know whose memory to spend and will not guess.  The pairing is set ONCE and retains the RAM Untyped, which makes two properties fall out of one retain — the budget's own RESET already refuses while any header carved from it is alive, and the pairing cannot move, so no header can be stranded in a region that is then reset.  T316 measures BOTH halves of a retype (header charged to RAM, page charged to the device region), because charging the wrong one to the wrong region is the mistake that would pass every other test.  **This unblocks D-5's remainder**: the framebuffer is now reachable as an Untyped a driver can retype frames from, which is the path that retires `SYS_FRAMEBUFFER_VMO` and with it the last kernel-fabricated memory object.  Multi-page frames landed with it (D-10), and **the migration is DONE**: `SYS_FRAMEBUFFER_INFO` reports the geometry and creates nothing, `fb` retypes one frame covering the whole region out of the device Untyped and maps it, and `SYS_FRAMEBUFFER_VMO` is retired — its number reserved, its code and `kvmo_wrap` DELETED rather than left undispatched, because a second way to reach the framebuffer that nothing tests and nothing revokes is worse than none.  T316 proves it end to end from ring 3 by observing that the region is CARVED and carries a child: a migration that had quietly fallen back would leave it untouched and every other test would still pass, because the screen is painted either way |
 | D-10 | **A frame mapped only its first page** | `SYS_UNTYPED_RETYPE2` accepted any page multiple for a `KOBJ_FRAME` and `SYS_FRAME_MAP` installed exactly ONE PTE — `kframe_map_page` mapped `f->paddr` and never read `f->size`.  A caller who bought a 64 KiB frame spent 64 KiB of its Untyped and could reach 4 KiB of it, with no error anywhere: the other fifteen pages were charged, owned, and unreachable | seL4 has frame SIZES (4K, 2M, 1G on x86-64) and a map covers the whole frame; large frames are how a driver maps an MMIO region without thousands of invocations | Nothing had ever created a multi-page frame, which is why it went unnoticed rather than why it was acceptable.  It was found while working out what `fb` would need to retype the framebuffer out of the device Untyped D-9 published | **CLOSED (Stage 6).**  A map installs every page of the frame, an unmap removes every page, and the THREE bulk teardown paths walk the frame rather than the mapping record's first address — a cleanup that removed one page of sixteen would leave PTEs outliving the object that justified them, which is the one thing an unmap exists to prevent, so all four share `kframe_unmap_all`.  Two properties are deliberate.  The occupancy check runs over EVERY page before any PTE is installed, so a failed map changes nothing — checking as it went would leave six pages of somebody's frame in an address space whose owner was told the map failed.  And a partial install unwinds exactly what went in, because a holder that has to retype a page table and retry must find the address space as it left it, or the retry hits BUSY on its own leftovers.  T317 asserts the charge, that every page is distinct (a map that aliased them all onto the first would pass a single-page test), that one unmap removes all of it, and that an OVERLAPPING map is refused while changing nothing.  **First recorded as "refused, not fixed"** — the refusal shipped, and the fix followed once the shape of it was clear |
+| D-11 | **CNode teardown is bounded by memory, not by a budget** | Deleting the one capability that names a CNode empties its slots, which ends the last active reference of every CNode below it, and so on to the bottom of the tree.  Since A-39 the STACK cost of that is constant, but the syscall still does not return until the whole tree is gone.  `kcnode_slot_revoke_bounded` takes a budget; `kcnode_slot_delete` does not, and teardown calls the unbounded form | `cteDelete` is preemptible through zombie capabilities: a delete that cannot finish in one slice names its own unfinished state and is restarted, so in-kernel latency is bounded whatever the object graph looks like | Reachable from ring 3 by one syscall, which is why it is a row and not a note.  What limits it is the principal's own Untyped: a 1-slot CNode costs about 144 bytes, so the work is proportional to memory the principal was legitimately granted, never more.  That is the charter's own bound — what bounds an allocation is the budget it was given — applied to time instead of space, which is weaker than D-8's explicit slice and weaker than seL4's | **OPEN.**  Registered rather than fixed: the hole A-39 closed was ring-0 memory corruption, this one is latency, and the repairs are not the same shape.  D-8's trick does not transfer — it works because every slice DESTROYS what it revoked, whereas a half-emptied CNode must not become reachable again, which is the case seL4 answers with zombies.  The cascade list A-39 introduced is the natural place to park a continuation, so the eventual fix has somewhere to stand |
 
 ### A-4 — CSpace-native introspection replaces the CPtr→handle bridge
 
