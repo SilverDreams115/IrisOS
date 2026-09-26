@@ -11,7 +11,7 @@
 
 #define KUNTYPED_ALIGN  64u   /* sub-allocation granularity (cache-line) */
 
-/* Phase S1: hard bounds for one SYS_UNTYPED_RETYPE2 batch — the whole batch is
+/* Hard bounds for one SYS_UNTYPED_RETYPE2 batch — the whole batch is
  * carved, initialized and published under the untyped lock, so it must stay
  * small enough to keep the IRQ-off window short. */
 #define KUNTYPED_RETYPE_MAX_COUNT  32u
@@ -23,7 +23,7 @@ struct KUntyped {
     uint64_t            phys_base;   /* physical start of managed region */
     uint64_t            total_size;  /* total bytes */
     uint64_t            used;        /* bottom bump — advances monotonically */
-    /* Stage 6 Step 1: the TOP bump, growing down from phys_base+total_size.
+    /* The TOP bump, growing down from phys_base+total_size.
      * Object HEADERS are carved here so that they never perturb the page
      * alignment the bottom carve depends on: a 64-byte header taken from the
      * bottom would push the next page-aligned carve to the following page and
@@ -33,12 +33,12 @@ struct KUntyped {
     _Atomic uint32_t    child_count; /* live typed objects / sub-untypeds allocated from here */
     int                 is_device;   /* 0=normal RAM (zero-fill on bump), 1=device memory */
     struct KUntyped    *alloc_parent; /* non-NULL when this KUntyped was created via RETYPE */
-    uint64_t            generation;  /* Phase S1: bumped on every successful RESET —
+    uint64_t            generation;  /* Bumped on every successful RESET —
                                       * a reused region never shares a generation
                                       * with the objects that lived there before */
     /*
      * Where the HEADERS of objects retyped out of a DEVICE region come from
-     * (ledger D-9).  NULL for RAM Untypeds, which carve their own.
+     *.  NULL for RAM Untypeds, which carve their own.
      *
      * A device region is MMIO.  The kernel can hand it out and a driver can
      * map it, but nothing can be stored in it: a `struct KFrame` written into
@@ -61,13 +61,13 @@ struct KUntyped {
  * Returns NULL if the KUntyped header itself cannot be kpage_alloc'd. */
 struct KUntyped *kuntyped_create(uint64_t phys_base, uint64_t size, int is_device);
 
-/* D-9: name the RAM Untyped that pays for the headers of objects retyped out
+/* Name the RAM Untyped that pays for the headers of objects retyped out
  * of this DEVICE Untyped.  Refuses on a RAM Untyped, on a device budget, and
  * on a second call — a pairing that could move would let a holder strand the
  * headers of live objects in a region it then reset. */
 iris_error_t kuntyped_set_hdr_budget(struct KUntyped *dev, struct KUntyped *ram);
 
-/* Stage 6 Step 4 — placement-init a sub-untyped whose header is a child block
+/* Placement-init a sub-untyped whose header is a child block
  * of its parent (kuntyped_alloc_child_top).  The block carries the child_count
  * entry and the parent retain, so `alloc_parent` stays NULL. */
 struct KUntyped *kuntyped_create_at(void *mem, uint64_t phys_base,
@@ -86,7 +86,7 @@ void    *kuntyped_bump_alloc(struct KUntyped *u, uint64_t bytes);
 uint64_t kuntyped_bump_alloc_phys(struct KUntyped *u, uint64_t bytes);
 
 /*
- * Ph79: parent-tracked typed-object allocation.
+ * Parent-tracked typed-object allocation.
  *
  * kuntyped_alloc_child: carve KUNTYPED_ALIGN + obj_bytes from the bump pointer.
  *   The first KUNTYPED_ALIGN bytes store a parent back-pointer; the remaining
@@ -102,7 +102,7 @@ uint64_t kuntyped_bump_alloc_phys(struct KUntyped *u, uint64_t bytes);
 void *kuntyped_alloc_child(struct KUntyped *u, uint64_t obj_bytes);
 
 /*
- * Stage 6 Step 1: same contract as kuntyped_alloc_child — parent back-pointer
+ * Same contract as kuntyped_alloc_child — parent back-pointer
  * in the block header, child_count incremented, parent retained, released by
  * kuntyped_release_child — but carved from the TOP of the region.
  *
@@ -120,7 +120,7 @@ struct KUntyped *kuntyped_child_parent(const void *obj_ptr);
 
 void  kuntyped_release_child(void *obj_ptr, uint64_t obj_bytes);
 
-/* Stage 6 Step 2 — a page-aligned carve with child accounting and no object
+/* A page-aligned carve with child accounting and no object
  * header: page tables.  They have no KObject, but they ARE derived memory, so
  * they hold a child_count entry (and a parent retain) for as long as the
  * address space that installed them lives.  That is what makes RESET refuse
@@ -139,11 +139,11 @@ uint64_t kuntyped_available(struct KUntyped *u);
  * Returns physical base address, or 0 on insufficient space or bad alignment. */
 uint64_t kuntyped_bump_alloc_phys_page(struct KUntyped *u, uint64_t size);
 
-/* Phase 18: live KUntyped object count (additive diagnostics). */
+/* Live KUntyped object count (additive diagnostics). */
 uint32_t kuntyped_live_count(void);
 
 /*
- * Phase S1: atomic batch carve for SYS_UNTYPED_RETYPE2.
+ * Atomic batch carve for SYS_UNTYPED_RETYPE2.
  *
  * Carves 'count' child blocks of (KUNTYPED_ALIGN + align_up(obj_bytes)) each
  * from the bump pointer in ONE critical section: capacity is checked for the
@@ -175,7 +175,7 @@ iris_error_t kuntyped_alloc_children_atomic(struct KUntyped *u,
                                             uint64_t *out_start,
                                             uint64_t *out_end);
 
-/* Phase S1: exact rollback of a batch that could not be published.  Only
+/* Exact rollback of a batch that could not be published.  Only
  * succeeds when no later carve happened (used == the batch end); the caller
  * must already have released every child (child_count decremented).
  *

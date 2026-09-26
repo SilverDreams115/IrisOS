@@ -41,7 +41,7 @@
 #include "../common/svc_loader.h"
 
 /*
- * Stage 6-pure Step 2: the suite supplies its own paging levels.
+ * The suite supplies its own paging levels.
  *
  * The kernel stopped creating page tables, so a map whose walk is incomplete
  * answers IRIS_ERR_MISSING_TABLE and expects the holder to retype a level and
@@ -65,13 +65,13 @@
  * a slot range is not free because the constant naming it reads scratch. */
 #define IT_PT_SCRATCH    IT_OBJ_CPTR(252)  /* the level's capability */
 #define IT_PT_VS_SCRATCH IT_OBJ_CPTR(253)  /* a child's VSpace, for MAP_INTO */
-/* The suite's OWN address space, as a capability.  Ledger D-5: SYS_VMO_MAP
+/* The suite's OWN address space, as a capability.  SYS_VMO_MAP
  * mapped into the caller's address space implicitly and SYS_FRAME_MAP names
  * it, so every map site needs this — including the ones that run long before
  * the VM tests do. */
 #define IT_VS       ((long)IRIS_CPTR_TEST_VSPACE)
 
-/* ── Phase S1: object-creation helpers ───────────────────────────────────────
+/* ── Object-creation helpers ───────────────────────────────────────
  *
  * SYS_ENDPOINT_CREATE / SYS_NOTIFY_CREATE / SYS_CNODE_CREATE are RETIRED:
  * every kernel object the suite fabricates is retyped from its delegated
@@ -99,7 +99,7 @@
 #define IT_OBJ_SLOT_SPAN   200u
 #define IT_OBJ_CPTR(leaf)  ((uint32_t)(((leaf) << 8) | IT_OBJ_CNODE_SLOT))
 /*
- * Stage 7 Step 9 — a child's ROOT CSPACE, kept so the suite can go on
+ * A child's ROOT CSPACE, kept so the suite can go on
  * delegating into it after the spawn.
  *
  * Minting into a child used to name its PROCESS, out of which the kernel read
@@ -118,7 +118,7 @@
  * process-shaped variants had nothing to offer this case. */
 #define IT_MINT_SELF(slot)   ((long)((uint64_t)(slot) << 32))
 /*
- * Stage 7 Step 10 — the suite's child table.
+ * The suite's child table.
  *
  * Observing a death names the THREAD that dies (SYS_TCB_WATCH), so a
  * supervisor keeps the TCB it retyped for each child.  This is the table a
@@ -131,7 +131,7 @@
  * A CNODE OF ITS OWN, because the table has to hold as many children as the
  * suite holds at once and the object CNode cannot spare that many leaves.
  *
- * Stage 7 Step 13 is what forced this: while SYS_PROCESS_KILL existed, a test
+ * Step 13 is what forced this: while SYS_PROCESS_KILL existed, a test
  * that spawned more children than the table could hold still killed them all —
  * it named the PROCESS, and every process capability is in the root CSpace.
  * Killing names the thread now, so a child the table has evicted is a child
@@ -144,7 +144,7 @@
 #define IT_CHILD_CN_SLOTS   128u
 #define IT_CHILD_MAX         48u
 /*
- * Stage 7 Step 15: two leaves per child, paired by construction — the thread at
+ * Two leaves per child, paired by construction — the thread at
  * 1..48 and the ADDRESS SPACE at 49..96.  No second table field, because the
  * pairing IS the arithmetic: a child's VSpace leaf is its thread's plus
  * IT_CHILD_MAX, so one recorded number names both.
@@ -180,7 +180,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 
 #define IT_OBJ_POOL_FIRST    4u
 /*
- * Ledger A-22 — the fault REPLY objects.
+ * The fault REPLY objects.
  *
  * A fault is a CALL on an endpoint, so serving one means receiving with reply
  * authority staged, and the bound reply capability IS "may resume that
@@ -217,7 +217,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
     ((long)((uint64_t)IT_PGR_MBOX_SLOT | ((uint64_t)(leaf) << 32)))
 /* Fixed slots for capabilities that outlive a test (fuzz worker control). */
 #define IT_FZ_CTL_SLOT      81u
-/* Stage 4: the loader's workspace CNode.  svc_load_minted_ws publishes the
+/* The loader's workspace CNode.  svc_load_minted_ws publishes the
  * child's process capability, its ELF/segment/stack VMOs and its own working
  * caps into leaves of this CNode instead of returning handles — the legacy
  * arity (no workspace) exists only for callers that had nowhere to put them,
@@ -245,18 +245,18 @@ struct it_child { uint32_t proc; uint32_t leaf; };
         else                                     (m).src_h    = (iris_cptr_t)_v; \
     } while (0)
 
-/* Stage 5 Step 4: threads are retyped from an Untyped and configured with
+/* Threads are retyped from an Untyped and configured with
  * CSpace/VSpace capabilities — defined next to the VSpace helpers it needs. */
 /* A thread argument asking to be told which thread you are: whoever creates
  * a thread holds its TCB, and hands it over in the entry register. */
 #define IT_THREAD_ARG_SELF_TCB 0xFFFFFFFFFFFFFFFFULL
 
-/* ── Phase S4 (Step 2): CSpace-sourced cap transfer ───────────────────────
+/* ── CSpace-sourced cap transfer ───────────────────────
  * The IPC transfer SOURCE is a CSpace slot, never a handle (charter §3.6/A6).
  * it_xfer_slot mints the cap behind src_h into `slot` of iris_test's own root
  * CNode and returns the CPtr to hand to EP_SEND / EP_CALL / SYS_REPLY.
  * Requires RIGHT_DUPLICATE on src_h (the mint) and grants RIGHT_TRANSFER on
- * the slot (the transfer itself).  Ledger A-29: the transfer is a COPY, so
+ * the slot (the transfer itself).  The transfer is a COPY, so
  * the slot SURVIVES the delivery holding the parent of what the receiver got;
  * a sender giving the capability away calls it_xfer_release afterwards.
  * The slot is deleted up front so re-entry (and any stale occupant) is clean.
@@ -264,7 +264,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * reply-object slots (88..97) and the fuzzing pool (100..239) — and inside the
  * 256-slot root CNode.  Overlapping any of those silently deletes a live
  * object at mint time (it cost a hang in T087 during Step 2 bring-up). */
-/* ── Phase S4: iris_test root-CNode slot map (256 slots) ───────────────────
+/* ── Iris_test root-CNode slot map (256 slots) ───────────────────
  * Reserved elsewhere, do NOT reuse: 1..15 well-known bootstrap · 25..31 test
  * fixtures · 36..43 + 48..51 per-test slots · 44..47 T100 lookup (computed
  * 44+i) · 52..59 file-grant sessions and CPtr constants · 64..87 S1 scratch ·
@@ -292,7 +292,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * things check it instead, and both are mechanical:
  *
  *   - the loader records every pre-start mint's outcome and `init` prints any
- *     failure (ledger A-34).  A destination slot that is already occupied is
+ *     failure.  A destination slot that is already occupied is
  *     ALREADY_EXISTS, named with the slot number;
  *   - `scripts/run_qemu_headless.sh` fails the build on that line.
  *
@@ -301,7 +301,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  *
  * Slots 29, 43, 63 and 254 are the scratch pool (IT_SCRATCH_0..3) and 255 is
  * the serial KIoPort; those ARE named here and are not free for anything else.
- * Slot 62 is IRIS_CPTR_PCI_EP (Stage 10): 60..62 appear in this file only as
+ * Slot 62 is IRIS_CPTR_PCI_EP: 60..62 appear in this file only as
  * destination slots in a SPAWNED CHILD's CSpace, so they were free in this
  * one, and finding that out took two collisions — the story is on the constant
  * in endpoint_proto.h and it is worth reading before picking a third.
@@ -321,7 +321,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * the top of the S1 scratch window, empty at suite start and named by no test.
  * The first attempt used 99 for the reason the comment above records. */
 #define IT_CPTR_DOMAIN_CONTROL IRIS_CPTR_DOMAIN_CONTROL_TEST
-/* Stage 5 Step 2: slot 99 is IRIS_CPTR_FB_CONTROL, the framebuffer control
+/* Slot 99 is IRIS_CPTR_FB_CONTROL, the framebuffer control
  * capability.  T134's guaranteed-EMPTY probe moved to a scratch slot it
  * deletes itself, which is a stronger guarantee than a slot everyone was
  * asked to leave alone. */
@@ -342,7 +342,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 #define IT_DEV_MINT_A  IT_SCRATCH_2   /* derived device caps (native CDT) */
 #define IT_DEV_MINT_B  IT_SCRATCH_3
 
-/* Stage 5: a narrowed I/O-port CONTROL capability, derived by the suite from
+/* A narrowed I/O-port CONTROL capability, derived by the suite from
  * its own.  Its own slot rather than one of the device-cap scratch pair,
  * because the narrowing tests use those as DESTINATIONS and a source that is
  * also a destination gets deleted out from under itself. */
@@ -353,7 +353,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 #define IT_XFER_SLOT_C  249u
 #define IT_XFER_SLOT_D  250u
 
-/* Stage 4: naming iris_test's OWN root CNode.  This used to probe the handle
+/* Naming iris_test's OWN root CNode.  This used to probe the handle
  * table for the first CNODE-typed generation-1 id, which only worked because
  * the kernel published every process's root CNode as its first handle.  The
  * root is structural now and lives in no handle table, so the operations that
@@ -367,7 +367,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * The rotation keeps sequential/nested transfers from colliding. */
 #define IT_XFER_SLOT_SPAN 4u   /* 247..250 */
 
-/* ── T004-T007 retired (Phase 13/Track F) ───────────────────────────────
+/* ── T004-T007 retired ───────────────────────────────
  * The KChannel-specific tests (loopback, NB-recv-empty, recv-timeout,
  * seal) are superseded by endpoint/notification equivalents:
  *   T004 → T015 (EP_SEND/RECV)      T005 → T014 (EP_NB_RECV empty)
@@ -397,7 +397,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 #define T024_GOT_SLOT IT_OBJ_CPTR(245u)   /* outside the rotating pool */
 #define IT_EP_IO_CAP ((uint32_t)VFS_EP_DATA_MAX)
 
-/* Stage 4: leaves of the second-level CNode reserved for capabilities the
+/* Leaves of the second-level CNode reserved for capabilities the
  * suite LOOKS UP and holds for the rest of the run.  Outside the rotating
  * fabrication pool (leaves 1..200), so a rotation can never reclaim one. */
 #define IT_LOOKUP_VFS  IT_OBJ_CPTR(240u)
@@ -477,7 +477,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  *             ACCESS_DENIED; empty slot / wrong type fail.  (Handle-path
  *             MAP_INTO stays covered by T076.) */
 
-/* 19/20 before: 19 became IRIS_CPTR_OWN_TCB (D-6) and the exclusive mint into
+/* 19/20 before: 19 became IRIS_CPTR_OWN_TCB and the exclusive mint into
  * an occupied slot fails, which is how this was found.  21/22 was the next
  * guess and it collides with T081 — the low range is full, so these live in
  * the S1 scratch window (64..87) at two slots nothing else names. */
@@ -501,7 +501,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * ACCESS_DENIED, and minting INTO the child via a slot without RIGHT_WRITE →
  * ACCESS_DENIED.  Failure paths: empty slot and wrong-type slot fail cleanly.
  *
- * Stage 7 Step 13: the object the lifecycle half of this hangs off is the
+ * The object the lifecycle half of this hangs off is the
  * THREAD.  Killing is SYS_TCB_EXIT and liveness is SYS_TCB_GET_INFO's state,
  * so the two rights levels are minted from the child's thread; the CSpace half
  * (minting INTO the child) still goes through the child's ROOT CNODE, because
@@ -641,8 +641,8 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 #define IT_SI_TOCTOU    8u
 #define IT_SI_REPLY     9u
 #define IT_SI_RESOLVE  10u
-#define IT_SI_PROCLIVE 11u   /* Phase 16: KProcess objects live */
-#define IT_SI_REAPHWM  12u   /* Phase 16: deferred-reap queue depth hwm */
+#define IT_SI_PROCLIVE 11u   /* KProcess objects live */
+#define IT_SI_REAPHWM  12u   /* Deferred-reap queue depth hwm */
 
 /* Phase 17 ext2 scheduler-hardening words (offsets 96..108, 4 uint32).  A
  * pre-Phase-17 kernel clamps SYS_SCHED_INFO to 96 bytes and leaves these zero —
@@ -687,7 +687,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 #define IT_S5_KILL    3u   /* SYS_EXCEPTION_RESUME action 1 (cumulative)         */
 #define IT_S5_CLEAN   4u   /* pending-fault records cleared (cumulative)         */
 
-/* ── Stage 5 Step 4: a thread born from an Untyped ────────────────────────
+/* ── A thread born from an Untyped ────────────────────────
  *
  * it_thread_create replaces SYS_THREAD_CREATE, which carved a thread out of
  * the kernel's static task pool: no capability was involved, no Untyped paid
@@ -782,7 +782,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 #define LP_EXIT_RECV_ERR_BASE  0x0B00L
 #define T099_CHILD_SLOT        40u
 
-/* Phase 16: send a bare command label to a child (no payload). */
+/* Send a bare command label to a child (no payload). */
 #define LP_CMD_SEND_BLOCK  0x109Au   /* must match lifecycle_probe */
 #define LP_CMD_CALL_BLOCK  0x109Bu   /* must match lifecycle_probe */
 
@@ -795,7 +795,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * command is one blocking EP_SEND on the ctl ep (rendezvous == the worker is
  * ready); the worker runs the op against g_fz_data_ep, publishes results in
  * its result slots and re-blocks on ctl.  Workers are started/stopped per
- * test; each leaves the process KTcb handle behind by design (Ph96) — the
+ * test; each leaves the process KTcb handle behind by design — the
  * per-test live delta documents it. */
 #define FZ_OP_EXIT       0u
 #define FZ_OP_RECV       1u   /* w1 = receive-slot declaration (0 = legacy) */
@@ -922,11 +922,11 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * Invariants: I15, I16, I17. */
 #define T118_ROUNDS 10u
 
-/* ── Phase 17: scheduler / Scheduling-Context hardening (T119–T124) ──────────
+/* ── Scheduler / Scheduling-Context hardening (T119–T124) ──────────
  *
  * These tests harden the scheduler as the microkernel's source of truth about
  * which task is alive, runnable, blocked, dead or pending-reap.  They lean on
- * the Phase 17 additive instrumentation exposed by SYS_SCHED_INFO's ext2 tier
+ * the additive instrumentation exposed by SYS_SCHED_INFO's ext2 tier
  * (it_sched_ext2): run-queue high-water, the duplicate-enqueue guard counter
  * (invariant S4), the live KSchedContext count (S8/S9) and the monotonic
  * task_yield() counter (progress / no-lost-task).  Combined with the existing
@@ -934,7 +934,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * (IT_SI_REAPHWM) words, they lock the scheduler invariants S1–S16 documented
  * in docs/architecture/scheduler-hardening.md.
  *
- * In-process worker threads are retyped TCBs (Stage 5 Step 4), created with
+ * In-process worker threads are retyped TCBs, created with
  * task id (not a handle) and leaves one KTcb HANDLE in this process's table by
  * design (Ph96, exactly as T118 notes).  So these tests assert TASK-live and
  * PROCESS-live return to baseline, never handle-live — the KTcb handle id is
@@ -1000,12 +1000,12 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * Invariants: S5, S12. */
 #define T122_ITERS 60u
 
-/* ── Phase 18: untyped / retype / revoke authority hardening (T125–T131) ──────
+/* ── Untyped / retype / revoke authority hardening (T125–T131) ──────
  *
  * These tests exercise the memory-authority surface — SYS_UNTYPED_RETYPE2,
  * SYS_UNTYPED_RESET, SYS_CAP_DERIVE, SYS_CAP_REVOKE — end to end from ring 3.
  * They lean on one boot KUntyped forwarded down the boot chain (userboot → init
- * → iris_test) into IRIS_CPTR_TEST_UNTYPED, plus the Phase 18 additive
+ * → iris_test) into IRIS_CPTR_TEST_UNTYPED, plus the additive
  * instrumentation (it_sched_ext3: live per-type object counts) and the existing
  * handle-live word.
  *
@@ -1023,7 +1023,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  *     children), NOT CSpace CNode slots and NOT untyped child_count — its scope
  *     is documented and asserted here.
  */
-/* Phase S1: the authority tests need a region whose child_count they fully
+/* The authority tests need a region whose child_count they fully
  * control (RESET is gated on child_count == 0).  The suite-wide creation
  * helpers (it_ep_create & friends) now also carve from the delegated untyped
  * at slot 55 and some fixtures live for the whole run, so these tests operate
@@ -1076,7 +1076,7 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 #define T139_ROUNDS 40u
 
 
-/* ── Phase 20: fault endpoint / exception delivery model (T140–T147) ──────────
+/* ── Fault endpoint / exception delivery model (T140–T147) ──────────
  *
  * User faults are authority events: registering a fault endpoint requires
  * RIGHT_MANAGE on the target process; delivery records the fault in the
@@ -1106,12 +1106,12 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 
 struct it_fault {
     uint32_t vector, task_id, error;
-    uint32_t seq;              /* Phase 25: fault generation (FAULT_OFF_SEQ) */
+    uint32_t seq;              /* Fault generation (FAULT_OFF_SEQ) */
     uint64_t rip, cr2;
 };
 
 /*
- * Ledger A-22 — the record is what ARRIVED, and `leaf` says which fault.
+ * The record is what ARRIVED, and `leaf` says which fault.
  *
  * This used to be SYS_TCB_FAULT_INFO on the faulting thread: a handler that
  * had been signalled came back to the kernel with a capability to the thread
@@ -1138,7 +1138,7 @@ struct it_fault {
 #define T147_SEED   0x20C0DE20u
 #define T147_ROUNDS 10u
 
-/* ── Phase 21: cross-syscall fuzzing / hostile argument surface (T148–T155) ───
+/* ── Cross-syscall fuzzing / hostile argument surface (T148–T155) ───
  *
  * These tests do not exercise a feature — they subject the WHOLE syscall
  * surface to deterministic adversarial pressure and prove it fails clean:
@@ -1207,9 +1207,9 @@ struct it_snap {
 #define T155_SEED   0x21C0DE55u
 #define T155_ROUNDS 16u
 
-/* ── Phase 22: service authority minimization (T156–T163) ────────────────────
+/* ── Service authority minimization (T156–T163) ────────────────────
  *
- * The kernel mechanism fails clean under hostility (Phase 21); the next risk is
+ * The kernel mechanism fails clean under hostility; the next risk is
  * a service holding authority it does not need.  These tests lock the
  * least-authority contract: delivery carries exactly the declared caps and no
  * more (T156/T162), svcmgr is a registry that never amplifies rights for
@@ -1235,9 +1235,9 @@ struct it_snap {
 #define T163_SEED   0x22C0DE63u
 #define T163_ROUNDS 12u
 
-/* ── Phase 23: device / driver isolation hardening (T164–T171) ───────────────
+/* ── Device / driver isolation hardening (T164–T171) ───────────────
  *
- * The service authority is minimized (Phase 22); the next risk is a driver
+ * The service authority is minimized; the next risk is a driver
  * reaching hardware it was never granted.  These tests prove containment: an
  * I/O-port cap bounds access to exactly its range (T164), a compromised
  * driver stand-in cannot escalate past its device caps (T165/T166), IRQ
@@ -1271,9 +1271,9 @@ struct it_snap {
  * `bad_bases` is outside it by construction. */
 #define T171_NARROW_SLOT IT_IOCTL_NARROW
 
-/* ── Phase 24: service restart / supervision model (T172–T180) ───────────────
+/* ── Service restart / supervision model (T172–T180) ───────────────
  *
- * Drivers are contained (Phase 23); the next structural risk is what happens
+ * Drivers are contained; the next structural risk is what happens
  * when a service or driver DIES.  These tests lock the supervision contract:
  * every service has an explicit policy (T172), a restarted service comes back
  * with a new generation and only its declared authority (T173/T177), a stale
@@ -1316,9 +1316,9 @@ struct it_snap {
 #define T180_SEED   0x24C0DE80u
 #define T180_ROUNDS 12u
 
-/* ── Phase 25: VM policy / user pager groundwork (T181–T190) ─────────────────
+/* ── VM policy / user pager groundwork (T181–T190) ─────────────────
  *
- * Services are supervised (Phase 24); the next structural boundary is MEMORY
+ * Services are supervised; the next structural boundary is MEMORY
  * POLICY.  These tests lock the first capability-mediated user-pager model:
  * an authorized ring-3 component resolves page faults of a SPECIFIC process
  * with explicit, attenuable authority — and nothing more.
@@ -1346,8 +1346,8 @@ struct it_snap {
 #define LP_PGR_SLOT_TPROC   12u
 #define LP_PGR_SLOT_TVS     13u
 #define LP_PGR_SLOT_FRAME   14u
-#define LP_PGR_SLOT_FAULT_EP 15u   /* A-22: the fault ENDPOINT the pager serves */
-/* Stage 7 Step 7: the fault mailbox CNode (see lifecycle_probe/main.c). */
+#define LP_PGR_SLOT_FAULT_EP 15u   /* The fault ENDPOINT the pager serves */
+/* The fault mailbox CNode (see lifecycle_probe/main.c). */
 #define LP_PGR_SLOT_FAULTCN 17u
 #define LP_EXIT_PGR_OK      0x0D00L
 
@@ -1367,7 +1367,7 @@ struct it_snap {
  * SYS_PROCESS_VSPACE), fault-handler notification, exit watch. */
 struct t25_tgt {
     iris_cptr_t cmd, proc, vs, notif, watch;
-    /* Stage 7 Step 7: the mailbox leaf this target's faults deliver into.
+    /* The mailbox leaf this target's faults deliver into.
      * Allocated per spawn out of the suite's own mailbox, so two targets
      * blocked in a fault at once (T183, T184) never overwrite each other's
      * capability — which is the whole reason a fault mailbox is per-target and
@@ -1399,7 +1399,7 @@ struct t25_tgt {
 #define T190_SEED   0x25AF9B31u
 #define T190_ROUNDS 6u
 
-/* ── Phase 26: granted-memory policy (T191–T200) ─────────────────────────────
+/* ── Granted-memory policy (T191–T200) ─────────────────────────────
  *
  * Phase 25 fixed the pager AUTHORITY contract; the page source was a raw frame.
  * Phase 26 made the source a first-class MEMORY OBJECT — a KVmo defended by
@@ -1421,7 +1421,7 @@ struct t25_tgt {
  * about paging survive with a run of one-page frames where the VMO was.
  *
  * Invariants M1–M30 live in docs/architecture/memory-object-vmo-policy.md.
- * Reuses the Phase 25 t25_* pager harness verbatim, and more of it than
+ * Reuses the t25_* pager harness verbatim, and more of it than
  * before: subaction 4 mapped a VMO page at an offset, and with the offset gone
  * it IS subaction 1 — the supervisor mints the page it means the pager to
  * install, and the pager installs the page it holds. */
@@ -1434,7 +1434,7 @@ struct t25_tgt {
 #define T26_WMARK    0xFA017E57u   /* == the probe's LP_CMD_FAULT_WRITE store */
 
 /*
- * Ledger D-5 — a GRANT is a run of one-page frames, one capability per page.
+ * A GRANT is a run of one-page frames, one capability per page.
  *
  * These tests used to hand a pager ONE capability to a four-page KVmo and tell
  * it, per fault, which offset to source the page from.  The kernel then owned
@@ -1466,7 +1466,7 @@ struct t25_tgt {
 #define T200_SEED   0x26C0FFEEu
 #define T200_ROUNDS 6u
 
-/* ── Phase 27: Service Pager Integration (T201–T210) ──────────────────────────
+/* ── Service Pager Integration (T201–T210) ──────────────────────────
  *
  * Phase 25/26 made the pager a MODEL and a page SOURCE.  Phase 27 makes it a
  * SERVICE: a distinct supervised image ("pager", initrd index 10 — NOT
@@ -1474,7 +1474,7 @@ struct t25_tgt {
  * over a control endpoint, resolving faults strictly inside a capability
  * manifest of target + VMO grants.
  *
- * iris_test acts as the SUPERVISOR (the Phase 24 probe-supervisor model, now
+ * iris_test acts as the SUPERVISOR (the probe-supervisor model, now
  * over a real named service): it mints the manifest, spawns the service,
  * registers "pager.ep", drives it, watches it, and restarts it under an
  * explicit policy.  Constants below MUST match services/pager/pager_proto.h.
@@ -1488,19 +1488,19 @@ struct t25_tgt {
  * gone; that is what makes 16 concurrent targets cost ONE notification
  * against the supervisor's quota instead of 16). */
 #define PGR_SLOT_FAULT_EP 5u
-/* Stage 7 Step 7: the fault mailbox CNode (see services/pager/pager_proto.h). */
+/* The fault mailbox CNode (see services/pager/pager_proto.h). */
 #define PGR_SLOT_FAULT_CN    14u
 #define PGR_TGT_BASE        20u
 #define PGR_TGT_STRIDE      2u
 #define PGR_TSLOT_PROC(i)   (PGR_TGT_BASE + (i) * PGR_TGT_STRIDE + 0u)
 #define PGR_TSLOT_VS(i)     (PGR_TGT_BASE + (i) * PGR_TGT_STRIDE + 1u)
-/* Ledger D-5: a grant is a run of one-page frames, mirroring pager_proto.h. */
+/* A grant is a run of one-page frames, mirroring pager_proto.h. */
 #define PGR_GRANT_PAGES     4u
 #define PGR_GRANT_BASE      86u
 #define PGR_PSLOT(j, p)     (PGR_GRANT_BASE + (j) * PGR_GRANT_PAGES + (p))
 #define PGR_REPORT_GRANT    (1u << 22)
 /* The pager service is the lifecycle_probe image in persistent service mode
- * (Phase 27): a real, separate, supervised image (NOT iris_test).  The control
+ *: a real, separate, supervised image (NOT iris_test).  The control
  * endpoint lands in the probe's command slot; the manifest slots above match
  * services/lifecycle_probe/main.c's LP_PS_* layout. */
 #define PGR_OP_PING         1u
@@ -1549,7 +1549,7 @@ struct t27_pager {
 #define T210_SEED   0x27F00D27u
 #define T210_ROUNDS 6u
 
-/* ── Phase 28 Bloque A: boot-growth hardening (T211–T216) ─────────────────────
+/* ── Bloque A: boot-growth hardening (T211–T216) ─────────────────────
  *
  * The Phase 27 "wedge on the 10th image" was NOT a memory/alignment/allocator
  * bug: it was an over-strict boot assertion.  userboot required the kernel
@@ -1580,7 +1580,7 @@ struct t27_pager {
 #define T216_SEED   0x28B007A4u
 #define T216_ROUNDS 12u
 
-/* ── Phase 28 Bloque B: file-backed memory (T217–T230) ────────────────────────
+/* ── Bloque B: file-backed memory (T217–T230) ────────────────────────
  *
  * The pager (its own binary) now backs faults from files: a supervisor
  * registers a backing (identity + generation) and validated regions, and the
@@ -1600,11 +1600,11 @@ struct t27_pager {
 #define FBK_OP_DIAG              11u
 #define FBK_OP_TARGET_RESET      12u
 #define FBK_SLOT_VFS_EP    4u
-#define FBK_SLOT_NOTIF     5u     /* A-22: the ONE shared fault ENDPOINT */
+#define FBK_SLOT_NOTIF     5u     /* The ONE shared fault ENDPOINT */
 #define FBK_VMO_CACHE_SLOT  16u   /* pager slot 16 = VMO grant 0 (cache) */
 #define FBK_VMO_PRIV_SLOT   17u   /* pager slot 17 = VMO grant 1 (private) */
 #define FBK_MAX_BACKINGS   4u
-#define FBK_MAX_REGIONS    16u    /* Phase 28.1: one region per possible target */
+#define FBK_MAX_REGIONS    16u    /* One region per possible target */
 #define FBK_MAX_TARGETS    16u
 #define FBK_CACHE_CAP      8u
 #define FBK_PRIV_CAP       8u
@@ -1625,7 +1625,7 @@ struct t27_pager {
 #define FBK_ERR_RANGE      0x6Au
 #define FBK_ERR_NOBACK     0x6Bu
 #define FBK_ERR_PRIVFULL   0x6Cu
-#define FBK_ERR_GRANT      0x6Du   /* Phase 28.1: VFS denied the grant */
+#define FBK_ERR_GRANT      0x6Du   /* VFS denied the grant */
 /* The productive pager's grant session (badge IRIS_BADGE_FILEGRANT_S(0)). */
 #define FBK_SESSION        0u
 
@@ -1675,7 +1675,7 @@ struct t28_fbk {
 /* A VFS-issued file grant as seen by the supervisor (GRANT_OPEN reply). */
 struct t28_grant { uint32_t idx; uint64_t bid; uint64_t gen; };
 
-/* The pager-request staging buffer is the thread's own IPC buffer (D-4): a
+/* The pager-request staging buffer is the thread's own IPC buffer: a
  * static array here would be a foreign pointer, which the kernel refuses. */
 #define g_t28_buf g_ep_io_buf
 
@@ -1702,7 +1702,7 @@ struct t28_grant { uint32_t idx; uint64_t bid; uint64_t gen; };
  * 5) for all of them, waking on bit (1<<i). */
 #define T28_MT_MAX 16u
 struct t28_multi {
-    iris_cptr_t fault_notif;     /* A-22: shared fault ENDPOINT, badge i+1 */
+    iris_cptr_t fault_notif;     /* Shared fault ENDPOINT, badge i+1 */
     iris_cptr_t exit_notif;      /* shared: bit i set when target i exits */
     iris_cptr_t cmd[T28_MT_MAX];
     iris_cptr_t proc[T28_MT_MAX];
@@ -1715,29 +1715,29 @@ struct it_utq_global {
     uint32_t version, struct_size, live_untypeds, _pad0;
     uint64_t retype_count, retype_failures, reset_count;
     uint64_t reclaimed_bytes, reuse_count, overlap_denials;
-    /* Stage 7-mem: the global gauges, moved here from SYS_RESOURCE_INFO —
+    /* The global gauges, moved here from SYS_RESOURCE_INFO —
      * facts about the KERNEL, not about a process, and the drift checks that
      * end most tests read them to prove nothing leaked. */
     uint32_t kslab_used_bytes, kslab_total_bytes, kslab_failed_allocs;
     uint32_t global_failed_charges, global_rollbacks;
-    /* Stage 9-evt: syscall re-executions, and those that resumed on a FRESH
-     * kernel stack with their original frame abandoned (ledger D-1). */
+    /* Syscall re-executions, and those that resumed on a FRESH
+     * kernel stack with their original frame abandoned. */
     uint32_t syscall_restarts;
     uint32_t syscall_abandons;
-    /* Stage 9-evt step 3: ring-3 kernel entries whose user context was saved
+    /* Ring-3 kernel entries whose user context was saved
      * into the interrupted thread's TCB instead of left on a kernel stack. */
     uint32_t irq_ctx_saves;
-    /* Stage 8-cap: threads holding a registered IPC buffer frame (D-4). */
+    /* Threads holding a registered IPC buffer frame. */
     uint32_t ipc_buffers;
-    /* Stage 9-evt step 3: free pages in the kernel's physical allocator. */
+    /* Free pages in the kernel's physical allocator. */
     uint32_t kernel_free_pages;
-    /* Stage 9-evt: 1 once the kernel's boot arena is sealed. */
+    /* 1 once the kernel's boot arena is sealed. */
     uint32_t kernel_heap_sealed;
     /* SMP roadmap §9.3 step 4: this thread's own restarts.  The global above
      * counts every core's, which stopped being an answer about the caller the
      * moment there was more than one core. */
     uint32_t syscall_restarts_self;
-    /* Ledger A-32: calls that still came through the NUMBERED door.  Must be
+    /* Calls that still came through the NUMBERED door.  Must be
      * falling while the invocation ABI is adopted, and zero when it closes. */
     uint64_t syscall_numbered_calls;
 };
@@ -1753,7 +1753,7 @@ struct it_utq_objects {
 /*
  * The MDB/CDT gauge block, mirrored so the suite can OBSERVE it.
  *
- * `mdb_legacy_roots` is documented in the ABI as "must → 0": a LEGACY_ROOT is
+ * `mdb_unparented_roots` is documented in the ABI as "must → 0": a LEGACY_ROOT is
  * a capability sitting in a CSpace with no parent in the derivation tree, so
  * revoking anything can never reach it.  Charter A9 — every derived capability
  * is traceable to its ancestor — is a claim about exactly this number, and
@@ -1761,7 +1761,7 @@ struct it_utq_objects {
  */
 struct it_utq_mdb {
     uint32_t version, struct_size;
-    /* Phase S2 Step C — TCB/SC blocks, skipped over to reach the MDB gauges. */
+    /* TCB/SC blocks, skipped over to reach the MDB gauges. */
     uint32_t tcb_live, tcb_hwm, tcb_retyped, tcb_destroyed;
     uint32_t sc_live, sc_hwm, sc_retyped, sc_destroyed;
     uint32_t cdt_derivation_count, cdt_derivation_hwm, cdt_revoke_count,
@@ -1769,12 +1769,12 @@ struct it_utq_mdb {
              cdt_ipc_transfer_count, legacy_handle_derivation_migrated;
     uint32_t tcb_registry_active, tcb_registry_hwm,
              tcb_registry_exhaustions, tcb_registry_generation_mismatch;
-    uint32_t mdb_nodes_live, mdb_nodes_hwm, mdb_legacy_roots,
+    uint32_t mdb_nodes_live, mdb_nodes_hwm, mdb_unparented_roots,
              mdb_orphan_promotions, mdb_reparents, mdb_revoked_nodes,
              mdb_moves, mdb_max_depth;
 };
 
-/* Phase S2 C.1: arg0 = kind | version<<16 | size<<32 (declared buffer size). */
+/* C.1: arg0 = kind | version<<16 | size<<32 (declared buffer size). */
 #define IT_QARG(kind, sz) ((long)((uint64_t)(kind) | ((uint64_t)1u << 16) | \
                                   ((uint64_t)(uint32_t)(sz) << 32)))
 
@@ -1817,7 +1817,7 @@ struct it_utq_mdb {
 #define T250_ROUNDS 10u
 
 /* ════════════════════════════════════════════════════════════════════════
- * Phase S1 — seL4 Architectural Convergence (T251–T262).
+ * SeL4 Architectural Convergence (T251–T262).
  *
  * Canonical kernel-object model + Untyped-only allocation substrate: every
  * migrated object (Endpoint / Notification / Reply / CNode) is born from an
@@ -1844,7 +1844,7 @@ struct it_utq_mdb {
 #define T262_ROUNDS 12u
 
 /* ════════════════════════════════════════════════════════════════════════
- * Phase S2 — Untyped Task Construction (increment 1: SchedulingContext).
+ * Untyped Task Construction (increment 1: SchedulingContext).
  * ════════════════════════════════════════════════════════════════════════ */
 
 /* SYS_UNTYPED_QUERY kind 4 — task-object gauges + CDT counters. */
@@ -1854,7 +1854,7 @@ struct it_utq_taskobj {
     uint32_t sc_live, sc_hwm, sc_retyped, sc_destroyed;
     uint32_t cdt_deriv, cdt_deriv_hwm, cdt_revoke, cdt_delete,
              cdt_cross, cdt_ipc, legacy_handle_deriv_migrated;
-    /* Phase S2 Step C — must mirror kernel struct iris_untyped_query_taskobj. */
+    /* Must mirror kernel struct iris_untyped_query_taskobj. */
     uint32_t tcb_registry_active, tcb_registry_hwm,
              tcb_registry_exhaustions, tcb_registry_generation_mismatch;
 };
@@ -1878,7 +1878,7 @@ struct it_utq_taskobj {
 #define T294_LEAF   250u
 #define T294_CPTR   IT_OBJ_CPTR(T294_LEAF)
 
-/* ── T298: an Untyped pays for its frames' headers too (Stage 6 Step 1) ──
+/* ── T298: an Untyped pays for its frames' headers too ──
  * A frame retyped from an Untyped always carved its PAGE from that Untyped;
  * its kernel-side header came from the kslab heap, so a caller who paid for a
  * page was also spending kernel memory that nothing accounted, nothing bounded
@@ -1903,7 +1903,7 @@ struct it_utq_taskobj {
  * Invariants: O1, O2, M3, M4. */
 #define T298_VA   0x8079000000ULL
 
-/* ── T299: page tables are charged to a budget (Stage 6 Step 2) ──────────
+/* ── T299: page tables are charged to a budget ──────────
  * Mapping user memory needs page tables, and the kernel used to take them
  * from its own PMM reserve: a process could make the kernel spend memory by
  * mapping at scattered addresses, with no budget, no capability and no
@@ -1928,7 +1928,7 @@ struct it_utq_taskobj {
 #define T299_SLOT_POOL  S1_SLOT_C
 #define T299_SLOT_PROC  S1_SLOT_D
 
-/* ── T300: user memory comes out of a named budget (Stage 6 Step 5) ──────
+/* ── T300: user memory comes out of a named budget ──────
  * Anonymous memory was the last thing the kernel handed out for free: a
  * process asked for a VMO and got PMM pages, bounded only by a per-process
  * quota the kernel invented rather than by a capability anyone delegated.
@@ -1979,7 +1979,7 @@ struct it_utq_taskobj {
 #define T301_SLOT_VS    S1_SLOT_D
 #define T301_MAX_PAGES  6u
 
-/* ── T302: a page table is a capability (Stage 6-pure Step 1) ────────────
+/* ── T302: a page table is a capability ────────────
  * Stage 6 charged page tables to a budget, which answered who pays.  It left
  * the kernel deciding WHEN a table exists and WHERE it goes — carving one
  * silently on whichever map first needed it — so the holder paid for an object
@@ -2009,7 +2009,7 @@ struct it_utq_taskobj {
 
 /* ── T304: the live-process ceiling was a number, and it is gone ─────────
  *
- * Stage 7 Step 3.  KPROCESS_MAX_LIVE refused the 65th process — a number the
+ * Step 3.  KPROCESS_MAX_LIVE refused the 65th process — a number the
  * kernel picked, of the same class as the page quota Step 2 removed and the
  * notification quota Phase S1 removed.  Since Stage 6 Step 4 a KProcess is a
  * child block of an Untyped its creator named, so what bounds how many exist
@@ -2024,7 +2024,7 @@ struct it_utq_taskobj {
  * cased tearing one down because nothing else ever dropped the reference
  * SYS_PROCESS_CREATE kept on its own behalf.
  *
- * Stage 7 Step 13 dropped that reference at create time, so a never-started
+ * Step 13 dropped that reference at create time, so a never-started
  * process lives exactly as long as capabilities to it do — and DELETING THE
  * CAPABILITY is the whole of the reclamation this RESET depends on.  The kill
  * is gone from the loop below, and the RESET still has to pass.
@@ -2062,7 +2062,7 @@ struct it_utq_taskobj {
  * there is nothing above it to be a child of, and every delegation downward is
  * a child.
  *
- * DMA CONTAINMENT adds the fourth (Stage 10-dma): IOSpaceControl, the
+ * DMA CONTAINMENT adds the fourth: IOSpaceControl, the
  * authority to say which MEMORY a DEVICE may reach.  It is a boot authority
  * for the same reason the other three are, and it is worth noting what makes
  * it a DIFFERENT authority rather than part of IOPORT_CONTROL: those say which
@@ -2098,7 +2098,7 @@ struct it_utq_taskobj {
  * ceiling is what makes the difference visible. */
 #define IT_MDB_LEGACY_ROOT_CEILING 33u
 
-/* ── T309: a passive server serves a LOOP on donated time (Stage 8-mcs) ───
+/* ── T309: a passive server serves a LOOP on donated time ───
  *
  * seL4's ReplyRecv, and the reason it is one syscall rather than two.
  *
@@ -2119,7 +2119,7 @@ struct it_utq_taskobj {
  */
 #define T309_ROUNDS 8
 
-/* ── T311: revoke is PREEMPTIBLE (ledger D-8) ────────────────────────────
+/* ── T311: revoke is PREEMPTIBLE ────────────────────────────
  *
  * SYS_CSPACE_REVOKE used to run until the invoked capability's subtree was
  * exhausted, and nothing bounded the subtree.  A ring-3 principal that could
@@ -2153,7 +2153,7 @@ struct it_utq_taskobj {
 #define T312_PROBE_G    ((long)(((uint64_t)T312_GUARD << 8) | \
                                 (uint64_t)IRIS_CPTR_TEST_UNTYPED))
 
-/* ── T313: a thread's IPC buffer is a FRAME it owns (ledger D-4) ─────────
+/* ── T313: a thread's IPC buffer is a FRAME it owns ─────────
  *
  * The bulk payload of a message was staged in 256 bytes living INSIDE every
  * TCB.  Three things were wrong with that at once, and they are exactly the
@@ -2220,7 +2220,7 @@ struct it_utq_taskobj {
  * preempted while those registers are live. */
 #define T314_SPINS 20000000ULL
 
-/* ── T317: a frame maps as a WHOLE, not just its first page (D-10) ───────
+/* ── T317: a frame maps as a WHOLE, not just its first page ───────
  *
  * `SYS_UNTYPED_RETYPE2` accepted any page multiple for a frame, and
  * `SYS_FRAME_MAP` installed exactly ONE PTE: `kframe_map_page` mapped
@@ -2282,7 +2282,7 @@ struct it_utq_taskobj {
  * Invariants: M3, and ledger D-1. */
 #define T318_THREADS 8u
 
-/* ── T322: an object exists exactly while a capability to it exists (D-7) ────
+/* ── T322: an object exists exactly while a capability to it exists ────
  * seL4's lifetime rule, stated so it can be checked rather than described.
  * There is no reference count in seL4: an object is alive because a capability
  * names it, and its memory comes back when its Untyped is reset.  IRIS reaches
@@ -2306,7 +2306,7 @@ struct it_utq_taskobj {
  * Invariants: O2, O6, M1. */
 struct t322_case { uint32_t type; long arg; const char *name; };
 
-/* ── T323: the counter and the capability graph, over many shapes (D-7) ─────
+/* ── T323: the counter and the capability graph, over many shapes ─────
  * T322 asserts seL4's lifetime rule on the simplest shape there is — one
  * object, two capabilities.  The three incidents D-7 records were not that
  * shape: they were a slot naming its own CNode, a cycle through another, and a
@@ -2400,7 +2400,7 @@ struct t322_case { uint32_t type; long arg; const char *name; };
 
 
 
-/* ── T329: a fault is IPC, and the badge says whose (A-22) ──────────────────
+/* ── T329: a fault is IPC, and the badge says whose ──────────────────
  *
  * The fault path used to be three mechanisms where seL4 reuses one: a
  * NOTIFICATION was signalled, the faulting thread's capability was published
@@ -2523,7 +2523,7 @@ struct t322_case { uint32_t type; long arg; const char *name; };
  */
 #define IT_POOL_EVICT_CEILING 6u
 
-/* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
+/* ── T296: one capability, one authority ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
  * authority to claim a serial port therefore meant holding the authority to
@@ -2766,7 +2766,7 @@ long it_map_fixup_inv(unsigned long label, long c, long a1, long a2, long a3);
 long it_cspace_self(void);
 long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg);
 long it_thread_ipc_buffer(long tcb);
-/* A-33: the IPC-buffer VA of the thread it_thread_create just made. */
+/* The IPC-buffer VA of the thread it_thread_create just made. */
 extern volatile uint64_t g_it_thread_buf;
 int it_sched_ext2(uint32_t w2[4]);
 void test_t093(void);
@@ -3126,7 +3126,7 @@ static inline long it_sys1(long nr, long a0) {
 }
 
 static inline long it_sys2(long nr, long a0, long a1) {
-    /* Phase S1: arg2 (rdx) is ALWAYS zeroed — SYS_EP_RECV/SYS_EP_NB_RECV now
+    /* Arg2 (rdx) is ALWAYS zeroed — SYS_EP_RECV/SYS_EP_NB_RECV now
      * interpret it as the explicit reply-object CPtr, so leaking garbage
      * there would randomly stage bogus replies. */
     return iris_syscall3(nr, a0, a1, 0L);
@@ -3145,7 +3145,7 @@ static inline long it_sys4(long nr, long a0, long a1, long a2, long a3) {
 }
 
 /*
- * ── Ledger A-32: the suite invokes capabilities ──────────────────────────
+ * ── The suite invokes capabilities ──────────────────────────
  *
  * `it_sysN(SYS_X, cap, …)` becomes `it_invokeN(cap, INV_X, …)`.  The shape of
  * a call site changes in one way that is the whole point of the conversion:

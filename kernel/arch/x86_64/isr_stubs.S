@@ -208,7 +208,7 @@ isr_common:
     movq %rsp, %rdi
     call isr_handler
 
-    /* Stage 9-evt step 3: leave through the dispatcher if this thread should
+    /* Leave through the dispatcher if this thread should
      * not go straight back.  Does not return when it decides to. */
     movq %rsp, %rdi
     call isr_maybe_dispatch

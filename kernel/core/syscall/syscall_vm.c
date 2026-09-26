@@ -39,7 +39,7 @@
 /*
  * SYS_VSPACE_MAP_TABLE(pt_cptr, vspace_cptr, vaddr) — seL4_X86_PageTable_Map.
  *
- * Stage 6-pure Step 1.  The holder retyped a paging level out of its own
+ * Step 1.  The holder retyped a paging level out of its own
  * Untyped; this puts it into an address space.  What the kernel contributes is
  * the walk — which level is missing for this address — because that is a fact
  * about the address space, not a choice the holder gets to make.  What it no
@@ -166,7 +166,7 @@ uint64_t sys_vspace_unmap_table(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * opaque capability into an address somebody can correlate.
  *
  * IRIS answers the address only; seL4's version reports it alone too.  The
- * SIZE is `Frame_Size`, because a frame here can be many pages (D-10) and the
+ * SIZE is `Frame_Size`, because a frame here can be many pages and the
  * two are different questions.
  */
 uint64_t sys_frame_get_address(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
@@ -222,13 +222,13 @@ uint64_t sys_frame_size(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /* ── Phase 29 composable spawn primitives ────────────────────────── */
 
 /*
- * sys_initrd_vmo is DELETED (Stage 6, ledger D-5).
+ * sys_initrd_vmo is DELETED.
  *
  * It handed a boot image over as a KVMO — one of the three object types seL4
  * has no equivalent for — which meant the loader and vfs both had to speak a
  * second memory ABI to read a file the kernel already had, and had to ask a
  * separate syscall how big it was.  `SYS_INITRD_FRAME` hands over a FRAME and
- * answers the size, and one map covers it (D-10).
+ * answers the size, and one map covers it.
  *
  * The NUMBER stays reserved; the code does not, because a second way to obtain
  * a boot image that nothing tests is worse than none.
@@ -262,7 +262,7 @@ uint64_t sys_initrd_frame(uint64_t arg0, uint64_t arg1,
     int ok = kbootcap_is((struct KBootstrapCap *)auth_obj,
                          IRIS_BOOTCAP_INITRD_CONTROL);
     if (!ok) { kobject_release(auth_obj); return syscall_err(IRIS_ERR_ACCESS_DENIED); }
-    /* A-40: held past its own check, because it is ALSO the expected MDB
+    /* Held past its own check, because it is ALSO the expected MDB
      * parent of the frame published below, and the slot naming it can be
      * emptied and refilled by a sibling thread in between. */
 
@@ -335,7 +335,7 @@ uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1,
 
     struct KObject   *auth_obj;
     iris_rights_t     auth_rights;
-    /* Stage 5 Step 2: the authority is the INITRD capability — reading boot
+    /* The authority is the INITRD capability — reading boot
      * images, and nothing else.  vfs holds it and no longer carries the
      * authority to create processes as a side effect. */
     iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
@@ -357,11 +357,11 @@ uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1,
 
 
 /*
- * sys_framebuffer_vmo is DELETED (Stage 6), not merely undispatched.
+ * sys_framebuffer_vmo is DELETED, not merely undispatched.
  *
  * It wrapped the framebuffer's physical range in a KVMO — the only caller of
  * `kvmo_wrap`, and the last place the kernel fabricated a memory object over
- * MMIO.  The region is a DEVICE Untyped now (ledger D-9) and `fb` retypes its
+ * MMIO.  The region is a DEVICE Untyped now and `fb` retypes its
  * own frame from it, so the code has no callers and no future: leaving it
  * compiled would leave a second way to reach the framebuffer that nothing
  * tests and nothing revokes.  The NUMBER stays reserved (syscall.h).
@@ -373,7 +373,7 @@ uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1,
  * `SYS_FRAMEBUFFER_VMO` answered this and fabricated a KVMO in the same call,
  * so the only way to learn where the framebuffer was and how wide it is was to
  * accept a kernel-made object over it.  Since the region became a DEVICE
- * Untyped (D-9) a driver retypes its own frame, and the two halves separate
+ * Untyped a driver retypes its own frame, and the two halves separate
  * cleanly: the geometry is a fact about hardware that boot discovered, and a
  * capability is not.
  *

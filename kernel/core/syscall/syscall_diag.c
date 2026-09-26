@@ -24,7 +24,7 @@ uint64_t sys_clock_get(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     /* arg2 = KDEBUG authority CPtr.  Zero is REFUSED, not a fallback: the
-     * authority has to be named (Stage 5 Step 2). */
+     * authority has to be named. */
     if (!t || !task_kdebug_cap_named(t, arg2))
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     uint64_t max = arg1;
@@ -77,7 +77,7 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * Extended total: 96 bytes.
  *
  * A caller passing 88..95 still gets the historical 88-byte snapshot; only a
- * buffer >= 96 receives the Phase 16 lifecycle words (same additive rule).
+ * buffer >= 96 receives the lifecycle words (same additive rule).
  *
  * Phase 17 additive scheduler-hardening tier — written ONLY when the caller
  * passes buf_size >= 112 (a caller passing 96..111 gets the exact historical
@@ -169,7 +169,7 @@ _Static_assert(SCHED_INFO_EXT7_BYTES == IRIS_SCHED_INFO_MAX_BYTES,
 uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     /* arg2 = KDEBUG authority CPtr.  Zero is REFUSED, not a fallback: the
-     * authority has to be named (Stage 5 Step 2). */
+     * authority has to be named. */
     if (!t || !task_kdebug_cap_named(t, arg2))
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     if (arg1 < SCHED_INFO_BASE_BYTES) return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -194,7 +194,7 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     buf[4] = (uint64_t)live | ((uint64_t)pad << 32);
 
     if (want >= SCHED_INFO_EXT_BYTES) {
-        /* Stage 4: the handle table is DELETED.  Its five gauges keep their
+        /* The handle table is DELETED.  Its five gauges keep their
          * ABI offsets and report structural zeros — they are the retirement
          * witnesses iris_test T095 asserts, and removing the fields would
          * silently turn "the namespace is empty" into "nobody is looking". */
@@ -210,7 +210,7 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         w[8]  = __atomic_load_n(&iris_ipc_stat_toctou_fallbacks, __ATOMIC_RELAXED);
         w[9]  = __atomic_load_n(&iris_ipc_stat_reply_caps, __ATOMIC_RELAXED);
         w[10] = __atomic_load_n(&iris_cspace_stat_resolves, __ATOMIC_RELAXED);
-        /* Stage 7-proc: the live-PROCESS gauge is gone with the object.  The
+        /* The live-PROCESS gauge is gone with the object.  The
          * field stays at 0 (a versioned struct does not renumber), and what it
          * used to approximate — how many principals exist — is now read off
          * the objects that are actually there: live TCBs, CSpaces and address
@@ -243,7 +243,7 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         uint32_t a2 = kendpoint_live_count();
         uint32_t a3 = knotification_live_count();
         uint32_t a4 = kcnode_live_count();
-        /* Offset 132 was kvmo_live, and is a pad again (ledger D-5): the
+        /* Offset 132 was kvmo_live, and is a pad again: the
          * object it counted is gone, and the question it answered — how much
          * memory does the kernel hold for somebody — is kframe_live_count at
          * offset 116, which counts the object that holds it now. */
@@ -254,7 +254,7 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     if (want >= SCHED_INFO_EXT4_BYTES) {
-        /* Phase 19 VM/VSpace words (offsets 136..156). */
+        /* VM/VSpace words (offsets 136..156). */
         uint32_t v0 = kvspace_live_count();
         uint32_t v1 = kframe_live_mapping_count();
         uint32_t v2 = kframe_map_success_count();

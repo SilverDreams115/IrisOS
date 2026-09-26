@@ -13,7 +13,7 @@ struct KVSpace;
 struct KFrame;
 
 /*
- * Stage 7 Step 3: KPROCESS_MAX_LIVE RETIRES.
+ * KPROCESS_MAX_LIVE RETIRES.
  *
  * 64 was an invented ceiling of the same class as the page quota Step 2
  * removed — a number the kernel picked, refused at, and could not be asked to
@@ -37,10 +37,10 @@ struct KFrame;
  * SYS_SCHED_INFO — the same fate the notification quota had in Phase S1 and
  * the page quota had in Step 2.  What is gone is the refusal.
  */
-/* Phase S1: KPROCESS_NOTIFICATION_QUOTA retired — the capacity to create
+/* KPROCESS_NOTIFICATION_QUOTA retired — the capacity to create
  * notifications is possessing Untyped memory plus CSpace slots, never a
  * kernel-side numeric quota.  (SYS_RESOURCE_INFO reports notifs_limit = 0.) */
-/* Phase 29: RESTORED 128 → 32.  Phase 28.1 temporarily raised this to 128 to
+/* RESTORED 128 → 32.  Phase 28.1 temporarily raised this to 128 to
  * work around a caller-charged accounting BUG: a loader (svc_load) created each
  * child's segment+stack VMOs under ITS OWN ownership, so a supervisor holding N
  * children accumulated ~4*N VMOs against its own quota.  Phase 29 fixes the root
@@ -50,10 +50,10 @@ struct KFrame;
  * many children it launches.  32 is now a genuine PER-PROCESS ceiling on the
  * VMOs a single domain owns, not a proxy for how many children a supervisor can
  * launch.  Raising the constant is no longer the answer. */
-/* KPROCESS_VMO_QUOTA / KPROCESS_PHYS_PAGES_LIMIT DELETED (Stage 7-mem) — the
+/* KPROCESS_VMO_QUOTA / KPROCESS_PHYS_PAGES_LIMIT DELETED — the
  * per-process VMO ceiling and the page counter went with the owner relation.
  * A VMO's accounting is the Untyped it was carved from. */
-/* Stage 7: RETIRED.  The per-process page ceiling was a number the kernel
+/* RETIRED.  The per-process page ceiling was a number the kernel
  * invented; since Stage 6-pure a VMO's pages come from an Untyped the caller
  * named, and exhausting THAT is what running out means.  phys_pages_limit
  * reports 0 — "no kernel ceiling" — the way the notification quota did when it
@@ -61,7 +61,7 @@ struct KFrame;
 
 
 /*
- * struct KProcess DELETED (Stage 7-proc).
+ * struct KProcess DELETED.
  *
  * What is left in this file is the FAULT machinery and the global gauges,
  * which never belonged to a process — a fault is taken by a thread and the
@@ -72,7 +72,7 @@ struct KFrame;
 
 
 /*
- * Stage 6-pure Step 5 — a process COMPOSED from objects its creator made.
+ * A process COMPOSED from objects its creator made.
  *
  * `pool` is the Untyped the process object itself comes out of (the one its
  * address space was retyped from), and `cnode` is the root CSpace the spawner
@@ -87,11 +87,11 @@ struct KFrame;
  * under one lock hold; see kprocess.c for why a separate flag read is not a
  * gate.  Every path that gives a thread a process goes through this. */
 /*
- * Phase S1: kprocess_quota_{acquire,release}_notification retired (Untyped is
+ * Kprocess_quota_{acquire,release}_notification retired (Untyped is
  * the budget for notifications).
  *
  * **Roadmap review correction.**  This used to end "VMO/page quotas remain for
- * legacy objects".  They do not.  `KVmo` is deleted (D-5), no path charges a
+ * legacy objects".  They do not.  `KVmo` is deleted, no path charges a
  * quota, no path refuses on one, and there is no `IRIS_ERR_QUOTA`.  What
  * bounds an allocation is the budget it was given, with no second ceiling
  * anywhere — which is the whole of charter M3.
@@ -99,22 +99,22 @@ struct KFrame;
  * The two gauges below are what is left, and they are PERMANENTLY ZERO:
  * `kquota_failed_charges` is never incremented and
  * `kfault_quota_stat_rollback` is never called.  They stay because the query
- * struct that carries them is part of the frozen ABI (Stage 10-abi) and
+ * struct that carries them is part of the frozen ABI and
  * removing a field is not a thing a frozen surface may do.  A reader must not
  * take them for a measurement: zero here means "nothing counts this", not "no
  * exhaustion has occurred".
  */
-/* Phase 29 — global resource-accounting gauges (SYS_RESOURCE_INFO). */
+/* Global resource-accounting gauges (SYS_RESOURCE_INFO). */
 uint32_t         kfault_quota_failed_count(void);
 uint32_t         kfault_quota_rollback_count(void);
 void             kfault_quota_stat_rollback(void);
 int              kfault_notify(struct task *t, uint64_t vector,
                                        uint64_t error_code, uint64_t rip, uint64_t cr2);
-/* Stage 8-mcs: deliver a TIMEOUT fault to the thread's timeout handler.
+/* Deliver a TIMEOUT fault to the thread's timeout handler.
  * Returns 0 when none is armed — the caller then falls back to blocking the
  * thread until its period refills the budget. */
 int              ktimeout_notify_fault(struct task *t);
-/* Phase 20: fault-model instrumentation + resume-time pending-fault clear. */
+/* Fault-model instrumentation + resume-time pending-fault clear. */
 /* Drop `ft`'s pending fault record, and the process's pointer to it if that is
  * the one it names.  Takes the THREAD rather than its id: the caller has
  * already resolved it, and an id comparison here was a second place the
@@ -127,7 +127,7 @@ uint32_t         kfault_resume_count(void);
 uint32_t         kfault_kill_count(void);
 uint32_t         kfault_cleanup_count(void);
 void             kfault_stat_cleanup(void);
-/* Phase 6.2: Bootstrap frame tracking.
+/* Bootstrap frame tracking.
  * kprocess_register_bootstrap_frame stores one alloc retain in bootstrap_frames[].
  * kprocess_release_bootstrap_frames drops all alloc retains; must be called after
  * kvspace_invalidate so that mapped_count is 0 when each frame is released. */
@@ -139,11 +139,11 @@ void             kfault_stat_cleanup(void);
  * compact indicator of how many processes (not merely tasks) are alive.
  */
 
-/* kprocess_is_alive DELETED (Stage 7 Step 13) — it backed SYS_PROCESS_STATUS,
+/* kprocess_is_alive DELETED — it backed SYS_PROCESS_STATUS,
  * and liveness is the EXECUTION's state (SYS_TCB_GET_INFO), not a bit derived
  * from a thread count somebody else owns. */
 
-/* kprocess_teardown_complete DELETED (Stage 7-proc) with the object it asked
+/* kprocess_teardown_complete DELETED with the object it asked
  * about.  A thread's terminal flag is the equivalent question, asked of the
  * execution that answers it. */
 

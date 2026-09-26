@@ -84,7 +84,7 @@ void test_t299(void) {
     it_slot_delete(T299_SLOT_PROC);
 
     /*
-     * Stage 7-proc: legs 1 and 2 retired with SYS_PROCESS_CREATE.
+     * Legs 1 and 2 retired with SYS_PROCESS_CREATE.
      *
      * They asserted that its address-space argument was REQUIRED and was a
      * capability of a specific type — real claims about a syscall that no
@@ -114,14 +114,14 @@ void test_t299(void) {
         cvs = it_retype_slot_alloc(pool, IRIS_KOBJ_VSPACE, 4096);
         if (cvs < 0) { ok = 0; why = "vspace retype"; }
     }
-    /* Stage 6-pure Step 5: the CSpace is ours to make too, and its width is
+    /* The CSpace is ours to make too, and its width is
      * ours to choose — the kernel used to pick 256 for everyone. */
     if (ok) {
         ccn = it_retype_slot_alloc(pool, IRIS_KOBJ_CNODE, 16);
         if (ccn < 0) { ok = 0; why = "cnode retype"; }
     }
     /*
-     * Stage 7-proc: the "bound twice" probes retired with the binding.
+     * The "bound twice" probes retired with the binding.
      *
      * A walk and a CSpace were EXCLUSIVE to one process, because teardown was
      * per-process and a shared one would have been emptied by the first
@@ -130,7 +130,7 @@ void test_t299(void) {
      * not a hazard to refuse: it is the definition of a process.
      */
 
-    /* Stage 6 Step 3: creating the address space already costs the budget —
+    /* Creating the address space already costs the budget —
      * its PML4 is a page of it and its VSpace header a block of it, where both
      * used to be kernel memory. */
     if (ok) {
@@ -149,13 +149,13 @@ void test_t299(void) {
     }
     /* A window no other mapping of this child touches, so the map must build
      * the levels rather than reuse them. */
-    /* Stage 7 Step 15: this test RETYPED the address space a few lines up and
+    /* This test RETYPED the address space a few lines up and
      * still holds it at `cvs` — asking the process for it was always the long
      * way round, and SYS_PROCESS_VSPACE is retired. */
     long t299_vs = ok ? cvs : -1;
     if (ok && t299_vs < 0) { ok = 0; why = "child vspace"; }
     /*
-     * Stage 7-proc: the levels are charged to THIS pool, said explicitly.
+     * The levels are charged to THIS pool, said explicitly.
      *
      * The suite's ordinary map wrapper fixes a MISSING_TABLE by retyping a
      * level from IRIS_CPTR_TEST_UNTYPED — its own budget — so the levels this
@@ -183,7 +183,7 @@ void test_t299(void) {
      * RESET-able once the child dies, and a VSpace capability held here keeps
      * that address space — and every page table in it, each a child entry on
      * the budget — alive past the death.  Naming the address space to map into
-     * it (Stage 7 Step 9) means the caller must also let go of it. */
+     * it means the caller must also let go of it. */
     if (t299_vs >= 0) { iris_cptr_t h = (iris_cptr_t)t299_vs; it_close(&h); }
     if (ok && it_invoke2(pool, INV_UNTYPED_INFO, 0, (long)(uintptr_t)&after) != 0) {
         ok = 0; why = "info2";
@@ -201,7 +201,7 @@ void test_t299(void) {
      *    pages stay where they are (a bump allocator does not rewind), but the
      *    tables stop counting as children, so a RESET can reuse the region.
      *
-     *    Stage 7-proc: an address space is an object WE made, and DELETING
+     *    An address space is an object WE made, and DELETING
      *    THE CAPABILITY is the whole of ending it.  Nothing was ever started
      *    here — there is no process to start — so this leg is the pure form of
      *    the claim: the levels a map built are charged to the budget, and they
@@ -450,7 +450,7 @@ void test_t302(void) {
     if (ok) it_pass("T302"); else it_fail("T302", why);
 }
 
-/* ── T303: a running thread outlives every capability to it (Stage 7) ─────
+/* ── T303: a running thread outlives every capability to it ─────
  * A thread has two owners and they are independent: whoever holds its TCB
  * capability, and the scheduler that is running it.  A pool-born thread got
  * the scheduler's reference from ktcb_object_init — its refcount of 1 WAS the
@@ -577,7 +577,7 @@ void test_t304(void) {
     }
 
     /*
-     * Stage 7-proc: the thing being counted is a THREAD.
+     * The thing being counted is a THREAD.
      *
      * This used to create 80 processes, each composed of an address space and
      * a CSpace, because a process was the object a ceiling had been invented
@@ -628,7 +628,7 @@ void test_t304(void) {
  * count does not GROW across a spawn/fault/kill cycle, which is the shape a
  * new productive producer would have.
  *
- * The known roots today (Stage 7):
+ * The known roots today:
  *   - the boot path: the root task's initial capabilities, installed by the
  *     kernel before any CSpace exists to derive from.  seL4's BootInfo caps
  *     are roots too; this class is legitimate and permanent.
@@ -639,7 +639,7 @@ void test_t304(void) {
  *     mailbox.  This one is NOT legitimate — its natural ancestor is the TCB
  *     slot the registrant named when it armed the handler, exactly as an
  *     IPC-delivered capability is a child of the sender's source slot
- *     (Stage 2).  Recorded in the roadmap as the A9 gap to close.
+ *.  Recorded in the roadmap as the A9 gap to close.
  * Invariants: A9. */
 uint32_t it_ipc_buffer_gauge(void) {
     struct it_utq_global q;
@@ -650,7 +650,7 @@ uint32_t it_ipc_buffer_gauge(void) {
 void test_t305(void) {
     struct it_utq_mdb q0, q1;
     int ok = 1;
-    const char *why = "legacy roots";
+    const char *why = "unparented roots";
 
     it_quiesce_reaper();
     if (!it_utq_mdb(&q0)) { it_fail("T305", "query"); return; }
@@ -672,12 +672,12 @@ void test_t305(void) {
      * started publishing without an ancestor and the change that did it is the
      * one to look at.
      */
-    if (q0.mdb_legacy_roots > IT_MDB_LEGACY_ROOT_CEILING) {
-        ok = 0; why = "legacy roots above the boot-path ceiling";
+    if (q0.mdb_unparented_roots > IT_MDB_LEGACY_ROOT_CEILING) {
+        ok = 0; why = "unparented roots above the boot-path ceiling";
     }
 
-    it_serial_write("[IRIS][TEST] T305 mdb_legacy_roots=");
-    it_log_num(q0.mdb_legacy_roots);
+    it_serial_write("[IRIS][TEST] T305 mdb_unparented_roots=");
+    it_log_num(q0.mdb_unparented_roots);
     it_serial_write(" nodes_live="); it_log_num(q0.mdb_nodes_live);
     it_serial_write(" max_depth="); it_log_num(q0.mdb_max_depth);
     it_serial_write(" orphans="); it_log_num(q0.mdb_orphan_promotions);
@@ -719,9 +719,9 @@ void test_t305(void) {
     if (ok && !it_utq_mdb(&q1)) { ok = 0; why = "query2"; }
     /* The cycle must not leave a root behind: whatever the delivery installed
      * is gone with the mailbox slot. */
-    if (ok && q1.mdb_legacy_roots > q0.mdb_legacy_roots) {
-        ok = 0; why = "legacy roots grew";
-        it_serial_write("[IRIS][TEST] T305 grew to="); it_log_num(q1.mdb_legacy_roots);
+    if (ok && q1.mdb_unparented_roots > q0.mdb_unparented_roots) {
+        ok = 0; why = "unparented roots grew";
+        it_serial_write("[IRIS][TEST] T305 grew to="); it_log_num(q1.mdb_unparented_roots);
         it_serial_write("\n");
     }
 
@@ -747,10 +747,10 @@ void test_t305(void) {
             if (ok && !t25_wait_fault(&g, &f)) { ok = 0; why = "fault pending"; }
             /* Read WITH the delivered capability live in the mailbox. */
             if (ok && !it_utq_mdb(&qb)) { ok = 0; why = "query4"; }
-            if (ok && qb.mdb_legacy_roots > qa.mdb_legacy_roots) {
+            if (ok && qb.mdb_unparented_roots > qa.mdb_unparented_roots) {
                 ok = 0; why = "fault delivered an unparented cap";
-                it_serial_write("[IRIS][TEST] T305 fault roots "); it_log_num(qa.mdb_legacy_roots);
-                it_serial_write(" -> "); it_log_num(qb.mdb_legacy_roots);
+                it_serial_write("[IRIS][TEST] T305 fault roots "); it_log_num(qa.mdb_unparented_roots);
+                it_serial_write(" -> "); it_log_num(qb.mdb_unparented_roots);
                 it_serial_write("\n");
             }
             t25_tgt_reap(&g);
@@ -761,7 +761,7 @@ void test_t305(void) {
     if (ok) it_pass("T305"); else it_fail("T305", why);
 }
 
-/* ── T306: a CNode capability carries a GUARD (Stage 8-cap, ledger D-2) ───
+/* ── T306: a CNode capability carries a GUARD ───
  *
  * Until this stage IRIS resolved a CPtr as a pure radix walk: each level ate
  * ctz(slot_count) bits and indexed.  seL4 puts a GUARD in the CNode
@@ -861,7 +861,7 @@ void test_t306(void) {
     if (ok) it_pass("T306"); else it_fail("T306", why);
 }
 
-/* ── T307: budget exhaustion is a FAULT a supervisor can answer (Stage 8-mcs)
+/* ── T307: budget exhaustion is a FAULT a supervisor can answer
  *
  * Ledger: the "MCS scheduling — partial" row.  IRIS enforced budget and period
  * — a thread that spent its budget blocked until the period refilled it — but
@@ -900,7 +900,7 @@ void test_t307(void) {
     int ok = 1;
     const char *why = "timeout fault";
 
-    /* A-22: a timeout fault is IPC too, on its own endpoint — a temporal
+    /* A timeout fault is IPC too, on its own endpoint — a temporal
      * supervisor is a server like a pager is. */
     long notif = it_ep_create();
     if (notif < 0) { it_fail("T307", "fault ep"); return; }
@@ -954,7 +954,7 @@ void test_t307(void) {
     if (ok) it_pass("T307"); else it_fail("T307", why);
 }
 
-/* ── T308: a PASSIVE server runs on its client's time (Stage 8-mcs) ───────
+/* ── T308: a PASSIVE server runs on its client's time ───────
  *
  * The last MCS pillar: scheduling context DONATION.  A thread with no SC of
  * its own is passive — it has no time and cannot run on its own account.  When
@@ -1029,7 +1029,7 @@ void test_t308(void) {
 
     long ep = it_ep_create_slot();
     long rp = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
-    long notif = it_ep_create_slot();   /* A-22: the server's timeout endpoint */
+    long notif = it_ep_create_slot();   /* The server's timeout endpoint */
     if (ep < 0 || rp < 0 || notif < 0) { it_fail("T308", "objects"); return; }
     g_t308_ep = ep; g_t308_reply = rp; g_t308_served = 0; g_t308_go = 0;
 
@@ -1188,7 +1188,7 @@ void test_t309(void) {
     if (ok) it_pass("T309"); else it_fail("T309", why);
 }
 
-/* ── T310: a blocking syscall is RE-EXECUTED, not parked (Stage 9-evt) ────
+/* ── T310: a blocking syscall is RE-EXECUTED, not parked ────
  *
  * Ledger D-1, step 1.  seL4 is an event kernel: no thread blocks inside the
  * kernel.  A syscall that cannot finish records what it needs in the THREAD,
@@ -1249,7 +1249,7 @@ void test_t310(void) {
         uint64_t tok = 0;
         if (give < 0 || iris_timer_arm((long)IRIS_CPTR_TIMER_EP, give, 0x4ull,
                                        30000000ull, &tok) != 0) { ok = 0; why = "arm"; }
-        it_xfer_release(give);       /* A-29: the copy was ours to give away */
+        it_xfer_release(give);       /* The copy was ours to give away */
     }
     if (ok) {
         uint64_t bits = 0;
@@ -1446,7 +1446,7 @@ static void t313_server(uint64_t self_tcb) {
     for (;;) {
         volatile uint8_t *b = (volatile uint8_t *)(uintptr_t)T313_SRV_VA;
         g_t313_srv_len     = (int)m.buf_len;
-        g_t313_srv_uptr_ok = 1;   /* A-33: no address is named, see T313 */
+        g_t313_srv_uptr_ok = 1;   /* No address is named, see T313 */
         /* The service: invert every byte, in place, in a page the server owns. */
         for (uint32_t i = 0; i < m.buf_len && i < 4096u; i++)
             b[i] = (uint8_t)(b[i] ^ 0xFFu);
@@ -1479,7 +1479,7 @@ void test_t313(void) {
     if (ok && it_invoke2((long)IRIS_CPTR_TEST_UNTYPED, INV_TCB_SET_IPC_BUFFER, cfr, (long)T313_CLI_VA) != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "non-TCB accepted";
     }
-    /* A-30: the same syscall used to answer WRONG_TYPE for arg0 and
+    /* The same syscall used to answer WRONG_TYPE for arg0 and
      * INVALID_ARG for arg1 — one call, two answers for one kind of mistake.
      * Both are WRONG_TYPE now. */
     if (ok && it_invoke2(self, INV_TCB_SET_IPC_BUFFER, (long)IRIS_CPTR_TEST_UNTYPED, (long)T313_CLI_VA) != (long)IRIS_ERR_WRONG_TYPE) {
@@ -1573,7 +1573,7 @@ void test_t313(void) {
             it_fz_note("T313", (uint32_t)g_t313_srv_len, T313_LEN, 0u);
         }
         /*
-         * A-33: neither end is TOLD where its buffer is, and that is the
+         * Neither end is TOLD where its buffer is, and that is the
          * point.  A message carries a LENGTH; the page it refers to is the one
          * the thread registered, because there is nowhere else a payload could
          * be.  This used to assert that the kernel handed back the registered
@@ -1868,7 +1868,7 @@ void test_t315(void) {
     if (ok) it_pass("T315"); else it_fail("T315", why);
 }
 
-/* ── T316: MMIO is handed over as a capability (ledger D-9) ──────────────
+/* ── T316: MMIO is handed over as a capability ──────────────
  *
  * seL4's BootInfo lists DEVICE Untypeds alongside RAM ones: that is how a
  * driver is given an MMIO region and retypes frames from it.  IRIS described
@@ -2185,7 +2185,7 @@ void test_t320(void) {
     if (ok) it_pass("T320"); else it_fail("T320", why);
 }
 
-/* ── T321: a CSpace cycle is reclaimed by revoking its Untyped (D-7) ─────────
+/* ── T321: a CSpace cycle is reclaimed by revoking its Untyped ─────────
  * The ledger records that a CNode reachable only through another CNode keeps
  * its own reference count above zero and is never collected — refcounting is a
  * strictly weaker collector than a derivation tree, and this is the case that

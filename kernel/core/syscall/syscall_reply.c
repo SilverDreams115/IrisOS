@@ -11,12 +11,12 @@
  *
  * SYS_REPLY: invoke a KReply handle to unblock its caller with a reply message.
  *   - Delivers the reply message, and its payload into the caller's own
- *     IPC buffer (ledger D-4).
+ *     IPC buffer.
  *   - Clears caller->pending_kreply (releases task's own KReply ref).
  *   - Transitions caller to TASK_READY.
  *   - Returns IRIS_ERR_NOT_FOUND if the KReply was already invoked.
  *
- * Reply-cap transfer (Phase 7.1): a reply MAY carry one capability in
+ * Reply-cap transfer: a reply MAY carry one capability in
  * msg.attached_handle / msg.attached_rights, with EP_SEND staging semantics:
  *   - The server handle must have RIGHT_TRANSFER; it is consumed on success.
  *   - The cap is installed in the EP_CALL caller's handle table; the caller
@@ -41,7 +41,7 @@ static inline void copy_irismsg_r(struct ipc_stage *dst, const struct ipc_stage 
     for (uint32_t i = 0u; i < (uint32_t)sizeof(struct ipc_stage); i++) d[i] = s[i];
 }
 
-/* ep_get_r removed — use cspace_resolve_only_endpoint (Phase 3.2) */
+/* ep_get_r removed — use cspace_resolve_only_endpoint */
 
 /* ── SYS_EP_CALL ──────────────────────────────────────────────────────── */
 
@@ -49,13 +49,13 @@ static uint64_t ep_call_complete(struct task *t);
 
 uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* arg1 is the MessageInfo and arg2 the first message register; both reach
-     * the message through the THREAD (A-33), because a restart re-enters from
+     * the message through the THREAD, because a restart re-enters from
      * the top and has to see the message it was given. */
     (void)arg1; (void)arg2;
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    /* Stage 9-evt Step 1: a re-execution runs only the completion.  The call
+    /* A re-execution runs only the completion.  The call
      * was delivered and answered; repeating the send half would deliver the
      * message a second time and transfer its capability twice. */
     if (t->sc_reentry) return ep_call_complete(t);
@@ -65,14 +65,14 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     iris_error_t err = cspace_resolve_only_endpoint_badged(t->cspace_root, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
     if (err != IRIS_OK) return syscall_err(err);
 
-    /* A-33: the outgoing message is in the registers this call arrived in, and
+    /* The outgoing message is in the registers this call arrived in, and
      * the reply comes back in the registers it returns through.  A Call used
      * to name ONE struct that was both, which is why it needed the buffer to
      * be readable and writable and why the reply's destination had to be saved
      * before the send overwrote it. */
     ipc_msg_load(t);
 
-    /* Phase 9: stamp the caller badge from the invoked cap (anti-spoofing);
+    /* Stamp the caller badge from the invoked cap (anti-spoofing);
      * the server observes it on EP_RECV / EP_NB_RECV. */
     t->ipc_msg.sender_badge = ep_badge;
 
@@ -80,9 +80,9 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * declares the caller's receive-slot for a cap the REPLY transfers back
      * (the KReply itself always stays a handle); a handle VALUE keeps the
      * historical INVALID_ARG contract, so legacy callers (forced to pass 0)
-     * are unaffected.  Stage 4: the boundary is the handle tag bit, not the
+     * are unaffected.  The boundary is the handle tag bit, not the
      * literal 1024 — a multi-level CPtr is a legitimate receive slot. */
-    /* A-33: a Call says where the REPLY's capability should land, and that is
+    /* A Call says where the REPLY's capability should land, and that is
      * its own argument word now.  It used to share `attached_handle` with the
      * capability being sent — two different capabilities in one field, told
      * apart by which half of the call was looking. */
@@ -100,7 +100,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
     t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
 
-    /* Phase 11: stage a transferred cap from attached_cap (separate field so the
+    /* Stage a transferred cap from attached_cap (separate field so the
      * reply cap and the transferred cap never collide).  Staging validates the
      * caller really holds it and reduces to the requested rights; the raw
      * attached_cap number is then cleared so it can never be delivered as-is.
@@ -149,7 +149,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         /* Immediate rendezvous: a receiver is already waiting. */
         struct task *receiver = ep->queue_head;
 
-        /* Phase S1: a CALL needs the receiver's explicit reply object.  If the
+        /* A CALL needs the receiver's explicit reply object.  If the
          * blocked receiver staged none, fail the call BEFORE consuming
          * anything — the receiver stays queued, the caller keeps its staged
          * cap (implicit KReply fabrication is retired). */
@@ -180,10 +180,10 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         t->ep_call_mode = 0u;
         irq_spinlock_unlock(&ep->lock, flags);
 
-        /* Phase 11: deliver the staged transferred cap into the receiver's
+        /* Deliver the staged transferred cap into the receiver's
          * attached_cap (the reply cap below takes attached_handle).
          * A1.5: routed — lands in the receiver's declared receive-slot
-         * (CPtr) or its handle table.  A-29: the caller keeps its source
+         * (CPtr) or its handle table.  The caller keeps its source
          * capability — what the receiver gets is a derivation child of it. */
         if (xfer_obj) {
             uint32_t nh = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
@@ -194,7 +194,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                             syscall_ipc_stage_cap_release(xfer_src_cn);
         }
 
-        /* Phase S1: bind the receiver's staged explicit reply object to this
+        /* Bind the receiver's staged explicit reply object to this
          * caller.  It was verified non-NULL before the receiver was DEQUEUED,
          * and the dequeue is what makes the check still true here: a receiver
          * off the endpoint's queue is not being delivered to by anyone else,
@@ -206,7 +206,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         {
             struct KReply *r = receiver->ep_reply_obj;
             if (kreply_bind_caller(r, t) == IRIS_OK) {
-                /* Stage 8-mcs: lend this caller's time to a passive server.
+                /* Lend this caller's time to a passive server.
                  * This is the sender-side rendezvous — the receiver was
                  * already waiting — and it needs the donation exactly as much
                  * as the receiver-side ones do. */
@@ -220,7 +220,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                 /* Defensive: claim lost (last cap dropped while blocked).
                  * Wake receiver (message already delivered) but fail the call. */
                 task_wakeup(receiver);
-                kobject_release(&receiver->base);   /* A-44: the queue's */
+                kobject_release(&receiver->base);   /* The queue's */
                 kobject_release(&ep->base);
                 return syscall_err(IRIS_ERR_CLOSED);
             }
@@ -228,9 +228,9 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         /* Receiver is ready; caller blocks waiting for reply. */
         task_wakeup(receiver);
-        kobject_release(&receiver->base);           /* A-44: the queue's */
+        kobject_release(&receiver->base);           /* The queue's */
         t->state        = TASK_BLOCKED_REPLY;
-        /* Stage 9-evt Step 1: park and be re-executed, rather than holding
+        /* Park and be re-executed, rather than holding
          * this frame across the server's whole turn — which is the longest
          * block in the system and therefore the most expensive stack to keep
          * alive.  Everything the completion needs is thread state. */
@@ -245,7 +245,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         t->ep_next       = 0;
         t->blocking_ep   = ep;
         t->ipc_msg_ready = 0u;
-        /* Phase 11: carry the staged transferred cap to the receiver (delivered
+        /* Carry the staged transferred cap to the receiver (delivered
          * into attached_cap by sys_ep_recv / sys_ep_nb_recv).  A1.10 / S4: the
          * source SLOT rides along un-consumed; the receiver commits it at
          * take time, and close/cancel paths abort it without consuming. */
@@ -257,7 +257,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         if (ep->queue_tail) { ep->queue_tail->ep_next = t; ep->queue_tail = t; }
         else                { ep->queue_head = t; ep->queue_tail = t; }
-        /* A-44: queued is held.  This file enqueues on the SAME endpoint queue
+        /* Queued is held.  This file enqueues on the SAME endpoint queue
          * syscall_endpoint.c does, which is the enumeration the first attempt
          * at this missed -- a waiter queued here and dequeued there had a
          * reference released that nobody ever took. */
@@ -287,7 +287,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * on its stack; the frame was holding the endpoint reference and nothing else.
  */
 static uint64_t ep_call_complete(struct task *t) {
-    /* Phase S4 (Step 2): endpoint close leaves our source-slot refs for us to
+    /* Endpoint close leaves our source-slot refs for us to
      * drop (kendpoint_obj_close cannot release them under ep->lock).  Nothing
      * was delivered on that path — the source slot itself survives. */
     if (t->ep_cap_src_cn) {
@@ -315,16 +315,16 @@ static uint64_t ep_call_complete(struct task *t) {
         return syscall_err(IRIS_ERR_CLOSED);
     }
 
-    /* D-4: nothing to drain.  The reply's payload went straight into this
+    /* Nothing to drain.  The reply's payload went straight into this
      * thread's own IPC buffer, and its LENGTH is in the MessageInfo below. */
-    ipc_msg_store_reply(t);   /* A-33: the reply comes back in registers */
+    ipc_msg_store_reply(t);   /* The reply comes back in registers */
     return syscall_ok_u64(0);
 }
 
 /* ── SYS_REPLY ────────────────────────────────────────────────────────── */
 
 uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;   /* the message: read through the thread (A-33) */
+    (void)arg1; (void)arg2;   /* the message: read through the thread */
     iris_cptr_t kreply_cptr = (iris_cptr_t)arg0;
     if (!kreply_cptr) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -336,7 +336,7 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                                        RIGHT_WRITE, &rp, &rp_rights);
     if (err != IRIS_OK) return syscall_err(err);
 
-    /* A-33: the reply message is in the registers this call arrived in.  It
+    /* The reply message is in the registers this call arrived in.  It
      * is loaded into the thread's staging like every other outgoing message,
      * and copied out of it here because the transfer below reads it after the
      * staging has been handed to the caller. */
@@ -382,7 +382,7 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     /*
-     * Ledger A-22 — answering a FAULT.
+     * Answering a FAULT.
      *
      * There is no syscall frame under this caller: it is a thread the CPU
      * trapped, and what "resume" means for it is the trap frame, not a return
@@ -414,17 +414,17 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         }
         kfault_resolve(caller, /*killed=*/0);
         task_wakeup(caller);
-        kobject_release(&caller->base);   /* A-43: the binding's, inherited */
+        kobject_release(&caller->base);   /* The binding's, inherited */
         kobject_release(&rp->base);
         return syscall_ok_u64(0);
     }
 
     /* Deliver reply message into caller's staging.  Safe because the binding
-     * holds a reference on it (A-43), not merely because it is blocked. */
+     * holds a reference on it, not merely because it is blocked. */
     copy_irismsg_r(&caller->ipc_msg, &reply_msg);
     caller->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
     caller->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
-    /* Phase 9: replies carry NO sender identity — the kernel forces badge 0
+    /* Replies carry NO sender identity — the kernel forces badge 0
      * so a server cannot spoof a badge into its caller (reply identity is
      * implied by the one-shot KReply itself). */
     caller->ipc_msg.sender_badge = 0u;
@@ -437,18 +437,18 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                                         xfer_src_cn, xfer_src_idx);
         caller->ipc_msg.attached_handle = new_h;
         caller->ipc_msg.attached_rights = xfer_rights;
-        /* A-29: the server keeps its source slot; the caller's copy is a
+        /* The server keeps its source slot; the caller's copy is a
          * derivation child of it (released outside rp->lock). */
         syscall_ipc_stage_cap_release(xfer_src_cn);
     }
 
-    /* D-4: the reply payload reaches the caller from wherever the server keeps
+    /* The reply payload reaches the caller from wherever the server keeps
      * it — its registered frame, or its user memory while we are still in its
      * address space. */
     ipc_transfer_reply(t, caller, &reply_msg);
 
     /*
-     * Stage 8-mcs — the lent scheduling context goes home BEFORE the caller
+     * The lent scheduling context goes home BEFORE the caller
      * runs again.  Ordering matters: waking the caller first would leave a
      * window where it is runnable with no SC while the server still holds it,
      * so the client would be scheduled on nothing and the server would keep
@@ -466,7 +466,7 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     task_wakeup(caller);
 
     /*
-     * A-43 — the reference the binding took, released now that this is the
+     * The reference the binding took, released now that this is the
      * last touch of the task.  "caller is blocked, safe" was the assumption
      * above; blocked is not alive when another core can be tearing it down.
      */
@@ -511,7 +511,7 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  */
 uint64_t sys_reply_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /*
-     * Stage 9-evt Step 1: on a RE-EXECUTION only the receive half runs.
+     * On a RE-EXECUTION only the receive half runs.
      *
      * The reply already happened on the first entry — it woke a client and
      * consumed a one-shot reply object — and a composed syscall must not
@@ -526,7 +526,7 @@ uint64_t sys_reply_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      */
     struct task *rr_t = task_current();
     if (!rr_t) return syscall_err(IRIS_ERR_INVALID_ARG);
-    /* A-33: ReplyRecv is a SEND followed by a receive, so its words are laid
+    /* ReplyRecv is a SEND followed by a receive, so its words are laid
      * out like a send's — the receive slot is the one a Call would use to say
      * where the reply's capability lands, NOT the word a plain receive puts it
      * in.  Those two indices are the same number, which is exactly why this

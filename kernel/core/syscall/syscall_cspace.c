@@ -6,7 +6,7 @@
 uint32_t iris_cspace_stat_resolves = 0u;
 
 /* ════════════════════════════════════════════════════════════════════════
- * Phase S3 — CSpace-only derivation syscalls (native MDB/CDT).
+ * CSpace-only derivation syscalls (native MDB/CDT).
  *
  * These take their SOURCE exclusively from the caller's CSpace (CPtr < 1024,
  * resolved to a slot).  They never consult the handle table for the source —
@@ -21,12 +21,12 @@ uint32_t iris_cspace_stat_resolves = 0u;
  * dest_cnode == 0 convention).  Shared with syscall_cap.c (device-cap
  * publication) via syscall_priv.h.
  *
- * Stage 4: the root is a structural back-reference, so this no longer reads
+ * The root is a structural back-reference, so this no longer reads
  * the handle table at all — the ledger entry "root CNode reachable only via
  * cspace_root_h" is retired, and with it the last reason CSpace resolution
  * depended on the namespace it was built to replace.
  *
- * Stage 7 Step 4: the back-reference it reads is the THREAD's.  "My own root"
+ * The back-reference it reads is the THREAD's.  "My own root"
  * used to mean my process's, which was the same CNode and a different claim. */
 iris_error_t cspace_own_root(struct KCNode *root, struct KCNode **out) {
     if (!root) return IRIS_ERR_NOT_FOUND;
@@ -222,7 +222,7 @@ uint64_t sys_cspace_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (err != IRIS_OK) return syscall_err(err);
 
     /*
-     * Stage 9-evt / ledger D-8 — PREEMPTIBLE.
+     * PREEMPTIBLE.
      *
      * Revoke used to run until the invoked capability's subtree was exhausted,
      * and nothing bounded the subtree: a ring-3 principal that could build a
@@ -258,7 +258,7 @@ uint64_t sys_cspace_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * ── Phase S4 (Step 6): CSpace-native capability introspection ─────────────
+ * ── CSpace-native capability introspection ─────────────
  *
  * SYS_CAP_IDENTIFY (117) and SYS_CAP_SAME_OBJECT (118) are the CSpace-native
  * replacements for SYS_HANDLE_TYPE (52) and SYS_HANDLE_SAME_OBJECT (53).
@@ -368,7 +368,7 @@ uint64_t sys_cap_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /*
  * SYS_CSPACE_SET_GUARD (127) — install a guard on a CNode capability.
  *
- * Stage 8-cap, ledger D-2.  See the contract in <iris/syscall.h>.
+ * Stage 8-cap.  See the contract in <iris/syscall.h>.
  *
  * The authority is holding the SLOT: a guard changes how CPtrs resolve through
  * that capability, which alters the holder's own capability address space and

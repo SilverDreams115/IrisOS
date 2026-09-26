@@ -12,7 +12,7 @@
 struct task;
 
 /*
- * Stage 8-mcs — SPORADIC REPLENISHMENT.
+ * SPORADIC REPLENISHMENT.
  *
  * The model before this was a leaky bucket that only refilled when empty:
  * `remaining_budget` was reset to the full budget in exactly one place, the
@@ -69,10 +69,10 @@ struct KSchedContext {
     uint64_t        budget_ticks;      /* configured ticks per period */
     uint64_t        period_ticks;      /* period length in ticks */
     uint64_t        remaining_budget;  /* ticks available RIGHT NOW */
-    /* Phase S2: one-to-one binding (S2.9).  bound_task != NULL ⇒ this SC is
+    /* One-to-one binding (S2.9).  bound_task != NULL ⇒ this SC is
      * bound to exactly that task; cleared on unbind / task death. */
     struct task    *bound_task;
-    uint8_t         configured;        /* Phase S2: 0 until SC_CONFIGURE (B2) */
+    uint8_t         configured;        /* 0 until SC_CONFIGURE (B2) */
 
     /* Pending replenishments, ordered oldest-first in a ring.  `refill_max` is
      * chosen at retype and the array is the object's tail, so the storage is
@@ -87,7 +87,7 @@ struct KSchedContext {
     uint64_t        consumed_run;
     uint64_t        consume_start;
     /*
-     * Ledger A-28: how much this scheduling context has spent SINCE ANYBODY
+     * How much this scheduling context has spent SINCE ANYBODY
      * ASKED — seL4's `seL4_SchedContext_Consumed`.
      *
      * The refill queue records what is owed BACK and says nothing about what
@@ -120,13 +120,13 @@ int  kschedctx_apply_refills(struct KSchedContext *sc, uint64_t now);
 /* Reset the queue to "the whole budget is available now" — configure time. */
 void kschedctx_refill_reset(struct KSchedContext *sc);
 
-/* Phase S2: Untyped retype is the ONLY creation path (kslab kschedctx_alloc
+/* Untyped retype is the ONLY creation path (kslab kschedctx_alloc
  * retired; SYS_SC_CREATE returns NOT_SUPPORTED). */
 struct KSchedContext *kschedctx_alloc_at(void *mem, uint32_t refill_max); /* untyped-backed */
 void                  kschedctx_close(struct KSchedContext *sc);
 iris_error_t          kschedctx_configure(struct KSchedContext *sc,
                                            uint64_t budget, uint64_t period);
-/* Phase S2: bind/unbind a task (one-to-one, atomic). */
+/* Bind/unbind a task (one-to-one, atomic). */
 iris_error_t          kschedctx_bind(struct KSchedContext *sc, struct task *t);
 void                  kschedctx_unbind(struct KSchedContext *sc, struct task *t);
 /* Phase 17/S2: live count + high-water/retype/destroy diagnostics. */

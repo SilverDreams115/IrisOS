@@ -179,9 +179,9 @@
 #define LP_PGR_SLOT_TPROC      12u
 #define LP_PGR_SLOT_TVS        13u
 #define LP_PGR_SLOT_FRAME      14u
-#define LP_PGR_SLOT_FAULT_EP   15u  /* A-22: the fault ENDPOINT, RIGHT_READ */
+#define LP_PGR_SLOT_FAULT_EP   15u  /* The fault ENDPOINT, RIGHT_READ */
 /*
- * Ledger A-22 — the fault REPLY objects.
+ * The fault REPLY objects.
  *
  * A CNode the SUPERVISOR retypes and fills with KReply objects.  A fault is a
  * CALL, so serving one means receiving with reply authority staged, and once
@@ -204,7 +204,7 @@
 #define LP_PGR_ERR_CR2         0x7Du   /* cr2 does not match expectation */
 
 /*
- * Phase 27's persistent PAGER SERVICE mode is DELETED (ledger D-5).
+ * Phase 27's persistent PAGER SERVICE mode is DELETED.
  *
  * It made this probe into a supervised user pager whose whole authority was a
  * manifest of target grants and VMO grants.  Phase 28 replaced it with a real
@@ -220,7 +220,7 @@ static inline long lp_sys1(long nr, long a0) {
 }
 
 /*
- * Stage 6-pure Step 2: this image is spawned in two roles, and the difference
+ * This image is spawned in two roles, and the difference
  * is entirely in what it was handed.  As a CONTAINED probe it holds no budget,
  * and the authority tests audit exactly that.  As a PAGER (T183+) it maps
  * frames into a target's address space, so it owes the levels under them and
@@ -237,7 +237,7 @@ static inline long lp_sys1(long nr, long a0) {
 /* A free slot for the device-authority probes to aim at: they must be refused
  * for want of a capability, so everything else about them has to be valid. */
 #define LP_SLOT_DEVPROBE 45u
-/* Ledger A-32: a label, not a syscall number. */
+/* A label, not a syscall number. */
 static inline long lp_invoke(long c, unsigned long label, long a1, long a2, long a3) {
     long r = iris_invoke(c, label, a1, a2, a3);
     if (r == (long)IRIS_ERR_MISSING_TABLE)
@@ -274,7 +274,7 @@ static int lp_slot_present(long cptr) {
 }
 
 
-/* Phase S1: recv with the explicit reply object at slot 13 when the parent
+/* Recv with the explicit reply object at slot 13 when the parent
  * minted one; otherwise fall back to a reply-less recv (send-only fixtures).
  * A bad reply CPtr fails BEFORE the endpoint is touched, so the retry is
  * side-effect free. */
@@ -314,7 +314,7 @@ void lp_main(iris_cptr_t bootstrap_ch_h) {
         long rr = (msg.reply = (long)(0), iris_msg_recv((long)LP_CPTR_CMD_EP, &msg));
         if (rr != 0)
             lp_sys1(SYS_EXIT, (long)(LP_EXIT_RECV_ERR_BASE | (uint32_t)-rr));
-        /* Stage 4: a delivered cap is a CPtr or nothing — handle
+        /* A delivered cap is a CPtr or nothing — handle
          * materialisation is retired, so a receive that declared slot 0 gets
          * the message without the capability and `got` is 0.  Signal bit 1
          * says "arrived in my CSpace"; the parent reads the exit code to tell
@@ -326,7 +326,7 @@ void lp_main(iris_cptr_t bootstrap_ch_h) {
         for (;;) {}
     }
 
-    /* Phase 16: block as a sender/caller on the command endpoint.  The child
+    /* Block as a sender/caller on the command endpoint.  The child
      * is normally killed while blocked (the parent observes the cleanup); if
      * the parent instead rendezvouses and replies, the syscall returns and we
      * exit LP_EXIT_IPC_BASE | -err so a completing run is still observable. */
@@ -342,7 +342,7 @@ void lp_main(iris_cptr_t bootstrap_ch_h) {
         for (;;) {}
     }
 
-    /* Phase 22: report which well-known CPtr slots resolve, as an exit bitmask.
+    /* Report which well-known CPtr slots resolve, as an exit bitmask.
      * Bits 0..15 = slots 0..15 (covers the core service slots + spawn cap 6);
      * bit 16 = slot 25 (proc cap), bit 17 = slot 55 (untyped), bit 18 = slot 56
      * (vspace) — the high-authority slots a minimal service must NEVER hold. */
@@ -358,11 +358,11 @@ void lp_main(iris_cptr_t bootstrap_ch_h) {
         for (;;) {}
     }
 
-    /* Phase 23: compromised-driver escalation battery — every attempt must be
+    /* Compromised-driver escalation battery — every attempt must be
      * denied by the kernel; the exit bitmask marks any that leaked through. */
     if (msg.label == (uint64_t)LP_CMD_DEV_PROBE) {
         uint32_t breach = 0u;
-        /* Stage 7 Step 14: well-formed in every argument but the AUTHORITY —
+        /* Well-formed in every argument but the AUTHORITY —
          * base|count packed in arg1, a real budget in arg2, a free slot in
          * arg3 — so what refuses it is the missing capability and not a
          * malformed request. */
@@ -375,7 +375,7 @@ void lp_main(iris_cptr_t bootstrap_ch_h) {
         for (;;) {}
     }
 
-    /* Phase 25: external user pager — serve fault(s) of the authorized target
+    /* External user pager — serve fault(s) of the authorized target
      * using ONLY the minted manifest (slots 12-15).  Every step is an explicit
      * capability invocation; nothing here works unless the supervisor granted
      * the exact authority (see header block for the wire contract). */
@@ -388,7 +388,7 @@ void lp_main(iris_cptr_t bootstrap_ch_h) {
         long err = 0;
         if (count == 0u) count = 1u;
         for (uint32_t n = 0; n < count && err == 0; n++) {
-            /* A-22: RECEIVE the fault.  The record is the message and the
+            /* RECEIVE the fault.  The record is the message and the
              * reply object staged here is the authority to resume — two
              * syscalls and a mailbox became one receive. */
             struct iris_msg fm;
@@ -405,7 +405,7 @@ void lp_main(iris_cptr_t bootstrap_ch_h) {
             }
             if (expect != 0 && cr2 != expect) { err = -(long)LP_PGR_ERR_CR2; break; }
             if (sub == 1u) {
-                /* Phase 25: install a raw frame (slot 14) at the fault page. */
+                /* Install a raw frame (slot 14) at the fault page. */
                 uint64_t va = va_ovr ? va_ovr : (cr2 & ~0xFFFULL);
                 r = lp_invoke((long)LP_PGR_SLOT_FRAME, INV_FRAME_MAP, (long)LP_PGR_SLOT_TVS, (long)va, (long)mflags);
                 if (r != 0) { err = r; break; }
@@ -427,7 +427,7 @@ void lp_main(iris_cptr_t bootstrap_ch_h) {
         for (;;) {}
     }
 
-    /* Phase 25: unauthorized-resolution battery — every attempt against the
+    /* Unauthorized-resolution battery — every attempt against the
      * victim (whose caps in slots 8/9 are deliberately under-privileged, or
      * whose task simply is not the pager's target) must be denied by the
      * kernel.  Exit bitmask marks any that leaked through; contained = 0. */
@@ -436,14 +436,14 @@ void lp_main(iris_cptr_t bootstrap_ch_h) {
         uint32_t vtid = (uint32_t)msg.words[0];
         uint64_t va   = msg.words[1];
         uint64_t vseq = msg.words[2]; (void)vseq;
-        /* Ledger A-22: resolving somebody else's fault fails for the best
+        /* Resolving somebody else's fault fails for the best
          * reason there is — resuming a thread is spending a REPLY capability,
          * and this pager was never given one for the victim.  The generation
          * number these probes used to carry is gone with the syscall that took
          * it: a one-shot capability needs no sequence check. */
         {
             /*
-             * A-22: resuming a thread is spending a REPLY capability, and the
+             * Resuming a thread is spending a REPLY capability, and the
              * supervisor never gave this pager one for the victim.  Leaf 2 is
              * empty, so the attempt fails on the capability rather than on a
              * rejected id — which is the containment this battery asserts.
@@ -490,7 +490,7 @@ void lp_main(iris_cptr_t bootstrap_ch_h) {
         for (;;) {}
     }
 
-    /* Phase 20: perform a faulting access so a supervisor's fault endpoint fires.
+    /* Perform a faulting access so a supervisor's fault endpoint fires.
      * The instruction faults; the kernel suspends this task in BLOCKED_FAULT and
      * signals the parent's handler.  If the parent resumes without fixing the
      * condition the same fault recurs; if it fixes it (e.g. remaps writable) the

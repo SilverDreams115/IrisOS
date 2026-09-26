@@ -2,7 +2,7 @@
 /*
  * main.c — init service boot supervisor (ring-3 ELF, phase 22+).
  *
- * Phase 14: orchestrator ONLY.  Every helper lives in its module (see the
+ * Orchestrator ONLY.  Every helper lives in its module (see the
  * split contract in init.h): init_bootstrap.c (spawn-cap / early-serial /
  * discovery / S5-S6 VFS validation), init_launch.c (fb / console / svcmgr /
  * iris_test spawns), init_test.c (runtime probes + S8).  main.c owns the
@@ -15,7 +15,7 @@
  * CSpace and is invoked as that slot — no KChannel, and no handle.
  *
  * Boot sequence validated:
- *   1. Resolve "vfs.ep" via the svcmgr discovery endpoint (Phase 7.2)
+ *   1. Resolve "vfs.ep" via the svcmgr discovery endpoint
  *   2. VFS EP LIST + STAT/READ_AT of the boot file (stateless)
  *   3. Exception-delivery selftest (S8) + iris_test ring-3 suite
  *   4. Idle loop (init never exits)
@@ -28,25 +28,25 @@
 
 /* ── Utilities ──────────────────────────────────────────────────────────── */
 
-/* Console KEndpoint master (Phase 7.3): init creates it, console serves it,
- * svcmgr publishes the send side as "console.ep".  Phase 13/Track I: the legacy
+/* Console KEndpoint master: init creates it, console serves it,
+ * svcmgr publishes the send side as "console.ep".  The legacy
  * console KChannel write handle (g_init_console_h) is retired — init logs over
  * console.ep, with early-serial as the only pre-console.ep fallback. */
 iris_cptr_t g_init_console_ep_h = IRIS_CPTR_NULL;
 iris_cptr_t g_init_timer_ep_h   = IRIS_CPTR_NULL;
-/* D-4: the console client marshals into the buffer it is given, and a thread
+/* The console client marshals into the buffer it is given, and a thread
  * with a registered IPC buffer must marshal into THAT — the kernel refuses a
  * send that names any other address.  So the log path shares the service's one
  * IPC buffer, which is what having one buffer means. */
 
-/* Phase S1: init's untyped pool — the boot KUntyped userboot minted at slot 12.
+/* Init's untyped pool — the boot KUntyped userboot minted at slot 12.
  * Every kernel object init fabricates (console/svcmgr endpoints, reply
  * objects, test fixtures) is retyped from it; the sub-untypeds delegated to
  * svcmgr and iris_test are carved from it too. */
 uint64_t g_init_untyped_c = 0;
 
 void init_log(const char *s) {
-    /* Phase 13 (Track I): endpoint-first over console.ep (synchronous flush
+    /* Endpoint-first over console.ep (synchronous flush
      * barrier) once it exists; the only pre-console.ep fallback is the direct
      * UART (early-serial) — never the legacy console KChannel.  No silent
      * fallback after verification: a broken EP drops the gated markers and
@@ -65,7 +65,7 @@ static const char init_stage_vfs_rw[]    = "[USER][INIT][S6] vfs ep rw\n";
 /* init_stage_exception (S8) lives in init_test.c — Phase 14/Inc 2 */
 /* init_stage_seal/init_stage_rights (S9/S10) retired — Phase 13/Track F */
 static const char init_stage_healthy[]   = "[USER][INIT][BOOT] healthy path OK\n";
-/* Phase 13/Track I: readdup/writedup/boot_ioport/boot_service fail strings
+/* Readdup/writedup/boot_ioport/boot_service fail strings
  * retired with the legacy console KChannel bootstrap.  The console/fb spawn
  * fail strings moved to init_launch.c with their users — Phase 14. */
 
@@ -95,7 +95,7 @@ void init_close(iris_cptr_t *h) {
 
 /* Runtime probes + S8 exception selftest extracted to init_test.c — Phase 14/Inc 2. */
 
-/* Phase 13 (Track F): init S9 (channel seal) and S10 (rights reduction)
+/* Init S9 (channel seal) and S10 (rights reduction)
  * KChannel selftests retired — the seal/close and rights-reduction
  * semantics are covered by the endpoint/cap-transfer runtime tests in
  * iris_test (T019 close-wakes-waiter, T052/T064 rights+transfer). */
@@ -115,7 +115,7 @@ void init_close(iris_cptr_t *h) {
 
 /* ── svcmgr lookup ──────────────────────────────────────────────────────── */
 
-/* Phase 13/Track I: init_lookup / init_lookup_wait / init_lookup_name (the
+/* Init_lookup / init_lookup_wait / init_lookup_name (the
  * legacy KChannel SVCMGR_MSG_LOOKUP[_NAME] discovery) are fully retired —
  * init discovers services via EP_LOOKUP_NAME over svcmgr.ep
  * (init_ep_lookup_name, init_bootstrap.c).  No legacy LOOKUP, no fallback. */
@@ -127,14 +127,14 @@ void init_close(iris_cptr_t *h) {
  * discovery, incl. the A1.6 reply receive-slot), init_vfs_ep_call, and the
  * S5/S6 LIST/STAT/READ_AT validation with their retry waits. */
 
-/* Phase 13 (Track I): the KBD HELLO/SUBSCRIBE legacy-KChannel helpers and the
+/* The KBD HELLO/SUBSCRIBE legacy-KChannel helpers and the
  * PS/2 scancode→ASCII echo table are retired — kbd is endpoint-only and sh
  * is the keystroke consumer (kbd.ep pull). */
 
 
 /* ── Echo loop ──────────────────────────────────────────────────────────── */
 
-/* Phase 13 (Track I): init's interactive echo loop is retired — sh is the
+/* Init's interactive echo loop is retired — sh is the
  * keystroke consumer (kbd.ep pull).  init's final state is a quiet idle loop so
  * the process never exits (which would tear it down). */
 static void init_idle_loop(void) {
@@ -143,7 +143,7 @@ static void init_idle_loop(void) {
 
     init_log("[USER] init idle loop start\n");
     /*
-     * Ledger A-24: idling is not a request about TIME.
+     * Idling is not a request about TIME.
      *
      * This was SYS_SLEEP(100) in a loop — init waking a hundred times a second
      * to do nothing, because a timed block was the only way it knew to stop.
@@ -177,15 +177,15 @@ void init_main(iris_cptr_t rbx_unused) {
     (void)rbx_unused;   /* svc_loader passes RBX = 0 — not a handle */
     init_early_serial_start();
 
-    /* D-4: a page init owns, registered as its IPC buffer.  Retyped from the
+    /* A page init owns, registered as its IPC buffer.  Retyped from the
      * boot untyped at slot 12 — the same one every endpoint and reply object
      * below comes out of.  Best-effort; a failure leaves the staging path. */
     init_ipc_buffer_init();
 
-    /* Phase S1: confirm the delegated boot untyped (slot 12) BEFORE any spawn —
+    /* Confirm the delegated boot untyped (slot 12) BEFORE any spawn —
      * console/svcmgr endpoints and reply objects are retyped from it.
      *
-     * Stage 4: SYS_UNTYPED_INFO answers by CPtr and materializes nothing, so
+     * SYS_UNTYPED_INFO answers by CPtr and materializes nothing, so
      * the check costs no handle-table entry and the pool stays a CPtr all the
      * way into retype2 — which is what gives the fabricated objects a real MDB
      * ancestor instead of LEGACY_ROOT status (see init_retype_slot). */
@@ -210,13 +210,13 @@ void init_main(iris_cptr_t rbx_unused) {
      */
     /* init_spawn_fb(); */
 
-    /* Spawn console: endpoint-only, CPtr-provisioned (Phase 13/Track I). */
+    /* Spawn console: endpoint-only, CPtr-provisioned. */
     if (!init_spawn_console()) {
         init_early_serial_write("[INIT] console spawn FAILED\r\n");
         init_exit(1);
     }
 
-    /* Verify the console endpoint with the first gated write (Phase 7.3): the
+    /* Verify the console endpoint with the first gated write: the
      * EP_CALL blocks until console serves it, so this also synchronizes with
      * console boot.  Done BEFORE early-serial is stopped so a broken EP can
      * still report LOUDLY over the direct UART (the missing OK marker fails
@@ -235,34 +235,34 @@ void init_main(iris_cptr_t rbx_unused) {
 
     init_log("[USER] init bootstrap start\n");
 
-    /* A-24: the timer service, before anything that waits.  A failure is not
+    /* The timer service, before anything that waits.  A failure is not
      * fatal on its own — it is fatal to whoever tries to wait, and they say so
      * where it matters rather than here. */
     if (!init_spawn_timer())
         init_log("[USER] timer spawn FAILED\n");
 
-    /* Stage 10: the PCI bus service, before anything that drives a device.
+    /* The PCI bus service, before anything that drives a device.
      * Same rule as the timer — a failure is fatal to whoever needs a device,
      * and they say so where it matters. */
     if (!init_spawn_pci())
         init_log("[USER] pci spawn FAILED\n");
 
-    /* Stage 10: the disk, which needs the bus service above it.  Not fatal —
+    /* The disk, which needs the bus service above it.  Not fatal —
      * a machine with no disk is a machine, and the services that need storage
      * say so where it matters. */
     if (!init_spawn_blk())
         init_log("[USER] blk spawn FAILED\n");
 
-    /* Stage 10: the network card, which also needs the bus service.  A machine
+    /* The network card, which also needs the bus service.  A machine
      * with no NIC is a machine — not fatal. */
     if (!init_spawn_net())
         init_log("[USER] net spawn FAILED\n");
 
-    /* Stage 10: the persistent filesystem, which needs the disk above it. */
+    /* The persistent filesystem, which needs the disk above it. */
     if (!init_spawn_fs())
         init_log("[USER] fs spawn FAILED\n");
 
-    /* Stage 10: the protocol stack, which needs the network card above it. */
+    /* The protocol stack, which needs the network card above it. */
     if (!init_spawn_ip())
         init_log("[USER] ip spawn FAILED\n");
 
@@ -283,7 +283,7 @@ void init_main(iris_cptr_t rbx_unused) {
 
     /* ── Service discovery ── */
     init_log(init_stage_lookup);
-    /* Phase 13 (Track I): init no longer probes kbd over the legacy service/reply
+    /* Init no longer probes kbd over the legacy service/reply
      * KChannel — kbd is endpoint/notification-only.  kbd liveness is covered by
      * sh's "[SH] kbd cptr OK" (a kbd.ep PING) and by T034/T035/T044/T058. */
 
@@ -327,12 +327,12 @@ void init_main(iris_cptr_t rbx_unused) {
     init_log("[USER] vfs ep stat OK\n");
     init_log("[USER] vfs ep read OK\n");
 
-    /* Phase 13 (Track I): KBD SUBSCRIBE / shared-reply probes retired — kbd is
+    /* KBD SUBSCRIBE / shared-reply probes retired — kbd is
      * endpoint/notification-only and sh consumes keystrokes via "kbd.ep" (pull).
      * init no longer subscribes to a push channel. */
     init_log(init_stage_healthy);
 
-    /* Phase 13 (Track F): the ring-3 timed-IPC KChannel selftest (CHAN_RECV_TIMEOUT
+    /* The ring-3 timed-IPC KChannel selftest (CHAN_RECV_TIMEOUT
      * → TIMED_OUT) is retired — covered by iris_test T010 (NOTIFY_WAIT_TIMEOUT). */
 
     init_runtime_probe_invalid_userptr();

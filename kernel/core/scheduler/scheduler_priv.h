@@ -30,7 +30,7 @@
  */
 struct CpuRunQueue {
     irq_spinlock_t lock;
-    /* Phase S2 Inc.2B: pointer-based FIFO per priority.  The parallel
+    /* Inc.2B: pointer-based FIFO per priority.  The parallel
      * index-keyed arrays (next[TASK_MAX]/queued[TASK_MAX]) are retired — the
      * per-task FIFO link and queued flag live inside struct task (rq_next /
      * rq_queued), so the run queue no longer derives identity from a static
@@ -70,7 +70,7 @@ uint64_t sched_domain_switches(void);
 /* ── Shared state (defined in task_lifecycle.c) ──────────────────────────── */
 
 /*
- * Phase S2 Inc.2 (Step C) — KTCB registry.
+ * KTCB registry.
  *
  * The registry is a table of REFERENCES (pointer + generation + flags), NOT of
  * TCB payload.  It is the sole iteration/allocation/lookup surface for the
@@ -86,7 +86,7 @@ uint64_t sched_domain_switches(void);
  * it never substitutes for capability authority.
  */
 /*
- * The scheduler's list of live threads (ledger A-19).
+ * The scheduler's list of live threads.
  *
  * It was `ktcb_registry[TASK_MAX]`, an array of identity slots — and that made
  * TASK_MAX a ceiling on how many threads may exist, which the kernel had no
@@ -111,7 +111,7 @@ extern struct task         ktcb_backing[TASK_BOOTSTRAP_MAX]; /* idle + root task
  * thread; that list had no readers and is deleted (SMP roadmap §9.3 step 4). */
 extern struct task        *sched_idle_thread;
 extern _Atomic uint32_t    next_id;
-/* Phase S2: task_rsp[TASK_MAX] retired — saved kernel RSP lives in
+/* Task_rsp[TASK_MAX] retired — saved kernel RSP lives in
  * struct task.saved_krsp (scheduler indirection: no index-keyed parallel
  * array, no (t - tasks) pointer arithmetic to reach it). */
 extern uint64_t            kernel_cr3;

@@ -17,7 +17,7 @@
  * what stops it coming back.
  *
  * The 4 KiB `syscall_kstack_base` went with them.  It was the kernel's single
- * syscall stack before the stack belonged to a core (Stage 9-evt step 3), and
+ * syscall stack before the stack belonged to a core, and
  * since then nothing but the shadow's initialiser has named it.
  */
 
@@ -43,7 +43,7 @@ syscall_entry:
     /*
      * Park the user stack pointer in the per-CPU scratch and take the kernel
      * stack.  This used to be `movq %rsp, %r8`; r8 is the FIFTH ARGUMENT
-     * REGISTER now (ledger A-32), and there is no other register free here —
+     * REGISTER now, and there is no other register free here —
      * rcx and r11 carry the user's RIP and RFLAGS, rax the syscall number, and
      * rdi/rsi/rdx/r10/r8 are the five arguments.  Pushed straight out of
      * memory below, so it never occupies a register at all.
@@ -79,7 +79,7 @@ syscall_entry:
      * argument count grew.
      *
      * r15 and r14 cost nothing to carry: they were ALREADY being pushed here
-     * as callee-saved, so the message ABI (A-33) taking them as arguments is
+     * as callee-saved, so the message ABI taking them as arguments is
      * the same two stores with a different name on them.  seL4 uses r15 as a
      * message register on x86_64 for exactly this reason.
      *
@@ -95,11 +95,11 @@ syscall_entry:
     pushq %rbp
     pushq %rbx
     pushq %r12
-    pushq %r13        /* arg8 (A-33) — and the user's r13 */
-    pushq %r14        /* arg7 (A-33) — and the user's r14 */
-    pushq %r15        /* arg6 (A-33) — and the user's r15 */
-    pushq %r9         /* arg5 (A-33) */
-    pushq %r8         /* arg4 (A-32) */
+    pushq %r13        /* arg8 — and the user's r13 */
+    pushq %r14        /* arg7 — and the user's r14 */
+    pushq %r15        /* arg6 — and the user's r15 */
+    pushq %r9         /* arg5 */
+    pushq %r8         /* arg4 */
     pushq %gs:72      /* user rsp    */
     pushq %r11        /* user rflags */
     pushq %rcx        /* user rip    */
@@ -111,7 +111,7 @@ syscall_entry:
     subq $8, %rsp     /* alignment   */
 
     /*
-     * Stage 9-evt Step 2: copy the user context into the TCB.
+     * Copy the user context into the TCB.
      *
      * The frame above is what step 2 abandons when a handler parks, so the
      * return address, flags and stack pointer must exist somewhere else by
@@ -127,7 +127,7 @@ syscall_entry:
 
     /*
      * syscall_dispatch(num, arg0..arg8) — ten parameters, nine of them user
-     * words (A-33).
+     * words.
      *
      * Six go in registers per the C ABI and FOUR on the stack: arg5 through
      * arg8, in that order from [rsp+0].  32 bytes, which is what four words
@@ -153,7 +153,7 @@ syscall_entry:
     /* return value in rax */
 
     /*
-     * A-33: hand the message back.
+     * Hand the message back.
      *
      * A receive returns a whole message and a message does not fit in rax, so
      * the kernel writes its return words into THIS FRAME and the restore below
@@ -170,7 +170,7 @@ syscall_entry:
     movq 8(%rsp), %rax
 
     /*
-     * A-33: the exit reads everything it needs out of the frame BEFORE it
+     * The exit reads everything it needs out of the frame BEFORE it
      * moves rsp, because the frame is on the kernel stack and the last act is
      * to leave it.  The order below is forced by that: scratch first, the
      * return message last, the user stack pointer last of all.
@@ -196,7 +196,7 @@ syscall_entry:
     jnz .Lsyscall_noncanonical
 
     /*
-     * The return message (A-33).  For a call that returns only a status these
+     * The return message.  For a call that returns only a status these
      * still hold what the caller passed in — syscall_store_user_ret left the
      * frame alone — which is strictly kinder than the clobber ring 3 already
      * assumes.  For a receive they hold the message: msginfo, badge, four
@@ -240,7 +240,7 @@ syscall_entry:
  * syscall_return_to_user(rax_value, user_rip, user_rflags, user_rsp,
  *                        callee_saved)
  *
- * Stage 9-evt Step 2 — return to ring 3 WITHOUT a syscall frame.
+ * Return to ring 3 WITHOUT a syscall frame.
  *
  * The normal exit path above reads the user's rip, flags and stack out of the
  * frame syscall_entry pushed.  A syscall that parked and was re-entered on a
@@ -261,9 +261,9 @@ syscall_entry:
  *   rdx = user RFLAGS
  *   rcx = user RSP
  *   r8  = &task->sc_user_regs[0]  — r15, r14, r13, r12, rbx, rbp
- *   r9  = &task->sc_ret[0]        — the return message (A-33): ret0..ret6
+ *   r9  = &task->sc_ret[0]        — the return message: ret0..ret6
  *
- * A-33: a parked receive completes here, and a receive returns a MESSAGE.  The
+ * A parked receive completes here, and a receive returns a MESSAGE.  The
  * fast path above reads it out of the frame; this path has no frame, so the
  * kernel left it in the TCB and hands over a pointer the same way it already
  * does for the callee-saved block.
@@ -301,7 +301,7 @@ syscall_return_to_user:
     movq 32(%r8), %rbx
     movq 40(%r8), %rbp
 
-    /* the return message (A-33).  r15 comes from HERE rather than from the
+    /* the return message.  r15 comes from HERE rather than from the
      * callee-saved block above, because it is a message register: what the
      * thread gets back is what the receive delivered, not what it was holding
      * when it parked.  r8 is read last of all, being the pointer. */

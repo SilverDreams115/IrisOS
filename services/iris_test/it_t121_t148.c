@@ -131,7 +131,7 @@ void test_t123(void) {
     int ok = 1;
     const char *why = "sc lifetime";
 
-    /* Phase S2: SYS_SC_CREATE retired; SCs come from Untyped RETYPE2. */
+    /* SYS_SC_CREATE retired; SCs come from Untyped RETYPE2. */
     long a = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
     long b = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
     iris_cptr_t sc  = (a >= 0) ? (iris_cptr_t)a : IRIS_CPTR_NULL;
@@ -355,7 +355,7 @@ void test_t125(void) {
         if (ok && it_retype_slot_alloc(IT_UT, IT_KOBJ_UNTYPED, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad ut size"; }
         /* non-power-of-two CNode slot count (RETYPE2 — the canonical path). */
         if (ok && it_retype2_at(IT_UT, IT_KOBJ_CNODE, 240u, 1u, 3) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad cnode slots"; }
-        /* Stage 4: the LEGACY handle-publishing retype (87) is retired for
+        /* The LEGACY handle-publishing retype (87) is retired for
          * EVERY type, not just the migrated family it refused since Phase S1.
          * There is one way to create an object from an Untyped, and it puts
          * the result in a CSpace slot. */
@@ -365,7 +365,7 @@ void test_t125(void) {
         if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_SCHED_CONTEXT, 0)!= (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy sc not retired"; }
         /* missing RIGHT_WRITE: retype through a read-only derived cap. */
         if (ok) {
-            /* Phase S4 (Step 3): the read-only copy is a native-CDT child. */
+            /* The read-only copy is a native-CDT child. */
             long ut_root = it_cdt_root((iris_cptr_t)IT_UT, IT_SCRATCH_0);
             long ro = (ut_root >= 0)
                     ? it_cdt_derive(ut_root, IT_SCRATCH_1, RIGHT_READ) : -1;
@@ -473,7 +473,7 @@ void test_t127(void) {
     iris_cptr_t outsider = (orr >= 0) ? (iris_cptr_t)orr : IRIS_CPTR_NULL;
     if (orr < 0) { ok = 0; why = "retype outsider"; }
 
-    /* Phase S4 (Step 3): the derivation tree is the NATIVE CDT over slots.
+    /* The derivation tree is the NATIVE CDT over slots.
      * root → c1 → gc1 ; root → c2. */
     long rootc = ok ? it_cdt_root(root, IT_SCRATCH_0) : -1;
     if (ok && rootc < 0) { ok = 0; why = "root slot"; }
@@ -559,7 +559,7 @@ void test_t128(void) {
     if (!it_sched_ext3(mid)) { ok = 0; why = "ext3 mid"; }
     if (ok && mid[IT_S3_FRAME] != s3b[IT_S3_FRAME] + 1u) { ok = 0; why = "frame not counted"; }
 
-    /* Phase S4 (Step 3): derive a child frame through the native CDT, then
+    /* Derive a child frame through the native CDT, then
      * revoke it away from the root slot. */
     long frc   = ok ? it_cdt_root(frame, IT_SCRATCH_0) : -1;
     if (ok && frc < 0) { ok = 0; why = "root slot"; }
@@ -633,7 +633,7 @@ void test_t129(void) {
     if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread create"; }
     if (ok) it_settle(1);
 
-    /* Phase S4: derive a child through the native CDT and revoke it — the
+    /* Derive a child through the native CDT and revoke it — the
      * OBJECT survives (the root slot still names it) and the blocked waiter
      * is unaffected: revocation removes capabilities, not execution. */
     long epc   = ok ? it_cdt_root(g_sh_ep, IT_SCRATCH_0) : -1;
@@ -674,7 +674,7 @@ void test_t130(void) {
     if (rr < 0) { it_fail("T130", "retype root"); return; }
     iris_cptr_t root = (iris_cptr_t)rr;   /* full rights: READ|WRITE|DUP|TRANSFER */
 
-    /* Phase S4 (Step 3): derivation is the native CDT.  Derive down to
+    /* Derivation is the native CDT.  Derive down to
      * READ-only (drops DUPLICATE). */
     long rootc = it_cdt_root(root, IT_SCRATCH_0);
     if (rootc < 0) { ok = 0; why = "root slot"; }
@@ -748,7 +748,7 @@ void test_t131(void) {
         if (rr < 0) { ok = 0; why = "retype"; break; }
         iris_cptr_t root = (iris_cptr_t)rr;
 
-        /* Phase S4 (Step 3): derive a small tree through the native CDT,
+        /* Derive a small tree through the native CDT,
          * sometimes revoke it, always tear it down. */
         long rootc = it_cdt_root(root, IT_SCRATCH_0);
         if (rootc < 0) { ok = 0; why = "root slot"; it_close(&root); break; }
@@ -807,12 +807,12 @@ void test_t131(void) {
     }
 }
 
-/* ── Phase 19: VM / VSpace / frame mapping hardening (T132–T139) ──────────────
+/* ── VM / VSpace / frame mapping hardening (T132–T139) ──────────────
  *
  * These tests close the gap Phase 18 left open: ring 3 now drives SYS_FRAME_MAP /
  * SYS_FRAME_UNMAP directly against its OWN address space, using a self-VSpace
  * cap obtained from SYS_VSPACE_SELF (self-authority only) and minted into
- * IRIS_CPTR_TEST_VSPACE.  Frames come from the Phase 18 boot untyped
+ * IRIS_CPTR_TEST_VSPACE.  Frames come from the boot untyped
  * (IRIS_CPTR_TEST_UNTYPED).  The Phase 19 additive instrumentation
  * (it_sched_ext4) exposes live KVSpace count, live KFrameMapping count, and the
  * cumulative map/unmap/TLB-invalidate counters — the observables behind V10–V18.
@@ -952,7 +952,7 @@ void test_t134(void) {
     long er = it_retype_slot_alloc(IT_UT, IT_KOBJ_ENDPOINT, 0);
     iris_cptr_t ep = (er >= 0) ? (iris_cptr_t)er : IRIS_CPTR_NULL;
     /* Read-only frame fixture (drops WRITE): cannot back a writable map.
-     * Phase S4 (Step 3): a native-CDT child, addressed by CPtr. */
+     * A native-CDT child, addressed by CPtr. */
     long rr = it_cdt_reduced(fr, IT_SCRATCH_0, IT_SCRATCH_1, RIGHT_READ);
     iris_cptr_t fr_ro = (rr >= 0) ? (iris_cptr_t)rr : IRIS_CPTR_NULL;
     if (ep == IRIS_CPTR_NULL || rr < 0) { ok = 0; why = "fixtures"; }
@@ -965,7 +965,7 @@ void test_t134(void) {
         { (long)ep,    IT_VS, T134_VA, IT_MAP_W, (long)IRIS_ERR_WRONG_TYPE,    "wrong frame type" },
         { (long)fr_ro, IT_VS, T134_VA, IT_MAP_W, (long)IRIS_ERR_ACCESS_DENIED, "insufficient rights" },
         { (long)fr,    IT_UT, T134_VA, IT_MAP_W, (long)IRIS_ERR_WRONG_TYPE,    "wrong vspace type" },
-        /* Stage 5 Step 2: the empty-slot probe used to name slot 99, kept
+        /* The empty-slot probe used to name slot 99, kept
          * permanently empty for it.  Slot 99 holds the framebuffer control
          * capability now, so the probe names a SCRATCH slot deleted on the
          * line above — guaranteed empty by construction rather than by a
@@ -1126,7 +1126,7 @@ void test_t137(void) {
 
     if (it_invoke((long)fr, INV_FRAME_MAP, IT_VS, (long)T137_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; }
 
-    /* Phase S4 (Step 3): derived cap, revoked while the frame is mapped. */
+    /* Derived cap, revoked while the frame is mapped. */
     long frc   = ok ? it_cdt_root(fr, IT_SCRATCH_0) : -1;
     if (ok && frc < 0) { ok = 0; why = "root slot"; }
     long child = (frc >= 0) ? it_cdt_derive(frc, IT_SCRATCH_1, RIGHT_SAME_RIGHTS) : -1;
@@ -1236,7 +1236,7 @@ void test_t139(void) {
         }
 
         /* Sometimes derive + revoke while mapped (revoke must not unmap).
-         * Phase S4 (Step 3): native CDT over scratch slots. */
+         * Native CDT over scratch slots. */
         if (fz_rand() & 1u) {
             long frc = it_cdt_root(fr, IT_SCRATCH_0);
             long c   = (frc >= 0) ? it_cdt_derive(frc, IT_SCRATCH_1, RIGHT_SAME_RIGHTS) : -1;
@@ -1277,7 +1277,7 @@ uint8_t g_it_fault_have[IT_FAULT_LEAVES];
  * message the kernel composed. */
 uint64_t g_it_fault_label[IT_FAULT_LEAVES];
 /* ...and the BADGE it was delivered through, which is how a handler serving
- * many clients on one endpoint knows whose fault it is (A-22). */
+ * many clients on one endpoint knows whose fault it is. */
 uint64_t g_it_fault_badge[IT_FAULT_LEAVES];
 
 long it_fault_info(uint32_t leaf, struct it_fault *f) {
@@ -1328,7 +1328,7 @@ static int it_fault_spawn_mbox(uint32_t mbox,
     if (lp_spawn_child(*ep_h, proc_h) < 0 || *proc_h == IRIS_CPTR_NULL) {
         it_close(ep_h); *why = "spawn"; return 0;
     }
-    /* Ledger A-22: `n_h` is the child's FAULT ENDPOINT, not a notification.
+    /* `n_h` is the child's FAULT ENDPOINT, not a notification.
      * The suite receives on it; the record arrives as the message and the
      * reply capability arrives with it. */
     long fe = it_ep_create();
@@ -1437,7 +1437,7 @@ static void it_fault_close4(iris_cptr_t *a, iris_cptr_t *b,
     it_close(a); it_close(b); it_close(c); it_close(d);
 }
 
-/* ── T140: register fault endpoint authority (A-22) ─────────────────────────
+/* ── T140: register fault endpoint authority ─────────────────────────
  * Registration is capability-mediated with no fallback:
  *   - RIGHT_WRITE on the THREAD and RIGHT_WRITE on the ENDPOINT are both
  *     required — reduced-rights copies get ACCESS_DENIED;
@@ -1481,12 +1481,12 @@ void test_t140(void) {
 
     if (ok && it_invoke2(it_child_tcb((long)proc_h), INV_TCB_WATCH, w, 1) != 0) { ok = 0; why = "watch"; }
 
-    /* Wrong types, both slots.  A-22: the handler is an ENDPOINT, so a
+    /* Wrong types, both slots.  The handler is an ENDPOINT, so a
      * notification in that slot is WRONG_TYPE — it used to be the only thing
      * accepted there. */
     if (ok && it_invoke(it_child_tcb((long)proc_h), INV_TCB_SET_FAULT_HANDLER, n1, 0, 0)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "notif wrong-type"; }
-    /* Stage 7 Step 12: the first argument names the THREAD, so the wrong-type
+    /* The first argument names the THREAD, so the wrong-type
      * probe on that half passes a notification where a TCB belongs.  The TCB
      * family answers WRONG_TYPE there too — one is the object the syscall is
      * invoked ON, the other an object it is handed, and both are checked. */
@@ -1661,7 +1661,7 @@ void test_t141(void) {
     if (ok && f1[IT_S5_CLEAN]   != f0[IT_S5_CLEAN] + 1u)   { ok = 0; why = "cleanup count"; }
     if (ok && t1 != t0)                    { ok = 0; why = "task live drift"; }
     if (ok && e1[IT_SI_LIVE]  != e0[IT_SI_LIVE])  { ok = 0; why = "handle leak"; }
-    /* Ledger A-22: a fault issues EXACTLY ONE reply capability — the
+    /* A fault issues EXACTLY ONE reply capability — the
      * authority to resume the thread, and nothing else.  This used to assert
      * the counter did not move at all, because a fault issued no capability
      * and answering one was a syscall anybody holding the TCB could make. */
@@ -1785,7 +1785,7 @@ void test_t143(void) {
     if (ok) it_pass("T143"); else it_fail("T143", why);
 }
 
-/* ── T144: fault resume semantics (A-22) ────────────────────────────────────
+/* ── T144: fault resume semantics ────────────────────────────────────
  * Resolution is exact, authorized, and one-shot — and every one of those is
  * now a property of the REPLY CAPABILITY rather than of a syscall's argument
  * checking:
@@ -1816,7 +1816,7 @@ void test_t144(void) {
     long pr_ro = it_cs_reduce((long)proc_h, RIGHT_READ);
     iris_cptr_t pr_ro_h = (pr_ro >= 0) ? (iris_cptr_t)pr_ro : IRIS_CPTR_NULL;
     if (ok && pr_ro < 0) { ok = 0; why = "ro dup"; }
-    /* Stage 7 Step 7: the authority is the TCB capability, so the denial test
+    /* The authority is the TCB capability, so the denial test
      * is a rights-reduced TCB rather than a rights-reduced process cap —
      * RIGHT_WRITE on a thread is what decides whether it runs again. */
     {
@@ -1925,7 +1925,7 @@ void test_t145(void) {
     if (ok && it_kill((long)proc_h) != 0) { ok = 0; why = "process kill"; }
     if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit b"; }
     /*
-     * Ledger A-22: what teardown clears is the ANSWER, not the supervisor's
+     * What teardown clears is the ANSWER, not the supervisor's
      * copy of the message.
      *
      * The record used to live in the kernel and be read back on demand, so
@@ -1987,7 +1987,7 @@ void test_t146(void) {
 
     /* Late handler response: clean failures, nothing stale.
      *
-     * A-22: answering a thread that is gone is NOT_FOUND — the reply object is
+     * Answering a thread that is gone is NOT_FOUND — the reply object is
      * still a perfectly good capability, it simply has no caller bound any
      * more.  DROPPING it late succeeds and does nothing, which is the correct
      * outcome and used to be an error: a handler giving up on a fault that has
@@ -2005,7 +2005,7 @@ void test_t146(void) {
     if (ok && (!it_sched_ext(e1) || !it_sched_ext4(v1) || !it_sched_ext5(f1) ||
                !it_task_live(&t1))) { ok = 0; why = "ext final"; }
     if (ok && f1[IT_S5_DELIVER] != f0[IT_S5_DELIVER] + 1u) { ok = 0; why = "delivery count"; }
-    /* A-22: a thread destroyed with a fault outstanding IS a kill resolution
+    /* A thread destroyed with a fault outstanding IS a kill resolution
      * — the fault ended, and it ended by the thread ceasing to exist.  It used
      * to move only when a handler said action=1, and teardown clearing the
      * record was counted as a cleanup and nothing else, so "the fault was
@@ -2015,7 +2015,7 @@ void test_t146(void) {
     if (ok && f1[IT_S5_CLEAN]   != f0[IT_S5_CLEAN] + 1u)   { ok = 0; why = "cleanup count"; }
     if (ok && t1 != t0)                  { ok = 0; why = "task live drift"; }
     if (ok && e1[IT_SI_LIVE]  != e0[IT_SI_LIVE])  { ok = 0; why = "handle leak"; }
-    /* Ledger A-22: a fault issues EXACTLY ONE reply capability — the
+    /* A fault issues EXACTLY ONE reply capability — the
      * authority to resume the thread, and nothing else.  This used to assert
      * the counter did not move at all, because a fault issued no capability
      * and answering one was a syscall anybody holding the TCB could make. */
@@ -2088,7 +2088,7 @@ void test_t147(void) {
             }
         }
         if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit"; }
-        /* A-22: whatever ended the fault — a reply, a refusal, or the thread
+        /* Whatever ended the fault — a reply, a refusal, or the thread
          * being destroyed under it — nothing can be answered for it now.  One
          * assertion covers all three because they all end the same way: the
          * reply capability has no caller. */
@@ -2132,7 +2132,7 @@ void test_t147(void) {
                !it_sched_ext5(f1) || !it_task_live(&t1))) { ok = 0; why = "ext final"; }
     if (ok && t1 != t0)                    { ok = 0; why = "task live drift"; }
     if (ok && e1[IT_SI_LIVE]   != e0[IT_SI_LIVE])   { ok = 0; why = "handle leak"; }
-    /* A-22: every fault this churn produced issued exactly one reply
+    /* Every fault this churn produced issued exactly one reply
      * capability, so the counter moves by at LEAST the number of rounds — a
      * floor rather than a fixed number, because the mix is seeded. */
     if (ok && e1[IT_SI_REPLY]  < e0[IT_SI_REPLY] + T147_ROUNDS) { ok = 0; why = "kreply drift"; }
@@ -2256,14 +2256,14 @@ void test_t148(void) {
         37, 38, 41, 42, 43, 44, 46, 59, 63, 72, 78, 79, 80, 90,
         /* Stage 4 closeout: the handle namespace's own surface. */
         15, 22, 52, 53, 81, 87, 89, 95,
-        /* Stage 5 Step 2: 45 = SYS_BOOTCAP_RESTRICT.  Narrowing a boot
+        /* 45 = SYS_BOOTCAP_RESTRICT.  Narrowing a boot
          * capability by cloning a weaker copy of it has no meaning once each
          * capability carries exactly one authority.
-         * Stage 5 Step 4: 48 = SYS_THREAD_CREATE.  A thread carved from the
+         * 48 = SYS_THREAD_CREATE.  A thread carved from the
          * kernel's static pool, authorised by nothing and identified by a
          * global id, is replaced by a TCB retyped from an Untyped and
          * configured with CSpace/VSpace capabilities.
-         * Stage 7: 58 = SYS_THREAD_START, the LAST pool-born execution path —
+         * 58 = SYS_THREAD_START, the LAST pool-born execution path —
          * a spawned process's first thread.  It survived Step 4 only because
          * a spawner could not name its child's CSpace and VSpace; Stage 6-pure
          * made it retype both, so the child's first thread is composed the
@@ -2287,37 +2287,37 @@ void test_t148(void) {
     /* High/unassigned range 114..400 (111 = SYS_UNTYPED_RETYPE2, 112 =
      * SYS_UNTYPED_QUERY, Phase S2's 113 = SYS_SC_BIND are live; 107..110 remain
      * live from Fases 25/26/29). */
-    /* Phase S3: 114-116 are SYS_CSPACE_MINT/REVOKE/MINT_INTO.  Phase S4/Stage 4:
+    /* 114-116 are SYS_CSPACE_MINT/REVOKE/MINT_INTO.  Phase S4/Stage 4:
      * 117-118 are SYS_CAP_IDENTIFY/SYS_CAP_SAME_OBJECT — the CSpace-native
      * introspection that replaces SYS_HANDLE_TYPE/SAME_OBJECT.  Stage 5
      * Step 4: 119-121 are SYS_CSPACE_SELF / SYS_TCB_CONFIGURE /
      * SYS_TCB_WRITE_REGS — execution for a TCB retyped from an Untyped.
-     * Stage 6-pure Step 1: 122 is SYS_VSPACE_MAP_TABLE, which installs a page
+     * 122 is SYS_VSPACE_MAP_TABLE, which installs a page
      * table the holder retyped.  Stage 7 Steps 8/10: 123-125 are
      * SYS_TCB_FAULT_INFO, SYS_TCB_WATCH and SYS_TCB_EXIT_CODE — a fault read
      * off the thread that took it, and a death observed on the thread that
-     * dies.  Stage 7 Step 12: 126 is SYS_TCB_SET_FAULT_HANDLER — faults armed
-     * on the execution that takes them.  Stage 8-cap: 127 is
+     * dies.  126 is SYS_TCB_SET_FAULT_HANDLER — faults armed
+     * on the execution that takes them.  127 is
      * SYS_CSPACE_SET_GUARD, which installs a guard on a CNode capability
-     * (ledger D-2).  Stage 8-mcs: 128 is SYS_TCB_SET_TIMEOUT_HANDLER — a
+     *.  128 is SYS_TCB_SET_TIMEOUT_HANDLER — a
      * thread's budget exhaustion delivered as a fault to a temporal
-     * supervisor.  Stage 8-mcs: 129 is SYS_REPLY_RECV — seL4's ReplyRecv,
+     * supervisor.  129 is SYS_REPLY_RECV — seL4's ReplyRecv,
      * which a passive server needs so it never crosses the gap between giving
-     * its donated time back and blocking again.  Stage 8-cap: 130 is
+     * its donated time back and blocking again.  130 is
      * SYS_TCB_SET_IPC_BUFFER — a thread's bulk-payload buffer becomes a frame
-     * it owns instead of 256 bytes inside its TCB (ledger D-4).  Stage 5: 131
+     * it owns instead of 256 bytes inside its TCB.  131
      * is SYS_IOPORT_CONTROL_NARROW — the kernel's hardcoded port whitelist
      * becomes a range carried ON the authority, so who may claim which ports
      * is something a supervisor decides rather than something the kernel
-     * asserts for everyone.  Stage 6: 132 is
+     * asserts for everyone.  132 is
      * SYS_UNTYPED_SET_DEVICE_BUDGET — a DEVICE untyped cannot hold the headers
      * of objects carved from it (MMIO is not storage), so the holder names the
-     * RAM that pays for them (ledger D-9).  The first UNASSIGNED number moves
-     * Stage 6: 133 is SYS_FRAMEBUFFER_INFO — the geometry alone, separated
+     * RAM that pays for them.  The first UNASSIGNED number moves
+     * 133 is SYS_FRAMEBUFFER_INFO — the geometry alone, separated
      * from the VMO its predecessor fabricated in the same call.  Stage 6/D-5:
      * 134 is SYS_INITRD_FRAME — a boot image as a FRAME rather than a KVMO,
      * which is how the loader and vfs stopped speaking a second memory ABI to
-     * read a file the kernel already had.  Ledger A-21: 135 is
+     * read a file the kernel already had.  135 is
      * SYS_ASID_POOL_ASSIGN — an address space gets its hardware identifier
      * from a POOL somebody holds, so building one and making one RUNNABLE
      * became two grants instead of a kernel-side bitmap nobody could name.

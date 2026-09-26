@@ -2,7 +2,7 @@
 /*
  * pager/main.c — the IRIS user pager service.
  *
- * Phase 27: a supervised userland service that resolves faults from raw VMO
+ * A supervised userland service that resolves faults from raw VMO
  * grants (PGR_OP_MAP_RESUME).  Phase 28 Bloque B: a complete file-backed memory
  * subsystem layered on top — backing identity + generation, validated file
  * regions, a bounded RO page cache, private-writable pages, EOF/zero-fill, and
@@ -10,7 +10,7 @@
  * kernel primitives (SYS_VMO_MAP_PAGE, SYS_PROCESS_VSPACE, fault generations,
  * seq-checked resume) plus the VFS.  No new syscall.
  *
- * Phase 28.1 — file grants + multi-target:
+ * File grants + multi-target:
  *   - File bytes come EXCLUSIVELY through VFS file grants
  *     (VFS_EP_OP_GRANT_READ_AT over the badged SESSION cap in slot 4).  The
  *     pager never sends a pathname; the VFS validates every access against
@@ -49,7 +49,7 @@
 static inline long pg_sys1(long nr, long a0) {
     return iris_syscall4((long)nr, (long)a0, (long)0L, (long)0L, (long)0);
 }
-/* Stage 6-pure Step 2: the pager maps on behalf of others, so it owes paging
+/* The pager maps on behalf of others, so it owes paging
  * levels for address spaces that are not its own.  They come from
  * IRIS_CPTR_OWN_UNTYPED — the budget its own address space was built from
  * — because the pager is the one holding a budget at the moment of the fault.
@@ -58,7 +58,7 @@ static inline long pg_sys1(long nr, long a0) {
  * issues. */
 #define PG_SLOT_PT 62u
 static long pg_self_vs_now(void);
-/* Ledger A-32: a label, not a syscall number. */
+/* A label, not a syscall number. */
 static inline long pg_invoke(long c, unsigned long label, long a1, long a2, long a3) {
     long r = iris_invoke(c, label, a1, a2, a3);
     if (r == (long)IRIS_ERR_MISSING_TABLE)
@@ -186,7 +186,7 @@ static long pg_read_file(uint32_t grant_idx, uint64_t file_off,
 
 
 /*
- * The frame behind one page slot, retyped on first use (ledger D-5).
+ * The frame behind one page slot, retyped on first use.
  *
  * A VMO allocated its pages when the kernel felt like it; a pager allocates
  * them when it decides to, out of the budget it holds.  Retyping into a slot
@@ -257,7 +257,7 @@ static uint32_t pg_cache_entries(void) {
 
 /* ── the fault endpoint: receive, sort by badge, keep the reply ─────────────
  *
- * Ledger A-22: every target's faults arrive as CALLS on the one endpoint at
+ * Every target's faults arrive as CALLS on the one endpoint at
  * PGR_SLOT_FAULT_EP, on a copy of it BADGED with the target index, so the
  * badge on the message says whose fault it is.  Serving one means holding its
  * REPLY capability until the supervisor says what to do, and a reply object
@@ -362,7 +362,7 @@ static long pg_resolve_region(uint32_t tidx) {
     long wr = pg_wait_fault(tidx);
     if (wr != 0) return wr;
 
-    /* Ledger A-22: the record ARRIVED with the fault — pg_wait_fault kept it.
+    /* The record ARRIVED with the fault — pg_wait_fault kept it.
      * The pager holds no capability to the faulting thread at all now; what it
      * holds is the reply that resumes it. */
     const uint8_t *fb = g_fault_rec[tidx];
@@ -460,7 +460,7 @@ static void pg_region_release(struct pg_region *rg) {
 static long pg_register_backing(const struct pgr_backing_req *rq) {
     if (rq->backing_idx >= PGR_MAX_BACKINGS) return -(long)PGR_ERR_BADOP;
     if (rq->grant_idx >= VFS_GRANTS_PER_SESSION) return -(long)PGR_ERR_RANGE;
-    /* Phase 28.1: the supervisor-declared identity must MATCH the VFS-issued
+    /* The supervisor-declared identity must MATCH the VFS-issued
      * one for this grant — the pager verifies before trusting, so a wrong or
      * dead grant can never be silently bound to a backing (A2/A3). */
     {
@@ -535,7 +535,7 @@ static long pg_unregister_region(uint32_t ridx) {
 /* Local revoke hygiene: bump the local generation copy so cached pages of the
  * old generation are unreachable for new faults; regions still bound to the
  * old generation now fail STALE_GEN; existing mappings survive (kernel VSpace
- * contract).  Phase 28.1: this is BOOKKEEPING, not the authority boundary —
+ * contract).  This is BOOKKEEPING, not the authority boundary —
  * the VFS enforces revocation on its own table (GRANT_REVOKE bumps the export
  * generation), so a pager that skips this step still cannot read the revoked
  * backing: every GRANT_READ_AT fails CLOSED at the VFS. */
@@ -555,7 +555,7 @@ static long pg_revoke_backing(uint32_t bidx) {
     return 0;
 }
 
-/* Phase 28.1: target death/replacement cleanup — release every region of the
+/* Target death/replacement cleanup — release every region of the
  * target and clear its pending fault bit, so a dead target leaves no ghost
  * fault record or accumulator bit behind (A22/A23/A24). */
 static long pg_target_reset(uint32_t tidx) {
@@ -601,7 +601,7 @@ static uint32_t pg_report_slots(void) {
     return mask;
 }
 
-/* Phase 27 raw-VMO resolution (still used by T201–T210/T215).  Phase 28.1: the
+/* Phase 27 raw-VMO resolution (still used by T201–T210/T215).  The
  * fault wait goes through the same shared-notification accumulator. */
 static long pg_serve_raw(uint32_t op, uint32_t tidx, uint32_t vidx, uint32_t flags,
                          uint64_t offset, uint64_t expect_cr2) {
@@ -648,7 +648,7 @@ static long pg_serve_raw(uint32_t op, uint32_t tidx, uint32_t vidx, uint32_t fla
 void pager_main(iris_cptr_t bootstrap_ch_h);
 void pager_main(iris_cptr_t bootstrap_ch_h) {
     (void)bootstrap_ch_h;
-    /* Stage 4: publish our own VSpace into a CSpace slot instead of taking a
+    /* Publish our own VSpace into a CSpace slot instead of taking a
      * handle for it.  The manifest oracle reports slot 15 from here on — the
      * pager's authority is now fully described by its CSpace, which is the
      * property the oracle exists to prove. */
@@ -657,7 +657,7 @@ void pager_main(iris_cptr_t bootstrap_ch_h) {
     g_self_vs = (pg_invoke2((long)IRIS_CPTR_OWN_VSPACE, INV_CSPACE_MINT, (long)((uint64_t)PGR_SLOT_SELF_VS << 32), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) == 0)
                 ? (long)PGR_SLOT_SELF_VS : -1;
 
-    /* D-4: a page the pager owns, registered as its IPC buffer.  Best-effort
+    /* A page the pager owns, registered as its IPC buffer.  Best-effort
      * — a failure leaves the kernel staging path, which still works. */
     {
         void *b = iris_ipc_buffer_init(PGR_SLOT_IPCBUF_FRAME,
@@ -727,7 +727,7 @@ void pager_main(iris_cptr_t bootstrap_ch_h) {
                 for (uint32_t i = 0; i < (uint32_t)sizeof(g_diag); i++) g_pg_buf[i] = ((uint8_t *)&g_diag)[i];
                 reply.buf_len  = (uint32_t)sizeof(g_diag);
             }
-            /* Phase S1: reply_h is our reusable reply-object CPtr — no close. */
+            /* Reply_h is our reusable reply-object CPtr — no close. */
             (void)iris_msg_reply((long)reply_h, &reply);
         }
         if (shutdown) { pg_sys1(SYS_EXIT, 0); for (;;) {} }

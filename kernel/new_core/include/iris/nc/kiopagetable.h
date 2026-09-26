@@ -3,7 +3,7 @@
 #define IRIS_NC_KIOPAGETABLE_H
 
 /*
- * kiopagetable.h — one level of a device's translation tables (Stage 10-dma).
+ * kiopagetable.h — one level of a device's translation tables.
  *
  * The same object as `KPageTable` one address space over: 4 KiB of storage
  * that IS the table, plus the record of where it is installed.  It is a

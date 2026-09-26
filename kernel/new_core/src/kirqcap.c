@@ -23,7 +23,7 @@ static const struct KObjectOps kirqcap_ops = {
 };
 
 /*
- * Stage 6 Step 6 — a device capability is a kernel object, so it is charged.
+ * A device capability is a kernel object, so it is charged.
  *
  * Claiming an interrupt line or a port range fabricates an object the kernel
  * used to pay for; the claimer names the Untyped instead.  seL4 does not

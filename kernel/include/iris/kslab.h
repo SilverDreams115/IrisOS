@@ -28,7 +28,7 @@ void kslab_seal(void);
 int  kslab_is_sealed(void);
 void  kslab_free (void *ptr, uint32_t size);
 
-/* Phase 29 — capacity-contract observability (see
+/* Capacity-contract observability (see
  * docs/architecture/kernel-capacity-limits.md).  used == bump high-water (the
  * bump pointer never retreats; frees are reused via per-class free-lists);
  * fail counts allocations that hit the arena ceiling. */

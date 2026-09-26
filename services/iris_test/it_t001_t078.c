@@ -13,7 +13,7 @@
 
 
 #include "../common/iris_msg.h"
-/* ── T001: the three ambient answers are RETIRED (A-27) ────────────────────
+/* ── T001: the three ambient answers are RETIRED ────────────────────
  *
  * `SYS_GETPID` handed a thread its own task id and `SYS_THREAD_EXIT` ended it
  * without recording why.  Neither was authority — no number selected an object
@@ -39,7 +39,7 @@ void test_t001(void) {
     if (ok) it_pass("T001"); else it_fail("T001", why);
 }
 
-/* ── T002: a granted clock can be ASKED (A-27) ─────────────────────────────
+/* ── T002: a granted clock can be ASKED ─────────────────────────────
  *
  * `SYS_CLOCK_GET` stays, because it cannot be gated (see T001).  What the timer
  * service adds is that a client which was given a clock can ask ITS OWNER
@@ -157,7 +157,7 @@ void test_t010(void) {
         it_fail("T010", "expected TIMED_OUT");
 }
 
-/* ── T011 / T012 RETIRED (Stage 4) ────────────────────────────────────────
+/* ── T011 / T012 RETIRED ────────────────────────────────────────
  * Their SUBJECT was the handle namespace: T011 asserted SYS_HANDLE_TYPE on an
  * endpoint HANDLE, T012 that two HANDLES name one object.  Both questions are
  * real and both are asked of CSpace now — T292 covers the type of a slot for
@@ -167,7 +167,7 @@ void test_t010(void) {
  * test whose subject dies with the mechanism. */
 
 /* ── T013: Rights enforcement on an endpoint (no WRITE → EP_SEND fails) ──── */
-/* Phase 13/Track I: rewritten from KChannel to KEndpoint — EP_SEND requires
+/* Rewritten from KChannel to KEndpoint — EP_SEND requires
  * RIGHT_WRITE, so a READ-only cap is rejected with ACCESS_DENIED (same
  * rights-enforcement guarantee, no SYS_CHAN). */
 void test_t013(void) {
@@ -571,7 +571,7 @@ static uint8_t      g_t022_stack[8192];
 static void t022_server(void) {
     struct iris_msg rmsg;
     iris_msg_zero(&rmsg);
-    /* D-4/A-33: the payload lands in this thread's OWN IPC buffer, and the
+    /* The payload lands in this thread's OWN IPC buffer, and the
      * message says how MANY bytes rather than where they are.  There is
      * nowhere else they could be: a thread sends from the page it registered
      * or it does not send a payload at all. */
@@ -583,7 +583,7 @@ static void t022_server(void) {
         for (;;) {}
     }
 
-    /* A-33: THIS thread's buffer, not the one that called us.  Each end
+    /* THIS thread's buffer, not the one that called us.  Each end
      * marshals in the page it registered; the kernel copied the request into
      * ours and will copy our reply out of it. */
     volatile uint8_t *b = (volatile uint8_t *)(uintptr_t)g_it_thread_buf;
@@ -692,7 +692,7 @@ static void t024_client(void) {
     struct iris_msg msg;
     iris_msg_zero(&msg);
     msg.label = 0x2424ULL;
-    /* Stage 4: the client declares where a reply-transferred cap should land.
+    /* The client declares where a reply-transferred cap should land.
      * Without a declaration the reply arrives with no capability at all —
      * handle materialisation is retired. */
     it_slot_delete((uint32_t)T024_GOT_SLOT);
@@ -741,7 +741,7 @@ void test_t024(void) {
     long rr = -1;
     long notif_raw = it_notify_create_slot();
     if (notif_raw >= 0) {
-        /* Phase S4 (Step 2): the reply's transfer source is a CSpace slot. */
+        /* The reply's transfer source is a CSpace slot. */
         long src = it_xfer_dup(notif_raw, RIGHT_WRITE | RIGHT_WAIT);
         if (src >= 0) {
             struct iris_msg reply;
@@ -830,7 +830,7 @@ void test_t025(void) {
     }
     iris_cptr_t reply_h = (iris_cptr_t)msg.got_cap;
 
-    /* Phase S4 (Step 2): a SOURCE SLOT without RIGHT_TRANSFER → staging must
+    /* A SOURCE SLOT without RIGHT_TRANSFER → staging must
      * fail with ACCESS_DENIED and leave the slot intact. */
     iris_cptr_t notif_h = IRIS_CPTR_NULL;
     long r1 = -1;
@@ -838,7 +838,7 @@ void test_t025(void) {
     long notif_raw = it_notify_create_slot();
     if (notif_raw >= 0) {
         notif_h = (iris_cptr_t)notif_raw;
-        /* Stage 4: the fixture is a CSpace slot, so the reduced-rights copy is
+        /* The fixture is a CSpace slot, so the reduced-rights copy is
          * a slot-to-slot derive (SYS_CSPACE_MINT).  SYS_CNODE_MINT's source is
          * handle-only and would simply not resolve a CPtr. */
         it_slot_delete(IT_XFER_SLOT_C);
@@ -877,9 +877,9 @@ void test_t025(void) {
         it_fail("T025", "non-transferable reply cap");
 }
 
-/* ── Phase 7.1: EP-based service path (svcmgr discovery + VFS) ───────────── */
+/* ── EP-based service path (svcmgr discovery + VFS) ───────────── */
 
-/* Phase 8: the discovery endpoint is the well-known CPtr slot (kind 0x20
+/* The discovery endpoint is the well-known CPtr slot (kind 0x20
  * retired); it is a CNode slot index, NOT a handle — never close it. */
 iris_cptr_t g_svcmgr_ep_h = (iris_cptr_t)IRIS_CPTR_SVCMGR_EP;
 iris_cptr_t g_vfs_ep_h    = IRIS_CPTR_NULL;  /* from T026 lookup   */
@@ -888,7 +888,7 @@ static iris_cptr_t g_con_ep_h    = IRIS_CPTR_NULL;  /* from T036 lookup   */
 
 /* EP_CALL buffer reuse: request payload AND reply bulk destination. */
 /*
- * The main test thread's bulk-payload buffer (ledger D-4).
+ * The main test thread's bulk-payload buffer.
  *
  * A pointer, not an array, because it moves: it starts at the static fallback
  * and becomes the thread's REGISTERED IPC buffer at suite start.  Every one of
@@ -1142,7 +1142,7 @@ void test_t031(void) {
     }
 }
 
-/* ── T032: legacy "vfs" KChannel name must no longer resolve (Phase 7.5) ─── */
+/* ── T032: legacy "vfs" KChannel name must no longer resolve ─── */
 
 /*
  * vfs is endpoint_only: svcmgr never creates the legacy service/reply
@@ -1175,7 +1175,7 @@ void test_t032(void) {
     }
 }
 
-/* ── T033: VFS EP STATUS (Phase 7.5) ─────────────────────────────────────── */
+/* ── T033: VFS EP STATUS ─────────────────────────────────────── */
 
 void test_t033(void) {
     if (g_vfs_ep_h == IRIS_CPTR_NULL) {
@@ -1353,7 +1353,7 @@ void test_t038(void) {
         it_fail("T038", "console ep semantics");
 }
 
-/* ── T039: CPtr-first svcmgr discovery (Phase 8) ─────────────────────────── */
+/* ── T039: CPtr-first svcmgr discovery ─────────────────────────── */
 
 /*
  * init minted the svcmgr discovery endpoint into our root CNode at
@@ -1379,7 +1379,7 @@ void test_t039(void) {
         it_fail("T039", "cptr lookup");
 }
 
-/* ── T040: CPtr failure semantics (Phase 8) ──────────────────────────────── */
+/* ── T040: CPtr failure semantics ──────────────────────────────── */
 
 /*
  * slot 30 (IRIS_CPTR_TEST_FIX_A) = console KChannel cap (wrong type),
@@ -1416,7 +1416,7 @@ void test_t040(void) {
         it_fail("T040", "cptr failure semantics");
 }
 
-/* ── T041: well-known CPtr slots resolve with the right type (Phase 8) ───── */
+/* ── T041: well-known CPtr slots resolve with the right type ───── */
 
 /*
  * SYS_CSPACE_RESOLVE materializes a slot into a handle; slots 1..4 must all
@@ -1441,7 +1441,7 @@ void test_t041(void) {
         it_fail("T041", "well-known slot resolve");
 }
 
-/* ── T042: VFS READ_AT directly via IRIS_CPTR_VFS_EP (Phase 8) ───────────── */
+/* ── T042: VFS READ_AT directly via IRIS_CPTR_VFS_EP ───────────── */
 
 void test_t042(void) {
     static const char expect[] = "Hello from IrisOS VFS!\n";
@@ -1491,7 +1491,7 @@ void test_t043(void) {
         it_fail("T043", "console via cptr");
 }
 
-/* ── T044: kbd PING via IRIS_CPTR_KBD_EP (Phase 8) ───────────────────────── */
+/* ── T044: kbd PING via IRIS_CPTR_KBD_EP ───────────────────────── */
 
 void test_t044(void) {
     struct iris_msg msg;
@@ -1521,7 +1521,7 @@ void test_t045(void) {
         it_fail("T045", "rights reduction on client slot");
 }
 
-/* ── T046 RETIRED (Stage 4) ───────────────────────────────────────────────
+/* ── T046 RETIRED ───────────────────────────────────────────────
  * It asserted that a name lookup still yields a real HANDLE alongside the CPtr
  * slots — the interop guarantee for clients that had not migrated.  There are
  * none, and handle materialisation on delivery is retired.
@@ -1534,7 +1534,7 @@ void test_t045(void) {
  * that no longer meant anything.  T092 asserts the guarantee that replaced it:
  * a client that declares no slot gets the reply WITHOUT the capability. */
 
-/* ── Phase 9: badges & sender identity (T047–T053) ───────────────────────── */
+/* ── Badges & sender identity (T047–T053) ───────────────────────── */
 
 /* PING a slot and return the badge the server says it observed (words[1]);
  * stores -1 on transport/protocol failure. */
@@ -1612,7 +1612,7 @@ void test_t052(void) {
     iris_msg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     msg.buf_len  = len;
-    /* Stage 4: a reply that carries a capability needs somewhere to put it —
+    /* A reply that carries a capability needs somewhere to put it —
      * handle materialisation is retired, so an undeclared receive gets the
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
@@ -1658,7 +1658,7 @@ void test_t053(void) {
         it_fail("T053", "distinct badges per cap");
 }
 
-/* ── Phase 10: service lifecycle, death/relookup & badge policy (T054–T062) ─ */
+/* ── Service lifecycle, death/relookup & badge policy (T054–T062) ─ */
 
 /* svcmgr STATUS oracle: name → {alive, generation}. Returns 0 on OK. */
 long it_status(const char *name, uint32_t *alive, uint32_t *gen) {
@@ -1667,7 +1667,7 @@ long it_status(const char *name, uint32_t *alive, uint32_t *gen) {
     iris_msg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_STATUS;
     msg.buf_len  = len;
-    /* Stage 4: a reply that carries a capability needs somewhere to put it —
+    /* A reply that carries a capability needs somewhere to put it —
      * handle materialisation is retired, so an undeclared receive gets the
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
@@ -1683,19 +1683,19 @@ long it_status(const char *name, uint32_t *alive, uint32_t *gen) {
 /* Generation cached at the pre-restart lookup (T056), checked stale in T059. */
 static uint32_t g_vfs_gen0 = 0;
 
-/* Phase 11: a dynamic test service registered by cap-transfer (T054), reused by
+/* A dynamic test service registered by cap-transfer (T054), reused by
  * the lookup/unregister tests T063–T066. */
 static iris_cptr_t g_ltst_ep = (iris_cptr_t)0;   /* IRIS_CPTR_NULL */
 static uint32_t    g_ltst_id = 0;
 
 /* Register endpoint `ep` under `name` via EP_CALL cap-transfer (attached_cap).
- * The dup is a give-away, released once the call lands (A-29); returns the
+ * The dup is a give-away, released once the call lands; returns the
  * dynamic id, or -(error code). */
 long it_register_ep(const char *name, iris_cptr_t ep) {
     /* The master svcmgr keeps must carry DUPLICATE so it can hand each client a
      * fresh WRITE cap on lookup (+TRANSFER so the cap is deliverable to it). */
     iris_rights_t mr = (iris_rights_t)(RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-    /* Phase S4 (Step 2): the EP_CALL transfer source is a CSpace slot. */
+    /* The EP_CALL transfer source is a CSpace slot. */
     long d = it_xfer_dup((long)ep, (uint32_t)mr);
     if (d < 0) return d;
     uint32_t len = it_stage_path(name);
@@ -1741,7 +1741,7 @@ void test_t055(void) {
     iris_msg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     msg.buf_len  = len;
-    /* Stage 4: a reply that carries a capability needs somewhere to put it —
+    /* A reply that carries a capability needs somewhere to put it —
      * handle materialisation is retired, so an undeclared receive gets the
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
@@ -1810,7 +1810,7 @@ void test_t057(void) {
 }
 
 /* T058: notification close-while-wait — covered by the dedicated host unit
- * test (tests/kernel/test_knotification.c, Phase 10).  This runtime slot
+ * test (tests/kernel/test_knotification.c).  This runtime slot
  * confirms the kbd IRQ-notification WAIT slot is still functional after the
  * lifecycle changes (a non-blocking poll must not fault). */
 void test_t058(void) {
@@ -1843,7 +1843,7 @@ void test_t060(void) {
     iris_msg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     msg.buf_len  = len;
-    /* Stage 4: a reply that carries a capability needs somewhere to put it —
+    /* A reply that carries a capability needs somewhere to put it —
      * handle materialisation is retired, so an undeclared receive gets the
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
@@ -1897,7 +1897,7 @@ void test_t062(void) {
         it_fail("T062", "badge policy regressed");
 }
 
-/* ── Phase 11: endpoint cap-transfer & cap-backed REGISTER (T063–T066) ────── */
+/* ── Endpoint cap-transfer & cap-backed REGISTER (T063–T066) ────── */
 
 /* T063: LOOKUP of the cap-registered name returns a REAL, usable endpoint cap —
  * SYS_HANDLE_SAME_OBJECT proves it is the very endpoint object iris_test
@@ -1909,7 +1909,7 @@ void test_t063(void) {
     iris_msg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     msg.buf_len  = len;
-    /* Stage 4: a reply that carries a capability needs somewhere to put it —
+    /* A reply that carries a capability needs somewhere to put it —
      * handle materialisation is retired, so an undeclared receive gets the
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
@@ -1945,7 +1945,7 @@ void test_t064(void) {
     long n = it_notify_create();
     if (n < 0) { it_fail("T064", "notify create"); return; }
     iris_cptr_t notif = (iris_cptr_t)n;
-    /* Phase S4 (Step 2): the EP_CALL transfer source is a CSpace slot. */
+    /* The EP_CALL transfer source is a CSpace slot. */
     long d = it_xfer_dup((long)notif, (uint32_t)RIGHT_WRITE);
     if (d < 0) { it_close(&notif); it_fail("T064", "xfer slot"); return; }
     len = it_stage_path("wrongtype.svc");
@@ -1995,7 +1995,7 @@ void test_t066(void) {
     iris_msg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     msg.buf_len  = len;
-    /* Stage 4: a reply that carries a capability needs somewhere to put it —
+    /* A reply that carries a capability needs somewhere to put it —
      * handle materialisation is retired, so an undeclared receive gets the
      * message without the cap. */
     it_slot_delete((uint32_t)IT_LOOKUP_TMP);
@@ -2007,7 +2007,7 @@ void test_t066(void) {
     if (ok) it_pass("T066"); else it_fail("T066", "lookup after unregister");
 }
 
-/* ── Phase 12: endpoint-first svcmgr — DIAG over EP + no legacy fallback ──── */
+/* ── Endpoint-first svcmgr — DIAG over EP + no legacy fallback ──── */
 
 /* T067: svcmgr DIAG over the endpoint (replaces legacy KChannel SVCMGR_MSG_DIAG
  * as the productive path) returns the expected catalog snapshot. */
@@ -2039,7 +2039,7 @@ void test_t068(void) {
         it_fail("T068", "unknown opcode no-fallback");
 }
 
-/* ── Phase 13: device-cap CPtr resolution (T069) ─────────────────────────── */
+/* ── Device-cap CPtr resolution (T069) ─────────────────────────── */
 
 /* T069: a device/authority cap (the spawn KBootstrapCap) minted into a CPtr
  * slot is invocable BY CPtr — SYS_INITRD_COUNT resolves it through CSpace
@@ -2048,7 +2048,7 @@ void test_t068(void) {
  * fallback.  This is the prerequisite that lets device caps stop travelling
  * over KChannel at bootstrap. */
 void test_t069(void) {
-    /* Stage 5 Step 2: the authority named here is the ioport CONTROL
+    /* The authority named here is the ioport CONTROL
      * capability — one capability, one authority — instead of a second copy of
      * the monolith probed through SYS_INITRD_COUNT.  What the test proves is
      * unchanged and is what its name says: an authority capability is invocable
@@ -2065,7 +2065,7 @@ void test_t069(void) {
         it_fail("T069", "device cap via cptr");
 }
 
-/* ── Phase 13 / Track G: retired SYS_CHAN ABI (T070) ─────────────────────── */
+/* ── Retired SYS_CHAN ABI (T070) ─────────────────────── */
 
 /* T070: the ENTIRE SYS_CHAN_* ABI is retired in Track G — KChannel is no longer
  * a productive IPC mechanism.  Every channel syscall number falls through the
@@ -2191,12 +2191,12 @@ void test_t073(void) {
     if (ep < 0) { it_fail("T073", "ep create"); return; }
     iris_cptr_t ep_h = (iris_cptr_t)ep;
 
-    /* Phase S4 (Step 2): the SOURCE is a CSpace slot.  Three failure shapes,
+    /* The SOURCE is a CSpace slot.  Three failure shapes,
      * each of which must leave the source cap exactly where it was. */
     iris_cptr_t root = T28_OWN_ROOT_CNODE;
 
     /* (a) A source slot WITHOUT RIGHT_TRANSFER → ACCESS_DENIED, slot intact.
-     * Stage 4: the fixture is a slot, so the reduced copy is a slot-to-slot
+     * The fixture is a slot, so the reduced copy is a slot-to-slot
      * derive; SYS_CNODE_MINT's source is handle-only. */
     it_slot_delete(IT_XFER_SLOT_C);
     if (it_invoke2(ep, INV_CSPACE_MINT, (long)((uint64_t)IT_XFER_SLOT_C << 32), (long)RIGHT_READ) != 0) {
@@ -2317,7 +2317,7 @@ void test_t074(void) {
 
 /* Spawn a lifecycle_probe child, minting `cmd_ep_h` into its command slot.
  * Returns 0 and fills *out_proc_h on success, or a negative error. */
-/* Stage 7 Step 9: `cn_leaf` is where the child's ROOT CSpace is kept, so the
+/* `cn_leaf` is where the child's ROOT CSpace is kept, so the
  * caller can go on minting into it — naming the CSpace it holds instead of the
  * process it does not. */
 long lp_spawn_child_cn(uint32_t cn_leaf, iris_cptr_t cmd_ep_h,
@@ -2334,7 +2334,7 @@ long lp_spawn_child_cn(uint32_t cn_leaf, iris_cptr_t cmd_ep_h,
     mints[n].rights = RIGHT_READ | RIGHT_WRITE;
     mints[n].badge  = 0;
     n++;
-    /* Phase S1: the child serves EP_CALLs on its command endpoint, so it needs
+    /* The child serves EP_CALLs on its command endpoint, so it needs
      * an explicit reply object at slot 13 (LP_CPTR_REPLY).  Retyped fresh
      * from the test untyped; the parent drops its handle right after the
      * mint so child death still fires close-wakes-caller. */
@@ -2361,7 +2361,7 @@ long lp_spawn_child_cn(uint32_t cn_leaf, iris_cptr_t cmd_ep_h,
                                it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(*out_proc_h);
     it_close(&reply_h);  /* the child's slot-13 mint is the only reply cap */
-    it_close(&boot_h);   /* Track I: no bootstrap channel (IRIS_CPTR_NULL anyway) */
+    it_close(&boot_h);   /* No bootstrap channel (IRIS_CPTR_NULL anyway) */
     return r;
 }
 

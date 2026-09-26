@@ -160,7 +160,7 @@ void gdt_init(void) {
     gdt_flush((uint64_t)(uintptr_t)&gdtr);
     tss_flush(GDT_TSS_SEL);
 
-    /* SWAPGS ABI (Phase 2):
+    /* SWAPGS ABI:
      *
      * Ring-0 resting state: GS_BASE = &cpu_local[0], KGS_BASE = 0.
      * Ring-3 user state:    GS_BASE = 0 (null),      KGS_BASE = &cpu_local[0].

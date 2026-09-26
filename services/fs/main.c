@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * fs/main.c — a filesystem that survives the power going off (Stage 10).
+ * fs/main.c — a filesystem that survives the power going off.
  *
  * The format and the reason it is this small are in `iris/fs_ep_proto.h`.
  * This file is the implementation: mount the disk the block service numbers

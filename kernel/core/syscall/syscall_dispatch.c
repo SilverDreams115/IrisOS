@@ -36,7 +36,7 @@ extern void syscall_entry(void);
  * uncalled.  The kernel's output path is klog, drained by the console service;
  * a second one that bypasses it is a debugging aid that outlived its session. */
 /*
- * Stage 9-evt Step 2 — the syscall frame, as C sees it.
+ * The syscall frame, as C sees it.
  *
  * syscall_entry pushes this and then calls into C.  Naming the layout HERE,
  * next to the only code that reads it, is what lets the user context be copied
@@ -56,11 +56,11 @@ struct syscall_frame {
     uint64_t user_rip;     /*  48 — rcx, set by the syscall insn    */
     uint64_t user_rflags;  /*  56 — r11, set by the syscall insn    */
     uint64_t user_rsp;     /*  64 — the caller's stack              */
-    uint64_t arg4;         /*  72 — r8  (ledger A-32)               */
-    uint64_t arg5;         /*  80 — r9  (ledger A-33)               */
-    uint64_t arg6;         /*  88 — r15 (ledger A-33)               */
-    uint64_t arg7;         /*  96 — r14 (ledger A-33)               */
-    uint64_t arg8;         /* 104 — r13 (ledger A-33)               */
+    uint64_t arg4;         /*  72 — r8               */
+    uint64_t arg5;         /*  80 — r9               */
+    uint64_t arg6;         /*  88 — r15               */
+    uint64_t arg7;         /*  96 — r14               */
+    uint64_t arg8;         /* 104 — r13               */
     /* Callee-saved, pushed FIRST so the offsets above did not move.
      * r15, r14 and r13 are ABOVE, because they are arguments now: the same
      * three pushes, carrying the user's values on the way in and the message
@@ -86,7 +86,7 @@ void syscall_save_user_ctx(struct syscall_frame *f) {
     t->sc_user_rsp    = f->user_rsp;
     /* Callee-saved too: abandoning the frame throws away the spills that
      * would otherwise have preserved them for the caller. */
-    /* r15 and r14 are message registers now (A-33), so what a parked thread
+    /* r15 and r14 are message registers now, so what a parked thread
      * gets back in them is what its receive delivered — not what it happened
      * to be holding.  They are saved here anyway, because a thread that parked
      * in a call which returns no message must find them unchanged. */
@@ -98,7 +98,7 @@ void syscall_save_user_ctx(struct syscall_frame *f) {
     t->sc_user_regs[5] = f->user_rbp;
 
     /*
-     * A-33: the return message starts out as the arguments.
+     * The return message starts out as the arguments.
      *
      * A call that returns nothing but a status writes none of these, and the
      * caller gets its own inputs back — strictly kinder than the clobber ring
@@ -122,7 +122,7 @@ void syscall_save_user_ctx(struct syscall_frame *f) {
 }
 
 /*
- * Stage 9-evt Step 1 — the restart loop (ledger D-1).
+ * The restart loop.
  *
  * A handler that cannot complete calls syscall_request_restart() and returns.
  * Its continuation is in THREAD state, never in its own locals, so re-entering
@@ -148,7 +148,7 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
                                      uint64_t arg7, uint64_t arg8);
 
 /*
- * A-33 — copy the return message out of the thread and into the frame.
+ * Copy the return message out of the thread and into the frame.
  *
  * Called by syscall_entry between the dispatch and the restore, from a pointer
  * to the frame, so that `struct task`'s field offsets stay out of assembly.
@@ -181,7 +181,7 @@ void syscall_request_restart(struct task *t) {
 }
 
 /*
- * Stage 9-evt — run one syscall to completion, parking as needed.
+ * Run one syscall to completion, parking as needed.
  *
  * Parking ABANDONS this frame and does not come back: `task_park_restart`
  * records the thread's resume point in its TCB, moves the CPU to the CORE's
@@ -277,7 +277,7 @@ __attribute__((noreturn)) void syscall_restart_trampoline(void) {
 }
 
 /*
- * Ledger A-32 — how many calls still came through the numbered door.
+ * How many calls still came through the numbered door.
  *
  * The invocation ABI is adopted one caller at a time, and a caller that was
  * never migrated keeps working: that is what makes the migration safe and also
@@ -323,7 +323,7 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
 
     switch (num) {
     /*
-     * What is left of the numbered table (ledger A-32).
+     * What is left of the numbered table.
      *
      * Three calls, and each is here because it invokes NOTHING.  seL4 keeps
      * `seL4_Yield` as a real syscall for exactly this reason: there is no

@@ -14,13 +14,13 @@ static inline void irismsg_copy64(struct ipc_stage *dst, const struct ipc_stage 
     uint64_t       *d = (uint64_t *)dst;
     d[0]=s[0]; d[1]=s[1]; d[2]=s[2]; d[3]=s[3];
     d[4]=s[4]; d[5]=s[5]; d[6]=s[6]; d[7]=s[7];
-    d[8]=s[8];                     /* Phase 11: sender_badge + attached_cap pair */
+    d[8]=s[8];                     /* Sender_badge + attached_cap pair */
     _Static_assert(sizeof(struct ipc_stage) == 9u * sizeof(uint64_t),
                    "irismsg_copy64 word count");
 }
 
 /*
- * ── A-33: a message is registers ──────────────────────────────────────────
+ * ── A message is registers ──────────────────────────────────────────
  *
  * `ipc_msg_load` fills this thread's staging from the invocation's argument
  * words; `ipc_msg_store` hands the staged message back in its return words.
@@ -81,7 +81,7 @@ void ipc_msg_load(struct task *t) {
 
 extern void serial_write(const char *s);
 /*
- * A-33: `extra` answers "did a capability land in the slot I declared?", which
+ * `extra` answers "did a capability land in the slot I declared?", which
  * is seL4's `extraCaps` and is the only way a receiver can tell.  Which field
  * holds that capability depends on which half of a conversation this is:
  *
@@ -154,7 +154,7 @@ static inline void copy_kbuf(uint8_t *dst, const uint8_t *src, uint32_t n) {
 }
 
 /*
- * ── D-4: the bulk payload, when a thread has an IPC BUFFER of its own ──────
+ * ── The bulk payload, when a thread has an IPC BUFFER of its own ──────
  *
  * Three helpers, shared with syscall_reply.c, that put every bulk-payload site
  * behind one decision: does this thread have a registered frame, or is it
@@ -202,7 +202,7 @@ iris_error_t ipc_stage_out(struct task *t) {
         return IRIS_ERR_INVALID_ARG;
     }
     /*
-     * A-33: there is no `buf_uptr` to check against the buffer any more.
+     * There is no `buf_uptr` to check against the buffer any more.
      *
      * There used to be, and it was the field that decided WHERE the payload
      * came from — which cost a boot's worth of corrupted console output and
@@ -291,7 +291,7 @@ void ipc_transfer_reply(struct task *server, struct task *caller,
     caller->ipc_msg.buf_len  = n;
 }
 
-/* ep_get removed — use cspace_resolve_only_endpoint (Phase 3.2) */
+/* ep_get removed — use cspace_resolve_only_endpoint */
 
 /*
  * A1.9/A1.10 two-phase cap staging — shared by EP_SEND / EP_NB_SEND /
@@ -320,7 +320,7 @@ iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_cptr
                                                uint64_t *out_badge,
                                                struct KCNode **out_src_cn,
                                                uint32_t *out_src_idx) {
-    /* Phase S4 (Step 2): CSpace-only source.  A handle value (>=1024) is not
+    /* CSpace-only source.  A handle value (>=1024) is not
      * a transfer source any more — it fails cleanly, it does NOT fall back
      * (charter §3.7, invariant A6). */
     if (!cspace_only_cptr((uint64_t)src_cptr)) return IRIS_ERR_INVALID_ARG;
@@ -359,7 +359,7 @@ iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_cptr
         return IRIS_ERR_INVALID_ARG;
     }
 
-    /* Phase 9: the transferred cap keeps its badge across the transfer. */
+    /* The transferred cap keeps its badge across the transfer. */
     if (out_badge) *out_badge = badge;
 
     *out_obj     = xo;
@@ -373,7 +373,7 @@ iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_cptr
  * Staging is over — delivered or not — so drop the refs peek took and LEAVE
  * THE SENDER'S SLOT ALONE.
  *
- * Ledger A-29: the delivered path used to delete it.  Sending a capability
+ * The delivered path used to delete it.  Sending a capability
  * over an endpoint was a MOVE, where seL4's is a COPY: the sender keeps what
  * it sent, gated by the Grant right, and the receiver's copy is a derivation
  * CHILD of the sender's slot.
@@ -386,7 +386,7 @@ iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_cptr
  *
  * A sender that means to give a capability away still can, in two steps that
  * are both its own: derive a copy, send it, delete the copy.  That is what the
- * timer client (A-24) does, and it is how the difference was noticed at all.
+ * timer client does, and it is how the difference was noticed at all.
  */
 void syscall_ipc_stage_cap_release(struct KCNode *src_cn) {
     if (!src_cn) return;
@@ -415,7 +415,7 @@ static void ipc_stat_bump(uint32_t *c) {
 }
 
 /*
- * syscall_ipc_deliver_cap_badged — RETIRED (Stage 4).
+ * syscall_ipc_deliver_cap_badged — RETIRED.
  *
  * It installed a transferred capability into the RECEIVER'S HANDLE TABLE when
  * the receiver had declared no receive slot.  That was the last place in the
@@ -451,7 +451,7 @@ static void ipc_stat_bump(uint32_t *c) {
  * slot.  (EP_CALL rejects handle values itself, keeping its historical
  * INVALID_ARG contract for that field.)
  *
- * Stage 4: `declared` is a full CPtr, not a direct index into the root CNode.
+ * `declared` is a full CPtr, not a direct index into the root CNode.
  * A process whose root is full — which iris_test and every spawner reach —
  * could otherwise not receive a capability at all; now it declares a slot in
  * a second-level CNode and the traversal finds it.
@@ -501,7 +501,7 @@ iris_error_t syscall_ipc_recv_slot_declare(struct task *t, uint32_t declared) {
  * Returns the msg discriminator: 0 = no cap (or destroyed on soft failure),
  * a CPtr (handle tag bit clear) = CSpace slot, a handle value = handle.
  * Reply caps never come through here — an EP_CALL's reply capability is the
- * CPtr the RECEIVER passed to EP_RECV, echoed back to it (Phase S1), so it was
+ * CPtr the RECEIVER passed to EP_RECV, echoed back to it, so it was
  * never a handle in the first place.
  */
 uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
@@ -513,14 +513,14 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
     uint32_t slot = receiver->ep_recv_slot;
     if (cspace_value_is_cptr((iris_cptr_t)slot)) {
         receiver->ep_recv_slot = 0;   /* one delivery consumes the declaration */
-        /* Stage 4: the declaration is a CPtr, so the destination is found by
+        /* The declaration is a CPtr, so the destination is found by
          * traversal — it need not be a direct slot of the root CNode. */
         struct KCNode *cn; uint32_t idx;
         iris_error_t e = cspace_resolve_dest_slot(receiver->cspace_root,
                                                   (iris_cptr_t)slot, &cn, &idx);
         if (e == IRIS_OK) {
             /*
-             * Phase S4 (Step 2): install as an MDB CHILD of the sender's
+             * Install as an MDB CHILD of the sender's
              * source slot — real CSpace ancestry, no LEGACY_ROOT.  The TOCTOU
              * slot→handle degradation is gone (charter §3.7): an occupied or
              * raced destination slot fails the delivery instead of silently
@@ -546,7 +546,7 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
              * without the capability, which is the same shape a revoked or
              * occupied destination already had.
              *
-             * A-40: this check is the EARLY one, and it is not the guarantee.
+             * This check is the EARLY one, and it is not the guarantee.
              * It takes `src_cn->lock` and lets it go, so on SMP the slot can
              * still change before the install.  `parent_expect` below repeats
              * it under the `mdb_lock` hold that actually links the parent,
@@ -579,7 +579,7 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
         kobject_release(xo);
         return IRIS_MSG_NO_CAP;
     }
-    /* Stage 4: no declaration means no destination.  The staged reference is
+    /* No declaration means no destination.  The staged reference is
      * dropped and the message is delivered without a capability. */
     kobject_release(xo);
     return IRIS_MSG_NO_CAP;
@@ -610,7 +610,7 @@ static int ep_send_fastpath(struct task *t, struct KEndpoint *ep) {
 
     irq_spinlock_unlock(&ep->lock, fl);
     task_wakeup(receiver);
-    kobject_release(&receiver->base);   /* A-44: the queue's */
+    kobject_release(&receiver->base);   /* The queue's */
     kobject_release(&ep->base);
     return 1;
 }
@@ -642,7 +642,7 @@ static int ep_recv_fastpath(struct task *t, struct KEndpoint *ep) {
 
     irq_spinlock_unlock(&ep->lock, fl);
     task_wakeup(sender);
-    kobject_release(&sender->base);   /* A-44: the queue's */
+    kobject_release(&sender->base);   /* The queue's */
     return 1;
 }
 
@@ -654,13 +654,13 @@ static uint64_t ep_send_complete(struct task *t);
 
 uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* arg1 is the MessageInfo and arg2 the first message register; both are
-     * read through the THREAD by ipc_msg_load (A-33), because a restart
+     * read through the THREAD by ipc_msg_load, because a restart
      * re-enters from the top and has to see the same message it was given. */
     (void)arg1; (void)arg2;
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    /* Stage 9-evt Step 1: a re-execution runs only the completion — the
+    /* A re-execution runs only the completion — the
      * message is delivered or the endpoint closed, and every effect this
      * syscall had is already done. */
     if (t->sc_reentry) return ep_send_complete(t);
@@ -670,10 +670,10 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     iris_error_t err = cspace_resolve_only_endpoint_badged(t->cspace_root, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
     if (err != IRIS_OK) return syscall_err(err);
 
-    /* A-33: the message is in the registers this call arrived in. */
+    /* The message is in the registers this call arrived in. */
     ipc_msg_load(t);
 
-    /* Phase 9: STAMP the sender badge from the invoked capability — whatever
+    /* STAMP the sender badge from the invoked capability — whatever
      * the sender wrote in the field is discarded (anti-spoofing). */
     t->ipc_msg.sender_badge = ep_badge;
 
@@ -682,13 +682,13 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         if (ep_send_fastpath(t, ep))
             return syscall_ok_u64(0);
 
-    /* Ph69/D-4: make the bulk payload readable by the kernel. */
+    /* Make the bulk payload readable by the kernel. */
     if (ipc_stage_out(t) != IRIS_OK) {
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    /* Ph68: validate and stage attached cap before taking the spinlock.
+    /* Validate and stage attached cap before taking the spinlock.
      * A1.10: PEEK only (two-phase, same as EP_NB_SEND since A1.9) — the
      * sender's handle is consumed at a commit point only once a receiver
      * is determined: here for an immediate rendezvous, or by the receiver
@@ -736,7 +736,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         receiver->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
         receiver->ipc_msg_ready           = 1;
 
-        /* Ph69/D-4: hand the payload over.  The receiver is not current, so
+        /* Hand the payload over.  The receiver is not current, so
          * its own address space is unreachable — a registered frame is not
          * (the kernel window is mapped everywhere), which is why this is one
          * call rather than two cases. */
@@ -744,16 +744,16 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         irq_spinlock_unlock(&ep->lock, flags);
 
-        /* Ph68: install cap (outside lock).  A1.5: routed — lands in the
+        /* Install cap (outside lock).  A1.5: routed — lands in the
          * receiver's declared receive-slot (CPtr) or its handle table.
-         * Phase S4 (Step 2): DELIVER FIRST — the MDB parenting requires the
-         * source slot to still be occupied.  A-29: it stays occupied. */
+         * DELIVER FIRST — the MDB parenting requires the
+         * source slot to still be occupied.  It stays occupied. */
         if (xfer_obj) {
             uint32_t new_h = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
                                                             xfer_rights, xfer_badge,
                                                             xfer_src_cn, xfer_src_idx);
             receiver->ipc_msg.attached_handle = new_h;
-            /* A-33: `attached_cap` is uniformly "what landed in the slot the
+            /* `attached_cap` is uniformly "what landed in the slot the
              * receiver declared", so the MessageInfo's extra count means one
              * thing wherever a message came from. */
             receiver->ipc_msg.attached_cap    = new_h;
@@ -763,7 +763,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         /* Wake receiver only after all data is consistent. */
         task_wakeup(receiver);
-        kobject_release(&receiver->base);   /* A-44: the queue's */
+        kobject_release(&receiver->base);   /* The queue's */
         kobject_release(&ep->base);
         return syscall_ok_u64(0);
     }
@@ -786,7 +786,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     else                { ep->queue_head = t; ep->queue_tail = t; }
 
     /*
-     * Ledger A-44 — a wait queue HOLDS what it names.
+     * A wait queue HOLDS what it names.
      *
      * These links are raw task pointers, and the core that later takes one off
      * the queue goes on walking it after `ep->lock` is dropped: it wakes it,
@@ -806,7 +806,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     irq_spinlock_unlock(&ep->lock, flags);
 
     /*
-     * Stage 9-evt Step 1 — park and ask to be RE-EXECUTED (ledger D-1).
+     * Park and ask to be RE-EXECUTED.
      *
      * A queued sender's whole continuation is already thread state: the
      * message, the staged capability and its source slot, the bulk payload,
@@ -832,7 +832,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 static uint64_t ep_send_complete(struct task *t) {
     if (t->sc_held) { kobject_release(t->sc_held); t->sc_held = 0; }
 
-    /* Phase S4 (Step 2): if the endpoint closed under us, kendpoint_obj_close
+    /* If the endpoint closed under us, kendpoint_obj_close
      * left our source-slot refs for us to drop (it could not release them
      * under ep->lock).  Nothing was delivered — the slot itself survives. */
     if (t->ep_cap_src_cn) {
@@ -848,7 +848,7 @@ static uint64_t ep_send_complete(struct task *t) {
 /* ── SYS_EP_RECV ─────────────────────────────────────────────────────── */
 
 /*
- * Phase S1 — explicit reply staging (receiver side).
+ * Explicit reply staging (receiver side).
  *
  * ep_recv_reply_stage: resolve the reply CPtr the receiver passed as arg2
  * (RIGHT_WRITE) and take the object's exclusive staged claim.  The task keeps
@@ -898,7 +898,7 @@ static int ep_bind_call_reply(struct task *receiver, struct task *sender,
     if (kreply_bind_caller(rp, sender) != IRIS_OK) return 0;
 
     /*
-     * Stage 8-mcs — DONATE the caller's scheduling context to a PASSIVE
+     * DONATE the caller's scheduling context to a PASSIVE
      * server.  A server with no SC of its own runs on the requester's time,
      * which is seL4's model: time is an authority a client delegates, not a
      * property the server was born with.  A passive server therefore cannot be
@@ -926,7 +926,7 @@ static int ep_bind_call_reply(struct task *receiver, struct task *sender,
 
 
 /*
- * ── Ledger A-22: a FAULT is a call on an endpoint ──────────────────────────
+ * ── A FAULT is a call on an endpoint ──────────────────────────
  *
  * kendpoint_fault_call — deliver `msg` from the faulting thread `t` to `ep`
  * as if `t` had made a CALL, and leave `t` blocked waiting for the reply.
@@ -1010,7 +1010,7 @@ int kendpoint_fault_call(struct task *t, struct KEndpoint *ep,
             receiver->ipc_msg.attached_handle = reply_attach;
             t->state = TASK_BLOCKED_REPLY;
             task_wakeup(receiver);
-            kobject_release(&receiver->base);   /* A-44: the queue's */
+            kobject_release(&receiver->base);   /* The queue's */
             return 1;
         }
         /* The staged reply object went away between the check and the bind.
@@ -1018,7 +1018,7 @@ int kendpoint_fault_call(struct task *t, struct KEndpoint *ep,
          * unanswerable, which is reported as "no handler" rather than left as
          * a thread blocked on a reply nobody holds. */
         task_wakeup(receiver);
-        kobject_release(&receiver->base);   /* A-44: the queue's */
+        kobject_release(&receiver->base);   /* The queue's */
         t->ep_fault_call = 0u;
         return 0;
     }
@@ -1030,14 +1030,14 @@ int kendpoint_fault_call(struct task *t, struct KEndpoint *ep,
     t->blocking_ep = ep;
     if (ep->queue_tail) { ep->queue_tail->ep_next = t; ep->queue_tail = t; }
     else                { ep->queue_head = t; ep->queue_tail = t; }
-    kobject_retain(&t->base);          /* A-44: queued is held */
+    kobject_retain(&t->base);          /* Queued is held */
     t->state = TASK_BLOCKED_SEND;
     irq_spinlock_unlock(&ep->lock, flags);
     return 1;
 }
 
 /*
- * ── Ledger A-23: a signal reaches a thread blocked on an ENDPOINT ──────────
+ * ── A signal reaches a thread blocked on an ENDPOINT ──────────
  *
  * The thread is in the endpoint's receive queue, so nothing but the endpoint
  * can reach it — which is exactly the deafness a bound notification exists to
@@ -1091,7 +1091,7 @@ int kendpoint_deliver_notification(struct task *t, uint64_t bits) {
 
     irq_spinlock_unlock(&ep->lock, flags);
     task_wakeup(t);
-    kobject_release(&t->base);   /* A-44: the queue's */
+    kobject_release(&t->base);   /* The queue's */
     return 1;
 }
 
@@ -1102,11 +1102,11 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    /* A-33: there is no message pointer to validate.  arg1 is the receive slot
+    /* There is no message pointer to validate.  arg1 is the receive slot
      * and arg2 the reply object; the message itself leaves in registers. */
 
     /*
-     * Stage 9-evt Step 1: a re-execution after the park runs ONLY the
+     * A re-execution after the park runs ONLY the
      * completion.  Re-doing the setup would re-stage a reply object that is
      * already staged (IRIS_ERR_BUSY) and re-declare a receive slot the
      * rendezvous has already consumed — a restartable handler must not repeat
@@ -1121,7 +1121,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (err != IRIS_OK) return syscall_err(err);
 
     /*
-     * A-33: a receive says where it wants a capability put, and that is now an
+     * A receive says where it wants a capability put, and that is now an
      * ARGUMENT rather than a field of a struct the kernel reads out of user
      * memory.  Fail-fast is unchanged and is the reason it happens here: a bad
      * declaration must be refused BEFORE the endpoint is touched, so a queued
@@ -1134,7 +1134,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(err);
     }
 
-    /* Phase S1: stage the explicit reply object named by arg2 (0 = none).
+    /* Stage the explicit reply object named by arg2 (0 = none).
      * Fail-fast: a bad reply CPtr fails BEFORE the endpoint is touched. */
     err = ep_recv_reply_stage(t, arg2);
     if (err != IRIS_OK) {
@@ -1147,12 +1147,12 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         t->ep_recv_slot = 0;   /* no cap on the fastpath — drop the declaration */
         ep_recv_reply_unstage(t);
         kobject_release(&ep->base);
-        ipc_msg_store(t);   /* A-33: the message goes back in registers */
+        ipc_msg_store(t);   /* The message goes back in registers */
         return syscall_ok_u64(0);
     }
 
     /*
-     * Ledger A-23 — a bound notification that is ALREADY signalled.
+     * A bound notification that is ALREADY signalled.
      *
      * The delivery path only reaches a thread that is blocked, so bits set
      * before this receive would sit pending until the next signal — the thread
@@ -1174,7 +1174,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
             t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
             t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
-            ipc_msg_store(t);   /* A-33: the message goes back in registers */
+            ipc_msg_store(t);   /* The message goes back in registers */
             return syscall_ok_u64(0);
         }
     }
@@ -1192,7 +1192,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         /* Rendezvous: a sender is already waiting. */
         struct task *sender = ep->queue_head;
 
-        /* Phase S1: a call-mode sender REQUIRES an explicit reply object.
+        /* A call-mode sender REQUIRES an explicit reply object.
          * Refuse the recv before anything is consumed — the sender stays
          * queued and keeps its staged cap; the receiver is told to supply
          * reply authority (implicit KReply fabrication is retired). */
@@ -1211,11 +1211,11 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP; /* will update after unlock */
         t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
 
-        /* Ph69/D-4: the receiver is in its own CR3, so the staging path may
+        /* The receiver is in its own CR3, so the staging path may
          * write to the buffer it named at EP_RECV. */
         ipc_transfer_bulk(sender, t, 1);
 
-        /* Ph68: take sender's staged cap. */
+        /* Take sender's staged cap. */
         struct KObject *xfer_obj     = sender->ep_cap_obj;
         uint32_t        xfer_rights  = sender->ep_cap_rights;
         uint64_t        xfer_badge   = sender->ep_cap_badge;
@@ -1233,7 +1233,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
          * reply cap takes attached_handle, so the transferred cap is delivered
          * into the separate attached_cap field; EP_SEND keeps attached_handle.
          * A1.5: routed — honours our declared receive-slot (CPtr < 1024).
-         * Phase S4 (Step 2): deliver first — the delivered cap is an MDB child
+         * Deliver first — the delivered cap is an MDB child
          * of the sender's source slot (A-29: which the sender keeps).  Outside
          * ep->lock: installing into a slot can fire object close callbacks
          * that take endpoint locks (cn->lock → ep->lock must not invert). */
@@ -1248,13 +1248,13 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             } else {
                 t->ipc_msg.attached_handle = new_h;
                 t->ipc_msg.attached_cap    = new_h;
-            t->ipc_msg.attached_cap_rights = xfer_rights;   /* A-33: see above */
+            t->ipc_msg.attached_cap_rights = xfer_rights;   /* See above */
             }
             syscall_ipc_stage_cap_release(xfer_src_cn);
         }
         t->ep_recv_slot = 0;   /* declaration is per-recv; never outlives it */
 
-        /* Ph85/Phase S1: if sender used EP_CALL, bind the receiver's staged
+        /* If sender used EP_CALL, bind the receiver's staged
          * explicit reply object and keep the sender blocked.  The kernel no
          * longer fabricates a KReply here.
          *
@@ -1280,14 +1280,14 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         } else {
             task_wakeup(sender);
         }
-        /* A-44: off the queue either way.  A call-mode sender stays blocked,
-         * but it is the REPLY binding that holds it now (A-43). */
-        kobject_release(&sender->base);   /* A-44: the queue's */
+        /* Off the queue either way.  A call-mode sender stays blocked,
+         * but it is the REPLY binding that holds it now. */
+        kobject_release(&sender->base);   /* The queue's */
 
         ep_recv_reply_unstage(t);   /* plain send: staged reply stays unused */
         kobject_release(&ep->base);
 
-        ipc_msg_store(t);   /* A-33: the message goes back in registers */
+        ipc_msg_store(t);   /* The message goes back in registers */
         return syscall_ok_u64(0);
     }
 
@@ -1300,13 +1300,13 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (ep->queue_tail) { ep->queue_tail->ep_next = t; ep->queue_tail = t; }
     else                { ep->queue_head = t; ep->queue_tail = t; }
-    kobject_retain(&t->base);          /* A-44: queued is held */
+    kobject_retain(&t->base);          /* Queued is held */
 
     t->state = TASK_BLOCKED_RECV;
     irq_spinlock_unlock(&ep->lock, flags);
 
     /*
-     * Stage 9-evt Step 1 — park and ask to be RE-EXECUTED (ledger D-1).
+     * Park and ask to be RE-EXECUTED.
      *
      * Everything the completion below needs is already thread state: the
      * delivered message, the staged reply object, the receive-slot
@@ -1339,18 +1339,18 @@ static uint64_t ep_recv_complete(struct task *t) {
      * sender's context; make sure it never survives this recv either way. */
     t->ep_recv_slot = 0;
 
-    /* Phase S1: if the rendezvous did not consume the staged reply object
+    /* If the rendezvous did not consume the staged reply object
      * (plain send, closed endpoint, cancel) release the claim now. */
     ep_recv_reply_unstage(t);
 
     if (t->ipc_ep_closed) { t->ipc_ep_closed = 0; return syscall_err(IRIS_ERR_CLOSED); }
 
-    /* D-4: nothing to copy out.  The payload was written straight into this
+    /* Nothing to copy out.  The payload was written straight into this
      * thread's own IPC buffer at rendezvous, and `ipc_msg.buf_uptr` already
      * says where — there is no kernel staging left to drain. */
     t->ep_recv_buf_uptr = 0;
 
-    ipc_msg_store(t);   /* A-33: the message goes back in registers */
+    ipc_msg_store(t);   /* The message goes back in registers */
     return syscall_ok_u64(0);
 }
 
@@ -1436,7 +1436,7 @@ uint64_t sys_ep_cancel_badged_sends(uint64_t arg0, uint64_t arg1, uint64_t arg2)
             kobject_release(&src_cn->base);
         }
         task_wakeup(w);
-        kobject_release(&w->base);   /* A-44: the queue's */
+        kobject_release(&w->base);   /* The queue's */
     }
 
     kobject_release(&ep->base);
@@ -1446,7 +1446,7 @@ uint64_t sys_ep_cancel_badged_sends(uint64_t arg0, uint64_t arg1, uint64_t arg2)
 /* ── SYS_EP_NB_SEND ──────────────────────────────────────────────────── */
 
 uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;   /* the message: read through the thread (A-33) */
+    (void)arg1; (void)arg2;   /* the message: read through the thread */
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -1455,19 +1455,19 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     iris_error_t err = cspace_resolve_only_endpoint_badged(t->cspace_root, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
     if (err != IRIS_OK) return syscall_err(err);
 
-    /* A-33: the message is in the registers this call arrived in. */
+    /* The message is in the registers this call arrived in. */
     ipc_msg_load(t);
 
-    /* Phase 9: stamp the sender badge from the invoked cap (anti-spoofing). */
+    /* Stamp the sender badge from the invoked cap (anti-spoofing). */
     t->ipc_msg.sender_badge = ep_badge;
 
-    /* Ph69/D-4: make the bulk payload readable by the kernel. */
+    /* Make the bulk payload readable by the kernel. */
     if (ipc_stage_out(t) != IRIS_OK) {
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    /* Ph68: stage cap before taking lock.  A1.9: PEEK only — the sender's
+    /* Stage cap before taking lock.  A1.9: PEEK only — the sender's
      * handle is consumed at the commit point below, so a send that fails
      * with CLOSED / WOULD_BLOCK leaves the sender's cap untouched (A1.5
      * atomicity rule: the source cap is never consumed by a failed
@@ -1524,20 +1524,20 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     irq_spinlock_unlock(&ep->lock, flags);
 
     /* A1.5: routed — receiver's declared receive-slot or handle table.
-     * Phase S4 (Step 2): deliver first, so the delivered cap is an MDB child
+     * Deliver first, so the delivered cap is an MDB child
      * of the source slot (A-29: the sender keeps it). */
     if (xfer_obj) {
         uint32_t new_h = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
                                                         xfer_rights, xfer_badge,
                                                         xfer_src_cn, xfer_src_idx);
         receiver->ipc_msg.attached_handle = new_h;
-        receiver->ipc_msg.attached_cap    = new_h;   /* A-33: see above */
+        receiver->ipc_msg.attached_cap    = new_h;   /* See above */
         receiver->ipc_msg.attached_cap_rights = xfer_rights;
         syscall_ipc_stage_cap_release(xfer_src_cn);
     }
 
     task_wakeup(receiver);
-    kobject_release(&receiver->base);   /* A-44: the queue's */
+    kobject_release(&receiver->base);   /* The queue's */
     kobject_release(&ep->base);
     return syscall_ok_u64(0);
 }
@@ -1548,7 +1548,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    /* A-33: there is no message pointer to validate.  arg1 is the receive slot
+    /* There is no message pointer to validate.  arg1 is the receive slot
      * and arg2 the reply object; the message itself leaves in registers. */
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
@@ -1556,8 +1556,8 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                                           RIGHT_READ, &ep, &_ep_r);
     if (err != IRIS_OK) return syscall_err(err);
 
-    /* Ph69: read receiver's hint.  A1.5: attached_cap declares a receive-slot.
-     * D-4: the hint lands in `ep_recv_buf_uptr` rather than a local, because
+    /* Read receiver's hint.  A1.5: attached_cap declares a receive-slot.
+     * The hint lands in `ep_recv_buf_uptr` rather than a local, because
      * that is the one field ipc_transfer_bulk consults for a thread with no
      * registered IPC buffer — a receiver should not name its destination two
      * different ways depending on which recv syscall it used. */
@@ -1568,7 +1568,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(err);
     }
 
-    /* Phase S1: stage the explicit reply object named by arg2 (0 = none). */
+    /* Stage the explicit reply object named by arg2 (0 = none). */
     err = ep_recv_reply_stage(t, arg2);
     if (err != IRIS_OK) {
         kobject_release(&ep->base);
@@ -1595,7 +1595,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct task *sender = ep->queue_head;
 
-    /* Phase S1: a call-mode sender REQUIRES an explicit reply object (see
+    /* A call-mode sender REQUIRES an explicit reply object (see
      * sys_ep_recv) — refuse before anything is consumed. */
     if (sender->ep_call_mode && !t->ep_reply_obj) {
         irq_spinlock_unlock(&ep->lock, flags);
@@ -1613,10 +1613,10 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
     t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
 
-    /* Ph69/D-4: same as above — correct CR3, so the staging path may write. */
+    /* Same as above — correct CR3, so the staging path may write. */
     ipc_transfer_bulk(sender, t, 1);
 
-    /* Ph68: take sender's staged cap. */
+    /* Take sender's staged cap. */
     struct KObject *xfer_obj     = sender->ep_cap_obj;
     uint32_t        xfer_rights  = sender->ep_cap_rights;
     uint64_t        xfer_badge   = sender->ep_cap_badge;
@@ -1630,9 +1630,9 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     irq_spinlock_unlock(&ep->lock, flags);
 
-    /* Phase 11: EP_CALL transferred cap → attached_cap; EP_SEND → attached_handle.
+    /* EP_CALL transferred cap → attached_cap; EP_SEND → attached_handle.
      * A1.5: routed — honours our declared receive-slot (CPtr < 1024).
-     * Phase S4 (Step 2): deliver first, outside ep->lock (see sys_ep_recv). */
+     * Deliver first, outside ep->lock (see sys_ep_recv). */
     t->ipc_msg.attached_cap = IRIS_MSG_NO_CAP;
     if (xfer_obj) {
         uint32_t new_h = syscall_ipc_deliver_cap_routed(t, xfer_obj,
@@ -1648,7 +1648,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
     t->ep_recv_slot = 0;   /* declaration is per-recv; never outlives it */
 
-    /* Ph85/Phase S1: ep_call_mode senders block until replied to — bind the
+    /* Ep_call_mode senders block until replied to — bind the
      * receiver's staged explicit reply object (no implicit KReply). */
     if (sender->ep_call_mode) {
         sender->ep_call_mode = 0u;
@@ -1664,11 +1664,11 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     } else {
         task_wakeup(sender);
     }
-    kobject_release(&sender->base);   /* A-44: the queue's */
+    kobject_release(&sender->base);   /* The queue's */
 
     ep_recv_reply_unstage(t);   /* plain send: staged reply stays unused */
     kobject_release(&ep->base);
 
-    ipc_msg_store(t);   /* A-33: the message goes back in registers */
+    ipc_msg_store(t);   /* The message goes back in registers */
     return syscall_ok_u64(0);
 }

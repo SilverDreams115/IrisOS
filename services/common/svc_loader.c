@@ -2,10 +2,10 @@
 /*
  * svc_loader.c — ring-3 ELF loader for IRIS services.
  *
- * Implements svc_load() using the Phase 29 composable spawn primitives:
+ * Implements svc_load() using the composable spawn primitives:
  *   SYS_INITRD_FRAME(55) + SYS_PROCESS_CREATE(56) + SYS_FRAME_MAP(57) +
  *   SYS_THREAD_START(58); pre-start caps are SYS_PROC_CSPACE_MINT CSpace
- *   mints (Phase 8) — the legacy SYS_HANDLE_INSERT step is gone (A1.8).
+ *   mints — the legacy SYS_HANDLE_INSERT step is gone (A1.8).
  *
  * Supports ET_DYN (static PIE, base=0) ELF64 x86-64 with R_X86_64_RELATIVE
  * RELA relocations.  RDTSC-seeded Xorshift64 ASLR bias applied per spawn.
@@ -198,9 +198,9 @@ static long sl_name_to_index(const char *name) {
     if (sl_streq(name, "lifecycle_probe")) return 9;
     if (sl_streq(name, "pager"))    return 10;
     if (sl_streq(name, "badelf"))   return 11;
-    /* A-24: appended at 16, past the fixtures, so no index below moved. */
+    /* Appended at 16, past the fixtures, so no index below moved. */
     if (sl_streq(name, "timer"))    return 16;
-    /* Stage 10: the bus service, appended for the same reason. */
+    /* The bus service, appended for the same reason. */
     if (sl_streq(name, "pci"))      return 17;
     if (sl_streq(name, "blk"))      return 18;
     if (sl_streq(name, "net"))      return 19;
@@ -220,7 +220,7 @@ long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
     return svc_load_minted(proc_c, initrd_c, name, out_proc_h, out_chan_h, 0, 0);
 }
 
-/* Legacy arity: RETIRED (Stage 4).  It existed so a caller with nowhere to put
+/* Legacy arity: RETIRED.  It existed so a caller with nowhere to put
  * the child's capabilities could take them as handles; every spawner supplies
  * a workspace CNode now, so the handle path underneath had no callers left.
  * Kept as a hard failure rather than deleted: a caller that reaches here has
@@ -252,7 +252,7 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
 #define SL_WS_ELF    1u
 #define SL_WS_PROC_BASE 16u  /* 16..99: one live process each */
 #define SL_WS_PROC_LIMIT 100u
-/* Stage 6 Step 5: one recyclable budget per live child, paired with its
+/* One recyclable budget per live child, paired with its
  * process leaf (leaf L uses budget leaf 100 + L - 16).
  *
  * Everything a child costs — its address space, its process state, its segment
@@ -266,7 +266,7 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
 #define SL_WS_CHILDPOOL(leaf) ((leaf) - SL_WS_PROC_BASE + SL_WS_PROC_LIMIT)
 #define SL_CHILD_POOL_BYTES (1u << 20)
 #define SL_WS_STACK  3u
-/* Stage 6 Step 5: a reusable scratch budget for the ELF image copy.
+/* A reusable scratch budget for the ELF image copy.
  *
  * The kernel copies the whole image when SYS_INITRD_VMO is invoked, and the
  * loader drops it as soon as the segments are out.  Charged to the spawner's
@@ -276,7 +276,7 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * ONE image, which is the seL4 reclamation pattern (revoke the Untyped you
  * used) in the form IRIS has. */
 #define SL_WS_ELFPOOL 5u
-/* Stage 6-pure Step 2: the child's VSpace, and one scratch slot the paging
+/* The child's VSpace, and one scratch slot the paging
  * levels pass through on their way into it.  One slot is enough for any depth
  * — installing hands the VSpace its own reference, so the capability here is
  * spent the moment it lands (see iris_vspace.h). */
@@ -285,7 +285,7 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * — 8..15 is the per-segment window — so a new slot goes above everything the
  * spawn loop indexes, not into the first gap that looks free. */
 #define SL_WS_CHILD_CNODE  184u  /* ...and its root CSpace, likewise */
-/* SL_WS_CHILD_TCB RETIRED (Stage 7-proc): the child's first thread is retyped
+/* SL_WS_CHILD_TCB RETIRED: the child's first thread is retyped
  * into the PROCESS LEAF itself — it is what claims the leaf and what the
  * spawner gets back, because a supervisor names the thread, not a process. */
 /* Two scratch slots, because the spare level a completed walk leaves behind
@@ -327,7 +327,7 @@ static int sl_ws_ensure(uint64_t ws) {
 }
 
 /*
- * Stage 7-proc: `proc_c` is RESERVED and unused.
+ * `proc_c` is RESERVED and unused.
  *
  * It was the spawn AUTHORITY — the boot capability SYS_PROCESS_CREATE checked
  * before it would make a process.  There is no process to make: a child is a
@@ -387,7 +387,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         seg_page_off[i] = 0;
     }
 
-    /* Stage 4: a workspace is mandatory — every capability this spawn creates
+    /* A workspace is mandatory — every capability this spawn creates
      * is published into a leaf of it and named by CPtr.  The alternative was the handle path,
      * which is gone; failing here names the missing argument instead of
      * quietly producing capabilities the caller cannot address. */
@@ -420,7 +420,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         long pool = (long)sl_ws_cptr(ws, SL_WS_ELFPOOL);
         long pr   = iris_invoke0(pool, INV_UNTYPED_RESET);
         /*
-         * Stage 7 Step 14: there is no fallback, because there is no default.
+         * There is no fallback, because there is no default.
          *
          * Both branches below used to set `pool = 0` and let the kernel charge
          * "the caller's own budget" — the KProcess field that was the last
@@ -441,7 +441,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                 r = (long)IRIS_ERR_NO_MEMORY; goto out;
             }
         }
-        /* Ledger D-5: the image is a FRAME, and the call answers how big it
+        /* The image is a FRAME, and the call answers how big it
          * is.  It used to be a KVMO — one of the object types seL4 has no
          * equivalent for — which meant the loader had to speak a second memory
          * ABI to read a file the kernel already had. */
@@ -456,7 +456,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
     }
 
     /* 2. Map ELF read-only at SL_ELF_VADDR for parsing.  One map covers the
-     *    whole frame (D-10); the levels for the parse window are the loader's
+     *    whole frame; the levels for the parse window are the loader's
      *    own to supply. */
     r = iris_vspace_map(INV_FRAME_MAP, (long)elf_h, self_vs,
                         (long)SL_ELF_VADDR, 0,
@@ -542,7 +542,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         /* 5. Choose page-aligned ASLR bias. */
         uint64_t bias = sl_choose_bias(max_vend);
 
-        /* 5b. Create the empty target process FIRST (Phase 29): the child must
+        /* 5b. Create the empty target process FIRST: the child must
          * exist before its image VMOs so those VMOs can be charged to the CHILD
          * (its own resource domain), not to the loader.  The loader passes the
          * child process cap as the VMO charge-target; it holds RIGHT_MANAGE on
@@ -555,7 +555,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * with the previous spawn's process.  Scan for a free one instead:
          * publication is exclusive, so ALREADY_EXISTS simply means "taken",
          * and the loader keeps no state to remember where it got to. */
-        /* Stage 6 Step 2: the child's page tables are charged to the
+        /* The child's page tables are charged to the
          * spawner's own Untyped — the one this workspace already carves from.
          *
          * A per-child sub-untyped was the first design and it was wrong: a
@@ -568,7 +568,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * from under a live child. */
         uint32_t proc_leaf = 0u;
         /* The budget the child's address space is built from — its paging
-         * levels come out of the same one (Stage 6-pure Step 2). */
+         * levels come out of the same one. */
         pool_c = 0;
         for (uint32_t l = SL_WS_PROC_BASE; l < SL_WS_PROC_LIMIT; l++) {
             /* Ask whether this leaf is taken BEFORE touching its budget: a
@@ -608,7 +608,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                 }
             }
             /*
-             * Stage 6-pure Step 4: the loader RETYPES the child's address
+             * The loader RETYPES the child's address
              * space and hands it over, instead of handing over a budget for
              * the kernel to build one from.  A process is composed out of
              * objects its creator made.
@@ -621,7 +621,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             child_vs = (long)sl_ws_cptr(ws, SL_WS_CHILD_VSPACE);
 
             /*
-             * Ledger A-21: NAME it, out of a pool this loader holds.
+             * NAME it, out of a pool this loader holds.
              *
              * A retyped address space has no identifier, and a thread cannot
              * be bound to an unnamed one — so this is not an optimisation for
@@ -646,7 +646,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             }
             child_cn = (long)sl_ws_cptr(ws, SL_WS_CHILD_CNODE);
             /*
-             * Stage 7-proc: the child's FIRST THREAD claims the leaf, and it
+             * The child's FIRST THREAD claims the leaf, and it
              * is what the spawner gets back.
              *
              * SYS_PROCESS_CREATE used to publish a KProcess here — an object
@@ -688,15 +688,15 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * fill; the phys pages are charged to the child (VMO owner), so
          * unmapping from the loader never strands the charge on the loader. */
         for (uint32_t i = 0; i < seg_count; i++) {
-            /* Stage 7 Step 14: the child's image comes out of the child's
+            /* The child's image comes out of the child's
              * budget, said rather than inferred — pool_c is the very region
              * its address space and process state were carved from.
-             * Stage 7-mem: and that is the WHOLE of "charged to the child".
+             * And that is the WHOLE of "charged to the child".
              * SYS_VMO_CREATE_FOR named a payer process on top of it, for a
              * per-process VMO ceiling that no longer exists. */
-            /* Ledger D-5: a FRAME retyped from the child's budget, not a
+            /* A FRAME retyped from the child's budget, not a
              * KVMO fabricated by the kernel.  A frame of the segment's whole
-             * size, because a frame maps as a whole (D-10) — which is what
+             * size, because a frame maps as a whole — which is what
              * makes the VMO's page-at-a-time population unnecessary. */
             r = iris_invoke(pool_c, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)), sl_ws_dest(ws, SL_WS_SEG + i), (long)seg_map_size[i]);
             if (r < 0) goto out;
@@ -782,20 +782,20 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         uint64_t elf_entry = eh->e_entry;
 
         /* 11. Unmap ELF from loader — no longer needed. */
-        /* D-5: the parse window held a FRAME, so it comes down as one. */
+        /* The parse window held a FRAME, so it comes down as one. */
         iris_invoke2((long)elf_h, INV_FRAME_UNMAP, self_vs, (long)SL_ELF_VADDR);
         elf_mapped = 0;
         sl_close_cap(elf_h);
         elf_h = IRIS_CPTR_NULL;
 
         /* 12. Target process created earlier (step 5b) so its image VMOs are
-         * charged to it (Phase 29).
-         * Phase 13 (Track I): the per-child bootstrap KChannel is retired — every
+         * charged to it.
+         * The per-child bootstrap KChannel is retired — every
          * cap is a pre-start CSpace mint, so no channel is created or inserted
          * and the child starts with RBX = 0 (no bootstrap handle). */
 
         /*
-         * Stage 6-pure Step 2: the child's paging levels are the child's, so
+         * The child's paging levels are the child's, so
          * they are retyped from the CHILD's budget and installed into the
          * CHILD's address space.  The loader needs a capability to that
          * address space to do it — which is what SYS_PROCESS_VSPACE is for,
@@ -826,7 +826,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         if (r < 0) goto out;
         stack_vmo_h = (iris_cptr_t)sl_ws_cptr(ws, SL_WS_STACK);
 
-        /* Stage 7 Step 9: the map names the child's ADDRESS SPACE, which the
+        /* The map names the child's ADDRESS SPACE, which the
          * loader retyped and still holds — not its process. */
         r = iris_vspace_map(INV_FRAME_MAP,
                             (long)stack_vmo_h, child_vs,
@@ -872,10 +872,10 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             sl_close_cap(seg_vmo[i]); seg_vmo[i] = IRIS_CPTR_NULL;
         }
 
-        /* 18. (Track I) No bootstrap channel to insert — the child gets RBX = 0. */
+        /* 18. No bootstrap channel to insert — the child gets RBX = 0. */
 
         /*
-         * Stage 6-pure Step 2: every child gets a capability to the budget
+         * Every child gets a capability to the budget
          * its own address space was built from.
          *
          * The kernel no longer creates paging levels, so a task that maps
@@ -901,7 +901,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         }
 
         /*
-         * 18a2 (D-6). The child's own ADDRESS SPACE and own THREAD, delegated.
+         * 18a2. The child's own ADDRESS SPACE and own THREAD, delegated.
          *
          * Both were reachable already through SYS_VSPACE_SELF / SYS_TCB_SELF,
          * and both arrived as MDB LEGACY_ROOTS when they did — capabilities
@@ -973,7 +973,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                                      (IRIS_CPTR_OWN_CSPACE << 32)), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
         }
 
-        /* 18b (Phase 8). Mint the well-known CSpace slots BEFORE the first
+        /* 18b. Mint the well-known CSpace slots BEFORE the first
          * thread starts: the child sees its slots populated from its first
          * instruction — no bootstrap barrier, no retry loop, no race.
          *
@@ -982,7 +982,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * consumer's smoke gate would catch a missing capability, which holds
          * only for capabilities some marker covers — and a table whose two
          * entries name the same slot produces a child missing one of them with
-         * nothing anywhere saying which (ledger A-34). */
+         * nothing anywhere saying which. */
         for (uint32_t mi = 0; mi < mint_count; mi++) {
             if (!mints) continue;
             uint64_t rb = (mints[mi].badge << 32) | (uint64_t)mints[mi].rights;
@@ -996,7 +996,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                 continue;
             }
             /*
-             * Stage 7 Step 9: the destination is the child's ROOT CNODE, which
+             * The destination is the child's ROOT CNODE, which
              * the loader retyped and still holds — not the child's process.
              *
              * SYS_CSPACE_MINT already took a destination CNode; the two
@@ -1014,7 +1014,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         /*
          * 19. Compose the child's first thread and start it.
          *
-         * Stage 7: this was SYS_THREAD_START, which carved a thread out of the
+         * This was SYS_THREAD_START, which carved a thread out of the
          * kernel's static task pool — the last execution path where a thread
          * existed because the kernel had a free slot rather than because
          * somebody held the memory and the authority.  It could not be
@@ -1039,14 +1039,14 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         }
     }
 
-    /* Stage 7 Step 9: if the spawner asked to keep delegating into its child,
+    /* If the spawner asked to keep delegating into its child,
      * give it the child's ROOT CNODE — the capability that makes a later mint
      * possible without naming the process to reach a CSpace nobody handed
      * over.  Minted, not moved: the loader's own slot is scratch and is
      * dropped below like everything else it was holding. */
     if (keep_cnode_dest && child_cn)
         (void)iris_invoke2(child_cn, INV_CSPACE_MINT, (long)keep_cnode_dest, (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
-    /* Stage 7 Step 10/12: and the child's first THREAD, for a spawner that
+    /* Step 10/12: and the child's first THREAD, for a spawner that
      * supervises it.  READ|WRITE, because supervising an execution is watching
      * it, reading why it ended, arming where its faults go, and stopping it —
      * one role, not four capabilities.  DUPLICATE on top, because a supervisor
@@ -1057,7 +1057,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
     if (keep_tcb_dest)
         (void)iris_invoke2((long)proc_h, INV_CSPACE_MINT, (long)keep_tcb_dest, (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
     /*
-     * Stage 7 Step 15: and the child's ADDRESS SPACE, for a spawner that means
+     * And the child's ADDRESS SPACE, for a spawner that means
      * to map into it later.
      *
      * The loader retyped this VSpace and has always held it through the spawn;
@@ -1093,7 +1093,7 @@ out:
     (void)iris_invoke1((long)SL_WS_SLOT(ws), INV_CNODE_DELETE, (long)SL_WS_PTSCRATCH_CH);
     (void)iris_invoke1((long)SL_WS_SLOT(ws), INV_CNODE_DELETE, (long)SL_WS_CHILD_VSPACE);
     (void)iris_invoke1((long)SL_WS_SLOT(ws), INV_CNODE_DELETE, (long)SL_WS_CHILD_CNODE);
-    /* Unmap ELF if still mapped.  D-5: the window holds a FRAME, so it comes
+    /* Unmap ELF if still mapped.  The window holds a FRAME, so it comes
      * down the way the success path takes it down — by naming the frame, not
      * by handing the kernel an address range and letting it find out what is
      * there.  The range form had no capability in it at all. */

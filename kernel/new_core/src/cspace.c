@@ -24,8 +24,8 @@ iris_error_t cspace_resolve_cap_badged(struct KCNode     *root,
     if (cptr == IRIS_CPTR_NULL) return IRIS_ERR_INVALID_ARG;
     if (!root) return IRIS_ERR_NOT_FOUND;
 
-    /* Stage 4: structural root — no handle-table lookup to start the walk.
-     * Stage 7 Step 4: and the root the caller passes is the THREAD's, so a
+    /* Structural root — no handle-table lookup to start the walk.
+     * And the root the caller passes is the THREAD's, so a
      * resolution no longer reads KProcess either. */
     struct KObject *root_obj = &root->base;
     iris_error_t    err;
@@ -39,7 +39,7 @@ iris_error_t cspace_resolve_cap_badged(struct KCNode     *root,
     struct KCNode *cur = (struct KCNode *)root_obj;
 
     /*
-     * Stage 8-cap / D-2 — the guard of the capability the walk ENTERED `cur`
+     * The guard of the capability the walk ENTERED `cur`
      * through.  Below the root that is the slot it descended from; at the root
      * it is the thread, because a thread reaches its root CSpace through a
      * structural pointer and there is no slot to carry a guard.
@@ -158,7 +158,7 @@ iris_error_t cspace_resolve_cap(struct KCNode     *root,
 }
 
 /*
- * Phase S3 — resolve a CPtr to its terminal SLOT LOCATION (CNode + index)
+ * Resolve a CPtr to its terminal SLOT LOCATION (CNode + index)
  * instead of the object it contains.  This is what gives the MDB a source
  * identity: derivation (SYS_CSPACE_MINT / MINT_INTO), revocation
  * (SYS_CSPACE_REVOKE) and retype ancestry operate on slots, not objects.
@@ -176,7 +176,7 @@ iris_error_t cspace_resolve_slot(struct KCNode   *root, iris_cptr_t cptr,
     if (cptr == IRIS_CPTR_NULL) return IRIS_ERR_INVALID_ARG;
     if (!root) return IRIS_ERR_NOT_FOUND;
 
-    /* Stage 4: the root is a structural back-reference — resolving a CPtr no
+    /* The root is a structural back-reference — resolving a CPtr no
      * longer begins with a handle-table lookup.  We take the same retain +
      * active_retain pair the handle read used to yield, so every existing
      * release path downstream is unchanged. */
@@ -314,7 +314,7 @@ TYPED_RESOLVE(cspace_resolve_vspace,      struct KVSpace,      KOBJ_VSPACE)
 TYPED_RESOLVE(cspace_resolve_frame,       struct KFrame,       KOBJ_FRAME)
 
 /*
- * Phase 8: CPtr/handle namespace split for the DUAL resolvers.
+ * CPtr/handle namespace split for the DUAL resolvers.
  *
  * handle_ids are slot | generation<<10 with generation >= 1,
  * so every live handle is >= 1024 and every direct CPtr argument is < 1024.
@@ -393,7 +393,7 @@ iris_error_t cspace_resolve_only_cnode(struct KCNode   *root,
         return IRIS_OK;
     }
 
-    /* Stage 4: there is no second namespace.  A value that is not a CPtr is a
+    /* There is no second namespace.  A value that is not a CPtr is a
      * malformed argument, not an address in another table. */
     return IRIS_ERR_INVALID_ARG;
 }
@@ -438,7 +438,7 @@ iris_error_t fn(struct KCNode   *root, iris_cptr_t cptr,                \
         *out = (member_type *)obj; *rights_out = r;                               \
         return IRIS_OK;                                                            \
     }                                                                              \
-    /* Stage 4: there is no second namespace — a non-CPtr is malformed. */    \
+    /* There is no second namespace — a non-CPtr is malformed. */    \
     return IRIS_ERR_INVALID_ARG;                                              \
 }
 
@@ -496,7 +496,7 @@ iris_error_t cspace_resolve_only_untyped(struct KCNode    *root,
         return IRIS_OK;
     }
 
-    /* Stage 4: there is no second namespace.  A value that is not a CPtr is a
+    /* There is no second namespace.  A value that is not a CPtr is a
      * malformed argument, not an address in another table. */
     return IRIS_ERR_INVALID_ARG;
 }
@@ -504,7 +504,7 @@ iris_error_t cspace_resolve_only_untyped(struct KCNode    *root,
 /*
  * cspace_resolve_only_frame — active+lifecycle ref contract.
  *
- * KFrame is a Phase 5 object; no IPC blocking occurs in frame operations.
+ * KFrame is a object; no IPC blocking occurs in frame operations.
  * CSpace-first; ACCESS_DENIED is a hard stop.  Handle-table fallback adds
  * kobject_active_retain to match the cspace_resolve_cap return contract.
  */
@@ -547,18 +547,18 @@ iris_error_t cspace_resolve_only_frame(struct KCNode   *root,
         return IRIS_OK;
     }
 
-    /* Stage 4: there is no second namespace.  A value that is not a CPtr is a
+    /* There is no second namespace.  A value that is not a CPtr is a
      * malformed argument, not an address in another table. */
     return IRIS_ERR_INVALID_ARG;
 }
 
 /*
  * cspace_resolve_only_vspace — dual resolver for the VSpace argument of
- * SYS_FRAME_MAP/SYS_FRAME_UNMAP (Phase 25).  Same namespace split and
+ * SYS_FRAME_MAP/SYS_FRAME_UNMAP.  Same namespace split and
  * active+lifecycle ref contract as cspace_resolve_only_frame.  Before
  * Phase 25 those syscalls fed the VSpace value straight into the raw radix
  * walk, where a handle (>= 1024) was masked into low root slots — the exact
- * aliasing hazard the Phase 8 split closed for every other capability
+ * aliasing hazard the split closed for every other capability
  * argument.  The handle namespace now resolves honestly, which is what lets
  * a supervisor drive map-into-target with the SYS_PROCESS_VSPACE handle
  * directly (no permanent CSpace slot pin).
@@ -602,13 +602,13 @@ iris_error_t cspace_resolve_only_vspace(struct KCNode   *root,
         return IRIS_OK;
     }
 
-    /* Stage 4: there is no second namespace.  A value that is not a CPtr is a
+    /* There is no second namespace.  A value that is not a CPtr is a
      * malformed argument, not an address in another table. */
     return IRIS_ERR_INVALID_ARG;
 }
 
 /*
- * Phase 13: generic dual resolver for device/authority caps (KIoPort, KIrqCap,
+ * Generic dual resolver for device/authority caps (KIoPort, KIrqCap,
  * KBootstrapCap, …).  Same namespace split as the typed resolvers (CPtr < 1024
  * → CSpace only; >= 1024 → handle table only) but **lifecycle-only** ref
  * contract — lifecycle-only, matching what the retired handle lookup gave —
@@ -654,13 +654,13 @@ iris_error_t cspace_resolve_only_obj(struct KCNode    *root,
         return IRIS_OK;
     }
 
-    /* Stage 4: there is no second namespace.  A value that is not a CPtr is a
+    /* There is no second namespace.  A value that is not a CPtr is a
      * malformed argument, not an address in another table. */
     return IRIS_ERR_INVALID_ARG;
 }
 
 /*
- * Phase 9: badge-aware dual endpoint resolver for the EP send/call paths.
+ * Badge-aware dual endpoint resolver for the EP send/call paths.
  * Same namespace split and lifecycle-only refcount contract as the
  * DUAL_RESOLVE_IPC endpoint resolver; additionally returns the badge of
  * the capability that was invoked (slot badge on the CSpace path, handle
@@ -700,7 +700,7 @@ iris_error_t cspace_resolve_only_endpoint_badged(struct KCNode    *root,
         return IRIS_OK;
     }
 
-    /* Stage 4: there is no second namespace.  A value that is not a CPtr is a
+    /* There is no second namespace.  A value that is not a CPtr is a
      * malformed argument, not an address in another table. */
     return IRIS_ERR_INVALID_ARG;
 }

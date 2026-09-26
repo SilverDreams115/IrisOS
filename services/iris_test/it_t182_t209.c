@@ -206,7 +206,7 @@ void test_t184(void) {
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "victim not suspended"; }
 
     /*
-     * Ledger A-22: the rights split is SHARPER, not gone.
+     * The rights split is SHARPER, not gone.
      *
      * It used to be READ-on-the-thread reads the fault record and
      * WRITE-on-the-thread resolves it — two rights on one capability, so
@@ -254,7 +254,7 @@ void test_t184(void) {
     if (ok) it_pass("T184"); else it_fail("T184", why);
 }
 
-/* ── T185: a spent answer cannot answer the next fault (A-22) ───────────────
+/* ── T185: a spent answer cannot answer the next fault ───────────────
  *
  * This test used to be about fault GENERATIONS: a counter the kernel kept per
  * thread, echoed back by the handler, so a stale resolution could be told from
@@ -391,7 +391,7 @@ void test_t186(void) {
     }
     uint32_t d0 = t25_delivered_now();
     if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T25_VA_A) != 0) { ok = 0; why = "fault cmd"; }
-    /* A-22: OBSERVE the delivery, do not take it — the fault is for the pager
+    /* OBSERVE the delivery, do not take it — the fault is for the pager
      * to serve, and receiving it here would be taking it away from them. */
     if (ok && !t25_wait_delivered(d0)) { ok = 0; why = "fault pending"; }
     if (ok && it_kill((long)p1proc) != 0) { ok = 0; why = "kill pager1"; }
@@ -401,7 +401,7 @@ void test_t186(void) {
     /* No zombie: suspended-alive, record and generation intact. */
     if (ok && it_invoke0(it_child_tcb((long)g.proc), INV_TCB_EXIT_CODE)
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "target not suspended"; }
-    /* A-22: that the fault SURVIVED its handler's death is proved by the next
+    /* That the fault SURVIVED its handler's death is proved by the next
      * pager serving it, below — which is a stronger claim than reading a
      * record back, and the only one available now that taking delivery is the
      * same act as reading it. */
@@ -476,7 +476,7 @@ void test_t187(void) {
     it_quiesce_reaper();
 
     /* Late completion fails clean at every step. */
-    /* Stage 7-proc: the address space outlives its threads while a capability
+    /* The address space outlives its threads while a capability
      * to it lives, so this succeeds — and is undone below so the baseline
      * still has to hold. */
     if (ok && it_invoke((long)fr_h, INV_FRAME_MAP, tvs_c, (long)T25_VA_A, 0) != 0) {
@@ -579,7 +579,7 @@ void test_t188(void) {
     if (ok && it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "target exit"; }
     it_quiesce_reaper();
 
-    /* The target died with the mapping installed.  Stage 7-proc: the address
+    /* The target died with the mapping installed.  The address
      * space is still valid — we hold a capability to it — so the sweep that
      * matters is the FRAME's: its mapped_count came back, which the reuse
      * check below proves.  A late unmap therefore finds no such mapping rather
@@ -621,7 +621,7 @@ void test_t189(void) {
 
     uint32_t d0 = t25_delivered_now();
     if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T25_VA_A) != 0) { ok = 0; why = "fault cmd"; }
-    /* A-22: observed, not taken — every generation below is meant to be able
+    /* Observed, not taken — every generation below is meant to be able
      * to serve it. */
     if (ok && !t25_wait_delivered(d0)) { ok = 0; why = "fault pending"; }
 
@@ -648,7 +648,7 @@ void test_t189(void) {
 
     /* Degraded or not, the fault never became a zombie: still suspended, and
      * still resolvable — which the surviving generation below proves by
-     * serving it.  A-22: a supervisor cannot read the record of a fault it
+     * serving it.  A supervisor cannot read the record of a fault it
      * means somebody else to answer, so what it checks is the thread. */
     if (ok && it_invoke0(it_child_tcb((long)g.proc), INV_TCB_EXIT_CODE)
               != (long)IRIS_ERR_WOULD_BLOCK) {
@@ -735,7 +735,7 @@ void test_t190(void) {
             it_lp_cmd_va(g2.cmd, LP_CMD_FAULT_WRITE, T25_VA_B) != 0) { ok = 0; why = "fault cmds"; }
         if (ok && !t25_wait_delivered(d0 + 1u)) { ok = 0; why = "faults pending"; }
         /*
-         * A-22: g2 is always the SUPERVISOR's to answer, so its fault is taken
+         * G2 is always the SUPERVISOR's to answer, so its fault is taken
          * here.  g1's is taken only in the rounds where the supervisor answers
          * it too — in ops 0 and 1 an external pager does, and a fault this
          * thread received is a fault that pager can never see.
@@ -766,7 +766,7 @@ void test_t190(void) {
             if (t25_serve(pc, 3u, 1u, 0, 0, T25_VA_A) != 0) { ok = 0; why = "op1 serve"; }
             if (ok && it_lp_wait_exit(g1.proc) != 0) { ok = 0; why = "op1 g1"; }
             if (ok && it_lp_wait_exit(pp) != LP_EXIT_PGR_OK) { ok = 0; why = "op1 pager report"; }
-            /* A-22: there is no "bogus generation" to try any more — an
+            /* There is no "bogus generation" to try any more — an
              * answer is a capability, so the only wrong one is one you do not
              * hold, which T185 and T184 assert directly. */
             if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq, 1) != 0) { ok = 0; why = "op1 g2 kill"; }
@@ -817,7 +817,7 @@ void test_t190(void) {
             long rvs = it_cs_reduce((long)g1.vs, RIGHT_READ);
             iris_cptr_t rvs_h = (rvs >= 0) ? (iris_cptr_t)rvs : IRIS_CPTR_NULL;
             if (rp < 0 || rvs < 0) { ok = 0; why = "op4 caps"; }
-            /* A-22: a READ-only copy of the very reply that would resume g1
+            /* A READ-only copy of the very reply that would resume g1
              * answers nothing — the rights on the ANSWER are what gate it. */
             if (ok) {
                 struct iris_msg rm;
@@ -881,8 +881,8 @@ void test_t190(void) {
     else { it_fz_note("T190", T190_SEED, round, op); it_fail("T190", why); }
 }
 
-/* Live FRAME count (SYS_SCHED_INFO ext3, offset 116 — the Phase 18 per-type
- * authority word).  Ledger D-5: this was it_vmo_live, reading the KVmo gauge
+/* Live FRAME count (SYS_SCHED_INFO ext3, offset 116 — the per-type
+ * authority word).  This was it_vmo_live, reading the KVmo gauge
  * at offset 132.  The question it answers is unchanged — did the memory this
  * test made come back — and it is asked of the object that now holds it.
  * Returns -1 on failure. */
@@ -1012,7 +1012,7 @@ void test_t191(void) {
  * already holds a mapping is BUSY.  None of them installs a PTE, which the
  * valid map afterwards proves.
  *
- * Ledger D-5: three of the original seven cases were OFFSETS — unaligned,
+ * Three of the original seven cases were OFFSETS — unaligned,
  * == size, > size — and they were the kernel range-checking a caller's index
  * into a region it owned.  There is no index: the page is the capability, and
  * an offset that named a page you were not granted is a slot you do not hold,
@@ -1354,7 +1354,7 @@ void test_t197(void) {
     t25_reap(&p1proc); it_close(&p1cmd);
     it_quiesce_reaper();
 
-    /* Fault survives; VMO stays live.  A-22: survival is proved by the next
+    /* Fault survives; VMO stays live.  Survival is proved by the next
      * generation serving it, at the end of this test. */
     if (ok && it_invoke0(it_child_tcb((long)g.proc), INV_TCB_EXIT_CODE)
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "fault lost"; }
@@ -1409,7 +1409,7 @@ void test_t197(void) {
  * exactly as before: no partial PTE, no mapped_count drift, no frame ref leak.
  * A valid map before and after the batch proves the space was never corrupted.
  *
- * Ledger D-5: the "bad offset" and "offset == size" cases went with the object.
+ * The "bad offset" and "offset == size" cases went with the object.
  * They asserted that the kernel range-checked an index into a region it owned;
  * a caller now names a page by capability, so the same mistake IS the released
  * capability case below, which this batch still makes.
@@ -1441,7 +1441,7 @@ void test_t198(void) {
         { (long)T26_PAGE(g,2),IT_VS, T26_SELF_VA,              3L, (long)IRIS_ERR_INVALID_ARG,  "W^X" },
         { (long)T26_PAGE(g,1),IT_VS, T26_SELF_VA,              0L, (long)IRIS_ERR_BUSY,         "occupied" },
         { vro,                IT_VS, T26_SELF_VA + 0x10000ULL, 1L, (long)IRIS_ERR_ACCESS_DENIED,"ro writable" },
-        /* Stage 4: a "stale cap" is a DELETED SLOT, and an empty slot is
+        /* A "stale cap" is a DELETED SLOT, and an empty slot is
          * NOT_FOUND — the CSpace form of the BAD_HANDLE this asserted while
          * the cap was a handle.  The property is the same and is the one that
          * survives: a capability that was released fails clean and mutates
@@ -1474,7 +1474,7 @@ void test_t198(void) {
  * VMO cap still write-protection-faults the target's store (err P|W|U) — the
  * PTE carries the MAPPING's rights, not the cap's ceiling.  W^X and remap of an
  * occupied VA are rejected.  No silent write, no escalation via remap.
- * Invariants: M9, M10, M8, M21, plus the Phase 20 write-fault observable. */
+ * Invariants: M9, M10, M8, M21, plus the write-fault observable. */
 void test_t199(void) {
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
@@ -1600,7 +1600,7 @@ void test_t200(void) {
             if (vro < 0) { ok = 0; why = "op4 dup"; break; }
             /* RO cap cannot install a writable PTE; a page past the end of
              * the grant is a slot nobody holds — neither leaves anything at
-             * T26_TVA_A.  Ledger D-5: "beyond size" used to be the kernel
+             * T26_TVA_A.  "beyond size" used to be the kernel
              * range-checking an offset; it is an empty CSpace slot now, which
              * is a stronger statement and a cheaper check. */
             if (it_invoke(vro, INV_FRAME_MAP, (long)g.vs, (long)T26_TVA_A, 1L)
@@ -1620,7 +1620,7 @@ void test_t200(void) {
         default: break;
         }
 
-        /* A-22: a fault this round did not answer is one the supervisor still
+        /* A fault this round did not answer is one the supervisor still
          * holds the reply for.  Dropping it is the answer — and after that
          * nothing is outstanding, which is what "residual" meant. */
         (void)it_fault_kill(g.fault_leaf);
@@ -1656,7 +1656,7 @@ int t27_pager_spawn(struct t27_pager *p,
     iris_cptr_t ctrl = (iris_cptr_t)ep;
 
     /*
-     * Ledger A-22: point every granted target's faults at the ONE shared
+     * Point every granted target's faults at the ONE shared
      * ENDPOINT (targets[0].notif), each through a copy BADGED with its own
      * index, BEFORE the pager starts — so no fault can land on the old wiring.
      *
@@ -1686,12 +1686,12 @@ int t27_pager_spawn(struct t27_pager *p,
     m[n].slot = PGR_SLOT_CTRL_EP; IT_MINT_SRC(m[n], ctrl); m[n].rights = RIGHT_READ; m[n].badge = 0; n++;
     if (nt > 0) {
         m[n].slot = PGR_SLOT_FAULT_EP; IT_MINT_SRC(m[n], targets[0].notif); m[n].rights = RIGHT_READ; m[n].badge = 0; n++;
-        /* A-22: the reply objects the pager receives with — the authority to
+        /* The reply objects the pager receives with — the authority to
          * resume, one per target it may serve. */
         m[n].slot = PGR_SLOT_FAULT_CN; IT_MINT_SRC(m[n], IT_PGR_MBOX_SLOT); m[n].rights = RIGHT_READ | RIGHT_WRITE; m[n].badge = 0; n++;
     }
     for (uint32_t i = 0; i < nt; i++) {
-        /* Stage 7 Step 8: the pager is NOT given the target's process
+        /* The pager is NOT given the target's process
          * capability.  It resolved faults with it — read the record, name the
          * thread — and both of those are the thread's now: the mailbox hands
          * it the faulting TCB and SYS_TCB_FAULT_INFO reads off that.  What is
@@ -1711,7 +1711,7 @@ int t27_pager_spawn(struct t27_pager *p,
         }
     }
 
-    /* Phase S1: the pager serves EP_CALLs on its ctrl endpoint — retype a
+    /* The pager serves EP_CALLs on its ctrl endpoint — retype a
      * fresh reply object and mint it at PGR_SLOT_REPLY (13); drop our handle
      * right after so pager death still wakes blocked callers. */
     iris_cptr_t pgr_reply_h = IRIS_CPTR_NULL;
@@ -1724,7 +1724,7 @@ int t27_pager_spawn(struct t27_pager *p,
         }
     }
 
-    /* Phase 28: the pager is its own supervised binary (initrd "pager"); it
+    /* The pager is its own supervised binary (initrd "pager"); it
      * enters its serve loop immediately on start — no mode-entry message. */
     iris_cptr_t boot = IRIS_CPTR_NULL;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager",
@@ -1814,7 +1814,7 @@ void test_t201(void) {
     /* PING via the direct control cap. */
     if (ok && t27_pager_call(p.ctrl_ep, PGR_OP_PING, 0, 0, 0, 0, 0) != 0) { ok = 0; why = "ping"; }
 
-    /* D-4: and it registered an IPC buffer of its own on the way up.  The
+    /* And it registered an IPC buffer of its own on the way up.  The
      * pager is spawned per-test rather than at boot, so it is not in T313's
      * standing count and this is where its migration is observable.  A
      * registration that quietly failed would leave the pager on the kernel's
@@ -1833,20 +1833,20 @@ void test_t201(void) {
     if (ok) {
         long mask = t27_pager_call(p.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_EP) |
-                          (1u << PGR_SLOT_FAULT_CN) /* Stage 7 Step 7: the fault
+                          (1u << PGR_SLOT_FAULT_CN) /* The fault
                               * mailbox.  Real authority — the CNode a fault
                               * delivers the faulting thread into — so the
                               * oracle counts it rather than being blind to it,
                               * which is the same reason slot 15 is here. */ |
-                          (1u << 13) /* Phase S1: explicit reply object */ |
-                          (1u << 15) /* Stage 4: the pager's own VSpace, now a cap */ |
-                          (1u << IRIS_CPTR_OWN_UNTYPED) /* Stage 6-pure Step 2: the
+                          (1u << 13) /* Explicit reply object */ |
+                          (1u << 15) /* The pager's own VSpace, now a cap */ |
+                          (1u << IRIS_CPTR_OWN_UNTYPED) /* The
                               * budget its own address space was built from.  The
                               * pager MAPS, and the kernel no longer creates paging
                               * levels, so it must be able to retype one.  A real
                               * authority, which is why it belongs in this oracle. */ |
                           (1u << IRIS_CPTR_OWN_VSPACE) |
-                          (1u << IRIS_CPTR_OWN_TCB) /* D-6: its own address
+                          (1u << IRIS_CPTR_OWN_TCB) /* Its own address
                               * space and its own thread, DELEGATED by its
                               * spawner instead of fabricated with
                               * SYS_VSPACE_SELF / SYS_TCB_SELF, which publish
@@ -1857,7 +1857,7 @@ void test_t201(void) {
                               * slot is authority whoever reads this must
                               * account for. */ |
                           PGR_REPORT_GRANT | (1u << 21);
-        /* Stage 7 Step 8: bit 20 (any target PROCESS capability) is GONE.  A
+        /* Bit 20 (any target PROCESS capability) is GONE.  A
          * pager maps and answers faults; both name the address space and the
          * thread, and neither names the process. */
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest mismatch"; }
@@ -2042,7 +2042,7 @@ void test_t204(void) {
     if (ok && it_invoke(vro, INV_FRAME_MAP, (long)g.vs, (long)T27_VA_A, 1L)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable not denied"; }
     /* A page past the end of the grant, and a kernel VA, are both refused with
-     * no PTE installed.  Ledger D-5: "bad offset" is an empty CSpace slot now,
+     * no PTE installed.  "bad offset" is an empty CSpace slot now,
      * because the page a caller names IS a capability. */
     if (ok && it_invoke((long)T26_PAGE(vmo, T26_GRANT_PAGES), INV_FRAME_MAP, (long)g.vs, (long)T27_VA_A, 0L)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "past the grant"; }
@@ -2119,20 +2119,20 @@ void test_t205(void) {
     if (ok) {
         long mask = t27_pager_call(p2.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_EP) |
-                          (1u << PGR_SLOT_FAULT_CN) /* Stage 7 Step 7: the fault
+                          (1u << PGR_SLOT_FAULT_CN) /* The fault
                               * mailbox.  Real authority — the CNode a fault
                               * delivers the faulting thread into — so the
                               * oracle counts it rather than being blind to it,
                               * which is the same reason slot 15 is here. */ |
-                          (1u << 13) /* Phase S1: explicit reply object */ |
-                          (1u << 15) /* Stage 4: the pager's own VSpace, now a cap */ |
-                          (1u << IRIS_CPTR_OWN_UNTYPED) /* Stage 6-pure Step 2: the
+                          (1u << 13) /* Explicit reply object */ |
+                          (1u << 15) /* The pager's own VSpace, now a cap */ |
+                          (1u << IRIS_CPTR_OWN_UNTYPED) /* The
                               * budget its own address space was built from.  The
                               * pager MAPS, and the kernel no longer creates paging
                               * levels, so it must be able to retype one.  A real
                               * authority, which is why it belongs in this oracle. */ |
                           (1u << IRIS_CPTR_OWN_VSPACE) |
-                          (1u << IRIS_CPTR_OWN_TCB) /* D-6: its own address
+                          (1u << IRIS_CPTR_OWN_TCB) /* Its own address
                               * space and its own thread, DELEGATED by its
                               * spawner instead of fabricated with
                               * SYS_VSPACE_SELF / SYS_TCB_SELF, which publish
@@ -2143,7 +2143,7 @@ void test_t205(void) {
                               * slot is authority whoever reads this must
                               * account for. */ |
                           PGR_REPORT_GRANT | (1u << 21);
-        /* Stage 7 Step 8: bit 20 (any target PROCESS capability) is GONE.  A
+        /* Bit 20 (any target PROCESS capability) is GONE.  A
          * pager maps and answers faults; both name the address space and the
          * thread, and neither names the process. */
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "restart manifest"; }
@@ -2349,7 +2349,7 @@ void test_t209(void) {
     /* Target not a zombie: suspended-alive, record + generation intact. */
     if (ok && it_invoke0(it_child_tcb((long)g.proc), INV_TCB_EXIT_CODE) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "target not suspended"; }
-    /* A-22: the fault outliving its handler is proved by the restart serving
+    /* The fault outliving its handler is proved by the restart serving
      * it, below. */
     /* Dead pager's control endpoint has no phantom receiver. */
     if (ok) {

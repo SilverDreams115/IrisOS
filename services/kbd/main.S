@@ -28,7 +28,7 @@
 .global _start
 
 /* ── Endpoint state (Fase 7.4) ─────────────────────────────────────────────
- * Ledger A-33: there is no message STRUCT here any more.  A message arrives in
+ * There is no message STRUCT here any more.  A message arrives in
  * registers and leaves in registers, so what the driver keeps between the
  * receive and the reply is three words it actually uses — and it keeps them
  * because the reply path needs registers for other things, not because the
@@ -78,7 +78,7 @@ _start:
     movq  $0,    %rax
     syscall
 
-/* ── Fase 13 (Track I): endpoint/notification-only — all caps are CPtr slots ──
+/* ── Fase 13: endpoint/notification-only — all caps are CPtr slots ──
  * kbd_ep_h    = IRIS_CPTR_OWN_EP   (5):  recv side of "kbd.ep"
  * kbd_notif_h = IRIS_CPTR_IRQ_NOTIFY (7): WAIT side of the IRQ notification
  * r14         = IRIS_CPTR_IOPORT  (10):  KIoPort (CPtr; SYS_IOPORT_IN/OUT)
@@ -91,7 +91,7 @@ _start:
 
     /* The bootstrap KChannel handle in entry RBX had a close here.  The handle
      * namespace is gone and SYS_HANDLE_CLOSE answers NOT_SUPPORTED, so the
-     * call did nothing; it goes with the numbered ABI (A-32) rather than being
+     * call did nothing; it goes with the numbered ABI rather than being
      * carried across as an invocation of a method that does not exist. */
 
     movq  $10, %r14                    /* IRIS_CPTR_IOPORT  (CPtr) */
@@ -166,7 +166,7 @@ _start:
 
 /* ── Main service loop (Fase 13/Track I: endpoint + IRQ notification only) ──
  *
- * Ledger A-23/A-24: ONE blocking receive takes both kinds of event.
+ * ONE blocking receive takes both kinds of event.
  *
  * It used to drain the endpoint non-blockingly and then sleep 10 ms on the IRQ
  * notification, because a thread blocked receiving on an endpoint was deaf to
@@ -190,7 +190,7 @@ _start:
     movl  kbd_ep_h(%rip), %edi
     testl %edi, %edi
     jz    .kbd_no_ep                   /* no endpoint granted              */
-    /* A-33: nothing to zero and no buffer to name.  A receive says where it
+    /* Nothing to zero and no buffer to name.  A receive says where it
      * wants a capability put and which reply object to stage, and that is all
      * it says; the message comes back in registers.
      *
@@ -203,7 +203,7 @@ _start:
     jne   .kbd_reply_pick_done
     movl  $14, %r10d
 .kbd_reply_pick_done:
-    /* A-33: rdi = the endpoint, rsi = the method, rdx = the slot a delivered
+    /* Rdi = the endpoint, rsi = the method, rdx = the slot a delivered
      * capability should land in (none), r10 = the reply object picked above. */
     xorl  %edx, %edx
     movq  $INV_EP_RECV, %rsi
@@ -213,7 +213,7 @@ _start:
     jnz   .kbd_recv               /* error: retry rather than spin     */
 
     /*
-     * A-33: unpack.  rdi = the badge the kernel stamped, rsi = the
+     * Unpack.  rdi = the badge the kernel stamped, rsi = the
      * MessageInfo, rdx = the reply capability this call is owed, and
      * r10..r15 = the message words.  The label is the MessageInfo's high
      * field and the bulk byte count its middle one — `iris/ipc_msg.h` is
@@ -247,7 +247,7 @@ _start:
     jmp   .kbd_ep_reply_err
 
 .kbd_ep_ping:                          /* PING → OK; mr1 = sender badge    */
-    /* A-33: a reply is a MessageInfo and message registers.  Label
+    /* A reply is a MessageInfo and message registers.  Label
      * IRIS_EP_REPLY_OK is 0, so the MessageInfo is just the word count. */
     movq  $2, %rdx                     /* label 0 (OK), length 2           */
     xorl  %r10d, %r10d                 /* mr0 = 0                          */
@@ -386,7 +386,7 @@ _start:
     movl  kbd_park(%rip), %eax
     testl %eax, %eax
     jz    .kbd_irq_ring
-    /* A-33: the parked caller's answer, in registers.  Label OK is 0, so the
+    /* The parked caller's answer, in registers.  Label OK is 0, so the
      * MessageInfo is the length alone; the scancode rides in mr1. */
     movzbl 88(%rsp), %eax
     movl  %eax, %r8d                   /* mr1 = scancode                   */
@@ -418,7 +418,7 @@ _start:
     movl  %ecx, kbd_ring_count(%rip)
     jmp   .kbd_recv
 
-/* ── Fase 13 (Track I): legacy KChannel handlers retired ──────────────────
+/* ── Fase 13: legacy KChannel handlers retired ──────────────────
  * The HELLO/STATUS/SUBSCRIBE handlers, the .kbd_irq_legacy subscriber push and
  * .kbd_recv_err are gone — kbd serves only the endpoint (POLL/READ/PING) and
  * the IRQ notification.  Liveness is covered by clients' kbd.ep PING. */

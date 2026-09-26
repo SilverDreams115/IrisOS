@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * net/main.c — an Intel e1000 driver in ring 3 (Stage 10).
+ * net/main.c — an Intel e1000 driver in ring 3.
  *
  * The interface and the buffer-ownership rules are in `iris/net_ep_proto.h`.
  * This file is the driver: find the NIC through `pci`, build descriptor rings

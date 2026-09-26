@@ -13,7 +13,7 @@
  *     → IRIS_EP_REPLY_ERR / IRIS_ERR_INVALID_ARG;
  *   - reads are clamped to VFS_EP_DATA_MAX; offset >= size is EOF, not error.
  *
- * Phase 28.1 — the file-grant trust boundary lives HERE, in the VFS, not in
+ * The file-grant trust boundary lives HERE, in the VFS, not in
  * any client:
  *   - the caller class comes from req->sender_badge (kernel-stamped from the
  *     invoked capability — a client cannot write it);
@@ -225,7 +225,7 @@ static void vfs_ep_handle_status(const struct vfs_export *exports,
     reply->word_count = 3u;
 }
 
-/* ── Phase 28.1: file-grant layer ────────────────────────────────────────── */
+/* ── File-grant layer ────────────────────────────────────────── */
 
 void vfs_ep_grants_init(struct vfs_ep_state *st, uint64_t epoch) {
     struct vfs_grant_table *gt = st->grants;
@@ -591,7 +591,7 @@ void vfs_ep_dispatch(struct vfs_ep_state *st,
         vfs_ep_msg_clear(reply);
         reply->label      = IRIS_EP_REPLY_OK;
         reply->words[0]   = 0u;
-        /* Phase 9 PING convention: echo the kernel-stamped sender badge. */
+        /* PING convention: echo the kernel-stamped sender badge. */
         reply->words[1]   = req->sender_badge;
         reply->word_count = 2u;
         return;

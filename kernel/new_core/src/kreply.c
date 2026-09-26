@@ -16,7 +16,7 @@ uint32_t kreply_live_count(void) {
 }
 
 /*
- * Ledger A-22 — a FAULT caller cannot be woken with an error.
+ * A FAULT caller cannot be woken with an error.
  *
  * Every other caller returns from a syscall, so "your server dropped the reply
  * authority" is an error code it reads and handles.  A faulting thread has no
@@ -63,10 +63,10 @@ static void kreply_obj_close(struct KObject *obj) {
     /* sys_ep_call wake-up path reads ipc_ep_closed and returns IRIS_ERR_CLOSED;
      * a fault caller has no such path and is killed instead. */
     kreply_abandon_caller(caller);
-    if (caller) kobject_release(&caller->base);   /* A-43: the binding's */
+    if (caller) kobject_release(&caller->base);   /* The binding's */
 }
 
-/* Phase S1: the ONLY KReply storage is untyped-backed — payload returns to the
+/* The ONLY KReply storage is untyped-backed — payload returns to the
  * source KUntyped region (kslab is never involved). */
 static void kreply_obj_destroy_ut(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kreply_live, 1u, memory_order_relaxed);
@@ -118,7 +118,7 @@ iris_error_t kreply_bind_caller(struct KReply *r, struct task *caller) {
     r->staged = 0;
     r->caller = caller;
     /*
-     * Ledger A-43 — the binding HOLDS the caller.
+     * The binding HOLDS the caller.
      *
      * `r->caller` is a raw task pointer that SYS_REPLY takes out under this
      * lock and then walks with the lock dropped: it writes the reply into the
@@ -139,7 +139,7 @@ iris_error_t kreply_bind_caller(struct KReply *r, struct task *caller) {
     return IRIS_OK;
 }
 
-/* ── Stage 8-mcs: scheduling context donation ───────────────────────────── */
+/* ── Scheduling context donation ───────────────────────────── */
 
 void kreply_donate_on_call(struct KReply *r, struct task *sender,
                            struct task *receiver) {
@@ -188,7 +188,7 @@ void kreply_return_donation(struct KReply *r, struct task *back_to) {
     struct task          *to = r->donated_to;
     r->donated_sc = 0;
     r->donated_to = 0;
-    if (to) kobject_retain(&to->base);   /* A-44: written through below */
+    if (to) kobject_retain(&to->base);   /* Written through below */
     irq_spinlock_unlock(&r->lock, flags);
 
     if (!sc) { if (to) kobject_release(&to->base); return; }
@@ -240,5 +240,5 @@ void kreply_cancel_caller(struct KReply *r) {
 
     /* caller->pending_kreply is managed by the teardown path; not touched here. */
     kreply_abandon_caller(caller);
-    if (caller) kobject_release(&caller->base);   /* A-43: the binding's */
+    if (caller) kobject_release(&caller->base);   /* The binding's */
 }

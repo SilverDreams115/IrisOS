@@ -8,14 +8,14 @@ struct KNotification;
 
 #define IRQ_ROUTE_MAX 16  /* maximum routable hardware IRQ lines (0..IRQ_ROUTE_MAX-1) */
 
-/* Phase 13/Track G: IRQ routing is KNotification-only — the legacy KChannel
+/* IRQ routing is KNotification-only — the legacy KChannel
  * message route (IRQ_MSG_TYPE_SIGNAL / SYS_CHAN_RECV) is fully retired.  An IRQ
  * fires → knotification_signal(notif, 1<<irq); the consumer drains device state
  * via its KIoPort cap and re-arms with SYS_IRQ_ACK. */
 
 void    irq_routing_init    (void);
 
-/* Phase 7.6: route an IRQ to a KNotification instead of a KChannel. When the
+/* Route an IRQ to a KNotification instead of a KChannel. When the
  * IRQ fires the kernel calls knotification_signal(notif, 1u << irq) — no
  * message, no queue; the consumer drains device state via its KIoPort cap
  * and re-arms with SYS_IRQ_ACK. A route holds either a channel or a
@@ -40,11 +40,11 @@ uint32_t irq_routing_active_count(void);
 /* Called from ISR context: send a one-byte payload into the channel
  * registered for irq.  Returns 0 if sent, -1 if no channel or full. */
 int32_t irq_routing_signal  (uint8_t irq, uint8_t data_byte);
-/* Stage 7-mem: clear every route bound to this notification.  Called from its
+/* Clear every route bound to this notification.  Called from its
  * CLOSE hook, so dropping the last capability to a notification unbinds the
  * interrupt — the binding belongs to the object, not to a resource domain. */
 void irq_routing_unregister_notification(struct KNotification *n);
-/* A-28: clear ONE line's route, named by the IRQ capability that holds it. */
+/* Clear ONE line's route, named by the IRQ capability that holds it. */
 int  irq_routing_clear(uint8_t irq);
 
 /* Called from sys_irq_ack: unmask the hardware IRQ line so new interrupts

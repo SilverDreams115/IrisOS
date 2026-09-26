@@ -10,7 +10,7 @@
 #include <iris/nc/kfault.h>
 #include <stdatomic.h>
 
-/* Phase 19 — live KVSpace object count (additive diagnostics, SYS_SCHED_INFO
+/* Live KVSpace object count (additive diagnostics, SYS_SCHED_INFO
  * ext4 tier).  Lets VM tests prove a child's VSpace is destroyed on process
  * death (V16) and that the count returns to baseline after churn. */
 static _Atomic uint32_t kvspace_live;
@@ -18,7 +18,7 @@ static _Atomic uint32_t kvspace_live;
 static void kvspace_release_nodes(struct KVSpace *vs);
 
 /*
- * The kernel-global PCID bitmap is GONE (ledger A-21).
+ * The kernel-global PCID bitmap is GONE.
  *
  * It allocated an identifier the moment a KVSpace was retyped, which made the
  * right to create an address space arrive with the memory to build one — and
@@ -46,7 +46,7 @@ void kvspace_tag_bootstrap(struct KVSpace *vs) {
 }
 
 static void kvspace_tag(struct KVSpace *vs) {
-    /* No identifier yet: one is ASSIGNED from a pool somebody holds (A-21).
+    /* No identifier yet: one is ASSIGNED from a pool somebody holds.
      * Until then the space has no name, and no thread can be bound to it. */
     vs->pcid     = 0u;
     vs->user_cr3 = paging_make_user_cr3(vs->cr3, 0u);
@@ -104,7 +104,7 @@ uint32_t kvspace_live_count(void) {
 }
 
 /*
- * Stage 7-proc: an address space stops being usable when the last CAPABILITY
+ * An address space stops being usable when the last CAPABILITY
  * to it goes, not when somebody declares a process dead.
  *
  * `close` fires at exactly that moment — the last CSpace slot holding this
@@ -155,7 +155,7 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
     }
     kvspace_release_nodes(vs);
 
-    /* Stage 7-proc: the root task's bootstrap frames, released after the sweep
+    /* The root task's bootstrap frames, released after the sweep
      * above has taken their mapped_count back to zero. */
     for (uint32_t i = 0; i < vs->bootstrap_frame_count; i++) {
         if (vs->bootstrap_frames[i]) {
@@ -165,7 +165,7 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
     }
     vs->bootstrap_frame_count = 0;
 
-    /* Stage 6-pure Step 1: tables the HOLDER retyped go back as capabilities.
+    /* Tables the HOLDER retyped go back as capabilities.
      * Releasing our reference is the whole of it — the region returns to its
      * Untyped when the last capability to the table goes, exactly like any
      * other retyped object, and the holder can then RESET.
@@ -191,7 +191,7 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
     }
 
     /*
-     * Stage 7 Step 11: the WALK comes down here, with the object.
+     * The WALK comes down here, with the object.
      *
      * It used to come down in the address-space reap, which is to say
      * when the PROCESS died — so a walk's lifetime was a property of an object
@@ -338,7 +338,7 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
 }
 
 /*
- * Stage 6 Step 6 — a mapping record comes from the address space's own budget.
+ * A mapping record comes from the address space's own budget.
  *
  * These are per-mapping kernel bookkeeping: small, numerous, and churning.
  * Carved from the VSpace's Untyped and recycled through a free list, so the
@@ -663,7 +663,7 @@ void kvspace_invalidate(struct KVSpace *vs) {
     if (!vs) return;
     spinlock_lock(&vs->lock);
     /*
-     * Stage 7 Step 11: cr3 SURVIVES invalidation.
+     * Cr3 SURVIVES invalidation.
      *
      * `valid` is what makes the address space unusable — every path that maps,
      * unmaps or installs a level checks it — and zeroing cr3 as well meant the

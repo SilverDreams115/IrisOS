@@ -15,7 +15,7 @@
 #define KCNODE_MAX_SLOTS     4096u
 #define KCNODE_DEFAULT_SLOTS  256u   /* used by UNTYPED_RETYPE when no count given */
 
-/* Stage 8-cap / D-2 — guard limits.  A CPtr owns the low 31 bits (the top of
+/* Guard limits.  A CPtr owns the low 31 bits (the top of
  * the value space is the retired handle range, see nc/cptr.h), so a guard
  * can never be wider than that and guard+radix must fit inside it. */
 #define CSPACE_CPTR_BITS       31u
@@ -23,20 +23,20 @@
 
 struct KCNode;
 
-/* Phase S3 — MDB flags (per-slot derivation metadata). */
-#define MDB_FLAG_LEGACY_ROOT 0x1u  /* installed from a non-CSpace origin
+/* MDB flags (per-slot derivation metadata). */
+#define MDB_FLAG_UNPARENTED 0x1u  /* installed from a non-CSpace origin
                                     * (handle / bootstrap / IPC delivery):
                                     * counted debt, see cspace-cdt-mdb.md §1.5 */
 
 struct KCSlot {
     struct KObject *object;
     iris_rights_t   rights;
-    uint64_t        badge;   /* Phase 9: per-cap sender identity.  0 =
+    uint64_t        badge;   /* Per-cap sender identity.  0 =
                               * unbadged.  Set only at mint time by the
                               * minting authority; copy/move/swap preserve
                               * it; it never crosses to other caps. */
     /*
-     * Phase S3 — MDB/CDT: intrusive derivation links.  The capability IS the
+     * MDB/CDT: intrusive derivation links.  The capability IS the
      * slot; its derivation node lives inside it (zero allocation per op).
      * Valid only while object != NULL; an empty slot has every link NULL and
      * flags 0 (invariant B.3-1).  Links are direct slot pointers — stable for
@@ -53,7 +53,7 @@ struct KCSlot {
     uint32_t        mdb_flags;
 
     /*
-     * Stage 8-cap / D-2 — CNode GUARD, meaningful only when `object` is a
+     * CNode GUARD, meaningful only when `object` is a
      * KOBJ_CNODE.  seL4 puts the guard in the CAPABILITY, not in the CNode
      * object (cap_cnode_cap_get_capCNodeGuard), so two capabilities to the
      * same CNode can carry different guards.  A KCSlot IS the capability in
@@ -117,7 +117,7 @@ void           kcnode_close(struct KCNode *cn);
  * Empty every slot of `cn` with DELETE semantics, exactly as the object's
  * close callback does, but WITHOUT waiting for the last reference to go.
  *
- * Stage 5 Step 3: a CSpace can contain a capability to one of its own CNodes
+ * A CSpace can contain a capability to one of its own CNodes
  * — the root task holds a capability to its own root CNode, the way seL4's
  * root task does — and a slot holds refs on the object it names.  A CNode
  * reachable from itself therefore never reaches zero references on its own,
@@ -132,34 +132,32 @@ void           kcnode_close(struct KCNode *cn);
 void           kcnode_teardown_slots(struct KCNode *cn);
 
 
-/* Phase 18: live KCNode object count (additive diagnostics). */
+/* Live KCNode object count (additive diagnostics). */
 uint32_t       kcnode_live_count(void);
-/* Phase S2: CSpace-native derivation (CDT/MDB) instrumentation. */
-void           kcnode_cdt_note_legacy_migrated_derivation(void);
+/* CSpace-native derivation (CDT/MDB) instrumentation. */
 void           kcnode_cdt_stats(uint32_t *deriv, uint32_t *deriv_hwm,
                                 uint32_t *revoke, uint32_t *del,
-                                uint32_t *cross, uint32_t *ipc,
-                                uint32_t *legacy_migrated);
+                                uint32_t *cross, uint32_t *ipc);
 iris_error_t   kcnode_mint(struct KCNode *cn, uint32_t slot_idx,
                             struct KObject *obj, iris_rights_t rights);
-/* Exclusive mint (Phase 8): fails with IRIS_ERR_ALREADY_EXISTS if the slot
+/* Exclusive mint: fails with IRIS_ERR_ALREADY_EXISTS if the slot
  * is occupied instead of silently replacing the cap.  Used by
  * SYS_PROC_CSPACE_MINT so a spawner cannot clobber a child's slots. */
 iris_error_t   kcnode_mint_excl(struct KCNode *cn, uint32_t slot_idx,
                                  struct KObject *obj, iris_rights_t rights);
-/* Badged exclusive mint (Phase 9): like kcnode_mint_excl but also records
+/* Badged exclusive mint: like kcnode_mint_excl but also records
  * the per-cap badge in the slot. */
 iris_error_t   kcnode_mint_excl_badged(struct KCNode *cn, uint32_t slot_idx,
                                         struct KObject *obj,
                                         iris_rights_t rights, uint64_t badge);
 iris_error_t   kcnode_fetch(struct KCNode *cn, uint32_t slot_idx,
                              struct KObject **out_obj, iris_rights_t *out_rights);
-/* Badge-aware fetch (Phase 9): also returns the slot badge. */
+/* Badge-aware fetch: also returns the slot badge. */
 iris_error_t   kcnode_fetch_badged(struct KCNode *cn, uint32_t slot_idx,
                                     struct KObject **out_obj,
                                     iris_rights_t *out_rights,
                                     uint64_t *out_badge);
-/* Stage 8-cap: fetch that also reports the capability's GUARD.  Only the
+/* Fetch that also reports the capability's GUARD.  Only the
  * CSpace walk needs it, and only when the fetched capability is a CNode it is
  * about to descend into; every other caller uses the badged form. */
 iris_error_t   kcnode_fetch_guarded(struct KCNode *cn, uint32_t slot_idx,
@@ -169,7 +167,7 @@ iris_error_t   kcnode_fetch_guarded(struct KCNode *cn, uint32_t slot_idx,
                                     uint64_t *out_guard,
                                     uint8_t  *out_guard_bits);
 
-/* Stage 8-cap: set the guard on a CNode capability already installed in a
+/* Set the guard on a CNode capability already installed in a
  * slot.  IRIS_ERR_WRONG_TYPE if the slot does not hold a KOBJ_CNODE;
  * IRIS_ERR_INVALID_ARG if the guard does not fit its declared width or the
  * level would exceed the CPtr space.  A guard is capability-local: setting it
@@ -179,13 +177,13 @@ iris_error_t   kcnode_slot_set_guard(struct KCNode *cn, uint32_t slot_idx,
 iris_error_t   kcnode_delete(struct KCNode *cn, uint32_t slot_idx);
 iris_error_t   kcnode_swap(struct KCNode *cn, uint32_t slot_a, uint32_t slot_b);
 
-/* ── Phase S3: canonical slot primitives (the ONLY slot mutators) ──────────
+/* ── Canonical slot primitives (the ONLY slot mutators) ──────────
  * See docs/architecture/cspace-cdt-mdb.md.  Every install/delete/move/revoke
  * of a CSpace slot goes through these; no TU touches cn->slots[] directly.
  */
 
 /* Install obj into (cn, idx) as an MDB node.  parent_cn == NULL → root
- * (legacy != 0 marks MDB_FLAG_LEGACY_ROOT — non-CSpace origin); otherwise
+ * (legacy != 0 marks MDB_FLAG_UNPARENTED — non-CSpace origin); otherwise
  * the new cap is a child of (parent_cn, parent_idx), which must be occupied.
  * exclusive != 0 → IRIS_ERR_ALREADY_EXISTS on an occupied slot; otherwise
  * the old occupant is deleted first (full delete-with-reparent semantics).
@@ -214,7 +212,7 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
                                         struct KCNode *parent_cn,
                                         uint32_t parent_idx,
                                         struct KObject *parent_expect,
-                                        int exclusive, int legacy);
+                                        int exclusive, int unparented);
 
 /* Derive (copy/mint) from source slot into dest slot: reads object, rights
  * and badge FROM the source, applies rights_reduce(src, requested) (requires
@@ -255,7 +253,7 @@ iris_error_t kcnode_slot_delete(struct KCNode *cn, uint32_t slot_idx);
  * invoked slot itself survives.  Siblings are untouched.  out_revoked
  * (optional) receives the number of capabilities destroyed. */
 /*
- * Stage 9-evt / ledger D-8 — revoke at most `budget` capabilities, then stop.
+ * Revoke at most `budget` capabilities, then stop.
  *
  * `*out_more` says whether the subtree still has descendants, i.e. whether the
  * caller must come back.  Unbounded revoke is the one in-kernel operation a
@@ -281,20 +279,20 @@ iris_error_t kcnode_slot_revoke(struct KCNode *cn, uint32_t slot_idx,
 iris_error_t mdb_badge_derive(uint64_t src_badge, uint64_t requested,
                               uint32_t obj_type, uint64_t *out_badge);
 
-/* ── Phase S3: MDB validator (test/diagnostic use; closed CNode set) ────── */
+/* ── MDB validator (test/diagnostic use; closed CNode set) ────── */
 struct mdb_validate_report {
     uint32_t errors;        /* invariant violations found */
     uint32_t nodes;         /* occupied slots in the set */
     uint32_t roots;         /* parentless nodes */
-    uint32_t legacy_roots;  /* roots flagged MDB_FLAG_LEGACY_ROOT */
+    uint32_t unparented_roots;  /* roots flagged MDB_FLAG_UNPARENTED */
     uint32_t max_depth;     /* deepest node observed */
 };
 uint32_t kcnode_mdb_validate(struct KCNode **set, uint32_t n,
                              struct mdb_validate_report *rep);
 
-/* Phase S3 — MDB gauges/counters (diagnostics; QUERY kind 4). */
+/* MDB gauges/counters (diagnostics; QUERY kind 4). */
 void kcnode_mdb_stats(uint32_t *nodes_live, uint32_t *nodes_hwm,
-                      uint32_t *legacy_roots, uint32_t *orphan_promotions,
+                      uint32_t *unparented_roots, uint32_t *orphan_promotions,
                       uint32_t *reparents, uint32_t *revoked_nodes,
                       uint32_t *moves, uint32_t *max_depth);
 /* IPC receive-slot delivery instrumentation (called by syscall_endpoint.c). */

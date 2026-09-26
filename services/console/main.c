@@ -4,14 +4,14 @@
  *
  * Bootstrap deliveries from svc_loader:
  *   recv SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP → ioport_h (KIoPort for 0x3F8..0x3FF)
- *   recv SVCMGR_BOOTSTRAP_KIND_SERVICE_EP → ep_h (KEndpoint recv, Phase 7.3)
+ *   recv SVCMGR_BOOTSTRAP_KIND_SERVICE_EP → ep_h (KEndpoint recv)
  *
  * Main loop: endpoint-only. Drain EP requests (CONSOLE_EP_OP_WRITE / SYNC /
  * PING — iris/console_ep_proto.h). EP WRITE replies only after the bytes hit
  * the UART; EP SYNC is an explicit flush barrier. The legacy KChannel write
  * path (CONSOLE_MSG_WRITE/SYNC) is retired, header deleted, and no longer
  * served — every writer, including svcmgr's klog drain, uses console.ep
- * (Phase 13/Track G).
+ *.
  */
 
 #include <stdint.h>
@@ -88,12 +88,12 @@ static void con_uart_write_byte(iris_cptr_t ioport_h, uint8_t byte) {
     /* Gone.  Say nothing and keep serving: there is nowhere to report it to. */
 }
 
-/* Phase 13 (Track I): the legacy KChannel write path (con_serve_chan_msg /
+/* The legacy KChannel write path (con_serve_chan_msg /
  * con_drain_chan, CONSOLE_MSG_WRITE/SYNC) is retired — console is endpoint-only.
  * Its sole writers (svcmgr klog drain, init logging) now use console.ep. */
 
 /*
- * The request buffer, and the two forms it can take (ledger D-4).
+ * The request buffer, and the two forms it can take.
  *
  * `g_con_ep_buf` is the fallback: 256 bytes of BSS matched to the kernel's own
  * staging, which is what a thread with no registered IPC buffer gets.  At
@@ -310,7 +310,7 @@ static void con_serve_ep_msg(iris_cptr_t ioport_h, struct iris_msg *req) {
             con_ep_reply_err(&reply, IRIS_ERR_INVALID_ARG);
             break;
         }
-        /* Phase 13 (Track I): no legacy KChannel writers remain — EP writes are
+        /* No legacy KChannel writers remain — EP writes are
          * synchronous by construction, so SYNC is a trivial acknowledge. */
         con_imsg_zero(&reply);
         reply.label      = IRIS_EP_REPLY_OK;
@@ -319,7 +319,7 @@ static void con_serve_ep_msg(iris_cptr_t ioport_h, struct iris_msg *req) {
     case IRIS_EP_OP_PING:
         con_imsg_zero(&reply);
         reply.label      = IRIS_EP_REPLY_OK;
-        /* Phase 9 PING convention: echo the kernel-stamped sender badge. */
+        /* PING convention: echo the kernel-stamped sender badge. */
         reply.words[1]   = req->sender_badge;
         reply.word_count = 2u;
         break;
@@ -328,14 +328,14 @@ static void con_serve_ep_msg(iris_cptr_t ioport_h, struct iris_msg *req) {
         break;
     }
 
-    /* Phase S1: reply_h is the console's OWN reply-object CPtr (echoed by the
+    /* Reply_h is the console's OWN reply-object CPtr (echoed by the
      * kernel from the recv arg2).  The object is reusable — nothing to close. */
     if (reply_h != IRIS_CPTR_NULL)
         (void)iris_msg_reply((long)reply_h, &reply);
 }
 
 void console_main_c(iris_cptr_t rbx_unused) {
-    /* Phase 13 (Track I): console is endpoint-only and fully CPtr-provisioned —
+    /* Console is endpoint-only and fully CPtr-provisioned —
      * the endpoint recv side is the IRIS_CPTR_OWN_EP mint (slot 5) and the
      * KIoPort for 0x3F8..0x3FF the IRIS_CPTR_IOPORT mint (slot 10), named by
      * CPtr like everything else (INV_IOPORT_IN/OUT).  No bootstrap KChannel
@@ -345,7 +345,7 @@ void console_main_c(iris_cptr_t rbx_unused) {
 
     (void)rbx_unused;   /* RBX = 0 since the KChannel bootstrap retired */
 
-    /* D-4: a page console owns, registered as its IPC buffer.  Best-effort —
+    /* A page console owns, registered as its IPC buffer.  Best-effort —
      * failing leaves the kernel staging path, which still works. */
     con_ipc_buffer_init();
 
@@ -355,7 +355,7 @@ void console_main_c(iris_cptr_t rbx_unused) {
     con_screen_init();
 
     /* Endpoint-only main loop: block on the KEndpoint, serve, reply.
-     * Phase S1: the explicit reply object (init retypes it from its untyped
+     * The explicit reply object (init retypes it from its untyped
      * pool and mints it at IRIS_CPTR_OWN_REPLY) rides in recv arg2. */
     for (;;) {
         struct iris_msg req;

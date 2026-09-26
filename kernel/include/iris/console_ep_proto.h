@@ -5,13 +5,13 @@
 #include <iris/endpoint_proto.h>
 
 /*
- * console_ep_proto.h — KEndpoint protocol for the serial console (Phase 7.3).
+ * console_ep_proto.h — KEndpoint protocol for the serial console.
  *
  * Wire format: a MessageInfo word and message registers (iris/ipc_msg.h);
  * the MessageInfo's label field is the opcode.
  * This is the ONLY console write path.  It fully replaced the legacy
  * CONSOLE_MSG_WRITE/SYNC KChannel protocol, whose header is deleted
- * (Phase 13/Track G).  All writers — init, sh, vfs, iris_test and svcmgr's
+ *.  All writers — init, sh, vfs, iris_test and svcmgr's
  * klog drain — use this endpoint.
  *
  * CONSOLE_EP_OP_WRITE — synchronous write.

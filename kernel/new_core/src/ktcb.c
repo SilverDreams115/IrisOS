@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 /*
- * Phase S2 D2 — KTCB object identity ops.
+ * D2 — KTCB object identity ops.
  *
  * The KTCB IS `struct task` (KObject at offset 0).  These ops manage the
  * OBJECT lifetime only; execution teardown (queues, resources, registry) is
@@ -75,7 +75,7 @@ void ktcb_object_init(struct task *t) {
     ktcb_live_inc();
 }
 
-/* ── Phase S2 Step 0 — Untyped-born (canonical) KTCB ───────────────────── */
+/* ── Untyped-born (canonical) KTCB ───────────────────── */
 
 struct task *ktcb_alloc_at(void *mem) {
     struct task *t = (struct task *)mem;
@@ -90,7 +90,7 @@ struct task *ktcb_alloc_at(void *mem) {
     t->ring       = TASK_RING3;
     t->priority   = TASK_PRIORITY_DEFAULT;
     /* A retyped TCB grants nothing until it is configured; ktcb_configure
-     * gives it the ceiling of whoever configured it (ledger A-20). */
+     * gives it the ceiling of whoever configured it. */
     t->mcp        = 0;
     t->reg_slot   = -1;                     /* no scheduler identity */
     t->configured = 0;                      /* execution gate: stays closed */

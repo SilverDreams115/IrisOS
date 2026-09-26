@@ -19,14 +19,14 @@
  *   slot 3  PGR_SLOT_CTRL_EP     control endpoint the pager serves (RIGHT_READ)
  *   slot 4  PGR_SLOT_VFS_EP     the pager's VFS SESSION cap: a badged
  *                               (IRIS_BADGE_FILEGRANT_S(session)), WRITE-only
- *                               vfs.ep cap.  Phase 28.1: this is NOT a generic
+ *                               vfs.ep cap.  This is NOT a generic
  *                               VFS client cap — the VFS confines the badge to
  *                               the session-scoped GRANT ops and denies every
  *                               name-based op, so the slot carries exactly
  *                               "the backings my supervisor granted me" and
  *                               nothing else, even if this pager is hostile.
  *   slot 5  PGR_SLOT_FAULT_EP   the SHARED fault ENDPOINT (RIGHT_READ).
- *                               Ledger A-22: a fault is an IPC message, so a
+ *                               A fault is an IPC message, so a
  *                               pager is a server and this is the endpoint it
  *                               serves.  One KEndpoint for ALL targets: the
  *                               supervisor registers each target's faults on a
@@ -38,7 +38,7 @@
  *                               the reply capability carries the authority to
  *                               resume.
  *   slot 15 PGR_SLOT_SELF_VS      the pager's OWN address space, published by
- *                               SYS_VSPACE_SELF at start-up (Stage 4).  It is
+ *                               SYS_VSPACE_SELF at start-up.  It is
  *                               not minted by the supervisor: a process's own
  *                               VSpace is an attribute of being a process, and
  *                               the pager needs it as a MAP target for the
@@ -59,15 +59,15 @@
 #define PGR_SLOT_CTRL_EP      3u
 #define PGR_SLOT_VFS_EP       4u
 #define PGR_SLOT_FAULT_EP     5u
-/* Phase S1: the pager's explicit reply object (supervisor retypes it from its
+/* The pager's explicit reply object (supervisor retypes it from its
  * untyped pool and mints it here); passed as arg2 of every ctrl-EP recv. */
 #define PGR_SLOT_REPLY        13u
-/* Stage 4: the pager's own VSpace as a capability, not a handle.  Inside the
+/* The pager's own VSpace as a capability, not a handle.  Inside the
  * 0..19 window the manifest oracle reports, deliberately: it is authority the
  * pager holds and the report must account for it. */
 #define PGR_SLOT_SELF_VS      15u
 /*
- * Ledger A-22 — the fault REPLY objects.
+ * The fault REPLY objects.
  *
  * A CNode the SUPERVISOR retypes and fills with one KReply per target, minted
  * here.  A fault arrives as a call, so serving it means receiving WITH reply
@@ -98,7 +98,7 @@
 #define PGR_TSLOT_VS(i)    (PGR_TGT_BASE + (i) * PGR_TGT_STRIDE + 1u)
 
 /*
- * Ledger D-5 — a GRANT is a run of frame capabilities, one per page.
+ * A GRANT is a run of frame capabilities, one per page.
  *
  * It was a KVMO: the client handed the pager one capability to a multi-page
  * region and the pager mapped page N of it with SYS_VMO_MAP_PAGE.  That
@@ -125,7 +125,7 @@
 #define PGR_PSLOT(j, p)    (PGR_GRANT_BASE + (j) * PGR_GRANT_PAGES + (p))
 
 /*
- * Ledger D-5 — the pager's pages are FRAMES it retypes, not VMOs it is granted.
+ * The pager's pages are FRAMES it retypes, not VMOs it is granted.
  *
  * A KVMO is a lazily-populated array of pages, and `SYS_VMO_MAP_PAGE` was the
  * only place that shape was actually used: everywhere else a VMO was a
@@ -153,7 +153,7 @@
 #define PGR_OP_MAP_RESUME  3u   /* map page N of a frame grant */
 #define PGR_OP_KILL        4u
 #define PGR_OP_SHUTDOWN    5u
-#define PGR_OP_MAP_REGION  6u   /* Phase 28: resolve a file-backed fault (target tidx) */
+#define PGR_OP_MAP_REGION  6u   /* Resolve a file-backed fault (target tidx) */
 #define PGR_OP_REGISTER_BACKING   7u   /* buffer = struct pgr_backing_req */
 #define PGR_OP_REGISTER_REGION    8u   /* buffer = struct pgr_region_req */
 #define PGR_OP_UNREGISTER_REGION  9u   /* words[1] = region_idx */
@@ -176,7 +176,7 @@
 #define PGR_VMO_PRIVATE    1u   /* VMO grant 1 (slot 17): private-writable pool */
 
 #define PGR_MAX_BACKINGS   4u
-#define PGR_MAX_REGIONS    16u  /* Phase 28.1: one region per possible target */
+#define PGR_MAX_REGIONS    16u  /* One region per possible target */
 
 /* Mapping modes. */
 #define PGR_MODE_RO_SHARED         0u
@@ -191,7 +191,7 @@
 /* Wire structs, passed in the control-message bulk buffer (<= IRIS_IPC_BUF_SIZE). */
 struct pgr_backing_req {
     uint32_t backing_idx;
-    uint32_t grant_idx;        /* Phase 28.1: VFS file-grant index (session-scoped) */
+    uint32_t grant_idx;        /* VFS file-grant index (session-scoped) */
     uint64_t backing_id;       /* VFS-issued (GRANT_OPEN reply) */
     uint64_t generation;       /* VFS-issued (GRANT_OPEN reply) */
     uint64_t file_size;
@@ -246,7 +246,7 @@ struct pgr_region_req {
 #define PGR_ERR_RANGE      0x6Au   /* region validation failure */
 #define PGR_ERR_NOBACK     0x6Bu   /* region references an unregistered backing */
 #define PGR_ERR_PRIVFULL   0x6Cu   /* no free private-writable page */
-#define PGR_ERR_GRANT      0x6Du   /* Phase 28.1: VFS denied the grant (bad index,
+#define PGR_ERR_GRANT      0x6Du   /* VFS denied the grant (bad index,
                                     * identity mismatch, missing right, revoked) */
 
 /* DIAG reply: words[0]=OK(0); the counters come back in the reply bulk buffer as
@@ -264,7 +264,7 @@ struct pgr_diag {
     uint32_t generation_stale;
     uint32_t grant_revoke;
     uint32_t private_pages;
-    /* Phase 28.1: multi-target fault multiplexing. */
+    /* Multi-target fault multiplexing. */
     uint32_t notif_waits;      /* SYS_NOTIFY_WAIT_TIMEOUT calls on the shared notif */
     uint32_t notif_wakeups;    /* successful wakeups (bit sets consumed) */
     uint32_t pending_mask;     /* fault bits accumulated but not yet resolved */

@@ -63,7 +63,7 @@ void test_t210(void) {
             if (!t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; break; }
             if (it_kill((long)g.proc) != 0 || it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "op2 kill"; }
             it_quiesce_reaper();
-            /* Stage 7-proc: the target's address space outlives the target
+            /* The target's address space outlives the target
              * while this test holds a capability to it, so the late map
              * SUCCEEDS into a space with nothing running in it. */
             if (ok && it_invoke((long)T26_AT(vmo, 0x1000ULL), INV_FRAME_MAP, (long)g.vs, (long)T27_VA_A, (long)(0u))
@@ -80,7 +80,7 @@ void test_t210(void) {
             /* RO VMO grant + writable request → the pager's map is ACCESS_DENIED. */
             if (res != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op3 not denied"; }
             /*
-             * A-22: the pager took DELIVERY of the fault before its map was
+             * The pager took DELIVERY of the fault before its map was
              * refused, so the answer is still its to give — and the retry
              * proves it kept it.  The supervisor cannot step in here and
              * resolve the fault itself, because a fault is delivered once, to
@@ -99,7 +99,7 @@ void test_t210(void) {
         default: break;
         }
 
-        /* A-22: a fault this round did not answer is one the supervisor still
+        /* A fault this round did not answer is one the supervisor still
          * holds the reply for.  Dropping it is the answer — and after that
          * nothing is outstanding, which is what "residual" meant. */
         (void)it_fault_kill(g.fault_leaf);
@@ -141,7 +141,7 @@ void test_t211(void) {
         long v = it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, i);
         if (v < 0) { ok = 0; why = "image vmo"; break; }
         iris_cptr_t vh = (iris_cptr_t)v;
-        /* D-5: the image is a frame, and the call that produced it said how
+        /* The image is a frame, and the call that produced it said how
          * big the FILE was — a frame only knows its region. */
         if (g_it_initrd_size <= 0) { ok = 0; why = "image size"; }
         it_close(&vh);
@@ -180,7 +180,7 @@ void test_t212(void) {
         if (sz <= 0 || sz > (long)(64u * 1024u * 1024u)) { ok = 0; why = "size range"; }
         /* Map it read-only into our own VSpace at a scratch VA; a mappable
          * image with a real backing proves the bounds are honest.  One map
-         * covers the whole frame (D-10), where a VMO needed a page at a
+         * covers the whole frame, where a VMO needed a page at a
          * time. */
         if (ok && it_invoke(v, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 0) != 0) {
             ok = 0; why = "map"; }
@@ -325,20 +325,20 @@ void test_t215(void) {
     if (ok) {
         long mask = t27_pager_call(p.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_EP) |
-                          (1u << PGR_SLOT_FAULT_CN) /* Stage 7 Step 7: the fault
+                          (1u << PGR_SLOT_FAULT_CN) /* The fault
                               * mailbox.  Real authority — the CNode a fault
                               * delivers the faulting thread into — so the
                               * oracle counts it rather than being blind to it,
                               * which is the same reason slot 15 is here. */ |
-                          (1u << 13) /* Phase S1: explicit reply object */ |
-                          (1u << 15) /* Stage 4: the pager's own VSpace, now a cap */ |
-                          (1u << IRIS_CPTR_OWN_UNTYPED) /* Stage 6-pure Step 2: the
+                          (1u << 13) /* Explicit reply object */ |
+                          (1u << 15) /* The pager's own VSpace, now a cap */ |
+                          (1u << IRIS_CPTR_OWN_UNTYPED) /* The
                               * budget its own address space was built from.  The
                               * pager MAPS, and the kernel no longer creates paging
                               * levels, so it must be able to retype one.  A real
                               * authority, which is why it belongs in this oracle. */ |
                           (1u << IRIS_CPTR_OWN_VSPACE) |
-                          (1u << IRIS_CPTR_OWN_TCB) /* D-6: its own address
+                          (1u << IRIS_CPTR_OWN_TCB) /* Its own address
                               * space and its own thread, DELEGATED by its
                               * spawner instead of fabricated with
                               * SYS_VSPACE_SELF / SYS_TCB_SELF, which publish
@@ -349,7 +349,7 @@ void test_t215(void) {
                               * slot is authority whoever reads this must
                               * account for. */ |
                           PGR_REPORT_GRANT | (1u << 21);
-        /* Stage 7 Step 8: bit 20 (any target PROCESS capability) is GONE.  A
+        /* Bit 20 (any target PROCESS capability) is GONE.  A
          * pager maps and answers faults; both name the address space and the
          * thread, and neither names the process. */
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest"; }
@@ -390,7 +390,7 @@ void test_t216(void) {
             long v = it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, i);
             if (v < 0) { ok = 0; why = "map vmo"; break; }
             iris_cptr_t vh = (iris_cptr_t)v;
-            /* D-5: a frame, mapped whole (D-10). */
+            /* A frame, mapped whole. */
             if (it_invoke(v, INV_FRAME_MAP, IT_VS, (long)T26_SELF_VA, 0) != 0) { ok = 0; why = "map"; }
             if (ok) (void)it_invoke2(v, INV_FRAME_UNMAP, IT_VS, (long)T26_SELF_VA);
             it_close(&vh);
@@ -473,7 +473,7 @@ static long t28_cmd_read_offs(iris_cptr_t cmd, uint64_t base, uint32_t count,
  * rights AND badge.  The ordinary svcmgr lookup strips DUPLICATE (client
  * grant tightening) and cannot mint fresh badges, so these pre-mints are the
  * only honest supervisor path. */
-/* Stage 4: these are the pre-mint SLOTS themselves.  They used to be
+/* These are the pre-mint SLOTS themselves.  They used to be
  * materialised into handles for every use and closed again; every syscall they
  * are passed to resolves a CPtr, so the round trip bought nothing. */
 static iris_cptr_t t28_vfs_cap(void) {
@@ -613,7 +613,7 @@ int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt,
         it_close(&ctrl); it_close(&vfs); it_close(&adm);
         *why = "session reset"; return 0;
     }
-    /* A-22: every target's faults onto the ONE shared ENDPOINT
+    /* Every target's faults onto the ONE shared ENDPOINT
      * (targets[0].notif), each through a copy badged `i + 1`, before the pager
      * starts. */
     if (!it_pgr_mbox_fresh(nt)) {
@@ -641,14 +641,14 @@ int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt,
     m[k].badge = IRIS_BADGE_FILEGRANT_S(FBK_SESSION); k++;
     if (nt > 0) {
         m[k].slot = FBK_SLOT_NOTIF; IT_MINT_SRC(m[k], targets[0].notif); m[k].rights = RIGHT_READ; m[k].badge = 0; k++;
-        /* Stage 7 Step 7: the mailbox each fault delivers a thread into. */
+        /* The mailbox each fault delivers a thread into. */
         m[k].slot = PGR_SLOT_FAULT_CN; IT_MINT_SRC(m[k], IT_PGR_MBOX_SLOT); m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
     }
     for (uint32_t i = 0; i < nt; i++) {
         m[k].slot = PGR_TSLOT_VS(i);    IT_MINT_SRC(m[k], targets[i].vs);    m[k].rights = RIGHT_WRITE;               m[k].badge = 0; k++;
     }
 
-    /* Phase S1: explicit reply object for the pager's ctrl EP (slot 13). */
+    /* Explicit reply object for the pager's ctrl EP (slot 13). */
     iris_cptr_t pgr_reply_h = IRIS_CPTR_NULL;
     {
         long rr = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
@@ -802,7 +802,7 @@ void test_t217(void) {
     if (ok) {
         long mask = t27_pager_call(f.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         /* 15 = the pager's own VSpace, a capability since Stage 4. */
-        /* Stage 6-pure Step 2 adds slot 12: the budget the pager's own
+        /* Step 2 adds slot 12: the budget the pager's own
          * address space was built from.  It MAPS, and the kernel no longer
          * creates paging levels, so it must be able to retype one. */
         /* D-6 adds 18 and 19: the pager's own address space and own thread,
@@ -1671,7 +1671,7 @@ void test_t230(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
- * Phase 28.1 — File Grant Capability Enforcement + Pager Multi-target (T231–T238)
+ * File Grant Capability Enforcement + Pager Multi-target (T231–T238)
  *
  * These tests attack the TRUST BOUNDARY, not the functional layer (T217–T230
  * already prove content correctness).  The premise everywhere is a HOSTILE
@@ -1982,7 +1982,7 @@ void test_t235(void) {
  * (A12).  We SIMULATE the new instance in-process by re-initializing a grant
  * table under a bumped epoch (the productive VFS uses its svcmgr restart
  * generation for the same effect) and confirm: (a) old generations never equal
- * new ones; (b) mappings already installed follow the Phase 28 contract.  The
+ * new ones; (b) mappings already installed follow the contract.  The
  * cross-instance generation-namespace property is verified against the live
  * VFS's issued generations.  Invariants: A12, A16. */
 void test_t236(void) {
@@ -2059,7 +2059,7 @@ static int t28_multi_spawn(struct t28_multi *m, uint32_t nt, const char **why) {
     for (uint32_t i = 0; i < T28_MT_MAX; i++) { m->cmd[i] = m->proc[i] = m->vs[i] = IRIS_CPTR_NULL; }
     m->fault_notif = m->exit_notif = IRIS_CPTR_NULL; m->n = 0;
     if (nt > T28_MT_MAX) { *why = "too many targets"; return 0; }
-    long fn = it_ep_create();       /* A-22: the shared fault ENDPOINT */
+    long fn = it_ep_create();       /* The shared fault ENDPOINT */
     long en = it_notify_create();
     if (fn < 0 || en < 0) { it_close(&m->fault_notif); it_close(&m->exit_notif);
         if (fn >= 0) { iris_cptr_t h = (iris_cptr_t)fn; it_close(&h); }
@@ -2115,13 +2115,13 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
     mm[k].slot = FBK_SLOT_VFS_EP;  IT_MINT_SRC(mm[k], vfs);  mm[k].rights = RIGHT_WRITE;
     mm[k].badge = IRIS_BADGE_FILEGRANT_S(FBK_SESSION); k++;
     mm[k].slot = FBK_SLOT_NOTIF;   IT_MINT_SRC(mm[k], m->fault_notif); mm[k].rights = RIGHT_READ; mm[k].badge = 0; k++;
-    /* Stage 7 Step 7: the mailbox each fault delivers a thread into. */
+    /* The mailbox each fault delivers a thread into. */
     mm[k].slot = PGR_SLOT_FAULT_CN; IT_MINT_SRC(mm[k], IT_PGR_MBOX_SLOT); mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
     for (uint32_t i = 0; i < m->n; i++) {
         mm[k].slot = PGR_TSLOT_VS(i);   IT_MINT_SRC(mm[k], m->vs[i]);   mm[k].rights = RIGHT_WRITE;               mm[k].badge = 0; k++;
     }
     iris_cptr_t boot = IRIS_CPTR_NULL;
-    /* Phase S1: explicit reply object for the pager's ctrl EP (slot 13). */
+    /* Explicit reply object for the pager's ctrl EP (slot 13). */
     iris_cptr_t pgr_reply_h = IRIS_CPTR_NULL;
     {
         long rr = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
@@ -2357,7 +2357,7 @@ void test_t238(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
- * Phase 29 — Resource Ownership, Quota Domains and Kernel Capacity (T239–T250)
+ * Resource Ownership, Quota Domains and Kernel Capacity (T239–T250)
  *
  * Model: a KProcess IS a resource domain.  Every object is charged to the
  * process that logically OWNS it (its payer), selected by explicit capability
@@ -2368,7 +2368,7 @@ void test_t238(void) {
  * exhaustion is atomic, and usage returns to baseline.
  * ════════════════════════════════════════════════════════════════════════ */
 
-/* Stage 7-mem: struct it_rinfo and it_rinfo() are DELETED with
+/* Struct it_rinfo and it_rinfo() are DELETED with
  * SYS_RESOURCE_INFO.  Per-process accounting is gone — a VMO's cost is the
  * Untyped it was carved from — and the three global gauges the syscall carried
  * (kslab occupancy, failed charges, rollbacks) live in SYS_UNTYPED_QUERY's

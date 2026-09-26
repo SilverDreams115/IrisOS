@@ -31,7 +31,7 @@
  * handed out before each read, so a capability from the last read is gone
  * rather than watching its data change underneath.
  *
- * Invariants: D-9, D-10, M3, and the Stage 10-dma containment claim as a
+ * Invariants: D-9, D-10, M3, and the containment claim as a
  * subsystem depends on it.
  */
 
@@ -68,7 +68,7 @@ void test_t355(void) {
     if (t355_blk(BLK_OP_INFO, 0, 0, 0, &info) != 0) {
         it_fail("T355", "the disk service did not answer"); return;
     }
-    /* A COUNT, not a flag (Stage 10): the driver reports how many disks it
+    /* A COUNT, not a flag: the driver reports how many disks it
      * brought up, because this machine has two — the one it booted from and
      * the one the filesystem lives on. */
     if (info.words[0] == 0u) {

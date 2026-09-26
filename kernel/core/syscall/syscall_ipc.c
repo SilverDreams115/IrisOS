@@ -3,7 +3,7 @@
 
 
 
-/* Phase 13/Track G: sys_chan_create/send/recv/recv_nb retired — KChannel is
+/* Sys_chan_create/send/recv/recv_nb retired — KChannel is
  * no longer a productive IPC mechanism; the syscall numbers return
  * IRIS_ERR_NOT_SUPPORTED via the dispatch default. */
 
@@ -82,7 +82,7 @@ uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (r != IRIS_OK) return syscall_err(r);
 
     /*
-     * Stage 9-evt Step 1 — RESTARTABLE (ledger D-1).
+     * RESTARTABLE.
      *
      * One non-blocking attempt; if it would block, the thread is enqueued on
      * the notification and parked, and the DISPATCHER re-executes this syscall
@@ -109,7 +109,7 @@ uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
-/* Phase 13/Track G: sys_chan_seal / sys_chan_recv_timeout retired (KChannel
+/* Sys_chan_seal / sys_chan_recv_timeout retired (KChannel
  * fully retired); the syscall numbers fall to the dispatch default. */
 
 

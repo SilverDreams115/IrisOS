@@ -30,7 +30,7 @@
  * `iris_cptr_t` and `IRIS_CPTR_NULL` come from nc/cptr.h, included above,
  * which is the header ring 3 includes.  This file used to declare the type a
  * second time and to spell the null capability `CPTR_NULL` — two names for one
- * thing, which a 1.0 ABI (Stage 10-abi) does not have.
+ * thing, which a 1.0 ABI does not have.
  */
 #define CSPACE_MAX_DEPTH 8u
 
@@ -64,7 +64,7 @@ struct KFrame;
  * cspace_resolve_cap — kernel-internal CSpace traversal.
  *
  * Traverses root's CNode tree using cptr, starting from root —
- * a structural back-reference, not a handle (Stage 4).
+ * a structural back-reference, not a handle.
  * On success returns IRIS_OK and writes the terminal capability into *obj_out
  * and its effective rights into *rights_out.
  *
@@ -94,7 +94,7 @@ iris_error_t cspace_resolve_cap(struct KCNode     *root,
                                  struct KObject   **obj_out,
                                  iris_rights_t     *rights_out);
 
-/* Phase 9: like cspace_resolve_cap but also returns the terminal slot's
+/* Like cspace_resolve_cap but also returns the terminal slot's
  * badge (badge_out may be NULL). */
 iris_error_t cspace_resolve_cap_badged(struct KCNode     *root,
                                         iris_cptr_t        cptr,
@@ -103,14 +103,14 @@ iris_error_t cspace_resolve_cap_badged(struct KCNode     *root,
                                         iris_rights_t     *rights_out,
                                         uint64_t          *badge_out);
 
-/* Phase S3: resolve a CPtr to its terminal SLOT LOCATION (CNode + index) —
+/* Resolve a CPtr to its terminal SLOT LOCATION (CNode + index) —
  * the identity the MDB operates on.  CSpace namespace only (caller guards
  * the <1024 split).  On success the CNode carries active+lifecycle refs
  * (caller releases both); the slot was occupied at resolution time. */
 iris_error_t cspace_resolve_slot(struct KCNode   *root, iris_cptr_t cptr,
                                  struct KCNode **cn_out, uint32_t *idx_out);
 
-/* Stage 4: the DESTINATION analogue of cspace_resolve_slot — resolves a CPtr
+/* The DESTINATION analogue of cspace_resolve_slot — resolves a CPtr
  * to the terminal (CNode, index) it addresses WITHOUT requiring that slot to
  * be occupied.  Same traversal, same ref contract (the returned CNode carries
  * active+lifecycle refs the caller releases), but the terminal slot may be
@@ -129,7 +129,7 @@ iris_error_t cspace_resolve_dest_slot(struct KCNode   *root, iris_cptr_t cptr,
                                       struct KCNode **cn_out,
                                       uint32_t *idx_out);
 
-/* Phase 9: badge-aware dual endpoint resolver for the EP send/call paths.
+/* Badge-aware dual endpoint resolver for the EP send/call paths.
  * Same namespace + refcount contract as cspace_resolve_only_endpoint
  * (lifecycle-only ref); additionally returns the badge of the capability
  * that was invoked (slot badge on the CSpace path, handle badge on the
@@ -198,7 +198,7 @@ iris_error_t cspace_resolve_only_frame(struct KCNode   *root,
 
 /*
  * cspace_resolve_only_vspace — dual resolver for the VSpace argument of
- * SYS_FRAME_MAP/SYS_FRAME_UNMAP (Phase 25).  Same namespace split and
+ * SYS_FRAME_MAP/SYS_FRAME_UNMAP.  Same namespace split and
  * active+lifecycle ref contract as cspace_resolve_only_frame; closes the
  * raw-radix handle-masking hazard those two syscalls still carried and lets a
  * supervisor pass a SYS_PROCESS_VSPACE handle directly.
@@ -210,7 +210,7 @@ iris_error_t cspace_resolve_only_vspace(struct KCNode   *root,
                                               iris_rights_t   *rights_out);
 
 /*
- * Phase 13: generic dual resolver for device/authority caps (KIoPort, KIrqCap,
+ * Generic dual resolver for device/authority caps (KIoPort, KIrqCap,
  * KBootstrapCap).  Namespace split as usual; LIFECYCLE-ONLY ref contract
  * (lifecycle-only) — release with a single kobject_release.
  * required==RIGHT_NONE defers the rights check to the caller.

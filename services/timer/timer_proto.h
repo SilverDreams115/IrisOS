@@ -3,7 +3,7 @@
 #define IRIS_TIMER_PROTO_H
 
 /*
- * timer_proto.h — the wire contract of the IRIS timer service (ledger A-24).
+ * timer_proto.h — the wire contract of the IRIS timer service.
  *
  * The kernel has no way to block a thread on TIME.  `SYS_SLEEP`,
  * `SYS_CLOCK_NANOSLEEP` and `SYS_NOTIFY_WAIT_TIMEOUT` are retired: a kernel
@@ -24,7 +24,7 @@
  *   slot TMR_SLOT_IRQ_CAP   the timer IRQ capability                (ROUTE)
  *   slot TMR_SLOT_IRQ_NOTIF the notification that IRQ is routed into, BOUND to
  *                           this service's thread so one thread can take both
- *                           ticks and requests (ledger A-23)        (WRITE)
+ *                           ticks and requests        (WRITE)
  *   slot TMR_SLOT_REPLY     its reply object                        (WRITE)
  *   slot IRIS_CPTR_OWN_UNTYPED  the budget its receive slots are carved from
  *

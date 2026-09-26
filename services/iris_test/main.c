@@ -19,7 +19,7 @@
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(iris_cptr_t rbx_unused) {
-    /* Phase 13 (Track I): the spawn/authority cap arrives as the
+    /* The spawn/authority cap arrives as the
      * IRIS_CPTR_PROC_CONTROL (slot 6) pre-start mint — no bootstrap KChannel.
      * SYS_CAP_CREATE_IOPORT resolves it by CPtr via the device-cap dual
      * resolver (the serial KIoPort for test output).  svc_loader passes
@@ -31,17 +31,17 @@ void iris_test_main(iris_cptr_t rbx_unused) {
      * only addressable because handles moved out of the low CPtr range. */
     (void)it_invoke((long)IRIS_CPTR_TEST_UNTYPED, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)), (long)((uint64_t)IT_OBJ_CNODE_SLOT << 32), 256);
 
-    /* Stage 7 Step 13: and one for the child threads the suite supervises.
+    /* And one for the child threads the suite supervises.
      * Separate from the objects CNode because it must hold as many entries as
      * the suite holds children — 48 in T240 — which is more leaves than the
      * objects CNode has spare. */
     (void)it_invoke((long)IRIS_CPTR_TEST_UNTYPED, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)), (long)((uint64_t)IT_CHILD_CN_SLOT << 32), (long)IT_CHILD_CN_SLOTS);
 
     {
-        /* Phase S4: device caps are published into a CSpace slot as MDB
+        /* Device caps are published into a CSpace slot as MDB
          * children of the authorising slot; the result is a CPtr, and
          * SYS_IOPORT_IN/OUT resolve it through their CSpace leg.
-         * Stage 5 Step 2: the authorising slot holds the ioport CONTROL
+         * The authorising slot holds the ioport CONTROL
          * capability — printing test output no longer needs the authority to
          * spawn processes. */
         if (it_ioport_create((long)IRIS_CPTR_IOPORT_CONTROL, 0x3F8, 8, (long)IT_SERIAL_SLOT) == 0)
@@ -51,7 +51,7 @@ void iris_test_main(iris_cptr_t rbx_unused) {
     it_serial_write("[IRIS][TEST] start\n");
 
     /*
-     * D-4: the main thread's own IPC buffer, before any test runs.
+     * The main thread's own IPC buffer, before any test runs.
      *
      * The buffer lands
      * at IRIS_IPC_BUFFER_VA, and every thread this suite creates gets the next
@@ -78,7 +78,7 @@ void iris_test_main(iris_cptr_t rbx_unused) {
     test_t001();
     test_t002();
     test_t003();
-    /* T004-T007 retired (Phase 13/Track F): the KChannel send/recv, NB-recv,
+    /* T004-T007 retired: the KChannel send/recv, NB-recv,
      * recv-timeout and seal/close semantics are covered by the endpoint /
      * notification equivalents — T015 (EP_SEND/RECV), T014 (EP_NB_RECV empty
      * → WOULD_BLOCK), T016 (EP_CALL/REPLY), T019 (endpoint close wakes a
@@ -318,7 +318,7 @@ void iris_test_main(iris_cptr_t rbx_unused) {
     test_t249();
     test_t250();
 
-    /* Phase S1 — seL4 Architectural Convergence suite. */
+    /* SeL4 Architectural Convergence suite. */
     test_t251();
     test_t252();
     test_t253();
@@ -332,39 +332,39 @@ void iris_test_main(iris_cptr_t rbx_unused) {
     test_t261();
     test_t262();
 
-    /* Phase S2 — Untyped task construction (increment 1: SchedulingContext). */
+    /* Untyped task construction (increment 1: SchedulingContext). */
     test_t267();
-    /* Phase S2 Checkpoint C.1 — versioned user-buffer ABI hardening. */
+    /* Checkpoint C.1 — versioned user-buffer ABI hardening. */
     test_t283();
-    /* Phase S2 Step 0 — canonical TCB from Untyped (adversarial lifecycle). */
+    /* Canonical TCB from Untyped (adversarial lifecycle). */
     test_t284();
     test_t285();
     test_t286();
     test_t287();
-    /* Phase S3 — native MDB/CDT, cross-process revoke. */
+    /* Native MDB/CDT, cross-process revoke. */
     test_t288();
     test_t289();
     test_t290();
-    /* T291 retired with SYS_BOOTCAP_RESTRICT (Stage 5 Step 2). */
+    /* T291 retired with SYS_BOOTCAP_RESTRICT. */
     test_t292();
     test_t293();
     test_t294();
     test_t295();
-    /* Stage 5: one capability, one authority. */
+    /* One capability, one authority. */
     test_t296();
-    /* Stage 5: a thread is retyped, configured and started. */
+    /* A thread is retyped, configured and started. */
     test_t297();
-    /* Stage 6: the Untyped pays for its frames' headers. */
+    /* The Untyped pays for its frames' headers. */
     test_t298();
-    /* Stage 6: page tables are charged to a budget. */
+    /* Page tables are charged to a budget. */
     test_t299();
-    /* Stage 6: user memory comes out of a named budget. */
+    /* User memory comes out of a named budget. */
     test_t300();
-    /* Stage 6: a refused spawn leaves its budget untouched. */
+    /* A refused spawn leaves its budget untouched. */
     test_t301();
-    /* Stage 6-pure: a page table is a capability the holder retypes. */
+    /* A page table is a capability the holder retypes. */
     test_t302();
-    /* Stage 7: a running thread outlives every capability to it. */
+    /* A running thread outlives every capability to it. */
     test_t303();
     test_t304();
     test_t305();

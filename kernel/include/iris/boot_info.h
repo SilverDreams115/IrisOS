@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 /*
- * Phase 3.4: Bootstrap CSpace slot layout.
+ * Bootstrap CSpace slot layout.
  *
  * These CPtr values are reserved in the root CNode of the initial task.
  * The root CNode is created by the root task's construction with KCNODE_DEFAULT_SLOTS=256
@@ -15,7 +15,7 @@
  *   Slots 1..BOOT_CPTR_RES_END   — reserved for future well-known boot caps
  *                                  (e.g. KBootstrapCap CSpace slot, root CNode
  *                                  self-reference, future VSpace cap, etc.).
- *   Slot 1: BOOT_CPTR_BOOTSTRAP_CAP — the initial KBootstrapCap (Phase 3.5).
+ *   Slot 1: BOOT_CPTR_BOOTSTRAP_CAP — the initial KBootstrapCap.
  *   Slots 2..BOOT_CPTR_RES_END     — reserved for future well-known boot caps.
  *   Slots BOOT_CPTR_UNTYPED_START..BOOT_CPTR_UNTYPED_END
  *                                — boot KUntyped blocks, in drain order.
@@ -28,17 +28,17 @@
  * BOOT_CPTR_UNTYPED_START..BOOT_CPTR_UNTYPED_END with SYS_UNTYPED_INFO
  * until it gets a non-zero error (NOT_FOUND).
  */
-/* Phase 3.5 / Phase 4: well-known boot capability slots.
+/* Well-known boot capability slots.
  * BOOT_CPTR_BOOTSTRAP_CAP occupies slot 1 in the root CNode of userboot.
- * BOOT_CPTR_VSPACE occupies slot 2 — the initial VSpace capability (Phase 4).
+ * BOOT_CPTR_VSPACE occupies slot 2 — the initial VSpace capability.
  * The legacy bootstrap_cap_h handle (arg0) remains valid in dual mode. */
 /* Slot 1 held the MONOLITHIC KBootstrapCap until Stage 5 Step 2 split it into
  * one capability per authority.  It is permanently reserved and permanently
  * EMPTY: there is no capability with more than one authority left to put
  * there, and the root task reads what it holds from BootInfo. */
 #define BOOT_CPTR_BOOTSTRAP_CAP   1u    /* retired — reserved, never populated */
-#define BOOT_CPTR_VSPACE          2u    /* KVSpace for userboot/root task (Phase 4) */
-/* Stage 5 Step 2: one capability per authority.  Each of these is a boot
+#define BOOT_CPTR_VSPACE          2u    /* KVSpace for userboot/root task */
+/* One capability per authority.  Each of these is a boot
  * capability carrying EXACTLY one authority, published into its own slot; the
  * root task delegates the one it means instead of narrowing a mask.  The root
  * task reads them out of BootInfo — these constants exist for the kernel that
@@ -50,24 +50,24 @@
 #define BOOT_CPTR_PROC_CONTROL    6u    /* SYS_PROCESS_CREATE authority */
 #define BOOT_CPTR_INITRD_CONTROL  7u    /* SYS_INITRD_COUNT / SYS_INITRD_VMO */
 #define BOOT_CPTR_FB_CONTROL      8u    /* SYS_FRAMEBUFFER_VMO (one-shot) */
-/* Stage 5 Step 3: the root task's OWN objects, as capabilities.  Its root
+/* The root task's OWN objects, as capabilities.  Its root
  * CNode was reachable only through the "arg0 == 0 means my own root"
  * convention and its TCB only by asking SYS_TCB_SELF; seL4's root task simply
  * finds seL4_CapInitThreadCNode and seL4_CapInitThreadTCB in its CSpace. */
 #define BOOT_CPTR_CNODE           9u    /* the root task's own root CNode */
 #define BOOT_CPTR_TCB            10u    /* the root task's initial thread */
 /* Authority over CPU time, delegated onward like every other boot control
- * (ledger A-20).  Convention-only, as BOOT_CPTR_CNODE and _TCB are: the root
+ *.  Convention-only, as BOOT_CPTR_CNODE and _TCB are: the root
  * task knows the slot, and the BootInfo struct does not change. */
 #define BOOT_CPTR_SCHED_CONTROL  11u    /* SYS_SC_CONFIGURE authority */
-/* Authority to carve address-space identifier pools (ledger A-21), seL4's
+/* Authority to carve address-space identifier pools, seL4's
  * ASIDControl.  Convention-only, like the two above. */
 #define BOOT_CPTR_ASID_CONTROL   12u
 /* Authority to place a thread in a scheduling DOMAIN — seL4's seL4_CapDomain.
  * Convention-only, like the three above. */
 #define BOOT_CPTR_DOMAIN_CONTROL 13u
 /* Authority to say which MEMORY a DEVICE may reach — seL4's IOSpace control
- * (Stage 10-dma).  Convention-only, like the four above.  Separate from
+ *.  Convention-only, like the four above.  Separate from
  * IOPORT_CONTROL and IRQ_CONTROL because it answers a different question:
  * those say which registers a driver may touch and which line it may hear,
  * this says what the hardware behind them may write to. */

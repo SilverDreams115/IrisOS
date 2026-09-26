@@ -41,7 +41,7 @@ static inline uint64_t sched_ticks_load(void) {
 }
 
 /*
- * Phase 17 — scheduling-decision counter (additive instrumentation, exposed
+ * Scheduling-decision counter (additive instrumentation, exposed
  * via the SYS_SCHED_INFO ext2 tier).  A strictly-monotonic progress signal
  * used by the T119/T122 selftests to prove cooperative tasks actually reach
  * the scheduler (no lost/stuck worker).  It never influences scheduling.
@@ -69,7 +69,7 @@ static _Atomic uint64_t wall_ticks = 0;
  * REPLENISHMENT so a budget-exhausted thread becomes READY even when the timer
  * ISR does not fire (QEMU TCG: no IRQs delivered during ring-0 spin).
  *
- * Ledger A-24: what is left here is MCS accounting and nothing else.  It used
+ * What is left here is MCS accounting and nothing else.  It used
  * to fast-forward to the nearest SLEEPING thread's deadline too, and to time
  * out blocked IPC waits — the kernel keeping a list of who wanted to be woken
  * when, on their behalf.  That is a service now, so the only deadline the
@@ -80,7 +80,7 @@ static _Atomic uint64_t wall_ticks = 0;
  * the fast-forward, or remains NULL if none.
  */
 static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
-    /* Phase S2 Step C: iterate the registry, not the raw array — a TCB's
+    /* Iterate the registry, not the raw array — a TCB's
      * identity is its registry reference, never a position in tasks[]. */
     /* Fast-forward clock to nearest deadline so timed tasks wake even with no IRQs.
      *
@@ -95,7 +95,7 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
         if (t->wake_tick != 0 && t->wake_tick < min_wake)
             min_wake = t->wake_tick;
         /*
-         * Stage 8-mcs: a budget-exhausted thread is woken by a REPLENISHMENT
+         * A budget-exhausted thread is woken by a REPLENISHMENT
          * falling due, and a replenishment has no wake_tick.  Without this it
          * would never be a fast-forward target, so on a tickless-looking guest
          * (QEMU TCG delivers no IRQs while ring 0 spins) an exhausted thread
@@ -138,7 +138,7 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
         if (t == idle) continue;
         if (t->state == TASK_BUDGET_EXHAUSTED && t->sched_ctx &&
             kschedctx_apply_refills(t->sched_ctx, sched_ticks_load())) {
-            /* Stage 8-mcs: woken by a REPLENISHMENT coming due, not by a
+            /* Woken by a REPLENISHMENT coming due, not by a
              * period-boundary reset.  The thread gets back exactly what it
              * spent, one period after it spent it. */
             t->wake_tick = 0;
@@ -150,7 +150,7 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
 }
 
 /*
- * Stage 9-evt Step 2 — the abandoning park (ledger D-1).
+ * The abandoning park.
  *
  * `abandon` means: do not preserve this frame.  The outgoing thread is set to
  * resume at syscall_restart_trampoline on a FRESH stack, and the integer
@@ -167,7 +167,7 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
  * on would let a timer land on a stack that is being rebuilt.
  */
 /*
- * task_yield / task_yield_impl are DELETED (Stage 9-evt step 3).
+ * task_yield / task_yield_impl are DELETED.
  *
  * They were how a thread reached the scheduler: switch from inside the
  * caller's frame, come back when the thread runs again.  Every caller is now
@@ -184,7 +184,7 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
 __attribute__((noreturn)) void syscall_restart_trampoline(void);
 
 /*
- * Stage 9-evt step 3 — parking leaves the thread's stack entirely.
+ * Parking leaves the thread's stack entirely.
  *
  * Step 2 made the frame disposable; this stops using it at all.  The thread's
  * resume point is recorded in its TCB and the CPU moves to the CORE's stack
@@ -207,7 +207,7 @@ __attribute__((noreturn)) void task_park_restart(void) {
 }
 
 /*
- * Stage 9-evt step 3 — give the CPU to `next`, saving nothing of `outgoing`
+ * Give the CPU to `next`, saving nothing of `outgoing`
  * but its FPU.
  *
  * Two shapes, and which one applies is a fact about how the thread LEFT ring 3
@@ -250,7 +250,7 @@ void sched_resume(struct task *next, struct task *outgoing) {
 }
 
 /*
- * ── Stage 9-evt step 3: choosing a thread, for the DISPATCHER ───────────────
+ * ── Choosing a thread, for the DISPATCHER ───────────────
  *
  * The same decision `task_yield_impl` makes, without the half that assumes a
  * stack to come back to.  It commits — current_task, TSS, the syscall stack
@@ -558,7 +558,7 @@ static void sched_tick_global(void) {
      *   that removes it is seL4's release queue, ordered by release time, where
      *   the tick looks at the head and stops.
      *
-     *   Ledger A-24: this scan used to look at SLEEPING threads too, and there
+     *   This scan used to look at SLEEPING threads too, and there
      *   is no such state any more — the kernel does not hold anybody's deadline
      *   but a scheduling context's.
      *
@@ -569,7 +569,7 @@ static void sched_tick_global(void) {
      */
     uint64_t tf = irq_spinlock_lock(&sched_list_lock);
     for (struct task *t = sched_thread_list; t; t = t->sched_next) {
-        /* Ph75: refill budget for exhausted tasks whose period has elapsed */
+        /* Refill budget for exhausted tasks whose period has elapsed */
         if (t->state == TASK_BUDGET_EXHAUSTED &&
             t->wake_tick != 0 &&
             t->wake_tick <= sched_ticks_load()) {
@@ -599,14 +599,14 @@ static void sched_tick_local(void) {
 
     if (!current_task) return;
 
-    /* Ph75 / Stage 8-mcs: charge one tick to the running thread's SC.  The
+    /* Charge one tick to the running thread's SC.  The
      * charge is recorded with the tick it happened on, so the replenishment it
      * earns comes due exactly one period later. */
     if (current_task->sched_ctx && current_task->state == TASK_RUNNING) {
         struct KSchedContext *sc = current_task->sched_ctx;
         if (kschedctx_charge_tick(sc, sched_ticks_load())) {
             /*
-             * Stage 8-mcs — a TIMEOUT FAULT, when one is armed.
+             * A TIMEOUT FAULT, when one is armed.
              *
              * Without a handler the thread simply blocks until a
              * replenishment falls due.  Nobody is told, so no principal can
@@ -670,7 +670,7 @@ void scheduler_tick_remote(void) {
  * thread, and the pool it drew from is the bootstrap pair now. */
 
 /*
- * scheduler_sleep_current is DELETED (Stage 9-evt step 3).
+ * scheduler_sleep_current is DELETED.
  *
  * It was the shape every blocking path used to have: set a deadline, then
  * yield from inside the caller's frame and return there when the thread woke

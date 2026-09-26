@@ -10,7 +10,7 @@
 
 static _Atomic uint32_t kendpoint_live;
 
-/* Phase 18 — live KEndpoint object count (additive diagnostics). */
+/* Live KEndpoint object count (additive diagnostics). */
 uint32_t kendpoint_live_count(void) {
     return atomic_load_explicit(&kendpoint_live, memory_order_relaxed);
 }
@@ -25,13 +25,13 @@ static void kendpoint_obj_close(struct KObject *obj) {
      * nothing was delivered, so the sender keeps its cap and wakes with
      * IRIS_ERR_CLOSED.
      *
-     * Phase S4 (Step 2): ep_cap_src_cn is deliberately LEFT SET here.  Its
+     * Ep_cap_src_cn is deliberately LEFT SET here.  Its
      * refs must be dropped outside this lock — releasing the last ref on a
      * CNode runs a destructor that tears down every slot recursively, and
      * this walk holds ep->lock.  Ownership passes to the woken sender, which
      * aborts its own staging right after task_yield() returns. */
     /*
-     * Ledger A-46 — the kills happen AFTER this lock, not under it.
+     * The kills happen AFTER this lock, not under it.
      *
      * A fault caller is killed rather than woken (A-22 below), and
      * `task_kill_external` on a thread that is not on a processor runs the
@@ -45,7 +45,7 @@ static void kendpoint_obj_close(struct KObject *obj) {
      *
      * A thread queued on an endpoint is off-CPU by definition, so this is not
      * a corner: it is what the fault-caller branch does every time.  And the
-     * work is unbounded (D-12) with interrupts off, on the lock every IPC on
+     * work is unbounded with interrupts off, on the lock every IPC on
      * this endpoint needs.
      *
      * Stage 2 wrote the rule down — "releasing the last ref on a CNode runs a
@@ -55,7 +55,7 @@ static void kendpoint_obj_close(struct KObject *obj) {
      *
      * The deferral costs nothing: these threads are leaving the queue anyway,
      * so `ep_next` is free to chain them, and the reference the queue holds
-     * on each (A-44) is what keeps them alive until the kill.
+     * on each is what keeps them alive until the kill.
      */
     struct task *kill_head = 0;
 
@@ -72,7 +72,7 @@ static void kendpoint_obj_close(struct KObject *obj) {
         t->blocking_ep   = 0;
         t->ipc_ep_closed = 1;
         /*
-         * Ledger A-22: a FAULT caller queued here has no syscall to return
+         * A FAULT caller queued here has no syscall to return
          * CLOSED to — waking it resumes it at the instruction that faulted,
          * which faults again into an endpoint that is now closed.  Its
          * handler is gone, so this is the "no handler" case arriving late,
@@ -85,7 +85,7 @@ static void kendpoint_obj_close(struct KObject *obj) {
             kill_head        = t;           /* keeps A-44's reference */
         } else {
             task_wakeup(t);
-            kobject_release(&t->base);      /* A-44: the queue's */
+            kobject_release(&t->base);      /* The queue's */
         }
         t = nxt;
     }
@@ -102,11 +102,11 @@ static void kendpoint_obj_close(struct KObject *obj) {
         k->ep_next = 0;
         kfault_resolve(k, /*killed=*/1);
         task_kill_external(k);
-        kobject_release(&k->base);          /* A-44: the queue's */
+        kobject_release(&k->base);          /* The queue's */
     }
 }
 
-/* ── Untyped-backed variant (Ph78; Phase S1: the ONLY variant) ─────
+/* ── Untyped-backed variant (Ph78; The ONLY variant) ─────
  * The kslab-backed kendpoint_alloc is retired: every KEndpoint payload
  * lives inside the KUntyped region it was retyped from (S2/S14). */
 
@@ -152,7 +152,7 @@ void kendpoint_cancel_waiter(struct task *t) {
 
     uint64_t flags = irq_spinlock_lock(&ep->lock);
 
-    /* A-44: whether this call is the one that TOOK it off the queue.  The walk
+    /* Whether this call is the one that TOOK it off the queue.  The walk
      * below finds nothing when a rendezvous on another core got there first,
      * and only the remover may give the queue's reference back. */
     int removed = 0;
@@ -191,7 +191,7 @@ void kendpoint_cancel_waiter(struct task *t) {
     t->ep_cap_badge   = 0;
     t->ep_cap_src_cn  = 0;
     t->ep_cap_src_idx = 0;
-    /* A-22: the fault this thread was delivering dies with the thread — the
+    /* The fault this thread was delivering dies with the thread — the
      * cancel path only runs on a forcible kill.  Cleared so a recycled TCB
      * cannot inherit a call mode it never made. */
     t->ep_fault_call  = 0u;
@@ -206,7 +206,7 @@ void kendpoint_cancel_waiter(struct task *t) {
     }
 
     /*
-     * A-44 — last, and only if this call is what took it off the queue.
+     * Last, and only if this call is what took it off the queue.
      *
      * This runs from the thread's own teardown, so the reference being given
      * back here cannot be the one keeping it alive; the execution reference

@@ -32,7 +32,7 @@
  * children of the bootstrap-cap slot, so revoking the bootstrap cap revokes
  * every device cap issued under it.  Slots 16..47 are free in svcmgr's root
  * CNode (1..15 well-known, 62/63 scratch, 64..255 receive pool). */
-/* Stage 5 Step 2: svcmgr's device-cap slots move up to 96..127 so that the
+/* Svcmgr's device-cap slots move up to 96..127 so that the
  * low, well-known part of every service's root CNode can hold the boot control
  * capabilities the kernel now publishes one per authority.  These slots are
  * svcmgr's own bookkeeping — nobody outside names them — so relocating them
@@ -70,7 +70,7 @@ struct svcmgr_service_state {
      * once and kept across restarts; the kernel signals it per IRQ and the
      * WAIT side goes to the child at bootstrap (kind 0x23). */
     uint32_t    irq_notif_c;   /* CPtr slot, 0 = absent */
-    /* Phase S1: per-service reply sub-untyped (4 KiB carved once from svcmgr's
+    /* Per-service reply sub-untyped (4 KiB carved once from svcmgr's
      * pool).  Each (re)boot RESETs it (when the previous reply objects died
      * with the child) and retypes fresh reply object(s) that are minted into
      * the child at IRIS_CPTR_OWN_REPLY(2).  svcmgr NEVER retains a reply cap:
@@ -78,9 +78,9 @@ struct svcmgr_service_state {
      * death. */
     uint32_t    reply_ut_c;   /* CPtr slot, 0 = absent */
     uint8_t restart_count;
-    uint8_t degraded;       /* Phase 24: 1 = restart budget exhausted, not revived */
+    uint8_t degraded;       /* 1 = restart budget exhausted, not revived */
     uint8_t reserved[2];
-    /* Phase 10: service generation — starts at 1 when first booted and bumps
+    /* Service generation — starts at 1 when first booted and bumps
      * on every restart (death→respawn) and on an explicit RESTART request.
      * A client that cached a generation can detect, via IRIS_SVCMGR_EP_STATUS,
      * that the service it holds a cap to has since been restarted. */
@@ -100,7 +100,7 @@ struct svcmgr_dynamic_service {
     iris_rights_t client_rights;
     char name[SVCMGR_SERVICE_NAME_CAP];
     uint8_t active;
-    /* Phase 10: badge of the client that registered this service (sender_badge
+    /* Badge of the client that registered this service (sender_badge
      * stamped by the kernel on the EP REGISTER call).  UNREGISTER over the EP
      * requires a matching owner badge; legacy KChannel registrations are
      * owner_badge 0 (unidentified). generation supports logical revocation. */
@@ -109,7 +109,7 @@ struct svcmgr_dynamic_service {
 };
 
 struct svcmgr_state {
-    /* Stage 5 Step 2: the two authorities a spawn needs, each a CPtr slot
+    /* The two authorities a spawn needs, each a CPtr slot
      * holding a capability that means exactly one thing.  They no longer move
      * or narrow during bootstrap: hardware authority is given up by deleting
      * its own slots (svcmgr_request_hardware_caps), which leaves these two
@@ -119,13 +119,13 @@ struct svcmgr_state {
     /* Step 4: both are CPtr slots, not handles.  Endpoint invocation resolves
      * either namespace, and as mint sources a CPtr installs each child's cap as
      * an MDB child of our slot — so the delegation stays revocable.  0 = absent. */
-    uint64_t console_ep_c;     /* console KEndpoint send side (Phase 7.3):
+    uint64_t console_ep_c;     /* console KEndpoint send side:
                                 * delivered by init at bootstrap (kind 0x22),
                                 * published as "console.ep". */
     uint64_t ep_c;                                            /* svcmgr KEndpoint for EP-based discovery */
-    uint32_t    death_notif_c;  /* Track B: one KNotification; bit (1<<service_id)
+    uint32_t    death_notif_c;  /* One KNotification; bit (1<<service_id)
                                  * signalled by the kernel on each service exit. */
-    /* Phase S1: svcmgr's delegated untyped pool (init carves a sub-untyped and
+    /* Svcmgr's delegated untyped pool (init carves a sub-untyped and
      * mints it at IRIS_CPTR_OWN_UNTYPED).  Every endpoint / notification /
      * reply svcmgr fabricates is retyped from here — the retired create
      * syscalls are never used.
@@ -135,7 +135,7 @@ struct svcmgr_state {
      * a handle source has no CSpace ancestor and the result is a LEGACY_ROOT.
      * 0 = no pool. */
     uint64_t    untyped_c;
-    /* Phase S4: CPtr slots (0 = absent), not handles. */
+    /* CPtr slots (0 = absent), not handles. */
     uint32_t    irq_caps[SVCMGR_IRQ_CAPS_TABLE_SIZE];       /* indexed by IRQ number  */
     uint32_t    ioport_caps[SVCMGR_IOPORT_CAPS_TABLE_SIZE]; /* indexed by service_id  */
     struct svcmgr_service_state services[IRIS_SERVICE_RUNTIME_SLOT_COUNT];
@@ -152,7 +152,7 @@ static const char sm_str_spawnok[]      = "[SVCMGR] service spawned\n";
 static const char sm_str_spawnfail[]    = "[SVCMGR] WARN: spawn failed\n";
 static const char sm_str_bootok[]       = "[SVCMGR] child bootstrap OK\n";
 static const char sm_str_bootfail[]     = "[SVCMGR] WARN: child bootstrap failed\n";
-/* Phase 13 (Track C): sm_str_bootdupfail/bootsendfail retired with the
+/* Sm_str_bootdupfail/bootsendfail retired with the
  * KChannel bootstrap senders — bootstrap caps are now pre-start CSpace mints. */
 static const char sm_str_lookupfail[]   = "[SVCMGR] WARN: lookup failed\n";
 /* sm_str_svc_exited replaced by inline format in svcmgr_release_service (logs name) */
@@ -175,7 +175,7 @@ static inline int64_t svcmgr_syscall1(uint64_t num, uint64_t arg0) {
 }
 
 /*
- * Phase S1: fabricate one kernel object from an untyped pool and return it as
+ * Fabricate one kernel object from an untyped pool and return it as
  * a handle-table handle (mint source).  SYS_UNTYPED_RETYPE2 publishes the new
  * capability into a scratch slot of svcmgr's own root CNode (dest 0 = own
  * root); the slot is materialized to a handle and then deleted, so the handle
@@ -196,7 +196,7 @@ static inline int64_t svcmgr_syscall1(uint64_t num, uint64_t arg0) {
  * receive-slot pool starts above them. */
 #define SVCMGR_MSLOT_REPLYUT(id) (57u + (uint32_t)(id))
 #define SVCMGR_SLOT_DEATH_NOTIF  61u
-/* Stage 7 Step 10: the THREAD each service was started with, kept so its death
+/* The THREAD each service was started with, kept so its death
  * can be watched on the execution that produces it rather than on a process
  * capability.  67..70, below the receive-slot pool and clear of every
  * well-known mint slot. */
@@ -207,7 +207,7 @@ static inline int64_t svcmgr_syscall1(uint64_t num, uint64_t arg0) {
 #define SVCMGR_TASK_DEAD         12u
 #define SVCMGR_SLOT_REPLY1       64u
 #define SVCMGR_SLOT_REPLY2       65u
-/* Phase S4 (Step 2): outbound cap-transfer source slot.  Every cap svcmgr
+/* Outbound cap-transfer source slot.  Every cap svcmgr
  * hands to a client is minted here first and transferred BY CPtr; the kernel
  * consumes the slot on a committed delivery.  63 sits below the dynamic
  * receive-slot pool (64..255) and outside every well-known mint slot. */
@@ -223,10 +223,10 @@ static int64_t svcmgr_retype_to_slot(uint64_t ut_cptr, uint32_t obj_type,
 }
 
 
-/* Phase 13: svcmgr logs over console.ep (CONSOLE_EP_OP_WRITE), not the legacy
+/* Svcmgr logs over console.ep (CONSOLE_EP_OP_WRITE), not the legacy
  * KChannel console writer.  Synchronous per-write flush; if console.ep is not
  * yet wired the line is dropped (same as the old early-boot behaviour). */
-/* D-4: the console client marshals into the buffer it is given, and a thread
+/* The console client marshals into the buffer it is given, and a thread
  * with a registered IPC buffer must marshal into THAT — the kernel refuses a
  * send that names any other address.  So the log path shares the service's one
  * IPC buffer, which is what having one buffer means. */
@@ -296,9 +296,9 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
         if (e->irq_num != 0xFFu && e->irq_num < SVCMGR_IRQ_CAPS_TABLE_SIZE &&
             state->irq_caps[e->irq_num] == 0u) {
             uint32_t slot = SVCMGR_IRQCAP_SLOT_BASE + e->irq_num;
-            /* Phase S4: authority BY CPtr (it becomes the MDB parent).
-             * Stage 5 Step 2: the authority is the IRQ control capability. */
-            /* Stage 7 Step 14: arg2 names the budget the object is charged
+            /* Authority BY CPtr (it becomes the MDB parent).
+             * The authority is the IRQ control capability. */
+            /* Arg2 names the budget the object is charged
              * to — svcmgr's own delegated pool, not one the kernel picked. */
             int64_t r = iris_invoke(IRIS_CPTR_IRQ_CONTROL, INV_BOOT_CREATE_IRQCAP, e->irq_num, IRIS_CPTR_OWN_UNTYPED, (uint64_t)slot << 32);
             if (r == 0) state->irq_caps[e->irq_num] = slot;
@@ -316,7 +316,7 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
     /*
      * Bootstrap is over: drop the authority to claim MORE hardware.
      *
-     * Stage 5 Step 2 turned this from a narrowing into a deletion.  It used
+     * Step 2 turned this from a narrowing into a deletion.  It used
      * to be derive-then-delete over a permission mask — SYS_BOOTCAP_RESTRICT
      * cloned the monolith without the hardware bit and svcmgr deleted the wide
      * original — because device authority was a BIT on the same capability
@@ -350,7 +350,7 @@ static struct svcmgr_service_state *svcmgr_service_state(struct svcmgr_state *st
  * stale client handles fail fast instead of silently queuing to a dead service.
  * The handle is then closed normally to drop the master reference.
  */
-/* Phase 13 (Track I): svcmgr_seal_handle_if_valid retired — the only sealable
+/* Svcmgr_seal_handle_if_valid retired — the only sealable
  * KChannels were the legacy service/reply pair, now gone (every service is
  * endpoint_only).  Dynamic masters are KEndpoint caps, which are just closed. */
 static void svcmgr_clear_service_masters(struct svcmgr_state *state, uint32_t service_id) {
@@ -417,7 +417,7 @@ static struct svcmgr_dynamic_service *svcmgr_dynamic_find_name(struct svcmgr_sta
     return 0;
 }
 
-/* True iff name ends in the reserved ".ep" suffix (Phase 7.1). */
+/* True iff name ends in the reserved ".ep" suffix. */
 static int svcmgr_name_has_ep_suffix(const char *name) {
     uint32_t len = 0;
     if (!name) return 0;
@@ -427,7 +427,7 @@ static int svcmgr_name_has_ep_suffix(const char *name) {
 }
 
 /*
- * Resolve reserved endpoint names (Phase 7.1):
+ * Resolve reserved endpoint names:
  *   "svcmgr.ep"       → svcmgr's own discovery KEndpoint
  *   "<image_name>.ep" → the service's KEndpoint (own_service_ep catalog flag)
  * Returns 1 and fills master/allowed on success. These names take precedence
@@ -448,20 +448,20 @@ static int svcmgr_resolve_ep_name(struct svcmgr_state *state, const char *name,
         if (state->ep_c == 0u) return 0;
         *out_cptr = (uint32_t)state->ep_c;
         /* Discovery cap: TRANSFER allows holders (e.g. init) to distribute
-         * it to children — including by CSpace mint (Phase 8), which needs
+         * it to children — including by CSpace mint, which needs
          * DUPLICATE. It only grants EP_CALL on svcmgr, never recv. */
         *allowed  = RIGHT_WRITE | RIGHT_TRANSFER | RIGHT_DUPLICATE;
         return 1;
     }
 
-    /* "console.ep" (Phase 7.3): the console is spawned by init, not from the
+    /* "console.ep": the console is spawned by init, not from the
      * catalog; init delivers the send side at bootstrap (kind 0x22). Same
      * anti-spoof property as catalog ".ep" names: bootstrap-delivered,
      * never runtime-registered. */
     if (svcmgr_name_equal(name, "console.ep")) {
         if (state->console_ep_c == 0u) return 0;
         *out_cptr = (uint32_t)state->console_ep_c;
-        /* DUPLICATE (Phase 8) lets holders re-mint the send cap into CSpace
+        /* DUPLICATE lets holders re-mint the send cap into CSpace
          * slots; it adds no receive authority. */
         *allowed  = RIGHT_WRITE | RIGHT_DUPLICATE;
         return 1;
@@ -481,7 +481,7 @@ static int svcmgr_resolve_ep_name(struct svcmgr_state *state, const char *name,
         svc = svcmgr_service_state(state, manifest->service_id);
         if (!svc || svc->ep_c == 0u) return 0;
         *out_cptr = svc->ep_c;
-        /* Send/call side only; DUPLICATE (Phase 8) allows CSpace re-minting
+        /* Send/call side only; DUPLICATE allows CSpace re-minting
          * (e.g. init mints vfs.ep/kbd.ep into iris_test's fixtures). */
         *allowed  = RIGHT_WRITE | RIGHT_DUPLICATE;
         return 1;
@@ -520,12 +520,12 @@ static uint32_t svcmgr_dynamic_ready_count(const struct svcmgr_state *state) {
  * ──────────────────────────────────────────────────────────────────────── */
 
 #define SVCMGR_RSLOT_BASE  132u  /* below: well-known bootstrap, master and
-                                  * device-cap slots (Stage 5 Step 2) */
+                                  * device-cap slots */
 _Static_assert(SVCMGR_RSLOT_BASE >= SVCMGR_IOPORT_SLOT_BASE + 16u,
                "the receive pool must start above the device-cap slots");
 #define SVCMGR_RSLOT_LIMIT 256u  /* root CNode has KCNODE_DEFAULT_SLOTS = 256 */
 
-/* Stage 4: the root-CNode handle probe is RETIRED.  It scanned svcmgr's own
+/* The root-CNode handle probe is RETIRED.  It scanned svcmgr's own
  * handle table for the first CNode-typed generation-1 id, relying on the
  * kernel inserting every process's root CNode as its FIRST handle.  The root
  * is now a structural back-reference on KProcess and lives in no handle table
@@ -555,7 +555,7 @@ static uint32_t svcmgr_next_recv_slot(const struct svcmgr_state *state) {
 
 /* Type of a delivered cap without consuming it.
  *
- * Stage 4: this used to materialize the CPtr into a handle (SYS_CSPACE_RESOLVE)
+ * This used to materialize the CPtr into a handle (SYS_CSPACE_RESOLVE)
  * purely to ask SYS_HANDLE_TYPE what it was, then close the handle again — the
  * last productive use of the CSpace→handle bridge in the tree.  SYS_CAP_IDENTIFY
  * answers the same question about the slot itself, so the round trip (and the
@@ -564,7 +564,7 @@ static uint32_t svcmgr_next_recv_slot(const struct svcmgr_state *state) {
  * The legacy leg remains only for a delivery that landed in the handle table
  * because the receiver declared no receive slot; it dies with that path. */
 static int64_t svcmgr_delivered_cap_type(uint32_t v) {
-    /* Stage 4: a delivered cap is a CPtr or nothing — handle materialisation
+    /* A delivered cap is a CPtr or nothing — handle materialisation
      * on delivery is retired, so the legacy leg has no input left. */
     return iris_invoke0((uint64_t)v, INV_CAP_IDENTIFY);
 }
@@ -572,7 +572,7 @@ static int64_t svcmgr_delivered_cap_type(uint32_t v) {
 /* Discard a delivered cap svcmgr will not keep: CNODE_DELETE for a CPtr
  * (frees the pool slot), close for a legacy handle.  No-op on no-cap. */
 static void svcmgr_discard_delivered_cap(struct svcmgr_state *state, uint32_t v) {
-    (void)state;   /* Stage 4: the root CNode is addressed by convention, not by a
+    (void)state;   /* The root CNode is addressed by convention, not by a
                     * per-state handle; the parameter stays for call-site symmetry. */
     if (v == (uint32_t)IRIS_MSG_NO_CAP) return;
     if (iris_msg_cap_is_cptr(v)) {
@@ -585,7 +585,7 @@ static void svcmgr_discard_delivered_cap(struct svcmgr_state *state, uint32_t v)
 
 static void svcmgr_dynamic_clear(struct svcmgr_dynamic_service *svc, int seal) {
     if (!svc || !svc->active) return;
-    (void)seal;  /* Track I: dynamic masters are KEndpoints — always closed. */
+    (void)seal;  /* Dynamic masters are KEndpoints — always closed. */
     if (svc->public_h != IRIS_CPTR_NULL)
         svcmgr_close_handle_if_valid(&svc->public_h);
     /* A1.6: release the CSpace-held master — the CNode slot owns its own
@@ -603,7 +603,7 @@ static void svcmgr_dynamic_clear(struct svcmgr_dynamic_service *svc, int seal) {
 /* svcmgr_reduce_lookup_rights retired — Phase 13/Track I */
 
 
-/* Phase 13 (Track C): svcmgr_send_spawn_cap retired — the initrd spawn cap is
+/* Svcmgr_send_spawn_cap retired — the initrd spawn cap is
  * now delivered as the IRIS_CPTR_SPAWN_CAP pre-start mint. */
 
 /* ── EP-based service discovery path ────────────────────────────────────
@@ -619,7 +619,7 @@ static void svcmgr_dynamic_clear(struct svcmgr_dynamic_service *svc, int seal) {
 /*
  * Receive buffer for bulk kbuf (service name) in EP_NB_RECV drain.
  *
- * Ledger D-4: `g_ep_buf` starts at this static fallback and moves to a page
+ * `g_ep_buf` starts at this static fallback and moves to a page
  * svcmgr retypes from the Untyped it owns, registered as its IPC buffer.  Names
  * then arrive in a page svcmgr owns, with no user pointer named on either side.
  */
@@ -630,12 +630,12 @@ static uint8_t *g_ep_buf = g_ep_recv_buf;
 #define SVCMGR_SLOT_IPCBUF_FRAME  22u
 #define SVCMGR_SLOT_IPCBUF_PT     23u
 
-/* Phase 10: dynamic (runtime-registered) service ids are reported as
+/* Dynamic (runtime-registered) service ids are reported as
  * SVCMGR_DYNAMIC_ID_BASE + slot_index so they never collide with the small
  * catalog ids (0..3) used by STATUS/RESTART. */
 #define SVCMGR_DYNAMIC_ID_BASE 0x40u
 
-/* Defined later; used by the EP DIAG handler (Phase 12). */
+/* Defined later; used by the EP DIAG handler. */
 static uint32_t svcmgr_ready_service_count(const struct svcmgr_state *state);
 static uint32_t svcmgr_active_slot_count(const struct svcmgr_state *state);
 
@@ -643,7 +643,7 @@ static uint32_t svcmgr_active_slot_count(const struct svcmgr_state *state);
 static int svcmgr_service_alive(struct svcmgr_state *state, uint32_t service_id) {
     struct svcmgr_service_state *svc = svcmgr_service_state(state, service_id);
     if (!svc || svc->proc_h == IRIS_CPTR_NULL) return 0;
-    /* Stage 7 Step 13: liveness is the EXECUTION's.  svcmgr already holds each
+    /* Liveness is the EXECUTION's.  svcmgr already holds each
      * service's first thread (SVCMGR_MSLOT_TCB) because that is what it
      * watches and what it must delete before a respawn; asking the thread its
      * state removes the last reason it also held the process for. */
@@ -696,7 +696,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
     uint32_t i;
     iris_cptr_t reply_h;
 
-    /* A-33: a receive reports what it was given in `got_cap`, and on a Call it
+    /* A receive reports what it was given in `got_cap`, and on a Call it
      * is the reply capability.  It used to be `attached_handle`, which also
      * meant "a capability I am sending" everywhere else. */
     if (!msg || msg->got_cap == (long)IRIS_MSG_NO_CAP) return;
@@ -722,11 +722,11 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
 
         iris_cptr_t master_h  = IRIS_CPTR_NULL;
         iris_rights_t granted = RIGHT_NONE;
-        /* Phase S4 (Step 2): when the master already lives in a CSpace slot we
+        /* When the master already lives in a CSpace slot we
          * mint straight from it — no handle is materialized at any point. */
         uint32_t    src_cptr  = 0u;
 
-        /* Reserved "<name>.ep" endpoint names resolve first (Phase 7.1). */
+        /* Reserved "<name>.ep" endpoint names resolve first. */
         if (!svcmgr_resolve_ep_name(state, (const char *)g_ep_buf,
                                     &master_h, &granted, &src_cptr)) {
             struct svcmgr_dynamic_service *dyn =
@@ -735,7 +735,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
                 (!dyn) ? svcmgr_catalog_find_name((const char *)g_ep_buf) : 0;
 
             if (dyn && dyn->public_cptr != 0u) {
-                /* Phase S4: CSpace-backed registration — the source IS a slot;
+                /* CSpace-backed registration — the source IS a slot;
                  * the A1.6 CSPACE_RESOLVE bridge is no longer needed here. */
                 src_cptr = dyn->public_cptr;
                 granted  = dyn->client_rights;
@@ -762,14 +762,14 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
             iris_rights_t client_rights = granted;
             if (!iris_badge_is_supervisor(msg->sender_badge))
                 client_rights &= ~(iris_rights_t)(RIGHT_DUPLICATE | RIGHT_TRANSFER);
-            /* Phase S4 (Step 2): the transfer SOURCE is a CSpace slot, never a
+            /* The transfer SOURCE is a CSpace slot, never a
              * handle.  Mint the master into svcmgr's scratch slot and hand the
              * CPtr to the kernel; the delivered cap becomes an MDB child of
              * that slot, so this grant is revocable from svcmgr.  Ledger A-29:
              * the transfer is a COPY, so the scratch slot survives the reply
              * and svcmgr drops it itself once the reply has landed. */
             (void)iris_invoke1(0, INV_CNODE_DELETE, SVCMGR_XFER_SLOT);
-            /* Stage 4: the registry master is a CSpace slot, so serving a
+            /* The registry master is a CSpace slot, so serving a
              * lookup is a slot-to-slot mint.  The SYS_CNODE_MINT branch for a
              * handle master is gone with the namespace. */
             int64_t mr = iris_invoke2((uint64_t)src_cptr, INV_CSPACE_MINT, ((uint64_t)SVCMGR_XFER_SLOT << 32), (uint64_t)(client_rights | RIGHT_TRANSFER));
@@ -792,14 +792,14 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
     }
     case IRIS_EP_OP_PING:
         /* Health check (Phase 8: also the CPtr-first discovery probe).
-         * Phase 9 PING convention: echo the kernel-stamped sender badge. */
+         * PING convention: echo the kernel-stamped sender badge. */
         reply.label      = IRIS_EP_REPLY_OK;
         reply.words[0]   = 0u;
         reply.words[1]   = msg->sender_badge;
         reply.word_count = 2u;
         break;
     case IRIS_SVCMGR_EP_STATUS: {
-        /* Phase 10: read-only liveness/generation oracle. Name in kbuf.
+        /* Read-only liveness/generation oracle. Name in kbuf.
          * Open to any caller — it is how a client polls a restart without
          * blocking on a possibly-dead endpoint. */
         uint32_t nl = msg->buf_len < IRIS_EP_SVCNAME_MAX
@@ -848,7 +848,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
         break;
     }
     case IRIS_SVCMGR_EP_DIAG: {
-        /* Phase 12: endpoint-native snapshot — the productive diagnostics path
+        /* Endpoint-native snapshot — the productive diagnostics path
          * (replaces legacy KChannel SVCMGR_MSG_DIAG). No KChannel round-trip. */
         reply.label      = IRIS_EP_REPLY_OK;
         reply.words[0]   = (uint64_t)iris_service_catalog_count();
@@ -859,7 +859,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
         break;
     }
     case IRIS_SVCMGR_EP_RESTART: {
-        /* Phase 10 PRIVILEGED: supervisor badges only. Kills the service; the
+        /* PRIVILEGED: supervisor badges only. Kills the service; the
          * existing SYS_PROCESS_WATCH path respawns it and bumps generation. */
         uint32_t sid = (uint32_t)msg->words[0];
         const struct iris_service_catalog_entry *m =
@@ -979,7 +979,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
             (void)iris_invoke1(0, INV_CNODE_DELETE, SVCMGR_XFER_SLOT);
     }
     /* A1.6: the CSpace slot keeps the authority; the resolved master was a
-     * per-request working handle only.  Phase S1: reply_h is svcmgr's OWN
+     * per-request working handle only.  Reply_h is svcmgr's OWN
      * reusable reply-object CPtr — never closed. */
 }
 
@@ -990,8 +990,8 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
 
     if (!svc) return IRIS_ERR_INVALID_ARG;
 
-    /* Phase 13 (Track C): every bootstrap cap is now a pre-start CSpace mint
-     * (svcmgr_build_core_mints) — the well-known endpoints (Phase 8), the vfs
+    /* Every bootstrap cap is now a pre-start CSpace mint
+     * (svcmgr_build_core_mints) — the well-known endpoints, the vfs
      * spawn cap (C1) and the kbd service/reply KChannels + KIoPort/KIrqCap (C2).
      * Nothing is sent over the bootstrap KChannel anymore; svcmgr just drops its
      * end.  The channel itself is retired in a later increment (Track C3). */
@@ -1000,14 +1000,14 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
 }
 
 /*
- * Phase 8: build the well-known CPtr mint table for a catalog child (see
+ * Build the well-known CPtr mint table for a catalog child (see
  * endpoint_proto.h for the layout).  Slots 1..4 carry the client side of
  * the core service endpoints (RIGHT_WRITE); slot 5 the child's OWN
  * endpoint recv side; slot 7 the IRQ KNotification WAIT side.  The table
  * is consumed by svc_load_minted, which mints BEFORE the child's first
  * thread starts — no bootstrap-message barrier is needed.
  */
-/* Phase S1: +2 reply-object mints (slots 13/14).  Ledger A-27: +1 for the
+/* +2 reply-object mints (slots 13/14).  +1 for the
  * timer, which `sh` needs because reading a clock is a request to a server now.
  * The bound is asserted below rather than trusted: a manifest that asks for
  * more than fits used to walk off the array. */
@@ -1025,7 +1025,7 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
         ? state->services[SVCMGR_SERVICE_KBD].ep_c : 0u;
     uint32_t n = 0;
 
-    /* Phase 9: the client-side slots (1..4) carry the CHILD's identity badge
+    /* The client-side slots (1..4) carry the CHILD's identity badge
      * — every message the child sends through them is kernel-stamped with
      * IRIS_BADGE_SVC(service_id).  Server-side caps (own EP recv, IRQ
      * notification) stay unbadged.
@@ -1066,9 +1066,9 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
         mints[n].badge = child_badge;
         n++;
     }
-    /* Ledger A-27: the clock is a service.  Unbadged, because the timer scopes
+    /* The clock is a service.  Unbadged, because the timer scopes
      * a cancel by the badge on the capability the request arrived through
-     * (A-24) and every child sharing svcmgr's badge would let one take back
+     * and every child sharing svcmgr's badge would let one take back
      * another's timer. */
     if ((manifest->client_eps & IRIS_SVC_CLIENT_EP_TIMER) &&
         svcmgr_delivered_cap_type(IRIS_CPTR_TIMER_EP) >= 0) {
@@ -1092,11 +1092,11 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
         mints[n].badge = 0;
         n++;
     }
-    /* Phase 13 (Track C): vfs's initrd access arrives as a pre-start CSpace
+    /* Vfs's initrd access arrives as a pre-start CSpace
      * mint instead of a post-spawn KChannel INITRD_CAP message.  RIGHT_READ
      * matches the legacy delivery; unbadged.
      *
-     * Stage 5 Step 2: what is delegated here is the INITRD capability, which
+     * What is delegated here is the INITRD capability, which
      * authorises reading boot images and nothing else.  vfs used to receive
      * the monolith's spawn bit for this, i.e. a file server held the authority
      * to create processes because that was the only cap that could read an
@@ -1108,14 +1108,14 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
         mints[n].badge = 0;
         n++;
     }
-    /* Phase 13 (Track I): the legacy service/reply KChannel pair (IRIS_CPTR_SVC_CHAN
+    /* The legacy service/reply KChannel pair (IRIS_CPTR_SVC_CHAN
      * / SVC_REPLY) is retired — every catalog service is endpoint_only, so no
      * service-channel mint is emitted.  Device caps (KIoPort/KIrqCap) below. */
     if (manifest->ioport_count > 0u &&
         manifest->service_id < SVCMGR_IOPORT_CAPS_TABLE_SIZE &&
         state->ioport_caps[manifest->service_id] != 0u) {
         mints[n].slot = IRIS_CPTR_IOPORT;
-        /* Phase S4: CSpace source — the child's device cap is an MDB child of
+        /* CSpace source — the child's device cap is an MDB child of
          * svcmgr's slot, so the delegation is revocable. */
         mints[n].src_cptr = state->ioport_caps[manifest->service_id];
         mints[n].rights = RIGHT_READ;
@@ -1148,8 +1148,8 @@ static uint32_t svcmgr_ready_service_count(const struct svcmgr_state *state) {
         const struct iris_service_catalog_entry *manifest =
             iris_service_catalog_find_by_service_id(i);
         if (manifest && manifest->endpoint_only) {
-            /* Phase 7.5: endpoint_only services have no legacy pair; their
-             * KEndpoint is the readiness entry point.  Phase 8: pure-client
+            /* Endpoint_only services have no legacy pair; their
+             * KEndpoint is the readiness entry point.  Pure-client
              * services (endpoint_only without an own endpoint, e.g. sh) are
              * ready when their process is alive. */
             if (manifest->own_service_ep) {
@@ -1176,7 +1176,7 @@ static uint32_t svcmgr_active_slot_count(const struct svcmgr_state *state) {
     return active;
 }
 
-/* Phase 7.5: VFS health is queried over the stateless endpoint
+/* VFS health is queried over the stateless endpoint
  * (VFS_EP_OP_STATUS on the master ep cap svcmgr already holds). The
  * stateless protocol has no open-file table, so opens/capacity report 0. */
 static int svcmgr_track_spawn(struct svcmgr_state *state,
@@ -1199,14 +1199,14 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
     svc->proc_h = proc_h;
 
     if (manifest->irq_num != 0xFFu) {
-        /* Phase S4: the IRQ cap is a CPtr slot; SYS_IRQ_ROUTE_REGISTER resolves
+        /* The IRQ cap is a CPtr slot; SYS_IRQ_ROUTE_REGISTER resolves
          * it through the CSpace leg of its dual resolver. */
         uint32_t irqcap_c = (manifest->irq_num < SVCMGR_IRQ_CAPS_TABLE_SIZE)
                                 ? state->irq_caps[manifest->irq_num]
                                 : 0u;
         iris_cptr_t route_h = public_h;
         if (manifest->irq_notify) {
-            /* Phase 7.6: IRQ → KNotification. Created once, reused across
+            /* IRQ → KNotification. Created once, reused across
              * restarts so the kernel route only needs re-registering. */
             if (svc->irq_notif_c == 0u) {
                 uint32_t sl = SVCMGR_MSLOT_IRQ(manifest->service_id);
@@ -1225,7 +1225,7 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
         }
     }
 
-    /* Stage 7 Step 10: watch the THREAD.  A service is one thread, so this is
+    /* Watch the THREAD.  A service is one thread, so this is
      * the same event named by the thing that produces it — and svcmgr holds
      * that thread, where it needed authority over a process before. */
     if (iris_invoke2((uint64_t)SVCMGR_MSLOT_TCB(manifest->service_id), INV_TCB_WATCH, state->death_notif_c, (uint64_t)1u << manifest->service_id) != IRIS_OK) {
@@ -1235,7 +1235,7 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
         return 0;
     }
 
-    /* Phase 10: first successful boot establishes generation 1; restarts bump
+    /* First successful boot establishes generation 1; restarts bump
      * it in svcmgr_handle_service_death before re-entering svcmgr_boot_service. */
     if (svc->generation == 0u)
         svc->generation = 1u;
@@ -1264,7 +1264,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
 
     svcmgr_clear_service_masters(state, manifest->service_id);
 
-    /* Phase 7.1: create the service's KEndpoint once; it survives restarts
+    /* Create the service's KEndpoint once; it survives restarts
      * (clear_service_masters does not touch ep_h) so client caps obtained
      * via "<name>.ep" lookup stay valid across a respawn. Non-fatal. */
     if (manifest->own_service_ep && svc->ep_c == 0u) {
@@ -1274,7 +1274,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
         svc->ep_c = (ep_r >= 0) ? sl : 0u;
     }
 
-    /* Phase 7.6: the IRQ KNotification must exist BEFORE bootstrap caps are
+    /* The IRQ KNotification must exist BEFORE bootstrap caps are
      * sent (the WAIT side ships with them); the kernel route is registered
      * later in track_spawn. Created once, survives restarts. */
     if (manifest->irq_notify && svc->irq_notif_c == 0u) {
@@ -1284,7 +1284,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
         svc->irq_notif_c = (nr >= 0) ? sl : 0u;
     }
 
-    /* Phase 13 (Track I): every catalog service is endpoint_only now — the
+    /* Every catalog service is endpoint_only now — the
      * legacy service/reply KChannel pair is fully retired (no SYS_CHAN_CREATE).
      * Each service's KEndpoint (+ IRQ notification for kbd) is its whole
      * surface. */
@@ -1298,14 +1298,14 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
     {
         iris_cptr_t loaded_proc_h = IRIS_CPTR_NULL;
         iris_cptr_t loaded_chan_h = IRIS_CPTR_NULL;
-        /* Phase 8: CPtr-first handoff — the well-known slots (discovery +
+        /* CPtr-first handoff — the well-known slots (discovery +
          * core service eps + own ep + irq notify) are minted into the
          * child's root CNode BEFORE its first thread starts, so even a
          * bag-less child (sh) finds them populated deterministically. */
         struct svc_mint mints[SVCMGR_CORE_MINT_MAX] = { 0 };
         uint32_t mint_count = svcmgr_build_core_mints(state, manifest, mints);
 
-        /* Phase S1: fresh explicit reply object(s) for a serving child, funded
+        /* Fresh explicit reply object(s) for a serving child, funded
          * by the per-service reply sub-untyped.  On a restart the previous
          * reply objects died with the child, so the RESET reclaims the whole
          * 4 KiB region before retyping (BUSY = something still lives there —
@@ -1350,7 +1350,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
         }
 
         /*
-         * Stage 7 Step 10: drop the PREVIOUS instance's thread first.
+         * Drop the PREVIOUS instance's thread first.
          *
          * Keeping a TCB keeps the thread OBJECT, and its storage is a child of
          * the service's budget — so a restart could not RESET that budget while
@@ -1367,7 +1367,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
                                SVC_LOADER_WS(state->untyped_c, 66u),
                                8u << 20, manifest->own_budget_slot,
                                /*keep_cnode_dest=*/0u,
-                               /* Stage 7 Step 10: keep the service's thread so
+                               /* Keep the service's thread so
                                 * its death is watched where it happens. */
                                (uint64_t)SVCMGR_MSLOT_TCB(manifest->service_id) << 32, 0);
         /* Drop svcmgr's reply handles regardless of the load result — the
@@ -1423,7 +1423,7 @@ static void svcmgr_release_service(struct svcmgr_state *state,
     svcmgr_close_handle_if_valid(&svc->proc_h);
 }
 
-/* Track B: the dead service is named directly by the signalled bit index. */
+/* The dead service is named directly by the signalled bit index. */
 static void svcmgr_handle_service_death(struct svcmgr_state *state, uint32_t service_id) {
     const struct iris_service_catalog_entry *manifest;
     struct svcmgr_service_state *svc;
@@ -1439,7 +1439,7 @@ static void svcmgr_handle_service_death(struct svcmgr_state *state, uint32_t ser
 
     if (!svcmgr_should_restart_service(state, manifest)) {
         if (manifest && manifest->restart_on_exit) {
-            /* Phase 24: restart budget exhausted — the service stays down and is
+            /* Restart budget exhausted — the service stays down and is
              * marked degraded (observable via STATUS words[5]).  A restartable
              * service never revives past its limit without explicit action. */
             svc->degraded = 1u;
@@ -1453,7 +1453,7 @@ static void svcmgr_handle_service_death(struct svcmgr_state *state, uint32_t ser
     svc = svcmgr_service_state(state, service_id);
     if (!svc) return;
     svc->restart_count++;
-    /* Phase 10: death→respawn bumps the generation so any client holding a cap
+    /* Death→respawn bumps the generation so any client holding a cap
      * to the previous instance can detect the change via STATUS and relookup. */
     svc->generation++;
 
@@ -1471,12 +1471,12 @@ static void svcmgr_handle_service_death(struct svcmgr_state *state, uint32_t ser
 void svcmgr_main_c(iris_cptr_t rbx_unused) {
     struct svcmgr_state *state = &g_svcmgr_state;
 
-    /* Phase 13 (Track I): the entry bootstrap KChannel is gone — every cap is a
+    /* The entry bootstrap KChannel is gone — every cap is a
      * pre-start CSpace mint, and svc_loader passes RBX = 0.  This argument has
      * not been a handle since; closing it was closing handle 0. */
     (void)rbx_unused;
 
-    /* D-4: a page svcmgr owns, registered as its IPC buffer.  Best-effort — a
+    /* A page svcmgr owns, registered as its IPC buffer.  Best-effort — a
      * failure leaves the kernel staging path, which still works. */
     {
         void *b = iris_ipc_buffer_init(SVCMGR_SLOT_IPCBUF_FRAME,
@@ -1516,7 +1516,7 @@ void svcmgr_main_c(iris_cptr_t rbx_unused) {
 
     svcmgr_log(sm_str_started);
 
-    /* Phase 13 (Track I): every bootstrap cap is a pre-start CSpace mint from
+    /* Every bootstrap cap is a pre-start CSpace mint from
      * init — no bootstrap KChannel.  Resolve the well-known slots to handles:
      *   slot 3 (CONSOLE_EP) — console.ep send side (log + re-mint to children);
      *   slot 5 (OWN_EP)     — svcmgr's discovery endpoint recv+mint side,
@@ -1526,13 +1526,13 @@ void svcmgr_main_c(iris_cptr_t rbx_unused) {
      *                         (INITRD_CONTROL) the authority to read boot
      *                         images; slot 9 (DEBUG_CONTROL) the kernel log
      *                         and scheduler statistics.  Three capabilities,
-     *                         three authorities (Stage 5 Step 2). */
+     *                         three authorities. */
     {
         state->console_ep_c = IRIS_CPTR_CONSOLE_EP;
         state->ep_c = IRIS_CPTR_OWN_EP;
         state->proc_cap_c   = IRIS_CPTR_PROC_CONTROL;
         state->initrd_cap_c = IRIS_CPTR_INITRD_CONTROL;
-        /* Phase S1: the delegated untyped pool (init carved a sub-untyped and
+        /* The delegated untyped pool (init carved a sub-untyped and
          * minted it at slot 12).  Every EP/notification/reply svcmgr creates
          * is retyped from this pool.
          *
@@ -1551,12 +1551,12 @@ void svcmgr_main_c(iris_cptr_t rbx_unused) {
     if (state->untyped_c == 0u)
         svcmgr_log(sm_str_untypedfail);
 
-    /* Phase S1: svcmgr's OWN reply object for the discovery endpoint, retyped
+    /* Svcmgr's OWN reply object for the discovery endpoint, retyped
      * straight into root slot IRIS_CPTR_OWN_REPLY (dest 0 = own root). */
     if (state->untyped_c != 0u)
         (void)iris_invoke(state->untyped_c, INV_UNTYPED_RETYPE, (uint64_t)IRIS_KOBJ_REPLY | (1ULL << 32), ((uint64_t)IRIS_CPTR_OWN_REPLY << 32), 0);
 
-    /* Drain kernel boot log to console over console.ep (Phase 13/Track I).
+    /* Drain kernel boot log to console over console.ep.
      * console_ep_write is a synchronous per-chunk flush barrier — every byte is
      * on the UART before EP_CALL returns — so no early kernel marker (e.g.
      * "boot vspace CSpace grants OK") can be dropped in an async send window.
@@ -1566,7 +1566,7 @@ void svcmgr_main_c(iris_cptr_t rbx_unused) {
         /* Step 4: name the capability that authorises the drain instead of
          * relying on the kernel finding a KDEBUG cap somewhere in our handle
          * table — which it cannot do now that our spawn cap is a CSpace slot.
-         * Stage 5 Step 2: that capability is the debug control capability,
+         * That capability is the debug control capability,
          * which authorises reading the kernel's log and nothing else. */
         int64_t n = iris_invoke2(IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_KLOG_DRAIN, (uint64_t)(uintptr_t)klog_drain_buf, 4096u);
         if (n > 0 && state->console_ep_c != 0u) {
@@ -1581,7 +1581,7 @@ void svcmgr_main_c(iris_cptr_t rbx_unused) {
     /* svcmgr's discovery endpoint (state->ep_c) is the IRIS_CPTR_OWN_EP mint
      * resolved above — no SYS_ENDPOINT_CREATE. */
 
-    /* Phase 8: pre-create ALL service endpoint / IRQ-notification masters
+    /* Pre-create ALL service endpoint / IRQ-notification masters
      * before autostart, so the first child booted can already receive the
      * full well-known slot set (vfs.ep / kbd.ep exist before any spawn). */
     for (uint32_t ci = 0; ci < iris_service_catalog_count(); ci++) {
@@ -1604,7 +1604,7 @@ void svcmgr_main_c(iris_cptr_t rbx_unused) {
         }
     }
 
-    /* Track B: the single death notification must exist before any service
+    /* The single death notification must exist before any service
      * boots (svcmgr_boot_service arms the watch against it). */
     {
         int64_t nr = svcmgr_retype_to_slot(state->untyped_c, IRIS_KOBJ_NOTIFICATION,
@@ -1618,7 +1618,7 @@ void svcmgr_main_c(iris_cptr_t rbx_unused) {
         svcmgr_log(sm_str_ep_ready);
 
     /*
-     * Ledger A-23 — one thread, two kinds of event.
+     * One thread, two kinds of event.
      *
      * svcmgr has to take REQUESTS on its endpoint and service DEATHS on a
      * notification, and a thread blocked receiving on an endpoint used to be

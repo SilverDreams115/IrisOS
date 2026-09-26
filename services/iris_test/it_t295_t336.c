@@ -55,7 +55,7 @@ void test_t326(void) {
     if (ok) it_pass("T326"); else it_fail("T326", why);
 }
 
-/* ── T327: time and priority are authorities you are GRANTED (A-20) ─────────
+/* ── T327: time and priority are authorities you are GRANTED ─────────
  * Three holes an audit against seL4's actual API found, and this is the gauge
  * that stops them coming back.
  *
@@ -73,7 +73,7 @@ void test_t326(void) {
  *
  * 3. `SYS_THREAD_PRIORITY` is RETIRED.  It set the caller's own priority for
  *    the asking — ambient authority on the scheduler, the same shape as the
- *    SELF syscalls (A-18) — and answers NOT_SUPPORTED.
+ *    SELF syscalls — and answers NOT_SUPPORTED.
  * Invariants: A1, A5, S1. */
 void test_t327(void) {
     it_quiesce_reaper();
@@ -351,7 +351,7 @@ void test_t329(void) {
  * nothing else can reach it.  Every server that needs BOTH an interrupt and a
  * request queue — which is what a driver is — therefore had to spend a second
  * thread on the choice, or busy-poll.  There is no way to write a
- * single-threaded driver without this, which is why the timer service (A-24)
+ * single-threaded driver without this, which is why the timer service
  * is the first thing that could not be written at all.
  *
  * Five claims:
@@ -451,7 +451,7 @@ void test_t330(void) {
 }
 
 
-/* ── T331: waiting is a service, not a syscall (A-24) ───────────────────────
+/* ── T331: waiting is a service, not a syscall ───────────────────────
  *
  * `SYS_SLEEP`, `SYS_CLOCK_NANOSLEEP` and `SYS_NOTIFY_WAIT_TIMEOUT` each parked
  * a thread with a deadline and had the scheduler wake it.  That is a policy
@@ -489,7 +489,7 @@ void test_t331(void) {
      *    that never fires SHOULD hang the suite rather than let a broken
      *    mechanism pass as a timeout. */
     /* A fresh copy per arm, dropped as soon as the arm lands: the transfer is
-     * a COPY (A-29), so "giving it away" is deriving a capability and then
+     * a COPY, so "giving it away" is deriving a capability and then
      * deleting your own slot.  What the service keeps is a derivation CHILD —
      * which is also how claim 3 below can be checked at all. */
     if (ok) {
@@ -598,7 +598,7 @@ static void t332_sender_b(void) {
 }
 
 
-/* ── T332: revocation with no tail (A-25) ───────────────────────────────────
+/* ── T332: revocation with no tail ───────────────────────────────────
  *
  * seL4's `seL4_CNode_CancelBadgedSends`, and the half of revocation IRIS was
  * missing.  Revoking a badged capability stops a client sending anything NEW.
@@ -712,9 +712,9 @@ static void t333_victim(void) {
 }
 
 
-/* ── T333: the five invocations seL4 has and IRIS could not express (A-28) ──
+/* ── T333: the five invocations seL4 has and IRIS could not express ──
  *
- * A file-by-file re-read (A-26) found five operations with no equivalent here.
+ * A file-by-file re-read found five operations with no equivalent here.
  * None was load-bearing for anything IRIS did, which is exactly why they went
  * unnoticed — an API gap only hurts when somebody reaches for it, and nobody
  * had.  Each is a thing a supervisor should be able to say and could not.
@@ -1013,7 +1013,7 @@ void test_t334(void) {
     if (ok) it_pass("T334"); else it_fail("T334", why);
 }
 
-/* ── T335: a wrong type is answered as a wrong type (A-30) ──────────────────
+/* ── T335: a wrong type is answered as a wrong type ──────────────────
  *
  * Twenty-two resolver results used to be rewritten on their way out: sixteen
  * `WRONG_TYPE → INVALID_ARG`, three `WRONG_TYPE → ACCESS_DENIED`, and three
@@ -1531,7 +1531,7 @@ void test_t295(void) {
  *     TYPE.  Labels are globally unique, as seL4's are, so nothing at the door
  *     disambiguates them — what stops `TCB_Suspend` reaching a notification is
  *     the method's own resolver, asking for the type it needs and answering
- *     WRONG_TYPE (A-30).  That is the check the whole door rests on, and the
+ *     WRONG_TYPE.  That is the check the whole door rests on, and the
  *     one that would rot unnoticed if nothing asked;
  *  3. a label that names no method at all is NOT_SUPPORTED — seL4's
  *     IllegalOperation;
@@ -1730,7 +1730,7 @@ static void t338_sender(void) {
     for (;;) {}
 }
 
-/* ── T338: a message is registers (ledger A-33) ────────────────────────────
+/* ── T338: a message is registers ────────────────────────────
  *
  * `struct IrisMsg` was the ABI: an 80-byte struct in user memory, named by a
  * pointer the kernel validated and then copied from, each way, for a message
@@ -1885,7 +1885,7 @@ static void t339_sender(void) {
 
 /* ── T339: a staged capability's parent is an OBJECT, not a location ────────
  *
- * A transfer is a COPY (A-29), and the copy is installed as an MDB CHILD of
+ * A transfer is a COPY, and the copy is installed as an MDB CHILD of
  * the sender's source slot — which is what gives a delivered capability real
  * ancestry instead of making it a LEGACY_ROOT.
  *
@@ -2003,7 +2003,7 @@ void test_t339(void) {
  *     opaque capability into an address somebody can correlate, so a holder
  *     who may not read may not ask;
  *  3. the type is checked: it is a FRAME method, and a notification answers
- *     WRONG_TYPE (A-30).
+ *     WRONG_TYPE.
  * Invariants: A1, A5. */
 #define T340_FRAME IT_SCRATCH_0
 #define T340_RO    IT_SCRATCH_1

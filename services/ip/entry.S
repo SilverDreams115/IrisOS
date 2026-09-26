@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * entry.S — IP stack service entry point (Stage 10).
+ * entry.S — IP stack service entry point.
  *
  * RBX = 0 under the CPtr-mint bootstrap model (svc_loader delivers every cap as
  * a pre-start CSpace mint).  Aligns the stack, seeds the stack canary, passes

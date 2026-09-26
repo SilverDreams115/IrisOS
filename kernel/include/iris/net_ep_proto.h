@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 /*
- * net_ep_proto.h — a network interface, as a service (Stage 10).
+ * net_ep_proto.h — a network interface, as a service.
  *
  * ── What this is, and what it deliberately is not ──────────────────────────
  *

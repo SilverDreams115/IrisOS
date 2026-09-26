@@ -178,11 +178,11 @@ void test_t240(void) {
     if (ok) it_pass("T240"); else it_fail("T240", why);
 }
 
-/* ── T241 — RETIRED with SYS_VMO_CREATE_FOR (Stage 7-mem) ─────────
+/* ── T241 — RETIRED with SYS_VMO_CREATE_FOR ─────────
  * Its subject was the PAYER argument: a process the caller held RIGHT_MANAGE
  * on, which a VMO's object count and pages were charged to.  There is no payer
  * and no per-process count — a VMO's memory comes from a budget the caller
- * NAMES and HOLDS (Stage 7 Step 14), and the budget is the accounting.  The
+ * NAMES and HOLDS, and the budget is the accounting.  The
  * authority question this asked (may I charge that domain?) is now the plain
  * one every other allocation asks: do I hold RIGHT_WRITE on that Untyped,
  * which T299 and T300 assert.
@@ -191,7 +191,7 @@ void test_t240(void) {
  * dies with it; one asserting a property that survives is rewritten. */
 
 
-/* ── T242 — RETIRED with the VMO owner relation (Stage 7-mem) ─────────
+/* ── T242 — RETIRED with the VMO owner relation ─────────
  * Its subject was single-charge: a VMO mapped into several VSpaces is charged
  * ONCE to its owner rather than per mapper.  With no owner there is no charge
  * to count once — the pages came out of one Untyped when the VMO was created,
@@ -203,7 +203,7 @@ void test_t240(void) {
  * dies with it; one asserting a property that survives is rewritten. */
 
 
-/* ── T243 — RETIRED with the VMO owner relation (Stage 7-mem) ─────────
+/* ── T243 — RETIRED with the VMO owner relation ─────────
  * Its subject was where a sparse VMO's PAGES are charged: once to the owner,
  * not per mapper.  Pages come from the VMO's own budget now, allocated at map
  * time out of the Untyped it was created from, so "who is charged" has one
@@ -244,7 +244,7 @@ void test_t244(void) {
     }
     /* Resolve two faulted pages from the shared RO cache. */
     if (ok && !t28_read_verify(&f, &g, 0u, T28_VA_A, t28_pat(0x1000), &why)) ok = 0;
-    /* Stage 7-mem: the cache fill used to be checked against the supervisor's
+    /* The cache fill used to be checked against the supervisor's
      * per-process page usage, with a comment conceding it could legitimately
      * move — which is a check that could not fail.  What must hold is the part
      * that could: killing the pager and reaping returns everything to
@@ -253,7 +253,7 @@ void test_t244(void) {
     t28_fbk_reap(&f);
     t25_tgt_reap(&g);
     it_quiesce_reaper();
-    /* Stage 7-mem: "no VMO leaked by the pager path" is a GLOBAL claim now,
+    /* "no VMO leaked by the pager path" is a GLOBAL claim now,
      * and it_snap_baseline_live below makes it — a leak by the pager, a target
      * or the supervisor all show in the live-VMO gauge, where the retired
      * per-process form only ever caught the caller's own. */
@@ -321,7 +321,7 @@ void test_t245(void) {
     if (ok) it_pass("T245"); else it_fail("T245", why);
 }
 
-/* ── T246 — RETIRED with the per-process VMO quota (Stage 7-mem) ─────────
+/* ── T246 — RETIRED with the per-process VMO quota ─────────
  * Its subject was KPROCESS_VMO_QUOTA: filling a process's VMO domain to 32 and
  * asserting the 33rd failed atomically.  The ceiling is gone — it was a number
  * the kernel invented, the same class as the page quota (Step 2) and the
@@ -335,7 +335,7 @@ void test_t245(void) {
  * dies with it; one asserting a property that survives is rewritten. */
 
 
-/* ── T247 — RETIRED with the payer argument (Stage 7-mem) ─────────
+/* ── T247 — RETIRED with the payer argument ─────────
  * Its subject was that budget-charge authority IS process-MANAGE authority: a
  * MANAGE capability could charge a child, a derived capability without MANAGE
  * could not.  Charging is naming an Untyped now, so the authority is
@@ -417,7 +417,7 @@ void test_t249(void) {
     t25_tgt_reap(&g0);
     t25_tgt_reap(&g1);
     it_quiesce_reaper();
-    /* Stage 7-mem: the accounting-drift check was per-process (vmos_usage,
+    /* The accounting-drift check was per-process (vmos_usage,
      * pages_usage).  The baseline below covers it and more: the live-VMO gauge
      * is global, so a leak by the pager, a target or the supervisor all show. */
     struct it_snap a = it_snap_take();
@@ -431,7 +431,7 @@ void test_t250(void) {
     struct it_snap b = it_snap_take();
     int ok = b.ok;
     const char *why = "resource stress";
-    /* Stage 7-mem: the round-trip is measured on a BUDGET of our own and on
+    /* The round-trip is measured on a BUDGET of our own and on
      * the global live-VMO gauge, not on a per-process count that no longer
      * exists.  A budget nothing else draws from makes "exactly what this round
      * spent came back" an exact claim. */
@@ -474,7 +474,7 @@ void test_t250(void) {
             /*
              * Exhaust a SMALL budget, then recover.
              *
-             * Stage 7-mem: this used to fill the per-process VMO quota to 32
+             * This used to fill the per-process VMO quota to 32
              * and check the global failed-charge counter advanced.  The
              * ceiling is a budget now, so exhaustion is a small Untyped
              * running out — a refusal that comes from a region somebody
@@ -552,17 +552,17 @@ void test_t251(void) {
         { IRIS_KOBJ_UNTYPED,       4096, IRIS_HANDLE_TYPE_UNTYPED },
         { IRIS_KOBJ_REPLY,         0,    IRIS_HANDLE_TYPE_REPLY },
         { IRIS_KOBJ_FRAME,         4096, IRIS_HANDLE_TYPE_FRAME },
-        /* Phase S2 Stage 0: the TCB joins the canonical family. */
+        /* Stage 0: the TCB joins the canonical family. */
         { IRIS_KOBJ_TCB,           0,    IRIS_HANDLE_TYPE_TCB },
-        /* Stage 6-pure Step 1: a paging level is a retyped object now, so it
+        /* A paging level is a retyped object now, so it
          * belongs in the manifest of what CAN exist.  Its region is always
          * exactly one page — 512 entries of 8 bytes and nothing else. */
         { IRIS_KOBJ_PAGE_TABLE,    4096, IRIS_HANDLE_TYPE_PAGE_TABLE },
-        /* Stage 6-pure Step 4: an address space is retyped by its holder and
+        /* An address space is retyped by its holder and
          * handed to SYS_PROCESS_CREATE.  Its region is the PML4 — one page,
          * like every other level of a walk. */
         { IRIS_KOBJ_VSPACE,        4096, IRIS_HANDLE_TYPE_VSPACE },
-        /* Stage 10-dma: a DEVICE's address space, and one level of it.  The
+        /* A DEVICE's address space, and one level of it.  The
          * space arrives naming no device — retyping it is paying for the
          * object, and naming the hardware it belongs to takes IOSPACE_CONTROL.
          * So it IS creatable by anyone holding an Untyped, which is why it
@@ -580,7 +580,7 @@ void test_t251(void) {
         it_slot_delete(S1_SLOT_A);
     }
     /*
-     * Ledger A-21: the eleventh canonical type, and the only one this suite
+     * The eleventh canonical type, and the only one this suite
      * cannot create.  An ASID pool is born only to a holder of ASIDControl,
      * and iris_test was deliberately given the POOL and not the CONTROL — so
      * what it witnesses here is the DISTINCTION: a registered type it may not
@@ -774,7 +774,7 @@ void test_t254(void) {
      * WRONG_TYPE, because that is what the resolver found. */
     if (ok && it_invoke(su, INV_UNTYPED_RETYPE, (long)((uint64_t)IRIS_KOBJ_ENDPOINT | (1ULL << 32)), (long)((uint64_t)S1_SLOT_A | ((uint64_t)S1_SLOT_B << 32)), 0) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "bad dest cnode"; }
     /* Released untyped cap: delete the slot, then retype through the dead
-     * CPtr.  Stage 4: an emptied slot answers NOT_FOUND — the CSpace form of
+     * CPtr.  An emptied slot answers NOT_FOUND — the CSpace form of
      * the BAD_HANDLE this asserted while the untyped was a handle.  The
      * property is unchanged: a capability that was released cannot be used
      * to create objects. */
@@ -822,7 +822,7 @@ void test_t255(void) {
     iris_cptr_t su_h = (iris_cptr_t)su;
 
     if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype"; }
-    /* Phase S4 (Step 3): the source is ALREADY a CPtr — derive natively, with
+    /* The source is ALREADY a CPtr — derive natively, with
      * no CSPACE_RESOLVE bridge and no handle anywhere in the path. */
     long h  = ok ? it_cdt_derive((long)S1_SLOT_A, IT_SCRATCH_1, RIGHT_SAME_RIGHTS) : -1;
     long d  = ok ? it_cdt_derive((long)S1_SLOT_A, IT_SCRATCH_0, RIGHT_WRITE) : -1;
@@ -1373,7 +1373,7 @@ int it_utq_t(struct it_utq_taskobj *q) {
     return it_invoke2(IT_QARG(4, sizeof(*q)), INV_UNTYPED_QUERY, (long)(uintptr_t)q, 0) == 0;
 }
 
-/* ── T291 — RETIRED with SYS_BOOTCAP_RESTRICT (Stage 5 Step 2) ─────────
+/* ── T291 — RETIRED with SYS_BOOTCAP_RESTRICT ─────────
  * Its subject was narrowing a boot capability by deriving a weaker CLONE of
  * it, which existed only because one object carried several authorities at
  * once.  Every boot capability carries exactly one now — kbootcap_alloc
@@ -1382,7 +1382,7 @@ int it_utq_t(struct it_utq_taskobj *q) {
  * constructed.  The number is pinned as NOT_SUPPORTED by T148, and the
  * property that replaced it (one capability, one authority) is T296.
  *
- * This is the Stage 4 rule applied unchanged: a test whose SUBJECT is the
+ * This is the rule applied unchanged: a test whose SUBJECT is the
  * retired mechanism dies with it, and one asserting a property that survives
  * is rewritten.  T291 is the first kind. */
 
@@ -1426,7 +1426,7 @@ void test_t267(void) {
     /* Configure validation (S2.8). */
     if (ok && it_invoke((long)S1_SLOT_A, INV_SC_CONFIGURE, 5, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "configure"; }
     if (ok && it_invoke((long)S1_SLOT_A, INV_SC_CONFIGURE, 0, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
-    /* Phase S2: budget==period accepted (full reservation); budget>period not. */
+    /* Budget==period accepted (full reservation); budget>period not. */
     if (ok && it_invoke((long)S1_SLOT_A, INV_SC_CONFIGURE, 100, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "budget==period rejected"; }
     if (ok && it_invoke((long)S1_SLOT_A, INV_SC_CONFIGURE, 200, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget>period"; }
     if (ok && it_invoke((long)S1_SLOT_A, INV_SC_CONFIGURE, 5, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "reconfigure A"; }
@@ -1545,7 +1545,7 @@ void test_t283(void) {
         if (ok && !it_utq_g(&b1)) { ok = 0; why = "QABI10 g1"; }
         if (ok && (b1.live_untypeds != b0.live_untypeds)) { ok = 0; why = "QABI10 state drift"; }
     }
-    /* Stage 7-mem: SYS_RESOURCE_INFO is RETIRED, so the prefix-safety probe
+    /* SYS_RESOURCE_INFO is RETIRED, so the prefix-safety probe
      * becomes a retirement probe — and the stronger claim of the two, because
      * a retired syscall must write NOTHING at all, not merely stay inside a
      * declared prefix. */
@@ -1560,7 +1560,7 @@ void test_t283(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
- * Phase S2 Stage 0 — canonical TCB from Untyped (T284–T287).
+ * Stage 0 — canonical TCB from Untyped (T284–T287).
  *
  * Charter §2.2 (O1–O6) and §C.2: the TCB is born from RETYPE2 as an INACTIVE
  * object (configured = 0) — cap-complete (GET_INFO / SET_PRIORITY / delete /
@@ -1621,7 +1621,7 @@ void test_t284(void) {
     if (ok && (it_invoke1((long)S1_SLOT_A, INV_TCB_GET_INFO, (long)(uintptr_t)&info) != 0 ||
                info.priority != 7u)) { ok = 0; why = "prio roundtrip"; }
 
-    /* Legacy handle-publishing birth is retired outright (Stage 4); it was
+    /* Legacy handle-publishing birth is retired outright; it was
      * already refused for TCB by S20 + Stage 0. */
     if (ok && it_sys3(SYS_UNTYPED_RETYPE, su, (long)IRIS_KOBJ_TCB, 0) !=
               (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy tcb retype alive"; }
@@ -1681,7 +1681,7 @@ void test_t285(void) {
     if (!g_t285_ready || g_t285_tcb < 0) { it_fail("T285", "tcb self"); return; }
     iris_cptr_t tcb_h = (iris_cptr_t)g_t285_tcb;
 
-    /* Stage 5 Step 4: thread creation returns a CAPABILITY, not a global
+    /* Thread creation returns a CAPABILITY, not a global
      * thread id — so the id this test tracks across death is read from the
      * object while it is alive instead of being whatever the creation call
      * happened to hand back. */
@@ -1835,7 +1835,7 @@ void test_t287(void) {
     if (!g_t285_ready || g_t285_tcb < 0) { it_fail("T287", "A tcb self"); return; }
     iris_cptr_t a_h = (iris_cptr_t)g_t285_tcb;
 
-    /* Stage 5 Step 4: creation returns a capability, so A's identity is read
+    /* Creation returns a capability, so A's identity is read
      * from A's own object rather than from the value the creation returned. */
     struct iris_tcb_info ia; ia.state = 0u;
     uint32_t id_a = 0u;
@@ -1897,7 +1897,7 @@ void test_t287(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
- * Phase S3 — native MDB/CDT, revoke cross-process (T288–T290).
+ * Native MDB/CDT, revoke cross-process (T288–T290).
  *
  * Real kernel objects, real CSpace slots, a real second process
  * (IRIS_CPTR_TEST_PROC).  Authority loss is checked FUNCTIONALLY: a revoked
@@ -1914,7 +1914,7 @@ static long it_cs_mint(uint64_t src, uint32_t dslot, iris_rights_t rights,
 static long it_cs_revoke(uint64_t cptr) {
     return it_invoke0((long)cptr, INV_CSPACE_REVOKE);
 }
-/* Stage 7 Step 9: every caller of this named the suite's OWN process to reach
+/* Every caller of this named the suite's OWN process to reach
  * its OWN CSpace, which SYS_CSPACE_MINT has expressed as dest_cnode 0 all
  * along.  Kept as a helper because the tests read better for it, not because
  * the operation is different. */
@@ -2299,7 +2299,7 @@ static void t297_helper(void) {
     for (;;) {}
 }
 
-/* ── T297: a thread is retyped, configured and started (Stage 5 Step 4) ──
+/* ── T297: a thread is retyped, configured and started ──
  * Every thread in this suite is already born this way — the helper that used
  * to call SYS_THREAD_CREATE now retypes a TCB from the suite's own Untyped and
  * configures it with capabilities — so the happy path is covered thirty times
@@ -2360,7 +2360,7 @@ void test_t297(void) {
         ok = 0; why = "cnode accepted as vspace";
     }
     /*
-     * Stage 7-proc: the "foreign cnode" probe is RETIRED.
+     * The "foreign cnode" probe is RETIRED.
      *
      * It asserted that a CNode which is not the target process's own root is
      * ACCESS_DENIED — KProcess acting as an authority over a capability the

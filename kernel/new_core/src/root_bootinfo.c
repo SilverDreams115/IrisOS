@@ -56,7 +56,7 @@ iris_error_t root_bootinfo_init(void *buf, uint32_t bytes,
     bi->cap_proc_control   = 0u;
     bi->cap_initrd_control = 0u;
     bi->cap_fb_control     = 0u;
-    /* v9 (Stage 10-abi): which ABI this kernel implements.  Written here
+    /* v9: which ABI this kernel implements.  Written here
      * rather than by the boot path, because it is a property of the BUILD and
      * a boot path that could forget it would hand out a zero that reads as
      * "version 0.0" rather than as "nobody said". */

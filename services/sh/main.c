@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * sh/main.c — ring-3 interactive shell service (Phase 31).
+ * sh/main.c — ring-3 interactive shell service.
  *
  * Bootstrap protocol (over bootstrap channel from svcmgr):
  *   recv SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP (6) → console_h  (RIGHT_WRITE)
@@ -8,12 +8,12 @@
  *   recv SVCMGR_ENDPOINT_SH_REPLY  (8)        → own reply_h  (closed; unused)
  *   recv SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP (0x20) → svcmgr discovery endpoint
  *
- * VFS access (Phase 7.2): endpoint-only. "vfs.ep" is resolved through the
+ * VFS access: endpoint-only. "vfs.ep" is resolved through the
  * svcmgr discovery endpoint; ls/cat use the stateless VFS EP protocol
  * (iris/vfs_ep_proto.h). There is no legacy KChannel fallback — if the
  * endpoint is missing, ls/cat report the error instead of masking it.
  *
- * Keyboard (Phase 7.4): endpoint-only. "kbd.ep" is resolved through the
+ * Keyboard: endpoint-only. "kbd.ep" is resolved through the
  * svcmgr discovery endpoint; the REPL pulls one key event per
  * EP_CALL(KBD_EP_OP_READ) — kbd parks the reply until a key arrives, so the
  * call doubles as the blocking wait. No legacy KChannel subscribe fallback.
@@ -58,7 +58,7 @@ static iris_cptr_t g_sh_vfs_ep_h = IRIS_CPTR_NULL;
  * IPC bulk buffer for EP_CALL round trips (request payload and reply data
  * share the buffer — EP_CALL reuses buf_uptr in both directions).
  *
- * Ledger D-4: `g_sh_buf` starts at this static fallback and moves to a page sh
+ * `g_sh_buf` starts at this static fallback and moves to a page sh
  * retypes from the Untyped it owns, registered as its IPC buffer.  Sharing one
  * page between the request and the reply is not a compromise here — it is what
  * an IPC buffer IS, and sh's call/reply pattern already worked that way.
@@ -70,13 +70,13 @@ static uint8_t *g_sh_buf = g_sh_ep_buf;
 #define SH_SLOT_IPCBUF_FRAME  22u
 #define SH_SLOT_IPCBUF_PT     23u
 
-/* Console endpoint path (Phase 8): sh is a pure CPtr-first client — ALL
+/* Console endpoint path: sh is a pure CPtr-first client — ALL
  * console output goes through the well-known slot IRIS_CPTR_CONSOLE_EP.
  * There is no legacy console cap anymore: if the slot is broken, sh stays
  * silent and every gated "[SH] ... OK" marker is missing, which fails the
  * smoke run. The `con` parameter is kept so call sites stay unchanged. */
 static iris_cptr_t g_sh_con_ep_h = (iris_cptr_t)IRIS_CPTR_CONSOLE_EP;
-/* D-4: the console client marshals into the buffer it is given, and a thread
+/* The console client marshals into the buffer it is given, and a thread
  * with a registered IPC buffer must marshal into THAT — the kernel refuses a
  * send that names any other address.  So the log path shares the service's one
  * IPC buffer, which is what having one buffer means. */
@@ -162,7 +162,7 @@ static void sh_write_u32(iris_cptr_t con, uint32_t v) {
     while (i) { out[0] = buf[--i]; sh_cout(con, out); }
 }
 
-/* ── VFS endpoint path (Phase 7.1) ────────────────────────────────── */
+/* ── VFS endpoint path ────────────────────────────────── */
 
 /* (Phase 8: sh_svc_ep_lookup removed — sh discovers nothing at runtime;
  * every core service cap is a well-known CSpace slot.) */
@@ -269,7 +269,7 @@ static void sh_dispatch(iris_cptr_t con, const char *line) {
     }
     if (sh_word_eq(line, "uptime")) {
         /*
-         * Ledger A-27: the clock is a SERVICE.  `SYS_CLOCK_GET` handed any task
+         * The clock is a SERVICE.  `SYS_CLOCK_GET` handed any task
          * a timestamp for the asking; what time it is, is something you are
          * told by whoever holds the hardware, and a shell that was not granted
          * the timer capability says so rather than being told anyway.
@@ -290,7 +290,7 @@ static void sh_dispatch(iris_cptr_t con, const char *line) {
         return;
     }
     if (sh_word_eq(line, "ls")) {
-        /* Endpoint-only path (Phase 7.2): no legacy KChannel fallback. */
+        /* Endpoint-only path: no legacy KChannel fallback. */
         if (g_sh_vfs_ep_h == IRIS_CPTR_NULL) {
             sh_cout(con, "ls: VFS endpoint unavailable\r\n");
             return;
@@ -327,7 +327,7 @@ void sh_main_c(iris_cptr_t rbx_unused) {
     iris_cptr_t console_h     = IRIS_CPTR_NULL;  /* unused: pure CPtr client */
     iris_cptr_t kbd_ep_h      = IRIS_CPTR_NULL;
 
-    /* D-4: a page sh owns, registered as its IPC buffer.  Best-effort — a
+    /* A page sh owns, registered as its IPC buffer.  Best-effort — a
      * failure leaves the kernel staging path, which still works. */
     {
         void *b = iris_ipc_buffer_init(SH_SLOT_IPCBUF_FRAME, SH_SLOT_IPCBUF_PT,
@@ -335,7 +335,7 @@ void sh_main_c(iris_cptr_t rbx_unused) {
         if (b) g_sh_buf = (uint8_t *)b;
     }
 
-    /* Phase 8: sh is a pure CPtr-first client. The bootstrap bag is empty
+    /* Sh is a pure CPtr-first client. The bootstrap bag is empty
      * (catalog: endpoint_only without an own endpoint) — everything sh
      * needs was minted into its root CNode before it ran:
      *   slot 1 svcmgr discovery, slot 2 vfs.ep, slot 3 console.ep,

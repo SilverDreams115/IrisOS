@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * syscall_invoke.c — the invocation door (ledger A-32).
+ * syscall_invoke.c — the invocation door.
  *
  * ONE syscall reaches every method in the kernel: `SYS_INVOKE(cptr, label,
  * a1, a2, a3)`.  The capability says WHAT is being acted on, the label says
@@ -23,7 +23,7 @@
  * here means a CSpace walk that the method then repeats when it fetches the
  * capability with the type and rights it actually needs — two walks per
  * invocation, forever.  And the repeat cannot be removed by handing the method
- * the object this function resolved, because under the event kernel (D-1)
+ * the object this function resolved, because under the event kernel
  * WHEN a method resolves is part of its contract:
  *
  *   - `sys_notify_wait` checks for a notification that CLOSED under it before
@@ -53,7 +53,7 @@ uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
                         uint64_t a1, uint64_t a2, uint64_t a3,
                         uint64_t a4, uint64_t a5, uint64_t a6,
                         uint64_t a7) {
-    /* a4, a5 and a7 are message words (A-33).  The IPC methods read the
+    /* a4, a5 and a7 are message words.  The IPC methods read the
      * message through the THREAD rather than through this switch, which would
      * otherwise carry nine arguments for the benefit of seven of its sixty
      * cases — and which a restart could not reproduce anyway.  a6 is the one
@@ -90,7 +90,7 @@ uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
      * first and the endpoint last, because it grew out of SYS_REPLY.  The
      * order is rearranged here rather than in the function, so that adopting
      * seL4's way of NAMING the operation changes nothing it does. */
-    /* A-33: the reply object rides in the capability word (a6), because a
+    /* The reply object rides in the capability word (a6), because a
      * reply carries no capability and the syscall enforces that itself. */
     case INV_EP_REPLY_RECV:            return sys_reply_recv(a6, 0, cptr);
 
@@ -127,7 +127,7 @@ uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
     case INV_FRAME_SIZE:               return sys_frame_size(cptr, a1, a2);
     case INV_FRAME_GET_ADDRESS:        return sys_frame_get_address(cptr, a1, a2);
 
-    /* ── KOBJ_IOSPACE — what a DEVICE may reach (Stage 10-dma) ────────── */
+    /* ── KOBJ_IOSPACE — what a DEVICE may reach ────────── */
     case INV_IOSPACE_BIND:             return sys_iospace_bind(cptr, a1, a2);
     case INV_IOSPACE_MAP_TABLE:        return sys_iospace_map_table(cptr, a1, a2);
     case INV_IOSPACE_MAP_FRAME:        return sys_iospace_map_frame(cptr, a1, a2, a3);
@@ -180,7 +180,7 @@ uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
          * says the same thing with the code it already uses for an operation
          * that does not exist.  A label sent to the wrong KIND of capability
          * does not land here — it reaches the method, which refuses it by type
-         * (A-30) and says so. */
+         * and says so. */
         return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }
 }

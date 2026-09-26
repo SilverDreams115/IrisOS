@@ -8,7 +8,7 @@
 #define KBOOTCAP_POOL_SIZE 0u
 
 /*
- * Stage 5 Step 2: ONE CAPABILITY, ONE AUTHORITY.
+ * ONE CAPABILITY, ONE AUTHORITY.
  *
  * A boot capability used to be a monolith carrying a permission MASK — spawn,
  * hardware, debug and framebuffer authority on a single object, delegated
@@ -31,7 +31,7 @@
 #define IRIS_BOOTCAP_IOPORT_CONTROL (1u << 5)  /* SYS_CAP_CREATE_IOPORT */
 #define IRIS_BOOTCAP_INITRD_CONTROL (1u << 6)  /* SYS_INITRD_COUNT / SYS_INITRD_VMO */
 /*
- * Authority over CPU TIME (ledger A-20).
+ * Authority over CPU TIME.
  *
  * seL4 hands the root task one `SchedControl` capability per core, and
  * `seL4_SchedControl_Configure` is the ONLY way a budget and a period reach a
@@ -44,7 +44,7 @@
  */
 #define IRIS_BOOTCAP_SCHED_CONTROL  (1u << 7)  /* SYS_SC_CONFIGURE */
 /*
- * Authority to carve ADDRESS-SPACE IDENTIFIER pools (ledger A-21).
+ * Authority to carve ADDRESS-SPACE IDENTIFIER pools.
  *
  * seL4's `ASIDControl`: one capability, in BootInfo, whose only power is
  * making pools.  Holding an Untyped lets you build the object; holding this

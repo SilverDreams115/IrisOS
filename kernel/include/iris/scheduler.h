@@ -18,7 +18,7 @@ void     scheduler_tick_remote(void);
  *
  * sched_live_task_count: number of scheduler task slots in any non-DEAD state.
  *   Includes the idle task.  Useful as a coarse live-process indicator.
- *   Cost: O(live threads) walk of the intrusive scheduler list (A-19).
+ *   Cost: O(live threads) walk of the intrusive scheduler list.
  *
  * sched_current_ticks: current scheduler tick counter value.
  *   Incremented at TASK_DEFAULT_SLICE Hz; wraps at UINT64_MAX (>5000 years at 100Hz).
@@ -36,13 +36,13 @@ struct task;
 void     sched_set_domain(struct task *t, uint8_t domain);
 uint32_t sched_domain_current(void);
 uint64_t sched_domain_switches(void);
-/* Phase 16: high-water depth of the deferred-reap queue.  Monotonic; a value
+/* High-water depth of the deferred-reap queue.  Monotonic; a value
  * approaching REAP_QUEUE_SIZE would mean the single-CPU "one death per yield"
  * assumption is being violated and dead task slots may leak. */
 uint32_t sched_reap_queue_hwm(void);
 
 /*
- * Phase 17 — scheduler hardening instrumentation (all additive, read-only).
+ * Scheduler hardening instrumentation (all additive, read-only).
  *
  * sched_run_queue_hwm:  high-water of tasks concurrently enqueued in the O(1)
  *   run queue.  Bounds proof for run-queue churn (T120).
@@ -65,7 +65,7 @@ uint32_t sched_run_queue_hwm(void);
 uint32_t sched_deaths_pending(void);
 uint32_t sched_run_queue_live(void);
 uint32_t sched_duplicate_enqueue_count(void);
-/* Phase S2 Step C — KTCB registry gauges (references, not payload). */
+/* KTCB registry gauges (references, not payload). */
 void     task_registry_stats(uint32_t *active, uint32_t *hwm,
                              uint32_t *exhaustions, uint32_t *gen_mismatch);
 uint32_t sched_yield_count(void);
@@ -77,7 +77,7 @@ uint64_t sched_idle_ticks(void);
 struct task;
 
 /*
- * Stage 9-evt step 3 — the per-core dispatcher and the stack it runs on.
+ * The per-core dispatcher and the stack it runs on.
  *
  * core_dispatch_init:   publish this core's stack top into its cpu_local.
  * core_stack_top_for:   that stack's top, for the boot path that has no

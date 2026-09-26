@@ -10,7 +10,7 @@
 struct task;
 
 /*
- * Phase S2 D2 — the KTCB is `struct task` itself (KObject at offset 0).  The old
+ * D2 — the KTCB is `struct task` itself (KObject at offset 0).  The old
  * `struct KTcb { KObject; struct task *task; }` wrapper is REMOVED: there is one
  * canonical structure with one object identity and four separated lifetimes
  * (object / execution / registry / storage — see sel4-task-model.md).
@@ -28,7 +28,7 @@ struct task;
 void ktcb_object_init(struct task *t);
 
 /*
- * Phase S2 Step 0 (charter §2.2/O1) — canonical TCB birth from Untyped.
+ * Step 0 (charter §2.2/O1) — canonical TCB birth from Untyped.
  *
  * ktcb_alloc_at: placement-init a KTCB whose storage IS the retyped region
  * (RETYPE2(KOBJ_TCB) path; block zero-filled by kuntyped_alloc_children_atomic;

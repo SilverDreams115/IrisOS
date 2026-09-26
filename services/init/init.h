@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * init.h — shared primitives for the init service (Phase 14).
+ * init.h — shared primitives for the init service.
  *
  * init began as a single large main.c.  Phase 14 decomposed it into auditable
  * modules that share this contract:
@@ -50,7 +50,7 @@ static inline long init_sys1(long nr, long a0) {
 
 
 /*
- * Phase S1: fabricate one kernel object from an untyped capability.
+ * Fabricate one kernel object from an untyped capability.
  *
  * SYS_UNTYPED_RETYPE2 publishes the new capability DIRECTLY into dest_slot of
  * init's own root CNode (dest 0 = own root).  The source must be a CPtr:
@@ -84,18 +84,18 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
 #define INIT_SLOT_TEST_UNTYPED 49u
 #define INIT_SLOT_WATCH_NOTIF  50u
 #define INIT_SLOT_PROBE_NOTIF  51u
-#define INIT_SLOT_S8_FAULT_EP  52u  /* A-22: the S8 thread's fault endpoint */
+#define INIT_SLOT_S8_FAULT_EP  52u  /* The S8 thread's fault endpoint */
 #define INIT_SLOT_LOADER_WS    53u   /* loader's second-level CNode */
 #define INIT_RSLOT_LK_SVCMGR   54u   /* receive slots for discovery lookups */
 #define INIT_RSLOT_LK_VFS      55u
 #define INIT_RSLOT_LK_KBD      56u
-/* Stage 5 Step 4: init's own CSpace and VSpace, as capabilities, plus the
+/* Init's own CSpace and VSpace, as capabilities, plus the
  * slot its one test thread is retyped into.  A thread is created by retyping a
  * TCB from init's Untyped and configuring it with these two — the static task
  * pool is no longer reachable from userland. */
 #define INIT_SLOT_OWN_CSPACE   57u
 #define INIT_SLOT_OWN_VSPACE   58u
-/* A-24: the timer service's fixtures, held by init for its whole run. */
+/* The timer service's fixtures, held by init for its whole run. */
 #define INIT_SLOT_TIMER_EP     63u   /* the control endpoint init serves it on */
 /* 64/65 are IRIS_CPTR_DEVICE_UNTYPED / OWN_CSPACE in init's own root CNode —
  * the first draft put the IRQ capability on top of the device untyped and got
@@ -106,9 +106,9 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
 #define INIT_SLOT_TIMER_CN     74u   /* its CNode of client notifications */
 #define INIT_SLOT_TIMER_UT     75u   /* its budget */
 #define INIT_SLOT_TIMER_GIVE   76u   /* the derived copy init hands over per arm */
-#define INIT_SLOT_IDLE_NOTIF   77u   /* A-24: what init stops on, forever */
+#define INIT_SLOT_IDLE_NOTIF   77u   /* What init stops on, forever */
 /*
- * Stage 10: the PCI bus service's fixtures.
+ * The PCI bus service's fixtures.
  *
  * 82 and up.  The first pick was 78, which is IRIS_CPTR_MMIO_UNTYPED — the
  * capability init has to HAND to this very service — so retyping an endpoint
@@ -152,20 +152,20 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
 #define INIT_SLOT_IP_UT       109u
 #define INIT_SLOT_IP_BUF      110u
 #define INIT_SLOT_S8_TCB       59u
-/* Stage 7 Step 7: where a fault delivers the faulting thread's capability.
+/* Where a fault delivers the faulting thread's capability.
  * init arms the handler for ITSELF, so its own root CNode is the mailbox and
  * this is just the slot in it. */
-#define INIT_SLOT_S8_REPLY     60u  /* A-22: reply authority for that fault */
-/* Stage 7 Step 9: iris_test's ROOT CSpace, kept from its spawn so init can
+#define INIT_SLOT_S8_REPLY     60u  /* Reply authority for that fault */
+/* Iris_test's ROOT CSpace, kept from its spawn so init can
  * still mint into it afterwards — delegating into a child names the CSpace,
  * and there is no longer a way to reach one by naming the process. */
 #define INIT_SLOT_TEST_CNODE   61u
-/* Stage 7 Step 10: iris_test's first THREAD, kept so init waits on the
+/* Iris_test's first THREAD, kept so init waits on the
  * execution that ends rather than on a process capability. */
 #define INIT_SLOT_TEST_TCB     62u
 
-/* Phase S1: init's untyped pool — the boot untyped delegated by userboot at
- * IRIS_CPTR_INIT_UNTYPED.  Stage 4: held as the CPtr itself, checked once in
+/* Init's untyped pool — the boot untyped delegated by userboot at
+ * IRIS_CPTR_INIT_UNTYPED.  Held as the CPtr itself, checked once in
  * init_main with a non-materializing SYS_UNTYPED_INFO probe.  0 = no pool
  * (spawns that need to fabricate objects fail loudly). */
 extern uint64_t g_init_untyped_c;
@@ -179,7 +179,7 @@ void init_log(const char *s);
  * sink): created by init_spawn_console, read by init_log, re-minted into
  * children by the launch module. */
 extern iris_cptr_t g_init_console_ep_h;
-/* A-24: the timer service's control endpoint, init's own copy. */
+/* The timer service's control endpoint, init's own copy. */
 extern iris_cptr_t g_init_timer_ep_h;
 int init_spawn_timer(void);
 int init_spawn_pci(void);
@@ -220,7 +220,7 @@ void init_close(iris_cptr_t *h);
 /* Initial-authority wiring (init_bootstrap.c). */
 void init_early_serial_start(void);
 void init_early_serial_write(const char *s);
-/* D-4: register init's own IPC buffer frame (best-effort), and the buffer
+/* Register init's own IPC buffer frame (best-effort), and the buffer
  * itself — the log path marshals into it too, because a thread has one. */
 void init_ipc_buffer_init(void);
 extern uint8_t *g_init_buf;

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * vfs_ep_proto.h — VFS service protocol over KEndpoint (Phase 7.1).
+ * vfs_ep_proto.h — VFS service protocol over KEndpoint.
  *
  * Wire format: a MessageInfo word plus message registers (iris/ipc_msg.h),
  * following the conventions in iris/endpoint_proto.h.  All operations are
@@ -12,11 +12,11 @@
  *     client leaves no server-side state behind and no sender identity is
  *     required (it was designed before badges; Phase 9 lifted the constraint
  *     and statelessness stayed on its own merits).
- *   - This is the ONLY VFS protocol (Phase 7.5): the legacy stateful KChannel
+ *   - This is the ONLY VFS protocol: the legacy stateful KChannel
  *     open/read/close protocol (iris/vfs_proto.h) was removed with its last
  *     clients; VFS no longer owns a legacy service channel.
  *   - Requests and replies never transfer capabilities.  A Call CAN carry one
- *     (A-33) and svcmgr's REGISTER does; every VFS answer is inline data.
+ * and svcmgr's REGISTER does; every VFS answer is inline data.
  *
  * Reply convention (see endpoint_proto.h):
  *   reply.label == IRIS_EP_REPLY_OK  → words[0] = 0, payload in words[1..] or
@@ -35,7 +35,7 @@
 
 #include <stdint.h>
 #include <iris/ipc_msg.h>
-#include <iris/endpoint_proto.h>   /* Phase 28.1: IRIS_BADGE_FILEGRANT_* */
+#include <iris/endpoint_proto.h>   /* IRIS_BADGE_FILEGRANT_* */
 
 /* Service opcode range 0x0100–0xEFFF (endpoint_proto.h); VFS owns 0x01xx. */
 
@@ -72,14 +72,14 @@
  *
  *   Note (buffer reuse): the request payload (path) and the reply payload
  *   (data) both live in the caller's registered IPC buffer, which is one page
- *   per thread (D-4) — there is no buf_uptr to point one of them elsewhere,
+ *   per thread — there is no buf_uptr to point one of them elsewhere,
  *   and since A-33 no pointer on the message path at all.  The client must
  *   re-stage the path before every call.
  */
 #define VFS_EP_OP_READ_AT  UINT64_C(0x0103)
 
 /*
- * VFS_EP_OP_STATUS — service health/diagnostics summary (Phase 7.5).
+ * VFS_EP_OP_STATUS — service health/diagnostics summary.
  *   Request:  no words, no bulk payload required (extra words are ignored;
  *             a bulk payload is rejected as IRIS_ERR_INVALID_ARG).
  *   Reply OK: words[1] = number of ready exports
@@ -91,17 +91,17 @@
 
 /* IRIS_EP_OP_PING (0xFF01, endpoint_proto.h) is also served: reply OK. */
 
-/* ── Phase 28.1: VFS-enforced file grants ─────────────────────────────────────
+/* ── VFS-enforced file grants ─────────────────────────────────────
  *
  * A file grant is an UNFORGEABLE, per-backing authority validated by the VFS
  * itself on every operation — a pathname is never authority.  The construction
  * composes three existing kernel guarantees:
  *
- *   1. sender_badge is KERNEL-STAMPED from the invoked capability (Phase 9);
+ *   1. sender_badge is KERNEL-STAMPED from the invoked capability;
  *      a client cannot write it.
  *   2. A badged endpoint cap can NEVER be re-badged (SYS_PROC_CSPACE_MINT);
  *      only a holder of an UNBADGED duplicable vfs.ep cap (a supervisor, by
- *      the Phase 10 grant-tightening rule) can mint session identities.
+ *      the grant-tightening rule) can mint session identities.
  *   3. Rights reduce monotonically on every mint.
  *
  * Roles, by badge class:
@@ -227,7 +227,7 @@
 
 /* Boot contract: number of exports seeded before "[VFS] ep ready" (the
  * static boot exports; initrd exports come on top). Checked by init's diag
- * invariant. Moved here from iris/vfs_proto.h (removed, Phase 7.5). */
+ * invariant. Moved here from iris/vfs_proto.h (removed). */
 #define VFS_BOOT_EXPORT_COUNT 4u
 
 /* Maximum data bytes per READ_AT reply (one IPC bulk buffer). */

@@ -8,7 +8,7 @@
 /*
  * 11 power-of-2 size classes: 2^5 (32) through 2^15 (32768).
  * The largest class (32768) covered struct KProcess, the biggest kernel object
- * there was; it is deleted (Stage 7-proc) and the class now covers a wide root
+ * there was; it is deleted and the class now covers a wide root
  * CNode.
  */
 #define KSLAB_MIN_LOG2   5u    /* 32 bytes  */
@@ -20,7 +20,7 @@ static uint32_t        kslab_total = 0;
 static uint32_t        kslab_used  = 0;   /* bump pointer (byte offset) */
 static void           *kslab_free_heads[KSLAB_NUM_CLASSES];
 static irq_spinlock_t  kslab_lock;
-/* Phase 29 — capacity-contract instrumentation.  kslab_used is bump-only (frees
+/* Capacity-contract instrumentation.  kslab_used is bump-only (frees
  * go to per-class free-lists for reuse, never lowering the bump pointer), so it
  * IS the high-water of arena consumption.  kslab_fail counts allocations that
  * hit the ceiling (returned 0) — the explicit, diagnosable exhaustion path. */
@@ -99,7 +99,7 @@ void *kslab_alloc(uint32_t size) {
         /* Bump-allocate, aligned to block boundary */
         uint32_t aligned = (kslab_used + block - 1u) & ~(block - 1u);
         if (aligned + block > kslab_total) {
-            kslab_fail++;   /* Phase 29: explicit, counted exhaustion (no wedge) */
+            kslab_fail++;   /* Explicit, counted exhaustion (no wedge) */
             irq_spinlock_unlock(&kslab_lock, flags);
             return 0;
         }

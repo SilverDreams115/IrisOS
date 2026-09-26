@@ -7,7 +7,7 @@
 #include <iris/ipc_msg.h>
 
 /*
- * iris_msg.h — marshalling, for ring 3 (ledger A-33).
+ * iris_msg.h — marshalling, for ring 3.
  *
  * A message is a MessageInfo word and message registers.  `struct iris_msg` is
  * a place to compose one before it goes into those registers and to unpack one
@@ -106,7 +106,7 @@ static inline long iris_msg_op(long cptr, unsigned long label,
         : "a"((long)SYS_INVOKE), "r"(r_14), "r"(r_13)
         : "rcx", "r11", "memory");
 
-    /* A-33: a call that FAILED delivered no message, and the kernel wrote no
+    /* A call that FAILED delivered no message, and the kernel wrote no
      * return words — the argument registers still hold what went out.  Reading
      * them as a message is how a refused receive came back carrying its own
      * MessageInfo and looking like a delivered capability. */
@@ -152,7 +152,7 @@ static inline long iris_msg_recv_op(long ep, unsigned long label,
     iris_msg_zero(m);
     m->recv_slot    = slot;
     m->reply        = reply;
-    /* A-33: a receive that failed delivered nothing, and the kernel wrote no
+    /* A receive that failed delivered nothing, and the kernel wrote no
      * return words.  Everything below would be the arguments read back. */
     if (ret != 0) return ret;
     m->sender_badge = (uint64_t)b;
@@ -225,7 +225,7 @@ static inline long iris_msg_reply_recv(long ep, struct iris_msg *m) {
     iris_msg_zero(m);
     m->recv_slot    = slot;
     m->reply        = reply;
-    /* A-33: a receive that failed delivered nothing, and the kernel wrote no
+    /* A receive that failed delivered nothing, and the kernel wrote no
      * return words.  Everything below would be the arguments read back. */
     if (ret != 0) return ret;
     m->sender_badge = (uint64_t)b;

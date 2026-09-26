@@ -26,7 +26,7 @@
  * the pending fault of that task is a different generation, so a stale
  * handler response can never resolve a fault it did not observe.
  *
- * Stage 7 Step 7: `task_id` at offset 4 is DIAGNOSTIC ONLY.  The thread is
+ * `task_id` at offset 4 is DIAGNOSTIC ONLY.  The thread is
  * named to SYS_EXCEPTION_RESUME by the capability the kernel published into
  * the mailbox the handler declared at registration; the number here is for
  * logs and correlation, and selects nothing.
@@ -36,12 +36,12 @@
 #define FAULT_OFF_TASK_ID     4   /* uint32_t: faulting task id */
 #define FAULT_OFF_RIP         8   /* uint64_t: rip at fault */
 #define FAULT_OFF_ERROR      16   /* uint32_t: error code */
-#define FAULT_OFF_SEQ        20   /* uint32_t: fault generation (Phase 25) */
+#define FAULT_OFF_SEQ        20   /* uint32_t: fault generation */
 #define FAULT_OFF_CR2        24   /* uint64_t: #PF address (vector==14 only) */
 #define FAULT_MSG_LEN        32u
 
 /*
- * Stage 8-mcs — the TIMEOUT fault vector.
+ * The TIMEOUT fault vector.
  *
  * x86 defines vectors 0..31; 32..255 are the interrupt range and no CPU
  * exception ever carries one, so a value above 255 cannot collide with a

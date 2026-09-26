@@ -29,7 +29,7 @@
 /* ── Shared state definitions ────────────────────────────────────────────── */
 
 /*
- * Ledger A-19 — no ceiling, and one static pair.
+ * No ceiling, and one static pair.
  *
  * `ktcb_registry[TASK_MAX]` is gone.  It held scheduler identity, it filled,
  * and `task_registry_alloc` then told a holder with memory and a capability
@@ -88,7 +88,7 @@ static int task_is_on_some_cpu(const struct task *t) {
     return atomic_load_explicit(&t->on_cpu, memory_order_acquire) != 0u;
 }
 
-/* ── Phase S2 D2 — registry + backing instrumentation (QUERY kind 4) ── */
+/* ── D2 — registry + backing instrumentation (QUERY kind 4) ── */
 static _Atomic uint32_t reg_active;
 static _Atomic uint32_t reg_hwm;
 static _Atomic uint32_t reg_exhaustions;
@@ -118,7 +118,7 @@ static int task_registry_alloc(struct task *t) {
         irq_spinlock_unlock(&sched_list_lock, lf);
         return 0;
     }
-    /* A-42: the test used to be OUTSIDE this hold, so two callers could both
+    /* The test used to be OUTSIDE this hold, so two callers could both
      * pass it and both splice `t` into the list, losing whichever links the
      * second overwrote.  A-41's claim is what keeps that unreachable today;
      * the test belongs under the lock that does the linking regardless. */
@@ -180,7 +180,7 @@ static struct task *task_backing_find_free(void) {
  * Allocate a fresh TCB: a free backing slot (storage) plus a free registry
  * slot (scheduler identity).  Returns NULL on either exhaustion.
  *
- * Stage 5 Step 4: it no longer reports the BACKING index.  That index was
+ * It no longer reports the BACKING index.  That index was
  * used to address the per-slot kernel-stack region, which tied a thread's
  * kernel stack to the fact that its storage came from the static pool — a
  * TCB retyped from an Untyped has no such index.  The kstack is keyed by the
@@ -220,7 +220,7 @@ struct task        *sched_idle_thread = 0;
  * but a diagnostic that hands two threads the same id is a diagnostic that
  * lies.  Three call sites increment it and none held a lock. */
 _Atomic uint32_t    next_id         = 0;
-/* Phase S2: task_rsp[TASK_MAX] retired — kernel RSP moved into struct task.saved_krsp */
+/* Task_rsp[TASK_MAX] retired — kernel RSP moved into struct task.saved_krsp */
 uint64_t            kernel_cr3      = 0;
 
 /*
@@ -268,7 +268,7 @@ static struct CpuRunQueue cpu_rqs[MAX_CPUS];
 _Atomic uint32_t          sched_live_count;
 
 /*
- * Phase 17 — additive scheduler instrumentation (silent, ABI-safe, exposed
+ * Additive scheduler instrumentation (silent, ABI-safe, exposed
  * only through SYS_SCHED_INFO's ext2 tier).  None of this changes scheduling
  * decisions; it only makes run-queue invariants observable to the T119–T124
  * selftests.
@@ -515,7 +515,7 @@ static uint8_t sched_pick_home_cpu(void) {
 }
 
 void task_wakeup(struct task *t) {
-    /* Phase S2 D2: t->terminal guards against a wakeup arriving mid-teardown
+    /* D2: t->terminal guards against a wakeup arriving mid-teardown
      * (e.g. kreply_cancel_caller waking its own caller when that caller is
      * the very task task_execution_teardown_off_cpu is unwinding) — state
      * alone is not enough once TASK_TERMINATED exists between READY/BLOCKED*
@@ -622,7 +622,7 @@ static void idle_task(void) {
 }
 
 /*
- * task_find_by_id — REMOVED (Stage 7 Step 7).
+ * task_find_by_id — REMOVED.
  *
  * It scanned the registry for a thread with a given id, and its last caller
  * was SYS_EXCEPTION_RESUME: the one place a global identifier still SELECTED
@@ -639,7 +639,7 @@ void task_init_fpu_state(struct task *t) {
 }
 
 /*
- * Phase S2 D2 — initialize a backing slot to the free (TASK_DEAD) state.  Used
+ * D2 — initialize a backing slot to the free (TASK_DEAD) state.  Used
  * ONLY at boot (task_init).  Does NOT touch the registry (separate pool) and
  * does NOT free the kstack (fresh slots have none).  The DEATH path no longer
  * calls this: a terminated object's backing is freed by the destructor.
@@ -656,7 +656,7 @@ void task_reset_slot(struct task *t) {
 }
 
 /*
- * Phase S2 D2 — the KTCB object destructor (called from ktcb.c when the last
+ * D2 — the KTCB object destructor (called from ktcb.c when the last
  * reference drops).  This is the STORAGE lifetime end: the backing slot is
  * zeroed and returned to TASK_DEAD (reusable), the object generation bumped so
  * a stale cap/token can never alias the next object placed here.  By this
@@ -687,18 +687,18 @@ void task_backing_free_on_destroy(struct task *t) {
 
 static void task_cancel_blocked_waits(struct task *t) {
     if (!t) return;
-    /* Phase 13/Track G: kchannel_cancel_waiter retired — no task blocks on a
+    /* Kchannel_cancel_waiter retired — no task blocks on a
      * KChannel (the object is gone). */
     knotification_cancel_waiter(t);
     kendpoint_cancel_waiter(t);
-    /* Ph85: cancel pending KReply (task was in TASK_BLOCKED_REPLY). */
+    /* Cancel pending KReply (task was in TASK_BLOCKED_REPLY). */
     if (t->pending_kreply) {
         struct KReply *r = t->pending_kreply;
         t->pending_kreply = 0;
         kreply_cancel_caller(r); /* clears r->caller; sets caller READY (no-op here) */
         kobject_release(&r->base);
     }
-    /* Phase S1: release a staged-but-unbound explicit reply object (task died
+    /* Release a staged-but-unbound explicit reply object (task died
      * while blocked in EP_RECV with a reply CPtr staged).  The object returns
      * to its free state and stays owned by whoever holds its capability. */
     if (t->ep_reply_obj) {
@@ -713,7 +713,7 @@ static void task_cancel_blocked_waits(struct task *t) {
 /* Release the sched_ctx retained ref and clear the pointer. */
 static void task_release_sched_ctx(struct task *t) {
     if (t->sched_ctx) {
-        /* Phase S2: unbind first so the SC keeps no stale bound_task pointer
+        /* Unbind first so the SC keeps no stale bound_task pointer
          * (S2.11); then drop this task's ref. */
         kschedctx_unbind(t->sched_ctx, t);
         kobject_release(&t->sched_ctx->base);
@@ -732,7 +732,7 @@ static void free_user_text_pages(struct task *t) {
 }
 
 /*
- * Phase S2 D2 — execution teardown (shared by self-exit and external kill).
+ * D2 — execution teardown (shared by self-exit and external kill).
  * Ends the EXECUTION, REGISTRY and (frees) execution resources, but NOT the
  * object: it drops the scheduler's execution reference last, so the object is
  * destroyed here only if no capability references it.  A surviving cap keeps
@@ -781,7 +781,7 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     uint64_t irq_flags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(irq_flags) : : "memory");
     rq_remove(t);
-    /* Stage 5 Step 4: the kernel stack goes back WITH the registry slot, not
+    /* The kernel stack goes back WITH the registry slot, not
      * later.  The stack's virtual slot is keyed by the registry index, so
      * releasing the index first opens a window in which the next thread claims
      * that index and maps its stack over a range this task has not unmapped
@@ -801,7 +801,7 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     free_user_text_pages(t);
 
     /*
-     * Stage 7-proc: no process to detach from, and nothing to count.
+     * No process to detach from, and nothing to count.
      *
      * A thread count reaching zero used to be what tore down an address space
      * and emptied a CSpace.  Both are driven by capabilities now — an address
@@ -815,7 +815,7 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     task_release_sched_ctx(t);
 
     /*
-     * Stage 7 Step 10: tell whoever is watching this thread that it is over.
+     * Tell whoever is watching this thread that it is over.
      *
      * Fired here, at the end of EXECUTION teardown, and before the references
      * this thread holds are dropped — a watcher woken by it can immediately
@@ -832,7 +832,7 @@ static void task_execution_teardown_off_cpu(struct task *t) {
         knotification_signal(n, t->exit_bits);
     }
 
-    /* Stage 7 Step 4: the thread's own CSpace reference goes with its
+    /* The thread's own CSpace reference goes with its
      * execution.  Dropped BEFORE the TCB release below, so a process whose last
      * thread is exiting still has its root emptied by thread teardown and
      * not by this release racing it. */
@@ -852,7 +852,7 @@ static void task_execution_teardown_off_cpu(struct task *t) {
         kobject_release(&vs->base);
     }
     /*
-     * Stage 7 Step 12: a dead thread has no pending fault, and its handler
+     * A dead thread has no pending fault, and its handler
      * registration goes with it.
      *
      * thread teardown used to clear the process's record so a late read
@@ -868,7 +868,7 @@ static void task_execution_teardown_off_cpu(struct task *t) {
          * block has already emptied — the references it took would have had
          * nobody left to release them. */
         struct KEndpoint *fe;
-        /* Stage 8-mcs: the TIMEOUT registration is a second, independent
+        /* The TIMEOUT registration is a second, independent
          * reference and is emptied under the same lock hold.  Missing it would
          * leak an endpoint per thread that ever armed a timeout handler — the
          * exact shape of leak this block exists to prevent for the exception
@@ -887,12 +887,12 @@ static void task_execution_teardown_off_cpu(struct task *t) {
         if (te) { kobject_active_release(&te->base); kobject_release(&te->base); }
     }
 
-    /* A-23: the BOUND notification.  Broken from the thread's side, because a
+    /* The BOUND notification.  Broken from the thread's side, because a
      * notification that outlives its bound thread would keep signalling into a
      * pointer that is about to be freed. */
     knotification_unbind_task(t);
 
-    /* D-4: the registered IPC buffer.  Held with active+lifecycle refs, so a
+    /* The registered IPC buffer.  Held with active+lifecycle refs, so a
      * thread that dies still owning its buffer gives the frame back and its
      * Untyped can be reset — the page was the user's, not the kernel's. */
     if (t->ipc_buffer) {
@@ -922,7 +922,7 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     kobject_release(&t->base);
 }
 
-/* Phase 16: reap-queue depth high-water, for lifecycle-churn diagnostics
+/* Reap-queue depth high-water, for lifecycle-churn diagnostics
  * (exposed additively via SYS_SCHED_INFO).  Monotonic; proves the deferred
  * reaper drains under pressure (T114/T118) — if it ever approached
  * REAP_QUEUE_SIZE the "cannot occur on single-CPU" assumption would be
@@ -1010,7 +1010,7 @@ static void free_phys_pages_range(uint64_t base_phys, uint32_t page_count) {
 
 
 /*
- * Stage 9-evt step 3 — describe a thread's FIRST entry into ring 3 in its TCB.
+ * Describe a thread's FIRST entry into ring 3 in its TCB.
  *
  * This used to be a frame pushed onto the thread's own kernel stack at
  * creation — `[user_entry_trampoline, rip, cs, rflags, rsp, ss]` — which is
@@ -1110,7 +1110,7 @@ void task_init(void) {
 }
 
 /*
- * task_create — DELETED (ledger A-19).
+ * task_create — DELETED.
  *
  * It built a KERNEL thread out of the static backing pool, and nothing called
  * it: `scheduler_add_task` was its only caller and had none of its own.  It was
@@ -1168,7 +1168,7 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     t->home_cpu   = 0;
 
     /*
-     * Stage 7-proc: the root task is built from the two objects a thread runs
+     * The root task is built from the two objects a thread runs
      * in, and nothing else.
      *
      * It used to allocate a KProcess to hold them — the one process the kernel
@@ -1182,12 +1182,12 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     root_cr3 = paging_create_user_space();
     if (root_cr3 == 0) goto fail;
 
-    /* Phase 6.2: create KVSpace before bootstrap maps so bootstrap_kframe_map
+    /* Create KVSpace before bootstrap maps so bootstrap_kframe_map
      * can register mapping back-refs via kframe_map_page. */
     {
         struct KVSpace *vs = kvspace_alloc(root_cr3);
         if (!vs) goto fail;
-        /* The root task's space predates every pool; boot stamps it (A-21). */
+        /* The root task's space predates every pool; boot stamps it. */
         kvspace_tag_bootstrap(vs);
         kobject_retain(&vs->base);
         root_vs = vs;
@@ -1210,7 +1210,7 @@ static struct task *task_create_user_impl(uint64_t arg0) {
         for (uint32_t b = 0; b < ub_size; b++) dst[b] = src[b];
         for (uint32_t b = ub_size; b < (uint32_t)(ub_pages << 12); b++) dst[b] = 0;
     }
-    /* Phase 6.2: Bootstrap Frame-backed mapping: userboot text (r--x).
+    /* Bootstrap Frame-backed mapping: userboot text (r--x).
      * Each page gets a KFrame (alloc_parent=NULL) mapped via kframe_map_page.
      * The alloc retain is stored in proc->bootstrap_frames[] and released by
      * the bootstrap-frame release inside the address-space reap,
@@ -1233,7 +1233,7 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     ustack_phys = pmm_alloc_pages(ustack_pages);
     if (ustack_phys == 0) goto fail;
 
-    /* Phase 6.2: Bootstrap Frame-backed mapping: initial user stack (rw-nx).
+    /* Bootstrap Frame-backed mapping: initial user stack (rw-nx).
      * Same KFrame-backed pattern as the text mapping above.
      * Physical memory tracked by t->ustack_phys. */
     for (uint32_t pg = 0; pg < ustack_pages; pg++) {
@@ -1266,7 +1266,7 @@ static struct task *task_create_user_impl(uint64_t arg0) {
         t->user_rsp = USER_STACK_TOP - 8 - (entropy << 4);
     }
 
-    /* Stage 7 Step 4: the root task's thread holds its own CSpace too.  It is
+    /* The root task's thread holds its own CSpace too.  It is
      * read off the process here because there is no capability to pass — this
      * is the one thread whose CSpace the KERNEL fabricated, before anything
      * existed that could name it. */
@@ -1287,7 +1287,7 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     t->utext_phys  = ub_copy_phys;
     t->utext_pages = ub_pages;
 
-    /* Phase S2 D2: the KTCB IS t itself.  ktcb_object_init sets refcount = 1,
+    /* D2: the KTCB IS t itself.  ktcb_object_init sets refcount = 1,
      * the scheduler's own execution reference (dropped at termination by
      * task_execution_teardown_off_cpu).
      *
@@ -1306,7 +1306,7 @@ fail_copy:
     free_phys_pages_range(ub_copy_phys, ub_pages);
 fail:
     free_phys_pages_range(ustack_phys, ustack_pages);
-    /* Stage 7-proc: reclamation is the ADDRESS SPACE's and the CSPACE's own —
+    /* Reclamation is the ADDRESS SPACE's and the CSPACE's own —
      * releasing the references is the whole of it, and their destructors run
      * when nobody holds them. */
     if (root_vs) kobject_release(&root_vs->base);
@@ -1333,7 +1333,7 @@ void task_abort_spawned_user(struct task *t) {
 }
 
 /*
- * task_thread_create — REMOVED (Stage 7).
+ * task_thread_create — REMOVED.
  *
  * It carved a thread out of the static task pool for a process the caller
  * named, and SYS_THREAD_START was its only caller.  A spawned process's first
@@ -1345,10 +1345,10 @@ void task_abort_spawned_user(struct task *t) {
  * built before any Untyped exists.
  */
 
-/* ── Stage 5 Step 4: execution for a TCB born from an Untyped ──────────────
+/* ── Execution for a TCB born from an Untyped ──────────────
  *
  * RETYPE2(KOBJ_TCB) has produced cap-complete but INACTIVE threads since
- * Phase S2: a full capability citizen with no registry slot, no kernel stack
+ * A full capability citizen with no registry slot, no kernel stack
  * and no address space, refused by every execution syscall.  What was missing
  * was the operation that gives it those — and it was missing because its
  * arguments are capabilities (a CSpace root and a VSpace) that only became
@@ -1361,7 +1361,7 @@ void task_abort_spawned_user(struct task *t) {
  * where it starts.
  */
 /*
- * Stage 7-proc: a thread is configured with a CSpace and a VSpace, and that is
+ * A thread is configured with a CSpace and a VSpace, and that is
  * all there is to it.
  *
  * It used to take a KProcess as well and JOIN it — a count to increment and a
@@ -1377,7 +1377,7 @@ iris_error_t ktcb_configure(struct task *t,
     if (t->configured || t->terminal) return IRIS_ERR_ALREADY_EXISTS;
 
     /*
-     * A-41 — CLAIM the thread before building it.
+     * CLAIM the thread before building it.
      *
      * Everything below installs references, takes the execution reference and
      * joins two global counts, and none of it is idempotent.  The test above
@@ -1391,7 +1391,7 @@ iris_error_t ktcb_configure(struct task *t,
         return IRIS_ERR_ALREADY_EXISTS;
 
     /*
-     * A-21: an address space with no identifier cannot be run in.  A holder
+     * An address space with no identifier cannot be run in.  A holder
      * who retyped a VSpace has built one; making it runnable is a second grant
      * (an ASIDPool), and this is where the two meet.  seL4 answers the same
      * question at the same place.
@@ -1407,7 +1407,7 @@ iris_error_t ktcb_configure(struct task *t,
     }
 
     /*
-     * The thread inherits the CEILING of whoever configured it (ledger A-20).
+     * The thread inherits the CEILING of whoever configured it.
      *
      * This is what makes a priority bound travel with delegation instead of
      * being a number the kernel hands out: a supervisor given 100 configures
@@ -1422,7 +1422,7 @@ iris_error_t ktcb_configure(struct task *t,
     }
 
     /*
-     * Stage 7 Step 4: the thread takes the CSpace it was configured with.
+     * The thread takes the CSpace it was configured with.
      *
      * `cspace` is the capability the caller NAMED, passed down rather than
      * re-read from the process — sys_tcb_configure has already proved the two
@@ -1439,7 +1439,7 @@ iris_error_t ktcb_configure(struct task *t,
         kobject_active_retain(&t->cspace_root->base);
     }
     /*
-     * Stage 7-proc: lifecycle AND active, the same pair as the CSpace above.
+     * Lifecycle AND active, the same pair as the CSpace above.
      *
      * The lifecycle ref keeps the object; the ACTIVE ref is what says the
      * address space is still in use, and dropping the last one is what
@@ -1507,7 +1507,7 @@ iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
     if (!t->configured || t->terminal) return IRIS_ERR_NOT_SUPPORTED;
 
     /*
-     * Stage 7: the range checks live here now.
+     * The range checks live here now.
      *
      * They were SYS_THREAD_START's, and SYS_THREAD_START was the only way a
      * spawned process got its first thread.  With that retired this is the
@@ -1523,7 +1523,7 @@ iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
         return IRIS_ERR_INVALID_ARG;   /* the ABI's stack alignment */
 
     /*
-     * A-42 — the gate and the write are ONE critical section.
+     * The gate and the write are ONE critical section.
      *
      * `started` is what freezes the entry frame, and it was tested here and
      * set by TCB_RESUME with nothing between the two.  Two cores pass each
@@ -1608,7 +1608,7 @@ void task_kill_external(struct task *t) {
 }
 
 /*
- * Phase S2 D2: task_exit_current runs ON the dying task's own kernel stack, so
+ * D2: task_exit_current runs ON the dying task's own kernel stack, so
  * it must do nothing that task_execution_teardown_off_cpu's OFF-CPU
  * precondition forbids (freeing that kstack) and nothing the off-CPU pass
  * duplicates (cancelling waits, freeing user pages, thread_count/process
@@ -1629,7 +1629,7 @@ void task_exit_current(void) {
     t->awaiting_reap = 1;
     t->state = TASK_DEAD;
     /*
-     * Stage 9-evt step 3: leave through the dispatcher rather than looping on
+     * Leave through the dispatcher rather than looping on
      * a yield.  The loop existed because a yield could decline and come back,
      * and a dead thread had to keep asking; the dispatcher cannot come back —
      * it resets the core stack under itself — so asking once is asking.
@@ -1643,7 +1643,7 @@ void task_exit_current(void) {
 }
 
 /*
- * task_kill_process — DELETED (Stage 7 Step 13).
+ * task_kill_process — DELETED.
  *
  * It was the body of SYS_PROCESS_KILL: a sweep of the whole task registry for
  * threads whose process pointer matched.  Nothing else called it, and nothing

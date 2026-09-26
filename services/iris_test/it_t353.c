@@ -47,7 +47,7 @@
  *
  * ── What the driver has to do, and why each step is a capability operation ──
  *
- *   1. The device is FOUND through the `pci` service (Stage 10), not by this
+ *   1. The device is FOUND through the `pci` service, not by this
  *      test reading configuration space.  0xCF8/0xCFC is one pair of ports
  *      through which any device on the machine can be reprogrammed, so a
  *      driver holding a capability for it would hold the bus — exactly the
@@ -86,7 +86,7 @@
  *   · every mapping was write-back, so there was no way to map a BAR.
  *
  * Invariants: D-9 (device memory is a capability), U11/U12, M3 (no kernel
- * allocation on this path), and the Stage 10-dma containment claim itself.
+ * allocation on this path), and the containment claim itself.
  */
 
 #include "it_priv.h"
@@ -331,7 +331,7 @@ void test_t353(void) {
         if (t353_pci(PCI_OP_CLAIM, dev_index, 0, bar_fr, &r) != 0) {
             ok = 0; why = "the bus service would not hand over the window";
         } else if (r.got_caps == 0u) {
-            /* A-33: the MessageInfo says whether a capability landed.  A reply
+            /* The MessageInfo says whether a capability landed.  A reply
              * carrying only numbers is the answer to "how big is it", and this
              * request was not that. */
             ok = 0; why = "the window arrived without a frame";

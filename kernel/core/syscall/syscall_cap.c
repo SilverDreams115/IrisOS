@@ -70,7 +70,7 @@ static iris_error_t dev_cap_publish(struct task *t, struct KObject *obj,
 /* Resolve the control-capability CPtr to BOTH its object (to check WHICH
  * authority it is) and its slot (to become the MDB parent).  CSpace only.
  *
- * Stage 5 Step 2: `kind` is matched EXACTLY.  The predecessor accepted any
+ * `kind` is matched EXACTLY.  The predecessor accepted any
  * boot capability carrying IRIS_BOOTCAP_HW_ACCESS — one bit that authorised
  * both IRQ and ioport creation, on an object that also carried spawn, debug
  * and framebuffer authority.  A service that needed a serial port therefore
@@ -115,7 +115,7 @@ static iris_error_t dev_cap_auth_ranged(struct task *t, uint64_t auth_cptr,
         return IRIS_ERR_ACCESS_DENIED;
     }
     /*
-     * A-40: the authority object stays HELD until the publish is done with it.
+     * The authority object stays HELD until the publish is done with it.
      * It is the expected MDB parent, and an expectation compared against a
      * pointer whose object may have been freed and its address reused is not
      * an expectation.  The caller drops it through dev_cap_auth_release.
@@ -138,7 +138,7 @@ static void dev_cap_auth_release(struct KCNode *cn, struct KObject *auth) {
 }
 
 /*
- * Stage 7 Step 14 — the budget is NAMED, never assumed.
+ * The budget is NAMED, never assumed.
  *
  * These two allocated their object from `t->process->mem_pool`: the Untyped
  * the kernel remembered as "this process's", picked because the caller had not
@@ -194,7 +194,7 @@ uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     err = dev_cap_budget(t, arg2, &pool);
     if (err != IRIS_OK) { dev_cap_auth_release(auth_cn, auth_obj); return syscall_err(err); }
 
-    /* Stage 6 Step 6: the object comes out of a budget.  Stage 7 Step 14: out
+    /* The object comes out of a budget.  Out
      * of the one the caller named. */
     struct KIrqCap *irqcap = kirqcap_alloc_from(pool, irq_num);
     dev_cap_budget_release(pool);
@@ -218,7 +218,7 @@ uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 
 uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                uint64_t arg3) {
-    /* Stage 7 Step 14: one range, one word — base in the low half, count in
+    /* One range, one word — base in the low half, count in
      * the high half — which frees arg2 to say which budget pays. */
     uint16_t     base      = (uint16_t)(arg1 & 0xFFFFu);
     uint16_t     count     = (uint16_t)((arg1 >> 16) & 0xFFFFu);
@@ -266,7 +266,7 @@ uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     err = dev_cap_budget(t, arg2, &pool);
     if (err != IRIS_OK) { dev_cap_auth_release(auth_cn, auth_obj); return syscall_err(err); }
 
-    /* Stage 6 Step 6: the object comes out of a budget.  Stage 7 Step 14: out
+    /* The object comes out of a budget.  Out
      * of the one the caller named. */
     struct KIoPort *ioport = kioport_alloc_from(pool, base, count);
     dev_cap_budget_release(pool);
@@ -346,7 +346,7 @@ uint64_t sys_ioport_control_narrow(uint64_t arg0, uint64_t arg1,
         src_first = ((struct KBootstrapCap *)auth)->port_first;
         src_last  = ((struct KBootstrapCap *)auth)->port_last;
     }
-    /* A-40: `auth` stays held all the way to the publish below — it is the
+    /* `auth` stays held all the way to the publish below — it is the
      * expected MDB parent, and a pointer whose object may already be freed
      * and its address reused is not an expectation. */
 

@@ -7,7 +7,7 @@
  * the full opcode/validation surface without a kernel. vfs.c wraps it with
  * the EP_RECV / SYS_REPLY drain loop.
  *
- * Phase 28.1: the dispatcher also owns the FILE-GRANT layer — the VFS-enforced
+ * The dispatcher also owns the FILE-GRANT layer — the VFS-enforced
  * authority table that makes a pathname worthless as authority.  The caller
  * class is derived from req->sender_badge (kernel-stamped, unforgeable);
  * session badges are confined to their own grants and denied every name-based
@@ -24,7 +24,7 @@
 /* One exported file. Shared by vfs.c (owner) and the dispatcher (reader).
  * is_mapped exports read through virt_base (initrd VMO mappings); inline
  * exports read from data[].
- * Phase 28.1: every ready export carries a VFS-ISSUED backing identity —
+ * Every ready export carries a VFS-ISSUED backing identity —
  * backing_id (stable for this service instance) and generation (bumped on
  * revoke; namespaced by the instance epoch so a restarted VFS never reissues
  * an old value). */
@@ -35,8 +35,8 @@ struct vfs_export {
     uint8_t  ready;
     uint8_t  is_mapped;
     uint64_t virt_base;
-    uint64_t backing_id;    /* Phase 28.1: VFS-issued, never caller-chosen */
-    uint64_t generation;    /* Phase 28.1: bumps on GRANT_REVOKE */
+    uint64_t backing_id;    /* VFS-issued, never caller-chosen */
+    uint64_t generation;    /* Bumps on GRANT_REVOKE */
 };
 
 /* One file grant: an unforgeable authority over exactly one backing at one

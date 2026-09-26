@@ -20,7 +20,7 @@ struct KNotification;
 struct KFrame;
 
 /*
- * There is no ceiling on live threads (ledger A-19).
+ * There is no ceiling on live threads.
  *
  * TASK_MAX was 256 and it bounded two things: a static backing pool, and the
  * scheduler's identity registry — which returned NO_MEMORY when full, so the
@@ -51,7 +51,7 @@ typedef enum {
     TASK_BLOCKED_IPC,       /* blocked waiting for an endpoint IPC rendezvous */
     TASK_BLOCKED_IRQ,       /* blocked waiting for a KNotification signal */
     /*
-     * Ledger A-24: TASK_SLEEPING is RETIRED and its number is kept so no other
+     * TASK_SLEEPING is RETIRED and its number is kept so no other
      * state silently inherits it.  A thread blocked on time was the kernel
      * holding a deadline on somebody's behalf; waiting is a service now, and a
      * thread waiting for one is blocked on a NOTIFICATION like any other.
@@ -60,11 +60,11 @@ typedef enum {
     TASK_BLOCKED_FAULT,     /* suspended pending exception handler decision */
     TASK_BLOCKED_SEND,      /* blocked waiting for a receiver on a KEndpoint */
     TASK_BLOCKED_RECV,      /* blocked waiting for a sender on a KEndpoint */
-    TASK_BUDGET_EXHAUSTED,  /* Ph75: SC budget spent; sleeping until refill tick */
-    TASK_BLOCKED_REPLY,     /* Ph85: EP_CALL caller blocked waiting for KReply invocation */
-    TASK_SUSPENDED,         /* Ph96: explicitly suspended via SYS_TCB_SUSPEND */
+    TASK_BUDGET_EXHAUSTED,  /* SC budget spent; sleeping until refill tick */
+    TASK_BLOCKED_REPLY,     /* EP_CALL caller blocked waiting for KReply invocation */
+    TASK_SUSPENDED,         /* Explicitly suspended via SYS_TCB_SUSPEND */
     /*
-     * Phase S2 D2 — execution ended but the KTCB OBJECT may still be alive
+     * D2 — execution ended but the KTCB OBJECT may still be alive
      * (referenced by surviving capabilities).  TERMINATED != destroyed:
      *   - not in any run/wait/reap queue;
      *   - not holding a registry slot (scheduler capacity released);
@@ -96,7 +96,7 @@ struct cpu_context {
 } __attribute__((packed));
 
 /*
- * Phase S2 D2 — the canonical TCB.
+ * D2 — the canonical TCB.
  *
  * `struct task` IS the KTCB: it carries the KObject header at offset 0 and all
  * execution state directly.  The old `struct KTcb { KObject; struct task* }`
@@ -120,11 +120,11 @@ struct task {
     uint32_t          id;
     task_state_t      state;
     task_ring_t       ring;
-    uint8_t           priority;  /* Ph73: 0=lowest, 255=highest; idle=0, user=128 */
+    uint8_t           priority;  /* 0=lowest, 255=highest; idle=0, user=128 */
     /*
      * The MAXIMUM CONTROLLED PRIORITY — the ceiling this thread may grant.
      *
-     * seL4's rule (ledger A-20): `seL4_TCB_SetPriority(tcb, authority, prio)`
+     * seL4's rule: `seL4_TCB_SetPriority(tcb, authority, prio)`
      * refuses a priority above the AUTHORITY thread's MCP, so priority is
      * delegated downward and never invented.  Without it, a holder of any TCB
      * capability can set 255 and starve the system, which is what IRIS did.
@@ -157,7 +157,7 @@ struct task {
      * it lives inside the TCB backing itself.  This is the first structural
      * decoupling of scheduler identity from the static-array index. */
     uint64_t          saved_krsp;
-    /* Phase S2 Inc.2B (Bloque A): intrusive run-queue links.  The per-CPU run
+    /* Inc.2B (Bloque A): intrusive run-queue links.  The per-CPU run
      * queue no longer uses index-keyed parallel arrays (next[TASK_MAX] /
      * queued[TASK_MAX]) nor (t - tasks) pointer arithmetic; each TCB carries
      * its own FIFO link + queued flag, so scheduling identity is by pointer,
@@ -175,7 +175,7 @@ struct task {
     uint64_t          utext_phys;      /* physical base of userboot text copy (ring-3 only) */
     uint32_t          utext_pages;     /* page count at utext_phys; 0 if not applicable */
     /*
-     * `process` DELETED (Stage 7-proc).
+     * `process` DELETED.
      *
      * A thread's process was the object it belonged to, and everything that
      * object was for has moved to the thread: its CSpace root and its address
@@ -186,7 +186,7 @@ struct task {
      * a fact about those two capabilities, not a third object to point at.
      */
     /*
-     * Stage 7 Step 4 — the CSpace this thread resolves CPtrs in, held by the
+     * The CSpace this thread resolves CPtrs in, held by the
      * THREAD.
      *
      * SYS_TCB_CONFIGURE has named the CSpace as a capability since Stage 5
@@ -204,7 +204,7 @@ struct task {
      */
     struct KCNode    *cspace_root;
     /*
-     * Stage 7 Step 5 — the address space this thread runs in, held by the
+     * The address space this thread runs in, held by the
      * THREAD, for the same reason as cspace_root above: SYS_TCB_CONFIGURE
      * names it as a capability and the scheduler then loaded CR3 out of
      * `t->process`, so what a thread ran in was a property of a shared object
@@ -214,7 +214,7 @@ struct task {
      */
     struct KVSpace   *vspace;
     /*
-     * Stage 7 Step 10 — this thread's death, observed by whoever holds it.
+     * This thread's death, observed by whoever holds it.
      *
      * A supervisor used to watch a PROCESS: the kernel signalled when its last
      * thread went, and the exit code lived on the process.  That made "my
@@ -231,7 +231,7 @@ struct task {
      * rather than a second slot.
      */
     /*
-     * Stage 7 Step 12 — the fault HANDLER is the thread's too.
+     * The fault HANDLER is the thread's too.
      *
      * Registration named a PROCESS, so the kernel kept the handler and the
      * generation counter on KProcess and pointed at "whoever faulted last" to
@@ -239,7 +239,7 @@ struct task {
      * that arms a thread's faults already holds that thread.
      */
     /*
-     * Ledger A-22 — a fault is an IPC MESSAGE on an ENDPOINT.
+     * A fault is an IPC MESSAGE on an ENDPOINT.
      *
      * It used to be three mechanisms where seL4 reuses one: a notification was
      * signalled, the faulting thread's capability was published into a mailbox
@@ -266,7 +266,7 @@ struct task {
     uint64_t          fault_ep_badge;
 
     /*
-     * Stage 8-mcs — the TIMEOUT fault endpoint, a SEPARATE registration.
+     * The TIMEOUT fault endpoint, a SEPARATE registration.
      *
      * seL4 keeps seL4_TCB_SetTimeoutEndpoint apart from the fault endpoint,
      * and the reason is authority rather than tidiness: the principal that
@@ -285,7 +285,7 @@ struct task {
     uint64_t          timeout_ep_badge;
 
     /*
-     * Ledger A-23 — the BOUND notification (seL4's seL4_TCB_BindNotification).
+     * The BOUND notification (seL4's seL4_TCB_BindNotification).
      *
      * A thread blocked receiving on an endpoint is, without this, deaf to
      * signals: it is in the endpoint's queue and nothing else can reach it.
@@ -298,7 +298,7 @@ struct task {
     uint8_t           timeout_pending;
 
     /*
-     * Stage 9-evt Step 1 — RESTARTABLE SYSCALLS (ledger D-1).
+     * RESTARTABLE SYSCALLS.
      *
      * seL4 is an event kernel: no thread blocks inside the kernel.  A syscall
      * that cannot complete records what it needs in the THREAD, returns, and
@@ -326,7 +326,7 @@ struct task {
      * re-read from the user's registers, whose frame step 2 will discard.
      */
     /*
-     * Stage 9-evt Step 2 — the user context a syscall must return to.
+     * The user context a syscall must return to.
      *
      * It lives on the thread's kernel stack today, pushed by syscall_entry
      * before the dispatch call.  That is precisely the frame step 2 abandons
@@ -400,7 +400,7 @@ struct task {
      */
     uint64_t          sc_acc;
     /*
-     * Stage 8-cap / D-2 — the GUARD on this thread's root CSpace capability.
+     * The GUARD on this thread's root CSpace capability.
      *
      * Guards live in the capability, and every CNode capability in a slot
      * carries its own (KCSlot.guard).  The root is the one capability a thread
@@ -416,7 +416,7 @@ struct task {
     uint8_t           cspace_root_guard_bits;
     uint64_t          sc_num;
     /*
-     * The syscall's arguments, kept where a restart can find them (D-1).
+     * The syscall's arguments, kept where a restart can find them.
      *
      * An array since A-33, because the message ABI addresses them by POSITION
      * — `ipc_msg.h` says which word of an invocation carries the MessageInfo
@@ -426,7 +426,7 @@ struct task {
      */
     uint64_t          sc_arg[9];
     /*
-     * A-33 — the return message.
+     * The return message.
      *
      * A receive returns a whole message and a message does not fit in a return
      * value, so the seven words go here and the exit path puts them in the
@@ -443,7 +443,7 @@ struct task {
     uint32_t          exit_code;
     uint8_t           exit_reported;   /* 1 once the watch has fired */
     /*
-     * Stage 7 Step 6 — the fault record belongs to the thread that took it.
+     * The fault record belongs to the thread that took it.
      *
      * It lived on KProcess, one copy per process, and the code said what that
      * cost: "the per-process record is last-writer-wins".  Two threads of one
@@ -463,7 +463,7 @@ struct task {
     uint32_t          fault_error;
     uint64_t          fault_cr2;
     uint8_t           fault_valid;    /* 1 = this thread has a pending fault */
-    uint32_t          fault_seq;       /* Phase 25: generation of the fault this
+    uint32_t          fault_seq;       /* Generation of the fault this
                                         * task is blocked on (TASK_BLOCKED_FAULT);
                                         * 0 = no fault ever delivered to it */
 
@@ -471,7 +471,7 @@ struct task {
     uint32_t          time_slice;   /* ticks per quantum (default TASK_DEFAULT_SLICE) */
     uint32_t          ticks_left;   /* ticks remaining before need_resched */
     uint32_t          need_resched; /* set by scheduler_tick when ticks_left hits 0 */
-    /* A-24: the ONE deadline the kernel still keeps, and it is not a thread's
+    /* The ONE deadline the kernel still keeps, and it is not a thread's
      * — it is when a scheduling context's budget comes back (TASK_BUDGET_
      * EXHAUSTED).  It used to also carry SYS_SLEEP's wake time and every timed
      * IPC wait's. */
@@ -491,11 +491,11 @@ struct task {
      */
     struct task        *notif_next;      /* intrusive link for notification queue */
     struct KEndpoint   *blocking_ep;     /* endpoint where task is blocked, or NULL */
-    /* Ph68: capability staged for transfer during a blocking send */
+    /* Capability staged for transfer during a blocking send */
     struct KObject     *ep_cap_obj;      /* kobject being transferred; NULL = none */
     uint32_t            ep_cap_rights;   /* rights to grant on ep_cap_obj */
-    uint64_t            ep_cap_badge;    /* Phase 9: badge carried by the staged cap */
-    /* Phase S4 (Step 2): source SLOT backing ep_cap_obj (two-phase staging).
+    uint64_t            ep_cap_badge;    /* Badge carried by the staged cap */
+    /* Source SLOT backing ep_cap_obj (two-phase staging).
      * The transfer source is a CSpace slot, not a handle — it is the MDB
      * identity the delivered cap is parented to.  The sender's slot stays
      * occupied while queued; the receiver commits (deletes it) only when it
@@ -505,7 +505,7 @@ struct task {
      * it carries active+lifecycle refs while set. */
     struct KCNode      *ep_cap_src_cn;
     uint32_t            ep_cap_src_idx;
-    /* Ph69: IPC buffer staging */
+    /* IPC buffer staging */
     uint64_t            ep_recv_buf_uptr;/* receiver's output buffer user addr (set at EP_RECV) */
     /* A1.5: receiver-declared receive-slot (direct root-CNode CPtr, 1..1023;
      * 0 = none/legacy).  Written by EVERY recv-family syscall entry
@@ -513,7 +513,7 @@ struct task {
      * cap delivery, so it can never leak across operations. */
     uint32_t            ep_recv_slot;
     /*
-     * `ipc_kbuf` is DELETED (ledger D-4).
+     * `ipc_kbuf` is DELETED.
      *
      * 256 bytes inside every TCB, where the kernel staged a message's bulk
      * payload: a size the user did not choose, memory it did not pay for, and
@@ -526,7 +526,7 @@ struct task {
      * somebody owns.
      */
     /*
-     * D-4 — the thread's IPC buffer, as a capability.
+     * The thread's IPC buffer, as a capability.
      *
      * A registered frame REPLACES the staging above for this thread: the user
      * writes its payload into a page it owns, mapped where it chose, and the
@@ -560,7 +560,7 @@ struct task {
      */
     struct iris_user_ctx user_ctx;
     /*
-     * How this thread resumes (Stage 9-evt step 3).
+     * How this thread resumes.
      *
      * 1 — it was interrupted in RING 3, so `user_ctx` above is its whole state
      *     and resuming it is an iretq off the core's stack.
@@ -585,12 +585,12 @@ struct task {
      * other.
      */
     void               (*kentry)(void);
-    /* Ph74: optional scheduling context — retained KSchedContext ref (NULL = best-effort) */
+    /* Optional scheduling context — retained KSchedContext ref (NULL = best-effort) */
     struct KSchedContext *sched_ctx;
-    /* Ph85: reply capability fields */
+    /* Reply capability fields */
     uint32_t       ep_call_mode;    /* 1 if task entered EP via SYS_EP_CALL (wants reply) */
     /*
-     * Ledger A-22: 1 if the call queued on this endpoint is a FAULT, not a
+     * 1 if the call queued on this endpoint is a FAULT, not a
      * syscall.  The endpoint machinery treats it like any other call — that is
      * the whole point — but the two ends differ, and both differences are
      * about there being no syscall frame underneath it:
@@ -604,7 +604,7 @@ struct task {
      */
     uint32_t       ep_fault_call;
     struct KReply *pending_kreply;  /* non-NULL while state == TASK_BLOCKED_REPLY (task holds a ref) */
-    /* Phase S1: explicit MCS-style reply object staged by the receiver.
+    /* Explicit MCS-style reply object staged by the receiver.
      * Set at EP_RECV / EP_NB_RECV entry from the reply CPtr in arg2 (the
      * task holds a lifecycle ref + the object's staged claim); consumed at
      * an EP_CALL rendezvous (bound to the caller) or released when the recv
@@ -612,12 +612,12 @@ struct task {
     struct KReply *ep_reply_obj;
     uint32_t       ep_reply_val;    /* raw CPtr/handle value the receiver passed —
                                      * echoed to the server in msg.attached_handle */
-    /* Phase S2 D2: `struct task` IS the KTCB — no separate wrapper.  A cap to
+    /* D2: `struct task` IS the KTCB — no separate wrapper.  A cap to
      * this thread is a KOBJ_TCB cap on &base.  `configured`/`terminal` flag
      * the object/execution state; `reg_slot` is the registry witness. */
-    uint8_t        configured;   /* Phase S2: TCB_CONFIGURE committed */
+    uint8_t        configured;   /* TCB_CONFIGURE committed */
     /*
-     * The CLAIM on configuring this thread (ledger A-41).
+     * The CLAIM on configuring this thread.
      *
      * `configured` cannot be that claim: it is the EXECUTION gate seven other
      * places read as "this thread may be written to and run", so setting it
@@ -640,7 +640,7 @@ struct task {
      * touched, so a legitimate retry after NO_MEMORY still works.
      */
     _Atomic uint8_t configuring;
-    uint8_t        started;      /* Stage 5: has been made runnable at least
+    uint8_t        started;      /* Has been made runnable at least
                                   * once — after that its kernel stack holds
                                   * live state and the entry frame must not be
                                   * rewritten (TCB_WRITE_REGS refuses) */
@@ -669,7 +669,7 @@ struct task {
      * NO_MEMORY when the array filled.  seL4 has no thread limit: a TCB exists
      * because somebody retyped one.  The registry's only remaining job was to
      * let the scheduler WALK every live thread looking for expired deadlines,
-     * and a walk wants a list (charter P2, ledger A-19).
+     * and a walk wants a list (charter P2).
      */
     int32_t        reg_slot;     /* 1 while on the scheduler list, else -1 */
     struct task   *sched_prev;   /* intrusive links for that list */
@@ -732,7 +732,7 @@ struct task {
      */
 };
 
-/* Phase S2 D2: canonical KTCB name for the unified structure. */
+/* D2: canonical KTCB name for the unified structure. */
 typedef struct task KTCB;
 
 /* KObject header must be at offset 0 so a KOBJ_TCB cap (KObject*) aliases the
@@ -744,7 +744,7 @@ _Static_assert(sizeof(struct cpu_context) == 64u,
 
 void         task_init(void);
 struct task *task_spawn_user(uint64_t arg0);
-/* Stage 5 Step 4 — execution for a TCB retyped from an Untyped.
+/* Execution for a TCB retyped from an Untyped.
  *
  * ktcb_configure gives an inactive (RETYPE2-born) TCB the execution state a
  * pool-born thread gets at creation: a registry slot, a kernel stack, FPU
@@ -768,7 +768,7 @@ void         task_exit_current(void);
 uint32_t ipc_buffers_registered(void);
 void     ipc_buffer_gauge_drop(void);
 
-/* Stage 9-evt step 3 — give the CPU to `next`; never returns.  Defined in
+/* Give the CPU to `next`; never returns.  Defined in
  * scheduler.c, named by the dispatcher and by the abandoning park. */
 __attribute__((noreturn))
 void sched_resume(struct task *next, struct task *outgoing);

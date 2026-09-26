@@ -117,7 +117,7 @@ start_user_ctx_and_iretq:
      * capability without somewhere per-thread to put it, and the entry
      * register is the only such place a freshly started thread has; without it
      * the only way for a thread to name itself is SYS_TCB_SELF, which hands
-     * out a capability asking for none (charter A5, ledger A-18).  rdi is
+     * out a capability asking for none (charter A5).  rdi is
      * loaded LAST, after the zeroing, for the same reason rbx is.
      */
     movq 104(%rdi), %rbx

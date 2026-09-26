@@ -12,7 +12,7 @@
 #define IRIS_SERVICE_IMAGE_SH           "sh"
 #define IRIS_SERVICE_RUNTIME_SLOT_COUNT 4u
 
-/* Phase 22: least-authority client-endpoint manifest.  Each catalog child used
+/* Least-authority client-endpoint manifest.  Each catalog child used
  * to receive ALL four core client-endpoint caps (svcmgr/vfs/console/kbd) at
  * slots 1..4 unconditionally — authority "just in case".  client_eps is now an
  * explicit per-service bitmask of the client endpoints a service actually calls
@@ -23,13 +23,13 @@
 #define IRIS_SVC_CLIENT_EP_VFS      0x2u
 #define IRIS_SVC_CLIENT_EP_CONSOLE  0x4u
 #define IRIS_SVC_CLIENT_EP_KBD      0x8u
-/* Ledger A-27: the TIMER service.  Reading a clock and waiting on time are
+/* The TIMER service.  Reading a clock and waiting on time are
  * requests to a server now, so a service that needs either declares it here
  * and one that does not cannot do either — which is the difference between a
  * capability and a syscall number. */
 #define IRIS_SVC_CLIENT_EP_TIMER    0x10u
 
-/* Phase 24: explicit supervision-policy classification.  Restartability is
+/* Explicit supervision-policy classification.  Restartability is
  * already encoded by restart_on_exit + restart_limit; criticality records the
  * SYSTEM IMPACT of the service's loss so the policy is auditable, not implicit.
  *   CRITICAL_RESTART   — the system depends on it; svcmgr restarts up to the
@@ -64,7 +64,7 @@ struct iris_service_catalog_entry {
     uint8_t        give_initrd_cap; /* 1 = forward the initrd capability so the
                                      * service can read boot images (vfs) */
     uint8_t        give_irqcap;     /* 1 = forward KIrqCap so service can call SYS_IRQ_ACK */
-    /* Stage 6-pure Step 2: the slot to mint the child a capability to the
+    /* The slot to mint the child a capability to the
      * budget its own address space was built from; 0 = none.  A service that
      * MAPS anything needs one, because the kernel no longer creates paging
      * levels; one that only answers on endpoints it was handed does not, and
@@ -72,12 +72,12 @@ struct iris_service_catalog_entry {
      * number differs per image. */
     uint16_t       own_budget_slot;
     uint8_t        irq_notify;      /* 1 = route the IRQ to a KNotification owned by svcmgr
-                                     *     (Phase 7.6) instead of the legacy service KChannel;
+                                     * instead of the legacy service KChannel;
                                      *     the WAIT side reaches the child at bootstrap as
                                      *     SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY. */
     uint8_t        own_service_ep;  /* 1 = svcmgr creates a KEndpoint for this service,
                                      *     sends the recv side at bootstrap (kind 0x21)
-                                     *     and publishes it as "<image_name>.ep" (Phase 7.1) */
+                                     *     and publishes it as "<image_name>.ep" */
     uint8_t        endpoint_only;   /* 1 = no legacy KChannel service/reply pair: svcmgr
                                      *     creates neither channel and bootstrap sends no
                                      *     SERVICE/REPLY kinds; lookups by the service's
@@ -87,12 +87,12 @@ struct iris_service_catalog_entry {
                                      *     With own_service_ep=0: a pure CPtr-first
                                      *     client (Phase 8: sh — empty bootstrap bag,
                                      *     ready when proc_h is alive). */
-    uint32_t       client_eps;      /* Phase 22: bitmask (IRIS_SVC_CLIENT_EP_*) of the
+    uint32_t       client_eps;      /* Bitmask (IRIS_SVC_CLIENT_EP_*) of the
                                      *     core client endpoints this service actually
                                      *     calls out to.  svcmgr_build_core_mints mints
                                      *     ONLY these into slots 1..4 — least authority.
                                      *     0 = a pure server/driver that talks to no peer. */
-    uint8_t        supervision;     /* Phase 24: IRIS_SUPERVISION_* — explicit criticality
+    uint8_t        supervision;     /* IRIS_SUPERVISION_* — explicit criticality
                                      *     / restart classification.  Must be consistent
                                      *     with restart_on_exit (checked by T172). */
 };
@@ -115,25 +115,25 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .ioport_count = 5u,
         .give_console = 0u,
         .give_irqcap = 1u,
-        /* Stage 6/D-5: kbd owns memory.  A service that holds no Untyped can
+        /* Kbd owns memory.  A service that holds no Untyped can
          * create nothing — not a frame, not a page table, not an IPC buffer —
          * and every object it needs has to be made for it by somebody else.
          * That is the shape the memory server exists to remove, and the cost
          * of removing it here is zero: the sub-untyped its address space is
          * already charged to is simply named in its own CSpace. */
         .own_budget_slot = 12u,
-        /* Phase 7.4: kbd owns a KEndpoint ("kbd.ep"); sh pulls key events
-         * through it. Phase 7.6: the IRQ reaches kbd as a KNotification.
-         * Phase 13/Track I: the legacy service/reply KChannel pair is retired —
+        /* Kbd owns a KEndpoint ("kbd.ep"); sh pulls key events
+         * through it. The IRQ reaches kbd as a KNotification.
+         * The legacy service/reply KChannel pair is retired —
          * kbd is endpoint-only (HELLO/STATUS/SUBSCRIBE gone). */
         .own_service_ep = 1u,
         .irq_notify = 1u,
         .endpoint_only = 1u,
-        /* Phase 22: kbd is a pure endpoint server + IRQ handler (main.S uses
+        /* Kbd is a pure endpoint server + IRQ handler (main.S uses
          * only OWN_EP/IRQ_NOTIFY/IOPORT/IRQ_CAP).  It calls NO peer service, so
          * it receives none of the slot-1..4 client caps. */
         .client_eps = 0u,
-        .supervision = IRIS_SUPERVISION_OPTIONAL_RESTART,  /* Phase 24: kbd is nice-to-have, restarted */
+        .supervision = IRIS_SUPERVISION_OPTIONAL_RESTART,  /* Kbd is nice-to-have, restarted */
     },
     {
         .image_name = IRIS_SERVICE_IMAGE_VFS,
@@ -150,17 +150,17 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .client_reply_rights = RIGHT_READ | RIGHT_DUPLICATE,
         .ioport_base = 0u,
         .ioport_count = 0u,
-        .give_console = 0u,  /* Phase 8: vfs logs via IRIS_CPTR_CONSOLE_EP */
+        .give_console = 0u,  /* Vfs logs via IRIS_CPTR_CONSOLE_EP */
         .give_initrd_cap = 1u,
         .own_budget_slot = 12u,  /* maps each initrd image to serve it */
         .own_service_ep = 1u,
-        /* Phase 7.5: vfs is endpoint-only — no legacy service/reply channels. */
+        /* Vfs is endpoint-only — no legacy service/reply channels. */
         .endpoint_only = 1u,
-        /* Phase 22: vfs logs to console (IRIS_CPTR_CONSOLE_EP) and serves its own
+        /* Vfs logs to console (IRIS_CPTR_CONSOLE_EP) and serves its own
          * endpoint; it never calls svcmgr, itself, or kbd, so it receives ONLY
          * the console client cap — not svcmgr/vfs/kbd. */
         .client_eps = IRIS_SVC_CLIENT_EP_CONSOLE,
-        .supervision = IRIS_SUPERVISION_CRITICAL_RESTART,  /* Phase 24: filesystem, restarted */
+        .supervision = IRIS_SUPERVISION_CRITICAL_RESTART,  /* Filesystem, restarted */
     },
     {
         .image_name = IRIS_SERVICE_IMAGE_SH,
@@ -178,22 +178,22 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .ioport_base = 0u,
         .ioport_count = 0u,
         .give_console = 0u,
-        /* sh reaches VFS only through "vfs.ep" (Phase 7.2) and kbd only
-         * through "kbd.ep" (Phase 7.4); the legacy give_vfs/give_kbd
+        /* sh reaches VFS only through "vfs.ep" and kbd only
+         * through "kbd.ep"; the legacy give_vfs/give_kbd
          * forwarding flags were removed in 7.5/7.4.
-         * Phase 8: sh is a pure CPtr-first client — endpoint_only without
+         * Sh is a pure CPtr-first client — endpoint_only without
          * an own endpoint means no legacy channel pair and an empty
          * bootstrap bag; everything sh needs arrives as well-known CSpace
          * slots 1..4. Readiness tracks proc_h (svcmgr_ready_service_count). */
         .endpoint_only = 1u,
-        /* Stage 6/D-5: sh owns memory too — see the note on kbd above. */
+        /* Sh owns memory too — see the note on kbd above. */
         .own_budget_slot = 12u,
-        /* Phase 22: sh is the shell — it drives svcmgr discovery, vfs, console
+        /* Sh is the shell — it drives svcmgr discovery, vfs, console
          * output and kbd input, so it legitimately holds all four client caps. */
         .client_eps = IRIS_SVC_CLIENT_EP_SVCMGR | IRIS_SVC_CLIENT_EP_VFS |
                       IRIS_SVC_CLIENT_EP_CONSOLE | IRIS_SVC_CLIENT_EP_KBD |
                       IRIS_SVC_CLIENT_EP_TIMER,   /* `uptime` asks the clock's owner */
-        .supervision = IRIS_SUPERVISION_OPTIONAL_NO_RESTART,  /* Phase 24: user shell, not auto-restarted */
+        .supervision = IRIS_SUPERVISION_OPTIONAL_NO_RESTART,  /* User shell, not auto-restarted */
     },
 };
 

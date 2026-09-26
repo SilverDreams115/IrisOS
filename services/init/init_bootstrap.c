@@ -4,7 +4,7 @@
  *
  * Everything here is MOVED VERBATIM from main.c (no functional change):
  *   - boot capability acquisition (the IRIS_CPTR_PROC_CONTROL
- *     pre-start mint from userboot, Phase 13/Track I);
+ *     pre-start mint from userboot);
  *   - the early-serial UART (the only pre-console.ep log fallback);
  *   - EP_LOOKUP_NAME service discovery over svcmgr.ep, including the A1.6
  *     reply receive-slot variant;
@@ -42,17 +42,17 @@ void init_early_serial_write(const char *s) {
     }
 }
 
-/* Phase S4: the serial KIoPort is published into a CSpace slot as an MDB child
+/* The serial KIoPort is published into a CSpace slot as an MDB child
  * of the authorising slot; the authority argument must be a CPtr.  Slot 40 is
  * free in init's root CNode (1..15 well-known).
- * Stage 5 Step 2: the authority is the IOPORT CONTROL capability, which
+ * The authority is the IOPORT CONTROL capability, which
  * authorises exactly this — claiming a port range.  It used to be the
  * monolithic spawn capability, so printing an early boot line required the
  * authority to spawn processes and power the machine off. */
 #define INIT_EARLY_SERIAL_SLOT 40u
 void init_early_serial_start(void) {
     if (g_init_early_serial_h != IRIS_CPTR_NULL) return;
-    /* Stage 7 Step 14: base and count share arg1 (base | count << 16) so arg2
+    /* Base and count share arg1 (base | count << 16) so arg2
      * can name the budget the KIoPort object is charged to.  init pays out of
      * its own boot block; nothing is charged to a pool the kernel picked. */
     if (iris_invoke((long)IRIS_CPTR_IOPORT_CONTROL, INV_BOOT_CREATE_IOPORT, (long)(0x3F8u | (8u << 16)), (long)IRIS_CPTR_INIT_UNTYPED, (long)((uint64_t)INIT_EARLY_SERIAL_SLOT << 32)) != 0) return;
@@ -64,7 +64,7 @@ void init_early_serial_stop(void) {
 }
 
 /*
- * Ledger A-24: a retry pause is "let whatever I am waiting for get a turn",
+ * A retry pause is "let whatever I am waiting for get a turn",
  * which is a SCHEDULING request and not one about time.  It used SYS_SLEEP
  * because a timed block was there; yielding says what is meant, and works
  * during bootstrap when there is no timer service yet.
@@ -74,7 +74,7 @@ void init_retry_pause(void) {
         (void)init_sys1(SYS_YIELD, 0);
 }
 
-/* Phase 13 (Track I): init's spawn/bootstrap KBootstrapCap arrives as the
+/* Init's spawn/bootstrap KBootstrapCap arrives as the
  * IRIS_CPTR_PROC_CONTROL (slot 6) pre-start mint from userboot — not over a
  * bootstrap KChannel.
  *
@@ -84,12 +84,12 @@ void init_retry_pause(void) {
  * duplicates are gone and restriction derives slot-to-slot — so every consumer
  * names slot 6 directly and the bridge had nothing left to bridge. */
 
-/* ── VFS endpoint client (Phase 7.2) ─────────────────────────────────────── */
+/* ── VFS endpoint client ─────────────────────────────────────── */
 
 /* EP_CALL bulk buffer: the request path and the reply data share this buffer
  * (EP_CALL reuses buf_uptr in both directions). +1 for a guard NUL. */
 /*
- * Ledger D-4: `g_init_buf` starts at this static fallback and moves to a page
+ * `g_init_buf` starts at this static fallback and moves to a page
  * init retypes from the budget its spawner gave it.  init is a pure client
  * here — it calls vfs and reads the reply back out of the same buffer — so one
  * page serves both directions, which is what an IPC buffer is.
@@ -116,7 +116,7 @@ static void init_imsg_zero(struct iris_msg *msg) {
  * Resolve a service name (e.g. "vfs.ep") through the svcmgr discovery endpoint:
  * EP_CALL(svcmgr_ep, IRIS_SVCMGR_EP_LOOKUP_NAME, name).  The reply carries the
  * endpoint cap via SYS_REPLY cap transfer.  Returns IRIS_CPTR_NULL on any
- * failure (caller retries / fails fast).  Phase 13/Track I: this EP_LOOKUP_NAME
+ * failure (caller retries / fails fast).  This EP_LOOKUP_NAME
  * path replaces the retired legacy KChannel LOOKUP_NAME (init_lookup_name).
  *
  * A1.6: reply_slot != 0 declares a receive-slot for the looked-up cap — it

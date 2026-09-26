@@ -2,7 +2,7 @@
 #ifndef IRIS_INVOKE_H
 #define IRIS_INVOKE_H
 /*
- * invoke.h — the invocation label space (ledger A-32).
+ * invoke.h — the invocation label space.
  *
  * THE SHAPE THIS ADOPTS
  *
@@ -179,7 +179,7 @@
 #define INV_CSPACE_ROTATE                  66u
 #define INV_DOMAIN_SET                     67u
 
-/* ── Stage 10-dma: what a DEVICE may reach ─────────────────────────────── */
+/* ── What a DEVICE may reach ─────────────────────────────── */
 #define INV_IOSPACE_BIND                   68u  /* name the device (authority) */
 #define INV_IOSPACE_MAP_TABLE              69u  /* install a translation level */
 #define INV_IOSPACE_MAP_FRAME              70u  /* the device may reach a frame */

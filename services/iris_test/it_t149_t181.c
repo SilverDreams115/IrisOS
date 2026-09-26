@@ -39,7 +39,7 @@ void test_t149(void) {
     if (ok && iris_msg_send(no, &m) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "ep_send on notif"; }
     if (ok && iris_msg_nb_send(no, &m) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "nb_send on notif"; }
     if (ok && it_invoke1(ep, INV_NOTIFY_SIGNAL, 1) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "signal on ep"; }
-    /* Stage 7 Step 13: killing names a THREAD, and the TCB family answers
+    /* Killing names a THREAD, and the TCB family answers
      * INVALID_ARG for an argument that is not one. */
     if (ok && it_invoke0(ep, INV_TCB_EXIT) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "kill on ep"; }
     if (ok && it_retype_slot_alloc(no, IT_KOBJ_FRAME, 4096) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "retype on notif"; }
@@ -114,7 +114,7 @@ void test_t150(void) {
             ok = 0; why = "sched_info bad dst"; break;
         }
     }
-    /* Ledger A-22: SYS_TCB_FAULT_INFO is RETIRED, so there is no kernel
+    /* SYS_TCB_FAULT_INFO is RETIRED, so there is no kernel
      * pointer to abuse here at all — a fault record reaches its handler as a
      * message, and the kernel never writes one into a buffer a caller names.
      * What is left to assert is that the number answers NOT_SUPPORTED
@@ -140,7 +140,7 @@ void test_t150(void) {
     }
     /* Both-null is the legal "just validate the cap" call → success. */
     if (ok && it_invoke2(IT_UT, INV_UNTYPED_INFO, 0, 0) != 0) { ok = 0; why = "untyped_info null-null not ok"; }
-    /* A-24: SYS_NOTIFY_WAIT and SYS_NOTIFY_POLL write out_bits, and both
+    /* SYS_NOTIFY_WAIT and SYS_NOTIFY_POLL write out_bits, and both
      * validate the pointer BEFORE they block or consume anything — so a
      * hostile destination costs a waiter neither its signal nor its slot.  The
      * probe used to go through SYS_NOTIFY_WAIT_TIMEOUT, which is retired: a
@@ -215,7 +215,7 @@ void test_t151(void) {
         op = 2;
         if (it_invoke(IT_UT, INV_FRAME_MAP, IT_VS, (long)va, (long)IT_MAP_W) >= 0) { ok = 0; why = "map wrong-type ok"; break; }
         op = 3;
-        /* Phase S4 (Step 3): the CSpace forms must reject a stale/empty slot
+        /* The CSpace forms must reject a stale/empty slot
          * just as cleanly, and a HANDLE value outright (namespace split). */
         it_slot_delete(IT_SCRATCH_3);
         if (it_invoke2((long)IT_SCRATCH_3, INV_CSPACE_MINT, (long)((uint64_t)IT_SCRATCH_2 << 32), (long)RIGHT_READ) >= 0) { ok = 0; why = "derive stale ok"; break; }
@@ -226,11 +226,11 @@ void test_t151(void) {
          * a bare large integer, which is a legitimate CPtr now. */
         if (it_invoke0((long)iris_cptr_beyond_limit(8u, 1u), INV_CSPACE_REVOKE) >= 0) { ok = 0; why = "revoke by handle ok"; break; }
         op = 5;
-        /* Stage 7 Step 7: a random CPTR, not a random id.  An unoccupied slot
+        /* A random CPTR, not a random id.  An unoccupied slot
          * resolves to NOT_FOUND and an occupied one to the wrong type, and
          * neither may resume anything. */
         {
-            /* A-22: a random CPtr is not a reply capability, so it answers
+            /* A random CPtr is not a reply capability, so it answers
              * nothing.  Whatever is in that slot — nothing, or an object of
              * some other type — the call fails; what it must never do is
              * resume a thread. */
@@ -332,7 +332,7 @@ void test_t152(void) {
     if (ok && it_retype_slot_alloc(IT_UT, IT_KOBJ_FRAME, 3) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad frame size"; }
     /* Non-null hostile out pointer (kernel half) → INVALID_ARG, nothing written. */
     if (ok && it_invoke2(IT_UT, INV_UNTYPED_INFO, 0, 0xFFFF800000001000L) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel out ptr"; }
-    /* Resume mismatch — NOT_FOUND, no state touched.  Ledger A-22: answering
+    /* Resume mismatch — NOT_FOUND, no state touched.  Answering
      * a fault is SYS_REPLY, and an empty slot holds no reply capability.  Leaf
      * 233 is above every fault leaf in the objects CNode and nothing else
      * writes it. */
@@ -369,7 +369,7 @@ void test_t153(void) {
         op = kind;
         if (kind == 3u) {
             /* Fault-pending waiter: register a handler, drive an invalid-VA fault. */
-            long n = it_ep_create();   /* A-22: faults go to an ENDPOINT */
+            long n = it_ep_create();   /* Faults go to an ENDPOINT */
             n_h = (n >= 0) ? (iris_cptr_t)n : IRIS_CPTR_NULL;
             if (n < 0 || it_invoke(it_child_tcb((long)proc_h), INV_TCB_SET_FAULT_HANDLER, n, 0, 0) != 0) { ok = 0; why = "reg handler"; }
             if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
@@ -533,7 +533,7 @@ void test_t155(void) {
                 if (ok && it_kill((long)proc_h) != 0) { ok = 0; why = "kill"; }
                 if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "kill exit"; }
             } else {                             /* controlled fault → kill */
-                long n = it_ep_create();   /* A-22: faults go to an ENDPOINT */
+                long n = it_ep_create();   /* Faults go to an ENDPOINT */
                 iris_cptr_t n_h = (n >= 0) ? (iris_cptr_t)n : IRIS_CPTR_NULL;
                 if (n < 0 || it_invoke(it_child_tcb((long)proc_h), INV_TCB_SET_FAULT_HANDLER, n, 0, 0) != 0) { ok = 0; why = "reg handler"; }
                 if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
@@ -602,7 +602,7 @@ long it_lp_report_slots(const struct svc_mint *extra, uint32_t nextra) {
 /*
  * The rights a lookup actually GRANTED.
  *
- * A-33: it used to read the rights the server had written into the reply
+ * It used to read the rights the server had written into the reply
  * message — a field the kernel copied across untouched, so the answer was
  * what the server ASKED for and not what the caller got.  There is no such
  * field now.  A capability's rights come back in the MessageInfo, which means
@@ -982,12 +982,12 @@ void test_t163(void) {
 
 /* Create an ioport cap over [base, base+count) via the HW_ACCESS spawn cap;
  * returns the handle or IRIS_CPTR_NULL. */
-/* Phase S4: the cap is published into a CSpace slot (MDB child of the spawn-cap
+/* The cap is published into a CSpace slot (MDB child of the spawn-cap
  * slot) and the CPtr is what callers hold.  Slots rotate over the device block
  * so nested creations (e.g. two live ioport caps in T171) do not collide; the
  * slot is deleted first so re-entry is clean. */
 static uint32_t g_it_dev_next;
-/* Phase S4 (Step 3): device caps now live in CSpace, so their derivation is
+/* Device caps now live in CSpace, so their derivation is
  * the NATIVE CDT operation — SYS_CSPACE_MINT into a slot, producing a real
  * MDB child of the source — not the legacy handle tree.  Returns the
  * destination CPtr, or the negative error. */
@@ -1033,7 +1033,7 @@ static long it_dev_probe(iris_cptr_t ioport_h, uint64_t offset, iris_rights_t de
     struct svc_mint mints[2] = { 0 };
     mints[0].slot = LP_CPTR_CMD_EP; IT_MINT_SRC(mints[0], cmd);
     mints[0].rights = RIGHT_READ | RIGHT_WRITE; mints[0].badge = 0;
-    /* Phase S4: the ioport cap lives in OUR CSpace now, so the child's copy is
+    /* The ioport cap lives in OUR CSpace now, so the child's copy is
      * minted from the slot — an MDB child of ours, hence revocable. */
     mints[1].slot = 10; mints[1].src_cptr = (uint64_t)ioport_h;
     mints[1].rights = dev_rights; mints[1].badge = 0;
@@ -1313,7 +1313,7 @@ void test_t167(void) {
         it_close(&n_ro);
     }
     /*
-     * Stage 7-mem: the last probe used to be "a proc cap lacking ROUTE is
+     * The last probe used to be "a proc cap lacking ROUTE is
      * denied", which was containment expressed through a third object.  A
      * route is authorised by what it acts on — RIGHT_ROUTE on the interrupt
      * line and RIGHT_WRITE on the notification — and the two probes above
@@ -1345,7 +1345,7 @@ void test_t167(void) {
  * This test used to assert something else: that the framebuffer was ONE-SHOT —
  * `SYS_FRAMEBUFFER_VMO` cleared a valid flag, so the second caller got
  * NOT_FOUND and the first got the region.  That was a GRANT wearing a query's
- * clothes, and it is retired (ledger D-5): the region is a DEVICE Untyped now,
+ * clothes, and it is retired: the region is a DEVICE Untyped now,
  * exclusivity is whoever holds that capability, and what remains here is
  * `SYS_FRAMEBUFFER_INFO` — a question about hardware, which anyone with the
  * authority may ask twice and which creates nothing.
@@ -1375,7 +1375,7 @@ void test_t168(void) {
     if (ok && (fb1.size == 0u || fb1.width == 0u || fb1.phys == 0u)) {
         ok = 0; why = "framebuffer geometry empty";
     }
-    /* Wrong-type auth cap (a notification).  A-30: the type is answered as a
+    /* Wrong-type auth cap (a notification).  The type is answered as a
      * type — WRONG_TYPE, not ACCESS_DENIED.  Nothing is disclosed by it: the
      * caller can ask SYS_CAP_IDENTIFY about its own slot for free.  What stays
      * ACCESS_DENIED is a real bootstrap capability of the wrong FLAVOUR, which
@@ -1622,7 +1622,7 @@ long it_unregister(uint32_t dyn_id) {
  * Every catalog service declares an explicit supervision policy, and the policy
  * is consistent with its restart flags: a RESTART class carries a non-zero
  * limit, a NO_RESTART class carries a zero limit.  The policy does not
- * contradict the Phase 22 authority manifest (a driver stays a driver).
+ * contradict the authority manifest (a driver stays a driver).
  * Invariants: R14, R15, R16, R20, R21. */
 void test_t172(void) {
     it_quiesce_reaper();
@@ -1864,7 +1864,7 @@ void test_t177(void) {
         if (io_h == IRIS_CPTR_NULL) { ok = 0; why = "io cap 2"; }
         else {
             struct svc_mint extra[1] = { 0 };
-            /* Phase S4: CSpace-sourced device delegation. */
+            /* CSpace-sourced device delegation. */
             extra[0].slot = 10; extra[0].src_cptr = (uint64_t)io_h;
             extra[0].rights = RIGHT_READ; extra[0].badge = 0;
             long rep = it_lp_report_slots(extra, 1u);
@@ -2052,7 +2052,7 @@ void t25_tgt_reap(struct t25_tgt *g) {
     t25_tgt_close(g);
 }
 
-/* Ledger A-22: a target's faults go to an ENDPOINT, and `g->notif` is where
+/* A target's faults go to an ENDPOINT, and `g->notif` is where
  * this fixture keeps it — the suite RECEIVES on it, and a target handed to a
  * pager is re-aimed at the pager's own endpoint instead. */
 static int t25_tgt_spawn_dest(struct t25_tgt *g, const char **why) {
@@ -2065,14 +2065,14 @@ static int t25_tgt_spawn_dest(struct t25_tgt *g, const char **why) {
     if (lp_spawn_child(g->cmd, &g->proc) < 0 || g->proc == IRIS_CPTR_NULL) {
         it_close(&g->cmd); *why = "spawn"; return 0;
     }
-    /* Stage 4: the target's VSpace is published into a CSpace slot (arg1 is
+    /* The target's VSpace is published into a CSpace slot (arg1 is
      * the destination), so every rights-reduced copy of it is a slot-to-slot
      * derive and an MDB child.  It used to come back as a handle. */
-    /* Stage 7 Step 15: the target's address space is the one the spawn kept
+    /* The target's address space is the one the spawn kept
      * for us, not one asked of its process. */
     long vs = it_child_vspace(g->proc);
     if (vs == 0) vs = -1;
-    long n  = it_ep_create();     /* A-22: the target's FAULT ENDPOINT */
+    long n  = it_ep_create();     /* The target's FAULT ENDPOINT */
     long w  = it_notify_create();
     g->vs    = (vs >= 0) ? (iris_cptr_t)vs : IRIS_CPTR_NULL;
     g->notif = (n  >= 0) ? (iris_cptr_t)n  : IRIS_CPTR_NULL;
@@ -2127,7 +2127,7 @@ long t25_pager_spawn(const struct t25_tgt *g, iris_cptr_t frame_h,
                             iris_cptr_t *out_cmd, iris_cptr_t *out_proc) {
     *out_cmd = *out_proc = IRIS_CPTR_NULL;
     /*
-     * Ledger A-22: nothing is RE-AIMED.
+     * Nothing is RE-AIMED.
      *
      * A fault is a message on an endpoint, so handing a target to a pager is
      * handing the pager that endpoint — the target's registration never
@@ -2148,7 +2148,7 @@ long t25_pager_spawn(const struct t25_tgt *g, iris_cptr_t frame_h,
     m[1].slot = LP_PGR_SLOT_TPROC; IT_MINT_SRC(m[1], g->proc);  m[1].rights = RIGHT_READ | RIGHT_MANAGE; m[1].badge = 0;
     m[2].slot = LP_PGR_SLOT_TVS;   IT_MINT_SRC(m[2], g->vs);    m[2].rights = RIGHT_WRITE;               m[2].badge = 0;
     m[3].slot = LP_PGR_SLOT_FRAME; IT_MINT_SRC(m[3], frame_h);  m[3].rights = frame_rights;              m[3].badge = 0;
-    /* A-22: RIGHT_READ is the authority to RECEIVE — which is the whole of
+    /* RIGHT_READ is the authority to RECEIVE — which is the whole of
      * "this pager may serve this target's faults". */
     m[4].slot = LP_PGR_SLOT_FAULT_EP; IT_MINT_SRC(m[4], g->notif); m[4].rights = RIGHT_READ;                m[4].badge = 0;
     /* ...and the reply objects it receives with.  WRITE so it can invoke one
@@ -2205,7 +2205,7 @@ long t25_xprobe(iris_cptr_t pcmd, uint32_t vtid, uint64_t va, uint32_t vseq) {
 }
 
 /*
- * Ledger A-22 — answer the fault this target is blocked in.
+ * Answer the fault this target is blocked in.
  *
  * It was a seq-checked SYS_EXCEPTION_RESUME: the supervisor named the faulting
  * thread with a capability the kernel had minted into its mailbox and echoed
@@ -2291,7 +2291,7 @@ int t25_frame_word(iris_cptr_t fr, uint32_t *val, int write) {
  * proc (READ|MANAGE) + target VSpace (WRITE) + one frame + fault notification
  * (WAIT).  The slot report shows exactly that set — no spawn cap, no device
  * caps, no untyped, no KDEBUG, no peer service slots, no self-proc/vspace.
- * Stage 7 Step 15: the second half used to check SYS_PROCESS_VSPACE's MANAGE
+ * The second half used to check SYS_PROCESS_VSPACE's MANAGE
  * gate — a READ-only PROCESS capability denied, a wrong type rejected, self
  * equivalent to VSPACE_SELF.  That syscall is retired, and with it the idea
  * that reaching an address space is authorised by a capability to something

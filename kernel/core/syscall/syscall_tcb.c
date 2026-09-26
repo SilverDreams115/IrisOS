@@ -2,7 +2,7 @@
 /*
  * syscall_tcb.c — Block 8 (Ph96-101): TCB capability syscalls.
  *
- * Phase S2 D2: the KTCB IS `struct task` (KObject at offset 0).  A KOBJ_TCB
+ * D2: the KTCB IS `struct task` (KObject at offset 0).  A KOBJ_TCB
  * capability resolves directly to the task; there is no wrapper indirection.
  * A cap to a TERMINATED thread still identifies the same object and answers
  * SYS_TCB_GET_INFO (state = TERMINATED); it cannot be resumed.
@@ -66,7 +66,7 @@ static iris_error_t tcb_resolve(struct KCNode *root, iris_cptr_t cptr,
  *
  * Both must be the caller's own CSpace root and VSpace.  IRIS still composes a
  * thread's authority through KProcess, so a thread in a foreign address space
- * is process-server work (Stage 7) — accepting foreign capabilities here and
+ * is process-server work — accepting foreign capabilities here and
  * quietly running the thread somewhere else would be a lie in the signature.
  * The check is by object identity, not by convention: the caller must HOLD
  * capabilities to the CSpace and VSpace it names, which is why SYS_CSPACE_SELF
@@ -86,7 +86,7 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     if (err != IRIS_OK) return syscall_err(err);
 
     /*
-     * arg3 — the ROOT CSpace GUARD (Stage 8-cap, ledger D-2).
+     * arg3 — the ROOT CSpace GUARD.
      *
      * It named the PROCESS the thread would join until Stage 7-proc, and was
      * reserved and ignored after that.  It carries seL4's `cspace_root_data`
@@ -117,7 +117,7 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     /*
      * The CSpace argument: a real KCNode capability the caller HOLDS.
      *
-     * Stage 7-proc: it used to have to BE that process's root, checked by
+     * It used to have to BE that process's root, checked by
      * identity, and the VSpace likewise.  That check was KProcess acting as an
      * authority: the capability you named was not enough, it also had to match
      * a third object's idea of what your CSpace should be.  A thread runs in
@@ -159,14 +159,14 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     struct KVSpace *vspace = (struct KVSpace *)vs_obj;
     kobject_release(vs_obj);
 
-    /* Stage 7 Step 4: the CSpace travels to the thread as the capability the
+    /* The CSpace travels to the thread as the capability the
      * caller named.  Safe to pass after its resolve reference was dropped: the
      * CALLER holds it in a CSpace slot for the whole of this syscall — that is
      * how it was resolved — so nothing can drop the last reference before
      * ktcb_configure takes its own pair. */
     err = ktcb_configure(target, cspace, vspace);
     if (err == IRIS_OK) {
-        /* Stage 8-cap / D-2: the guard belongs to the CSpace capability just
+        /* The guard belongs to the CSpace capability just
          * installed, so it is written with it and only when the install
          * succeeded — a guard on a root the thread does not have would change
          * how a CSpace it never got resolves. */
@@ -206,7 +206,7 @@ uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }
     /*
-     * Stage 7: the TCB capability IS the authority.
+     * The TCB capability IS the authority.
      *
      * This used to refuse a target in another process, because a spawner had
      * no legitimate reason to point one — it could not have configured it
@@ -229,7 +229,7 @@ uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
  * seL4's `seL4_TCB_ReadRegisters`, and the other half of an asymmetry: a
  * supervisor could point a thread anywhere it liked and never ask where it
  * was.  A fault handler gets the rip and the faulting address in the message
- * (A-22); which REGISTER held the bad pointer was unreachable from ring 3 by
+ *; which REGISTER held the bad pointer was unreachable from ring 3 by
  * any means.
  *
  * RIGHT_READ deliberately.  Observing a thread is not changing it, and a
@@ -275,7 +275,7 @@ uint64_t sys_tcb_read_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /*
  * SYS_TCB_WATCH(tcb_cptr, notif_cptr, signal_bits) → 0 or iris_error_t
  *
- * Stage 7 Step 10: be told when THIS THREAD dies.
+ * Be told when THIS THREAD dies.
  *
  * SYS_PROCESS_WATCH asked the same question of a process, which meant a
  * supervisor needed authority over an object it did not create to learn about
@@ -386,7 +386,7 @@ static uint64_t tcb_register_handler(uint64_t arg0, uint64_t arg1, int timeout) 
 
 uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                    uint64_t arg3) {
-    /* A-22: the mailbox and the signal mask are gone.  Refusing a caller that
+    /* The mailbox and the signal mask are gone.  Refusing a caller that
      * still passes them is deliberate — silently ignoring two arguments would
      * let code written for the old shape keep compiling and keep "working"
      * while the mailbox it names is never filled. */
@@ -423,7 +423,7 @@ uint64_t sys_tcb_set_timeout_handler(uint64_t arg0, uint64_t arg1,
  * nothing else can reach it — which forced every server that needs both an
  * interrupt and a request queue to spend a second thread on the choice.  A
  * driver IS that server, so the absence was structural rather than a
- * convenience: the timer service (A-24) is the first thing that could not be
+ * convenience: the timer service is the first thing that could not be
  * written without it.
  *
  * `notif_cptr == 0` unbinds.  RIGHT_WRITE on both: which thread a signal wakes
@@ -520,7 +520,7 @@ uint64_t sys_tcb_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /*
  * SYS_TCB_EXIT_CODE(tcb_cptr) → the code, or IRIS_ERR_WOULD_BLOCK
  *
- * Stage 7 Step 10: the code a thread exited with, read off that thread.
+ * The code a thread exited with, read off that thread.
  * WOULD_BLOCK while it is still running, which is the same answer the
  * process-scoped form gives for a process that has not exited.
  */
@@ -566,7 +566,7 @@ uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     /*
      * Suspending YOURSELF blocks, so it parks like every other blocking
-     * syscall (Stage 9-evt).  It used to yield from inside this frame and
+     * syscall.  It used to yield from inside this frame and
      * return here when somebody resumed the thread — the continuation being
      * "the rest of this function" on the thread's kernel stack, for however
      * long the suspension lasted.
@@ -612,7 +612,7 @@ uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * it just refused to run.
      */
     /*
-     * A-42: the witness is read and `started` is published under the thread's
+     * The witness is read and `started` is published under the thread's
      * own obj_lock, because WRITE_REGS tests `started` to decide whether the
      * entry frame is still writable.  Unlocked on both sides, the two pass
      * each other and the frame of a thread this call is about to run gets
@@ -624,7 +624,7 @@ uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_release(&target->base);
         return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }
-    /* Stage 5 Step 4: a thread that has been runnable once holds live state,
+    /* A thread that has been runnable once holds live state,
      * so its entry frame is frozen from here on (SYS_TCB_WRITE_REGS refuses). */
     target->started = 1;
     irq_spinlock_unlock(&target->obj_lock, tf);
@@ -638,7 +638,7 @@ uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /*
      * arg2 is the AUTHORITY: a TCB capability whose ceiling bounds what may be
-     * granted (ledger A-20).  seL4 spells it
+     * granted.  seL4 spells it
      * `seL4_TCB_SetPriority(service, authority, priority)` and refuses a
      * priority above the authority's MCP — priority is delegated downward and
      * never invented.  IRIS took no authority and no bound, so a holder of any
@@ -753,7 +753,7 @@ uint64_t sys_tcb_set_mcpriority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * and whatever any other domain's threads are doing.
  *
  * `auth_cptr` is the DOMAIN CONTROL capability and it is checked first,
- * exactly as `SchedControl` is for a budget (A-20).  A separate authority from
+ * exactly as `SchedControl` is for a budget.  A separate authority from
  * the TCB capability on purpose: holding a thread lets you order it within the
  * time you were given, and moving it into somebody else's time is a different
  * question.  A supervisor that may configure its children must not be able to

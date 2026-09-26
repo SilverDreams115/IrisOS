@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * vfs.c — VFS service, endpoint-only (Phase 7.5).
+ * vfs.c — VFS service, endpoint-only.
  *
  * The service speaks exactly one protocol: the stateless KEndpoint protocol
  * in iris/vfs_ep_proto.h (LIST / STAT / READ_AT / STATUS / PING), dispatched
@@ -9,7 +9,7 @@
  * its last clients in this phase; svcmgr no longer creates the legacy
  * service/reply channels for VFS (catalog endpoint_only flag).
  *
- * KChannel is fully retired (Phase 13/Track G): vfs receives its bootstrap
+ * KChannel is fully retired: vfs receives its bootstrap
  * capability as a pre-start CPtr mint (IRIS_CPTR_INITRD_CONTROL) and logs over
  * console.ep — neither path uses a channel.
  */
@@ -33,9 +33,9 @@
 struct vfs_state {
     iris_cptr_t console_h;
     iris_cptr_t initrd_c;
-    iris_cptr_t ep_h;          /* recv side of our KEndpoint (Phase 7.1) */
+    iris_cptr_t ep_h;          /* recv side of our KEndpoint */
     struct vfs_export      exports[VFS_SERVICE_EXPORTS];
-    struct vfs_grant_table grants;   /* Phase 28.1: VFS-enforced file grants */
+    struct vfs_grant_table grants;   /* VFS-enforced file grants */
     struct vfs_ep_state    ep_state;
 };
 
@@ -76,14 +76,14 @@ static const char *const vfs_initrd_name_table[] = {
 
 
 static long vfs_self_vs(void);
-/* Stage 6-pure Step 2: the kernel no longer creates paging levels, so a map
+/* The kernel no longer creates paging levels, so a map
  * whose walk is incomplete comes back as MISSING_TABLE and vfs supplies the
  * level itself — from IRIS_CPTR_OWN_UNTYPED, the budget its own address
  * space was built from.  One rule about the address space, so it lives at the
  * syscall boundary rather than at each map site. */
 #define VFS_SLOT_SELF_VS  60u
 #define VFS_SLOT_PT       61u
-/* Ledger A-32: a label, not a syscall number.  The fixup is the same one —
+/* A label, not a syscall number.  The fixup is the same one —
  * what changed is that the operation is now named by the capability it acts
  * on, so the wrapper passes a method rather than a table index. */
 static inline int64_t vfs_invoke(uint64_t c, unsigned long label, uint64_t a1,
@@ -115,11 +115,11 @@ static long vfs_self_vs(void) {
 
 
 /* g_vfs_console_h retired — Phase 13/Track G (console.ep only). */
-/* Console endpoint (Phase 8): the well-known slot IRIS_CPTR_CONSOLE_EP,
+/* Console endpoint: the well-known slot IRIS_CPTR_CONSOLE_EP,
  * verified with a PING after bootstrap; pre-verification boot lines are
  * dropped (vfs no longer receives a legacy console cap). */
 static iris_cptr_t g_vfs_console_ep_h = IRIS_CPTR_NULL;
-/* D-4: the console client marshals into the buffer it is given, and a thread
+/* The console client marshals into the buffer it is given, and a thread
  * with a registered IPC buffer must marshal into THAT — the kernel refuses a
  * send that names any other address.  So the log path shares the service's one
  * IPC buffer, which is what having one buffer means. */
@@ -131,7 +131,7 @@ static iris_cptr_t g_vfs_console_ep_h = IRIS_CPTR_NULL;
 static uint8_t *g_vfs_reply;
 
 static void vfs_log(const char *msg) {
-    /* Phase 13/Track G: vfs logs over console.ep only — the legacy console
+    /* Vfs logs over console.ep only — the legacy console
      * KChannel writer is retired (vfs is endpoint_only; g_vfs_console_h was
      * always invalid). */
     if (g_vfs_console_ep_h != IRIS_CPTR_NULL)
@@ -142,7 +142,7 @@ static void vfs_copy_bytes(uint8_t *dst, const uint8_t *src, uint32_t len) {
     for (uint32_t i = 0; i < len; i++) dst[i] = src[i];
 }
 
-/* Stage 4: vfs's own working slot for an initrd image capability.  It is
+/* Vfs's own working slot for an initrd image capability.  It is
  * borrowed for the length of one seed — publish, read the size, map, delete —
  * so a single slot serves every image.  16 sits above every well-known
  * pre-start mint vfs receives. */
@@ -160,7 +160,7 @@ static void vfs_copy_cstr(char *dst, const uint8_t *src, uint32_t len) {
     for (i++; i < VFS_EP_PATH_MAX; i++) dst[i] = '\0';
 }
 
-/* Phase 13 (Track C): vfs_bootstrap_handle retired — the initrd spawn cap now
+/* Vfs_bootstrap_handle retired — the initrd spawn cap now
  * arrives as the IRIS_CPTR_INITRD_CONTROL pre-start mint, no KChannel one-shot. */
 
 static int vfs_seed_one_export(struct vfs_export *export_file,
@@ -219,20 +219,20 @@ static void vfs_seed_initrd_exports(struct vfs_state *state) {
         }
         if (slot == (uint32_t)(sizeof(state->exports)/sizeof(state->exports[0]))) break;
 
-        /* Stage 4: the image VMO is published into a CSpace slot, used, and
+        /* The image VMO is published into a CSpace slot, used, and
          * the slot deleted.  It used to come back as a handle that had to be
          * closed on three separate paths. */
         vfs_slot_delete(VFS_SLOT_INITRD_VMO);
-        /* Stage 7 Step 14: the budget the image copy is charged to is named,
+        /* The budget the image copy is charged to is named,
          * not defaulted — VFS pays out of its own delegated pool. */
-        /* Ledger D-5: a boot image arrives as a FRAME, and the call that
+        /* A boot image arrives as a FRAME, and the call that
          * hands it over answers how big it is — a caller that has to ask the
          * size of the thing it was just given has been given two things. */
         sz_rc = vfs_invoke((uint64_t)state->initrd_c, INV_BOOT_INITRD_FRAME, (uint64_t)i, VFS_INITRD_VMO_DEST, IRIS_CPTR_OWN_UNTYPED);
         if (sz_rc <= 0) continue;
 
         virt = VFS_INITRD_MAP_BASE + (uint64_t)i * VFS_INITRD_MAP_SLOT;
-        /* One map covers the whole frame (D-10), so the page-at-a-time
+        /* One map covers the whole frame, so the page-at-a-time
          * machinery a VMO needed is gone with the VMO. */
         map_rc = vfs_invoke((uint64_t)VFS_SLOT_INITRD_VMO, INV_FRAME_MAP, (uint64_t)vfs_self_vs(), virt, 0);
         vfs_slot_delete(VFS_SLOT_INITRD_VMO);
@@ -247,7 +247,7 @@ static void vfs_seed_initrd_exports(struct vfs_state *state) {
     }
 }
 
-/* Phase 28 Bloque B: export a single initrd image (a file-backed content
+/* Bloque B: export a single initrd image (a file-backed content
  * fixture) under an explicit name.  Unlike vfs_seed_initrd_exports, this is
  * NOT clamped to the first VFS_INITRD_NAME_COUNT images — file-backed fixtures
  * live at higher indices (>= SL_CATALOG_COUNT) that the clamp skips.  Returns 1
@@ -264,7 +264,7 @@ static int vfs_seed_one_fixture(struct vfs_state *state, uint32_t index,
     if (slot == (uint32_t)(sizeof(state->exports)/sizeof(state->exports[0]))) return 0;
 
     vfs_slot_delete(VFS_SLOT_INITRD_VMO);
-    /* D-5: a frame, and the call answers its size. */
+    /* A frame, and the call answers its size. */
     sz_rc = vfs_invoke((uint64_t)state->initrd_c, INV_BOOT_INITRD_FRAME, (uint64_t)index, VFS_INITRD_VMO_DEST, IRIS_CPTR_OWN_UNTYPED);
     if (sz_rc <= 0) return 0;
 
@@ -297,7 +297,7 @@ static void vfs_seed_fixture_exports(struct vfs_state *state) {
 /* Single-threaded server: static IPC buffers, no stack pressure. */
 /*
  * The request and reply payload buffers, and why vfs is the one service whose
- * migration was not mechanical (ledger D-4).
+ * migration was not mechanical.
  *
  * An IPC buffer is ONE page per thread — that is what an IPC buffer is, in
  * seL4 and here — and the kernel reads a send's payload from offset 0 of it,
@@ -349,7 +349,7 @@ static void vfs_ep_serve(struct vfs_state *state, struct iris_msg *req) {
     vfs_ep_dispatch(&state->ep_state, req, req_buf, &reply, g_vfs_reply);
 
 
-    /* Phase S1: reply_h is the vfs's OWN reply-object CPtr (echoed by the
+    /* Reply_h is the vfs's OWN reply-object CPtr (echoed by the
      * kernel from the recv arg2).  The object is reusable — never closed. */
     if (reply_h == IRIS_CPTR_NULL) return;
     (void)iris_msg_reply((long)reply_h, &reply);
@@ -361,7 +361,7 @@ void vfs_server_main_c(iris_cptr_t rbx_unused) {
     /* svc_loader passes RBX = 0: there is no bootstrap handle to keep. */
     (void)rbx_unused;
 
-    /* D-4: a page vfs owns, registered as its IPC buffer.  Both the incoming
+    /* A page vfs owns, registered as its IPC buffer.  Both the incoming
      * payload and the outgoing reply live there; the request is copied out
      * before the reply is composed (see the buffer declarations above).
      * Best-effort — a failure leaves the kernel staging path, which works. */
@@ -383,14 +383,14 @@ void vfs_server_main_c(iris_cptr_t rbx_unused) {
     vfs_log(vfs_str_started);
 
     /* Phase 8/13: every cap arrives as a well-known pre-start CSpace slot —
-     * slot 5 our endpoint recv side, slot 3 the console endpoint, and (Track C)
+     * slot 5 our endpoint recv side, slot 3 the console endpoint, and
      * slot 6 the initrd-access spawn KBootstrapCap.  The spawn cap resolves
      * through the device-cap dual resolver, so SYS_INITRD_* accept it by CPtr;
      * no bootstrap KChannel one-shot is needed. */
     state.ep_h = (iris_cptr_t)IRIS_CPTR_OWN_EP;
     state.initrd_c = (iris_cptr_t)IRIS_CPTR_INITRD_CONTROL;
 
-    /* Phase 8: console output goes through the minted console-endpoint
+    /* Console output goes through the minted console-endpoint
      * slot; a PING proves the slot is live before the gated marker. */
     {
         struct iris_msg pmsg;
@@ -408,9 +408,9 @@ void vfs_server_main_c(iris_cptr_t rbx_unused) {
 
     if (!vfs_seed_exports(&state)) goto fail;
     vfs_seed_initrd_exports(&state);
-    vfs_seed_fixture_exports(&state);   /* Phase 28 Bloque B: file-backed fixtures */
+    vfs_seed_fixture_exports(&state);   /* Bloque B: file-backed fixtures */
 
-    /* Phase 28.1: initialize the file-grant layer.  The instance epoch is the
+    /* Initialize the file-grant layer.  The instance epoch is the
      * svcmgr restart generation of "vfs.ep": a restarted VFS gets a strictly
      * newer epoch, so backing generations from a previous instance can never
      * validate against this one (old grants are gone with the old table AND
@@ -437,7 +437,7 @@ void vfs_server_main_c(iris_cptr_t rbx_unused) {
         vfs_ep_grants_init(&state.ep_state, epoch);
     }
     /* initrd_c is the IRIS_CPTR_INITRD_CONTROL CSpace slot, not an owned handle —
-     * it is reaped with the address space, nothing to close here (Track C). */
+     * it is reaped with the address space, nothing to close here. */
     vfs_log(vfs_str_boot_ok);
     vfs_log(vfs_str_ep_ready);
     vfs_log(vfs_str_ready);
@@ -454,7 +454,7 @@ void vfs_server_main_c(iris_cptr_t rbx_unused) {
             for (uint32_t i = 0; i < (uint32_t)sizeof(req); i++) raw[i] = 0;
         }
 
-        /* Phase S1: explicit reply object (svcmgr mints it at slot 13). */
+        /* Explicit reply object (svcmgr mints it at slot 13). */
         r = (req.reply = (long)IRIS_CPTR_OWN_REPLY, iris_msg_recv((long)state.ep_h, &req));
         if (r != IRIS_OK) {
             vfs_log(vfs_str_ep_lost);

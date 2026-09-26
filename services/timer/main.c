@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * timer/main.c — the IRIS timer service (ledger A-24).
+ * timer/main.c — the IRIS timer service.
  *
  * The kernel used to be able to block a thread on TIME: `SYS_SLEEP`,
  * `SYS_CLOCK_NANOSLEEP` and `SYS_NOTIFY_WAIT_TIMEOUT` each parked a thread
@@ -125,7 +125,7 @@ void timer_main(iris_cptr_t bootstrap_ch_h) {
     (void)bootstrap_ch_h;
 
     /*
-     * Bind the IRQ notification to this thread.  Without it (ledger A-23) a
+     * Bind the IRQ notification to this thread.  Without it a
      * receive on the control endpoint would make this service deaf to its own
      * interrupt, and the whole design would need a second thread to hold the
      * two halves apart.
@@ -178,7 +178,7 @@ void timer_main(iris_cptr_t bootstrap_ch_h) {
         } else if (slot >= TMR_MAX_TIMERS) {
             err = TMR_ERR_FULL;
         } else if (m.got_caps == 0u) {
-            /* A-33: the MessageInfo says whether a capability landed in the
+            /* The MessageInfo says whether a capability landed in the
              * slot this receive declared — seL4's `extraCaps`.  `got_cap` is
              * the reply object, which is a different question. */
             err = TMR_ERR_NOCAP;

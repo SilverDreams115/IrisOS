@@ -11,7 +11,7 @@ static _Atomic uint32_t kschedctx_retyped;
 static _Atomic uint32_t kschedctx_destroyed;
 
 /* Phase 17/S2 — live KSchedContext count + diagnostics.  Exposed via the
- * SYS_SCHED_INFO ext2 tier (T123) and SYS_UNTYPED_QUERY kind 4 (Phase S2). */
+ * SYS_SCHED_INFO ext2 tier (T123) and SYS_UNTYPED_QUERY kind 4. */
 uint32_t kschedctx_live_count(void) {
     return atomic_load_explicit(&kschedctx_live, memory_order_relaxed);
 }
@@ -40,7 +40,7 @@ static void kschedctx_obj_close(struct KObject *obj) {
      * the refcount and triggers destroy. */
 }
 
-/* Phase S2: the ONLY storage path is untyped-backed — the payload returns to
+/* The ONLY storage path is untyped-backed — the payload returns to
  * its source region (kslab is never involved). */
 static void kschedctx_obj_destroy_ut(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kschedctx_live, 1u, memory_order_relaxed);
@@ -99,7 +99,7 @@ iris_error_t kschedctx_configure(struct KSchedContext *sc,
     sc->period_ticks     = period;
     sc->remaining_budget = budget;
     sc->configured       = 1;
-    /* Stage 8-mcs: reconfiguring discards the old replenishment schedule —
+    /* Reconfiguring discards the old replenishment schedule —
      * those entries were denominated in the OLD period and would hand back
      * time on a cadence nobody asked for.  The new budget is available now,
      * which is what the invariant sum == budget_ticks requires with an empty
@@ -135,7 +135,7 @@ void kschedctx_unbind(struct KSchedContext *sc, struct task *t) {
     irq_spinlock_unlock(&sc->lock, flags);
 }
 
-/* ── Stage 8-mcs: sporadic replenishment ─────────────────────────────────
+/* ── Sporadic replenishment ─────────────────────────────────
  *
  * The invariant every function here maintains:
  *
@@ -197,7 +197,7 @@ void kschedctx_flush_run(struct KSchedContext *sc) {
     uint64_t amt = sc->consumed_run;
     sc->consumed_run  = 0;
     sc->consume_start = 0;
-    /* A-28: what was SPENT, as distinct from what is owed back. */
+    /* What was SPENT, as distinct from what is owed back. */
     sc->consumed_total += amt;
 
     if (sc->refill_count < sc->refill_max) {

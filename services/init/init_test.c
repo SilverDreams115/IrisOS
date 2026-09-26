@@ -16,7 +16,7 @@
 
 static const char init_stage_exception[] = "[USER][INIT][S8] exception delivery OK\n";
 
-/* Phase 13 (Track I): the invalid-userptr selftest now exercises the kernel's
+/* The invalid-userptr selftest now exercises the kernel's
  * user-pointer validation over a KNotification (A-24: SYS_NOTIFY_POLL, with a
  * bogus out_bits pointer → IRIS_ERR_INVALID_ARG) instead of a KChannel. */
 void init_runtime_probe_invalid_userptr(void) {
@@ -44,7 +44,7 @@ static void __attribute__((noinline)) s8_ud2_fn(void) {
     for (;;) {}
 }
 
-/* Ledger A-22: exception delivery is IPC.  The faulting thread CALLS the
+/* Exception delivery is IPC.  The faulting thread CALLS the
  * endpoint its supervisor armed; init receives the record as an ordinary
  * message and holds the reply capability that would resume it. */
 void init_selftest_exception(void) {
@@ -63,7 +63,7 @@ void init_selftest_exception(void) {
 
     /* Spawn a thread that immediately executes ud2 (#UD, vector 6).
      *
-     * Stage 5 Step 4: the thread is a TCB RETYPED from init's own Untyped and
+     * The thread is a TCB RETYPED from init's own Untyped and
      * configured with capabilities to the CSpace and VSpace it runs in — the
      * kernel's static task pool is not reachable from userland any more.  Each
      * step can fail on its own, and each failure is a SKIP rather than a
@@ -86,7 +86,7 @@ void init_selftest_exception(void) {
         init_log("[USER][INIT][S8] SKIP: tcb retype\n"); return;
     }
     /*
-     * Ledger A-22: point the thread's faults at the endpoint above.  It moved
+     * Point the thread's faults at the endpoint above.  It moved
      * below the retype in Stage 7 Step 12 for the reason it stays there: there
      * is no thread to name before it.
      */

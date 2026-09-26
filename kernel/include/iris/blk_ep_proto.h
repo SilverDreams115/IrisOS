@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 /*
- * blk_ep_proto.h — storage, as a service (Stage 10).
+ * blk_ep_proto.h — storage, as a service.
  *
  * ── What this is ───────────────────────────────────────────────────────────
  *

@@ -37,7 +37,7 @@
 #include <stdint.h>
 
 
-/* Phase 29 — global resource-accounting instrumentation (additive, exposed via
+/* Global resource-accounting instrumentation (additive, exposed via
  * SYS_RESOURCE_INFO).  A charge that hits its domain's limit increments
  * kquota_failed_charges; a provisional charge rolled back on a later failure in
  * the same operation increments kquota_rollbacks.  Both make quota-exhaustion
@@ -49,7 +49,7 @@ uint32_t kfault_quota_failed_count(void)  { return atomic_load_explicit(&kquota_
 uint32_t kfault_quota_rollback_count(void){ return atomic_load_explicit(&kquota_rollbacks,      memory_order_relaxed); }
 void     kfault_quota_stat_rollback(void) { atomic_fetch_add_explicit(&kquota_rollbacks, 1u, memory_order_relaxed); }
 
-/* Phase 20 — fault-model instrumentation (additive, exposed via SYS_SCHED_INFO
+/* Fault-model instrumentation (additive, exposed via SYS_SCHED_INFO
  * ext5 tier).  Silent; makes fault delivery/resolution observable to the
  * T140–T147 selftests without changing any behaviour.
  *   delivery  — user faults handed to a registered handler (notif signalled).
@@ -68,7 +68,7 @@ uint32_t kfault_nohandler_count(void) { return atomic_load_explicit(&kfault_noha
 uint32_t kfault_resume_count(void)    { return atomic_load_explicit(&kfault_resume,    memory_order_relaxed); }
 uint32_t kfault_kill_count(void)      { return atomic_load_explicit(&kfault_kill,      memory_order_relaxed); }
 uint32_t kfault_cleanup_count(void)   { return atomic_load_explicit(&kfault_cleanup,   memory_order_relaxed); }
-/* Stage 7 Step 12: the record is the thread's, so thread teardown is what
+/* The record is the thread's, so thread teardown is what
  * clears it — and this counts the same thing it always did, records actually
  * cleared, from the one place that now does the clearing. */
 void kfault_stat_cleanup(void) {
@@ -79,14 +79,14 @@ void kfault_stat_nohandler(void) { atomic_fetch_add_explicit(&kfault_nohandler, 
 
 /*
  * kfault_resolve — drop the pending-fault record for process p if it
- * belongs to task_id.  Phase 20: SYS_EXCEPTION_RESUME calls this so a resolved
+ * belongs to task_id.  SYS_EXCEPTION_RESUME calls this so a resolved
  * fault stops being reported by SYS_PROCESS_FAULT_INFO (which must return
  * WOULD_BLOCK when nothing is pending).  `killed` selects the resume/kill
  * counter.  Idempotent — a second call with no matching pending fault is a
  * no-op.
  */
 /*
- * Stage 7 Step 15: this took a KProcess, and used it for nothing but its LOCK.
+ * This took a KProcess, and used it for nothing but its LOCK.
  *
  * The record it clears has been the thread's since Step 6, and the other
  * writer of `fault_valid` — SYS_TCB_SET_FAULT_HANDLER, deciding whether an
@@ -125,7 +125,7 @@ void kfault_resolve(struct task *ft, int killed) {
 
 
 /*
- * TCB_Watch — REMOVED (Stage 7 Step 10) with SYS_PROCESS_WATCH.
+ * TCB_Watch — REMOVED with SYS_PROCESS_WATCH.
  * A death is watched on the THREAD that dies (SYS_TCB_WATCH), by whoever holds
  * its TCB.  The emit/clear pair below stays only as long as the watch ARRAY
  * does, and both go with KProcess.
@@ -144,7 +144,7 @@ static void kfault_wr64(uint8_t *p, uint64_t v) {
 }
 
 /*
- * Stage 7 Step 12 — a fault is delivered by the THREAD's own registration.
+ * A fault is delivered by the THREAD's own registration.
  *
  * Everything this needs is on the execution that faulted: whom to tell, where
  * to put its capability, and which generation the fault is.  The last-faulter
@@ -219,7 +219,7 @@ static int kfault_deliver(struct task *t, uint64_t vector,
     }
 
     /*
-     * Ledger A-22 — the thread CALLS its fault handler.
+     * The thread CALLS its fault handler.
      *
      * A failure here means the endpoint is closed: there is a registration but
      * nobody behind it, which is the same situation as no registration at all
@@ -248,7 +248,7 @@ int kfault_notify(struct task *t, uint64_t vector,
 }
 
 /*
- * Stage 8-mcs — a thread's scheduling context ran out of budget.
+ * A thread's scheduling context ran out of budget.
  *
  * Reported as a fault with a distinguished vector so a handler reads it with
  * the same SYS_TCB_FAULT_INFO it already uses, and answers it with the same

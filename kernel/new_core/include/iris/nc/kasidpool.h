@@ -3,7 +3,7 @@
 #define IRIS_NC_KASIDPOOL_H
 
 /*
- * kasidpool.h — address-space identifiers as a CAPABILITY (ledger A-21).
+ * kasidpool.h — address-space identifiers as a CAPABILITY.
  *
  * An address space needs a hardware tag: on x86-64 a PCID, on ARM an ASID.
  * IRIS allocated one automatically out of a kernel-global bitmap the moment a

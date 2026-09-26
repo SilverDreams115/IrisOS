@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * kcnode.c — capability nodes + native MDB/CDT (Phase S3).
+ * kcnode.c — capability nodes + native MDB/CDT.
  *
  * The capability IS the slot: object/rights/badge plus an intrusive
  * derivation node (parent / first-child / doubly-linked siblings).  These
@@ -29,7 +29,7 @@
 
 static _Atomic uint32_t kcnode_live;
 
-/* Phase 18 — live KCNode object count (additive diagnostics). */
+/* Live KCNode object count (additive diagnostics). */
 uint32_t kcnode_live_count(void) {
     return atomic_load_explicit(&kcnode_live, memory_order_relaxed);
 }
@@ -43,51 +43,37 @@ static _Atomic uint32_t cdt_revoke_count;       /* revoke invocations */
 static _Atomic uint32_t cdt_delete_count;       /* slot deletes (occupied) */
 static _Atomic uint32_t cdt_cross_cnode_desc;   /* derived installs across CNodes */
 static _Atomic uint32_t cdt_ipc_transfer_count; /* receive-slot deliveries */
-static _Atomic uint32_t legacy_handle_deriv_migrated;
 
 static _Atomic uint32_t mdb_nodes_live;
 static _Atomic uint32_t mdb_nodes_hwm;
-static _Atomic uint32_t mdb_legacy_roots;       /* live LEGACY_ROOT nodes */
+static _Atomic uint32_t mdb_unparented_roots;   /* caps with no MDB parent */
 static _Atomic uint32_t mdb_orphan_promotions;  /* children promoted to root */
 static _Atomic uint32_t mdb_reparents;          /* children adopted by grandparent */
 static _Atomic uint32_t mdb_revoked_nodes;      /* caps destroyed by revoke */
 static _Atomic uint32_t mdb_moves;
 static _Atomic uint32_t mdb_max_depth;
 
-/* Phase S4 (Step 3): RETIRED.  The parallel handle-tree derivation this
- * counted is deleted (SYS_CAP_DERIVE/SYS_CAP_REVOKE retired,
- * table's derived-insert / revoke-children / parent-array machinery gone),
- * so it has ZERO callers and legacy_handle_deriv_migrated is a structural 0.
- * The symbol stays as the retirement witness in the UNTYPED_QUERY layout:
- * if it ever moves again, a second derivation tree has been reintroduced. */
-void kcnode_cdt_note_legacy_migrated_derivation(void) {
-    atomic_fetch_add_explicit(&legacy_handle_deriv_migrated, 1u, memory_order_relaxed);
-}
-
 void kcnode_cdt_note_ipc_transfer(void) {
     atomic_fetch_add_explicit(&cdt_ipc_transfer_count, 1u, memory_order_relaxed);
 }
 
 void kcnode_cdt_stats(uint32_t *deriv, uint32_t *deriv_hwm, uint32_t *revoke,
-                      uint32_t *del, uint32_t *cross, uint32_t *ipc,
-                      uint32_t *legacy_migrated) {
+                      uint32_t *del, uint32_t *cross, uint32_t *ipc) {
     if (deriv)     *deriv     = atomic_load_explicit(&cdt_derivation_count, memory_order_relaxed);
     if (deriv_hwm) *deriv_hwm = atomic_load_explicit(&cdt_derivation_hwm,   memory_order_relaxed);
     if (revoke)    *revoke    = atomic_load_explicit(&cdt_revoke_count,     memory_order_relaxed);
     if (del)       *del       = atomic_load_explicit(&cdt_delete_count,     memory_order_relaxed);
     if (cross)     *cross     = atomic_load_explicit(&cdt_cross_cnode_desc, memory_order_relaxed);
     if (ipc)       *ipc       = atomic_load_explicit(&cdt_ipc_transfer_count, memory_order_relaxed);
-    if (legacy_migrated)
-        *legacy_migrated = atomic_load_explicit(&legacy_handle_deriv_migrated, memory_order_relaxed);
 }
 
 void kcnode_mdb_stats(uint32_t *nodes_live, uint32_t *nodes_hwm,
-                      uint32_t *legacy_roots, uint32_t *orphan_promotions,
+                      uint32_t *unparented_roots, uint32_t *orphan_promotions,
                       uint32_t *reparents, uint32_t *revoked_nodes,
                       uint32_t *moves, uint32_t *max_depth) {
     if (nodes_live)        *nodes_live        = atomic_load_explicit(&mdb_nodes_live, memory_order_relaxed);
     if (nodes_hwm)         *nodes_hwm         = atomic_load_explicit(&mdb_nodes_hwm, memory_order_relaxed);
-    if (legacy_roots)      *legacy_roots      = atomic_load_explicit(&mdb_legacy_roots, memory_order_relaxed);
+    if (unparented_roots)      *unparented_roots      = atomic_load_explicit(&mdb_unparented_roots, memory_order_relaxed);
     if (orphan_promotions) *orphan_promotions = atomic_load_explicit(&mdb_orphan_promotions, memory_order_relaxed);
     if (reparents)         *reparents         = atomic_load_explicit(&mdb_reparents, memory_order_relaxed);
     if (revoked_nodes)     *revoked_nodes     = atomic_load_explicit(&mdb_revoked_nodes, memory_order_relaxed);
@@ -163,7 +149,7 @@ static void mdb_clear_node(struct KCSlot *s) {
     s->mdb_flags       = 0;
     /* Guard the slot's own guard too: a stale guard on an emptied slot would
      * be inherited by whatever capability is installed next, silently changing
-     * how CPtrs resolve through it (Stage 8-cap). */
+     * how CPtrs resolve through it. */
     s->guard           = 0;
     s->guard_bits      = 0;
 }
@@ -172,7 +158,7 @@ static void mdb_clear_node(struct KCSlot *s) {
  * Detach `s` from the graph with DELETE semantics: children are spliced
  * into s's parent (grandparent adoption); if s is a root, each child is
  * promoted to an independent root (counted).  mdb_lock held.  Accounting
- * for the node itself (nodes_live--, legacy_roots--) happens here.
+ * for the node itself (nodes_live--, unparented_roots--) happens here.
  */
 static void mdb_detach_reparent(struct KCSlot *s) {
     struct KCSlot *parent = s->mdb_parent;
@@ -214,8 +200,8 @@ static void mdb_detach_reparent(struct KCSlot *s) {
     if (s->mdb_parent)
         atomic_fetch_sub_explicit(&cdt_derived_live, 1u, memory_order_relaxed);
     mdb_unlink_from_parent(s);
-    if (s->mdb_flags & MDB_FLAG_LEGACY_ROOT)
-        atomic_fetch_sub_explicit(&mdb_legacy_roots, 1u, memory_order_relaxed);
+    if (s->mdb_flags & MDB_FLAG_UNPARENTED)
+        atomic_fetch_sub_explicit(&mdb_unparented_roots, 1u, memory_order_relaxed);
     atomic_fetch_sub_explicit(&mdb_nodes_live, 1u, memory_order_relaxed);
     mdb_clear_node(s);
 }
@@ -256,7 +242,7 @@ static void kcnode_empty_slots(struct KCNode *cn) {
 }
 
 /*
- * ── Ledger A-39: CNode teardown is iterative ────────────────────────────
+ * ── CNode teardown is iterative ────────────────────────────
  *
  * Emptying a slot that names another CNode drops that CNode's last active
  * reference, which runs its close hook, which empties ITS slots.  Written as
@@ -359,7 +345,7 @@ static const struct KObjectOps kcnode_ops = {
     .destroy = kcnode_obj_destroy,
 };
 
-/* ── Untyped-backed variant (Ph79) ──────────────────────────────── */
+/* ── Untyped-backed variant ──────────────────────────────── */
 
 struct KCNode *kcnode_alloc_at(void *mem, uint32_t num_slots) {
     if (!mem || num_slots == 0u || num_slots > KCNODE_MAX_SLOTS) return 0;
@@ -418,7 +404,7 @@ void kcnode_teardown_slots(struct KCNode *cn) {
 /*
  * Does this slot still hold exactly this object?
  *
- * Stage 8-cap / D-6: a capability recorded now and used as an MDB PARENT later
+ * A capability recorded now and used as an MDB PARENT later
  * needs more than "the slot is occupied".  A slot is a reusable location: it
  * can be deleted and refilled with something unrelated between the moment an
  * authority was exercised and the moment the kernel acts on it, and installing
@@ -446,14 +432,14 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
                                         struct KCNode *parent_cn,
                                         uint32_t parent_idx,
                                         struct KObject *parent_expect,
-                                        int exclusive, int legacy) {
+                                        int exclusive, int unparented) {
     if (!cn || !obj || rights == RIGHT_NONE) return IRIS_ERR_INVALID_ARG;
     if (parent_cn && parent_idx >= parent_cn->slot_count) return IRIS_ERR_INVALID_ARG;
 
     if (!exclusive && slot_idx >= cn->slot_count) return IRIS_ERR_INVALID_ARG;
 
     /*
-     * Stage 7-proc: a slot naming its OWN CNode takes no ACTIVE reference.
+     * A slot naming its OWN CNode takes no ACTIVE reference.
      *
      * A CSpace may name its own CNodes — the root task holds a capability to
      * its own root CNode — and an active reference is what says "somebody can
@@ -519,7 +505,7 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
     if (parent_cn) {
         parent = &parent_cn->slots[parent_idx];
         /*
-         * A-40 — identity, under the hold that links it.
+         * Identity, under the hold that links it.
          *
          * `parent->object` used to be tested only for being non-NULL, and the
          * caller had read that slot earlier under a DIFFERENT lock.  Between
@@ -567,9 +553,9 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
             atomic_fetch_add_explicit(&cdt_cross_cnode_desc, 1u, memory_order_relaxed);
     } else {
         s->mdb_parent = 0;
-        s->mdb_flags  = legacy ? MDB_FLAG_LEGACY_ROOT : 0u;
-        if (legacy)
-            atomic_fetch_add_explicit(&mdb_legacy_roots, 1u, memory_order_relaxed);
+        s->mdb_flags  = unparented ? MDB_FLAG_UNPARENTED : 0u;
+        if (unparented)
+            atomic_fetch_add_explicit(&mdb_unparented_roots, 1u, memory_order_relaxed);
     }
     mdb_node_count_inc();
 
@@ -617,7 +603,7 @@ iris_error_t kcnode_slot_derive(struct KCNode *src_cn, uint32_t src_idx,
     if (be != IRIS_OK) return be;
 
     /* Install as a child of the source slot.  The source is re-verified under
-     * mdb_lock by install_linked -- by IDENTITY, not occupancy (A-40): the
+     * mdb_lock by install_linked -- by IDENTITY, not occupancy: the
      * object was read above under a lock that has since been dropped, and a
      * derivation whose parent slot now holds something else is not a
      * derivation of it. */
@@ -841,7 +827,7 @@ iris_error_t kcnode_slot_revoke(struct KCNode *cn, uint32_t slot_idx,
 }
 
 /*
- * Stage 9-evt / D-8 — the bounded form.
+ * The bounded form.
  *
  * `budget == 0` means unbounded, which is what the kernel-internal callers
  * (CNode teardown) want: they are not running on a ring-3 principal's behalf
@@ -885,7 +871,7 @@ iris_error_t kcnode_slot_revoke_bounded(struct KCNode *cn, uint32_t slot_idx,
              * built to survive rather than to prevent.
              *
              * A revoke DROPS `mdb_lock` between batches — that is what makes
-             * it preemptible (D-8) — so the slot it was invoked on can be
+             * it preemptible — so the slot it was invoked on can be
              * deleted underneath it by another CPU.  The answer is the honest
              * one: NOT_FOUND if nothing had been revoked yet, and otherwise
              * stop and report what was.  A revoke that destroyed half a
@@ -919,8 +905,8 @@ iris_error_t kcnode_slot_revoke_bounded(struct KCNode *cn, uint32_t slot_idx,
         irq_spinlock_unlock(&v_cn->lock, cf);
 
         mdb_unlink_from_parent(v);
-        if (v->mdb_flags & MDB_FLAG_LEGACY_ROOT)
-            atomic_fetch_sub_explicit(&mdb_legacy_roots, 1u, memory_order_relaxed);
+        if (v->mdb_flags & MDB_FLAG_UNPARENTED)
+            atomic_fetch_sub_explicit(&mdb_unparented_roots, 1u, memory_order_relaxed);
         atomic_fetch_sub_explicit(&mdb_nodes_live, 1u, memory_order_relaxed);
         atomic_fetch_sub_explicit(&cdt_derived_live, 1u, memory_order_relaxed);
         mdb_clear_node(v);
@@ -952,7 +938,7 @@ iris_error_t kcnode_mint(struct KCNode *cn, uint32_t slot_idx,
 /* kcnode_mint_badged is gone — an OVERWRITE mint that installed a LEGACY root
  * with an explicit badge, written for the Phase 9 MOVE path and never called
  * by it.  Every producer of an unparented capability is one T305 has to
- * account for (D-6), so one that nothing uses is one to delete rather than
+ * account for, so one that nothing uses is one to delete rather than
  * keep available. */
 
 iris_error_t kcnode_mint_excl_badged(struct KCNode *cn, uint32_t slot_idx,
@@ -1003,7 +989,7 @@ iris_error_t kcnode_fetch(struct KCNode *cn, uint32_t slot_idx,
 }
 
 /*
- * Stage 8-cap / D-2 — fetch a capability together with its GUARD.
+ * Fetch a capability together with its GUARD.
  *
  * Same contract as kcnode_fetch_badged (both refs taken on success); the guard
  * is only meaningful when the fetched object is a KOBJ_CNODE and is reported
@@ -1044,7 +1030,7 @@ iris_error_t kcnode_fetch_guarded(struct KCNode *cn, uint32_t slot_idx,
 }
 
 /*
- * Stage 8-cap / D-2 — install a guard on a CNode capability.
+ * Install a guard on a CNode capability.
  *
  * The guard belongs to the CAPABILITY, not to the CNode: this writes one slot
  * and nothing else, so another capability to the same CNode keeps whatever
@@ -1166,7 +1152,7 @@ uint32_t kcnode_mdb_validate(struct KCNode **set, uint32_t n,
             }
             if (!s->mdb_parent) {
                 r.roots++;
-                if (s->mdb_flags & MDB_FLAG_LEGACY_ROOT) r.legacy_roots++;
+                if (s->mdb_flags & MDB_FLAG_UNPARENTED) r.unparented_roots++;
                 /* A root belongs to no sibling list. */
                 if (s->mdb_next_sib || s->mdb_prev_sib) r.errors++;
             } else {

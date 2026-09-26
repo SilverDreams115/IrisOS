@@ -61,7 +61,7 @@
  * not zero.
  *
  * This is not hypothetical: it is how SYS_INITRD_VMO's budget argument
- * (Stage 6 Step 5) broke every three-argument caller until their stubs were
+ * broke every three-argument caller until their stubs were
  * fixed.  Zero also has a defined MEANING in every syscall that has grown an
  * argument so far — "no destination", "my own budget" — so a stub that zeroes
  * r10 degrades to the old behaviour instead of resolving garbage.
@@ -95,7 +95,7 @@ static inline long iris_syscall4(long nr, long a0, long a1, long a2, long a3) {
     return ret;
 }
 /*
- * Five user words (ledger A-32): the invocation ABI needs a capability, a
+ * Five user words: the invocation ABI needs a capability, a
  * label and three method arguments where the numbered ABI needed four
  * arguments.  r8 is the fifth by the same convention that put the first four
  * in rdi/rsi/rdx/r10 — and taking it cost the entry path its scratch register,
@@ -134,7 +134,7 @@ static inline long iris_syscall0(long nr) {
 #define SYS_WRITE   0
 #define SYS_EXIT    1   /* modern/conforming: success path does not return */
 /*
- * SYS_GETPID — RETIRED (ledger A-27).  Number permanently reserved; answers
+ * SYS_GETPID — RETIRED.  Number permanently reserved; answers
  * IRIS_ERR_NOT_SUPPORTED.
  *
  * It handed a thread its own task id for the asking.  Not authority — the
@@ -160,7 +160,7 @@ static inline long iris_syscall0(long nr) {
  * All heap memory must be managed via SYS_VMO_CREATE + SYS_VMO_MAP. */
 #define SYS_BRK     7
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (A-24): the kernel cannot block a thread on time; waiting is a ring-3 timer service. */
+ *   RETIRED: the kernel cannot block a thread on time; waiting is a ring-3 timer service. */
 #define SYS_SLEEP   8   /* modern/conforming: returns 0 on success */
 /* legacy: removed from user-space dispatch; internal use only */
 /* SYS_IPC_CREATE  9  (retired) */
@@ -174,10 +174,10 @@ static inline long iris_syscall0(long nr) {
 #define SYS_CHAN_SEND    13  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 #define SYS_CHAN_RECV    14  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (Stage 4): the handle namespace is gone; deleting the slot is what closing was. */
+ *   RETIRED: the handle namespace is gone; deleting the slot is what closing was. */
 #define SYS_HANDLE_CLOSE 15  /* (handle) → 0 or negative iris_error_t */
 /*
- * Virtual Memory Objects — RETIRED (ledger D-5).
+ * Virtual Memory Objects — RETIRED.
  *
  * SYS_VMO_CREATE(16), SYS_VMO_MAP(17), SYS_VMO_UNMAP(36), SYS_VMO_SHARE(46),
  * SYS_VMO_MAP_INTO(57), SYS_VMO_MAP_PAGE(108) and SYS_VMO_CREATE_FOR(109) are
@@ -204,24 +204,24 @@ static inline long iris_syscall0(long nr) {
  *   SYS_VMO_UNMAP       → SYS_FRAME_UNMAP.  It took an address RANGE and no
  *                         capability at all: "remove whatever is here".
  *   SYS_VMO_SIZE        → SYS_FRAME_SIZE, the same number (67).
- *   SYS_VMO_SHARE       → already retired (Stage 4): cross-process handle.
- *   SYS_VMO_CREATE_FOR  → already retired (Stage 7-mem): payer argument.
+ *   SYS_VMO_SHARE       → already retired: cross-process handle.
+ *   SYS_VMO_CREATE_FOR  → already retired: payer argument.
  */
 /* SYS_SPAWN 18 retired in Phase 19 — permanently reserved, returns
  * IRIS_ERR_NOT_SUPPORTED. Healthy-path process creation now uses the
  * composable primitives rooted in SYS_INITRD_VMO / SYS_PROCESS_CREATE /
  * SYS_VMO_MAP_INTO / SYS_THREAD_START / SYS_HANDLE_INSERT. */
 #define SYS_SPAWN        18
-/* Phase S1: SYS_NOTIFY_CREATE (19) RETIRED — returns IRIS_ERR_NOT_SUPPORTED.
+/* SYS_NOTIFY_CREATE (19) RETIRED — returns IRIS_ERR_NOT_SUPPORTED.
  * Notifications are created via SYS_UNTYPED_RETYPE2 (Untyped storage, cap
  * directly in CSpace; no kslab, no per-process quota, no handle).  Number
  * permanently reserved. */
-#define SYS_NOTIFY_CREATE 19 /* RETIRED (Phase S1) → IRIS_ERR_NOT_SUPPORTED */
+#define SYS_NOTIFY_CREATE 19 /* RETIRED → IRIS_ERR_NOT_SUPPORTED */
 #define SYS_NOTIFY_SIGNAL 20 /* (handle, bits) → 0 or negative iris_error_t */
 #define SYS_NOTIFY_WAIT   21 /* (handle, *out_bits) → 0 or negative iris_error_t */
 /* modern/conforming: handle management */
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (Stage 4): it produced a second handle.  A slot-to-slot derive makes the copy an MDB child, so it is revocable. */
+ *   RETIRED: it produced a second handle.  A slot-to-slot derive makes the copy an MDB child, so it is revocable. */
 #define SYS_HANDLE_DUP      22  /* (src_handle, new_rights) → new_handle_id or negative iris_error_t
                                  *   Requires RIGHT_DUPLICATE on src_handle.
                                  *   new_rights must be a subset of existing rights.
@@ -231,10 +231,10 @@ static inline long iris_syscall0(long nr) {
                                  *   IRIS_ERR_NOT_SUPPORTED.  Zero in-tree
                                  *   callers; cross-process placement is
                                  *   SYS_CSPACE_MINT with the destination
-                                 *   CNode named (Stage 7 Step 9), or an IPC
+                                 *   CNode named, or an IPC
                                  *   receive-slot (A1.5/A1.6). */
 /*
- * SYS_PROCESS_WATCH (29) — RETIRED (Stage 7 Step 10).  Number permanently
+ * SYS_PROCESS_WATCH (29) — RETIRED.  Number permanently
  * reserved; answers IRIS_ERR_NOT_SUPPORTED.  A death is watched on the THREAD
  * that dies (SYS_TCB_WATCH), by whoever holds its TCB — which a supervisor
  * has, because it retyped and configured that thread.  Watching a PROCESS
@@ -243,7 +243,7 @@ static inline long iris_syscall0(long nr) {
  */
 #define SYS_PROCESS_WATCH   29
 /*
- * SYS_PROCESS_SELF (28) — RETIRED (Stage 7 Step 15).  Number permanently
+ * SYS_PROCESS_SELF (28) — RETIRED.  Number permanently
  * reserved; answers IRIS_ERR_NOT_SUPPORTED.  It handed a task a capability to
  * its own KProcess for the things that used to need one — minting into your
  * own CSpace, mapping into your own address space, being named as a payer,
@@ -252,13 +252,13 @@ static inline long iris_syscall0(long nr) {
  * (96) hand out the three self-capabilities that are left.
  */
 #define SYS_PROCESS_SELF    28
-/* SYS_PROCESS_STATUS — RETIRED (Stage 7 Step 13).  Number permanently
+/* SYS_PROCESS_STATUS — RETIRED.  Number permanently
  * reserved; returns IRIS_ERR_NOT_SUPPORTED.  Liveness is a property of an
  * EXECUTION: read it with SYS_TCB_GET_INFO (101) on a thread you hold, whose
  * `state` says more than the one bit this answered. */
 #define SYS_PROCESS_STATUS  26
 
-/* Phase 13 (Track B): the legacy PROC_EVENT_MSG_EXIT KChannel event is retired.
+/* The legacy PROC_EVENT_MSG_EXIT KChannel event is retired.
  * Process death is now delivered as a KNotification signal — see
  * SYS_PROCESS_WATCH above. */
 /* SYS_DIAG_SNAPSHOT 30 retired Phase 51 — permanently reserved, returns
@@ -305,14 +305,14 @@ static inline long iris_syscall0(long nr) {
 /*
  * Hardware capability creation — modern/conforming (iris_error_t).
  *
- * Stage 5 Step 2: each syscall requires ITS OWN control capability, matched
+ * Each syscall requires ITS OWN control capability, matched
  * exactly.  The IRQ control capability does not authorise ioport creation and
  * the ioport control capability does not authorise IRQ creation; neither is a
  * bit on a larger capability, so holding one says nothing about the other.
  * Policy (which service gets which resource) lives in svcmgr; the kernel
  * validates ranges and creates the cap object.
  *
- * Stage 7 Step 14: both take the BUDGET the kernel object is carved from in
+ * Both take the BUDGET the kernel object is carved from in
  * arg2, and it is required.  They used to charge the caller's KProcess default
  * — the last place the kernel picked whose memory pays.  IRQCAP had a free
  * argument; IOPORT did not, so its two 16-bit device facts share arg1, which
@@ -365,7 +365,7 @@ static inline long iris_syscall0(long nr) {
  *                long, and a loader parses it and drops it, so a caller that
  *                points this at a scratch Untyped can RESET that region
  *                between spawns instead of spending its whole pool one image
- *                at a time.  Stage 7 Step 14: REQUIRED — 0 used to mean "the
+ *                at a time.  REQUIRED — 0 used to mean "the
  *                caller's own budget", read off the KProcess.
  *   The result is a read-only KOBJ_VMO (RIGHT_READ) over a private copy of the
  *   embedded ELF bytes; map with flags=0.
@@ -420,7 +420,7 @@ static inline long iris_syscall0(long nr) {
  *   Also registers the mapping descriptor in proc's vmo_mappings for teardown.
  *   Uses 4-arg syscall ABI (arg3 = flags via r10).
  *
- * SYS_THREAD_START — RETIRED (Stage 7 Step 1).  58 answers NOT_SUPPORTED and
+ * SYS_THREAD_START — RETIRED.  58 answers NOT_SUPPORTED and
  *   the number stays reserved.  It carved a spawned process's first thread out
  *   of the kernel's static task pool.  Composing one instead: RETYPE2 a
  *   KOBJ_TCB from the child's budget, SYS_TCB_CONFIGURE it with the child's
@@ -439,7 +439,7 @@ static inline long iris_syscall0(long nr) {
  *   New code uses SYS_PROC_CSPACE_MINT or an IPC receive-slot instead.
  */
 /*
- * SYS_INITRD_VMO — RETIRED (Stage 6, ledger D-5).  Permanently reserved.
+ * SYS_INITRD_VMO — RETIRED.  Permanently reserved.
  *
  * It handed a boot image over as a KVMO, so the loader and vfs both had to
  * speak a second memory ABI to read a file the kernel already had, and had to
@@ -448,7 +448,7 @@ static inline long iris_syscall0(long nr) {
  */
 #define SYS_INITRD_VMO      55
 #define SYS_PROCESS_CREATE  56
-#define SYS_VMO_MAP_INTO    57  /* RETIRED (D-5) → IRIS_ERR_NOT_SUPPORTED */
+#define SYS_VMO_MAP_INTO    57  /* RETIRED → IRIS_ERR_NOT_SUPPORTED */
 #define SYS_THREAD_START    58
 #define SYS_HANDLE_INSERT   59
 
@@ -467,17 +467,17 @@ static inline long iris_syscall0(long nr) {
  *   only the first caller can claim the physical framebuffer window.
  */
 /*
- * SYS_FRAMEBUFFER_VMO — RETIRED (Stage 6).  Permanently reserved.
+ * SYS_FRAMEBUFFER_VMO — RETIRED.  Permanently reserved.
  *
  * It answered "where is the framebuffer" AND fabricated a KVMO over the region
  * in the same call, so the geometry could only be learned by accepting a
  * kernel-made object — the last memory object in the system nobody retyped
- * (ledger D-5).  It was also a one-shot GRANT wearing a query's clothes: the
+ *.  It was also a one-shot GRANT wearing a query's clothes: the
  * first caller consumed a valid flag and every later one got NOT_FOUND.
  *
  * The two halves are now what they are.  SYS_FRAMEBUFFER_INFO (133) reports
  * the geometry and creates nothing; the REGION is a DEVICE Untyped published
- * in BootInfo (D-9), and exclusivity is who holds that capability.
+ * in BootInfo, and exclusivity is who holds that capability.
  */
 #define SYS_FRAMEBUFFER_VMO 60
 
@@ -539,7 +539,7 @@ static inline long iris_syscall0(long nr) {
 #define SYS_CHAN_RECV_TIMEOUT 63  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 
 /*
- * Timed notification wait (Phase 43).
+ * Timed notification wait.
  *
  * SYS_NOTIFY_WAIT_TIMEOUT(notify_h, bits_uptr, timeout_ns) → 0 or negative iris_error_t.
  *   Blocks until the KNotification has at least one signal bit set, or until
@@ -548,7 +548,7 @@ static inline long iris_syscall0(long nr) {
  *   success (same as SYS_NOTIFY_WAIT).  Requires RIGHT_WAIT on notify_h.
  */
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (A-24): a timed wait put the CLOCK in the kernel; the timer service signals the notification instead. */
+ *   RETIRED: a timed wait put the CLOCK in the kernel; the timer service signals the notification instead. */
 #define SYS_NOTIFY_WAIT_TIMEOUT 64
 
 /*
@@ -566,7 +566,7 @@ static inline long iris_syscall0(long nr) {
 /*
  * I/O port sub-delegation — modern/conforming (iris_error_t).
  *
- * SYS_IOPORT_RESTRICT — RETIRED (Stage 4).  Number permanently reserved;
+ * SYS_IOPORT_RESTRICT — RETIRED.  Number permanently reserved;
  * returns IRIS_ERR_NOT_SUPPORTED.  It published a narrowed KIoPort as a handle
  * with no capability ancestor; SYS_CAP_CREATE_IOPORT publishes into a CSpace
  * slot as an MDB child of the authorising bootstrap cap instead.
@@ -580,7 +580,7 @@ static inline long iris_syscall0(long nr) {
 #define SYS_WAIT_ANY  44  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 
 /*
- * SYS_VMO_UNMAP(36) — RETIRED (ledger D-5).  Permanently reserved.
+ * SYS_VMO_UNMAP(36) — RETIRED.  Permanently reserved.
  *
  * It removed the mappings for an address RANGE from the caller's own address
  * space, and took no capability at all — "remove whatever is here" — which is
@@ -588,7 +588,7 @@ static inline long iris_syscall0(long nr) {
  * whose mapping is coming down, in the address space it names, which is the
  * same authority the map needed.
  */
-#define SYS_VMO_UNMAP 36  /* RETIRED (D-5) → IRIS_ERR_NOT_SUPPORTED */
+#define SYS_VMO_UNMAP 36  /* RETIRED → IRIS_ERR_NOT_SUPPORTED */
 
 /*
  * SYS_CHAN_RECV_NB(34) — retired in Phase 13/Track G with the KChannel object.
@@ -608,7 +608,7 @@ static inline long iris_syscall0(long nr) {
  *   Cannot be used for self-termination — use SYS_EXIT for that.
  *   Idempotent: returns 0 if the process is already dead.
  */
-/* SYS_PROCESS_KILL — RETIRED (Stage 7 Step 13).  Number permanently reserved;
+/* SYS_PROCESS_KILL — RETIRED.  Number permanently reserved;
  * returns IRIS_ERR_NOT_SUPPORTED.  Stopping an execution is SYS_TCB_EXIT (100)
  * on a thread you hold; reclaiming a process that never started is deleting
  * the last capability to it. */
@@ -635,7 +635,7 @@ static inline long iris_syscall0(long nr) {
  *   RETIRED (P1): discovery lives in user space; a name is resolved by a server somebody holds. */
 #define SYS_NS_LOOKUP       25
 
-/* Boot capability kinds — ONE CAPABILITY, ONE AUTHORITY (Stage 5 Step 2).
+/* Boot capability kinds — ONE CAPABILITY, ONE AUTHORITY.
  *
  * These are not bits to combine: each value names a whole capability, the
  * kernel matches it by exact equality, and a capability carrying more than one
@@ -656,7 +656,7 @@ static inline long iris_syscall0(long nr) {
 #define IRIS_BOOTCAP_INITRD_CONTROL (1u << 6)  /* SYS_INITRD_COUNT / SYS_INITRD_VMO */
 
 /*
- * SYS_BOOTCAP_RESTRICT (45) — RETIRED (Stage 5 Step 2).  Number permanently
+ * SYS_BOOTCAP_RESTRICT (45) — RETIRED.  Number permanently
  * reserved; returns IRIS_ERR_NOT_SUPPORTED.
  *
  * It derived a weaker CLONE of a boot capability, the only way to give up part
@@ -684,11 +684,11 @@ static inline long iris_syscall0(long nr) {
  *   SYS_PROC_CSPACE_MINT into a destination CSpace slot instead.
  */
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (Stage 4): it published into the child's HANDLE table.  SYS_PROC_CSPACE_MINT into a destination slot is the CSpace form. */
+ *   RETIRED: it published into the child's HANDLE table.  SYS_PROC_CSPACE_MINT into a destination slot is the CSpace form. */
 #define SYS_VMO_SHARE  46
 
 /*
- * SYS_EXCEPTION_HANDLER — RETIRED (Stage 7 Step 12).  Use
+ * SYS_EXCEPTION_HANDLER — RETIRED.  Use
  * SYS_TCB_SET_FAULT_HANDLER (126); the number returns NOT_SUPPORTED.
  *
  * It armed a PROCESS, so every thread in it shared one mailbox, one
@@ -703,7 +703,7 @@ static inline long iris_syscall0(long nr) {
 #define SYS_EXCEPTION_HANDLER  47
 
 /*
- * SYS_PROCESS_FAULT_INFO — RETIRED (Stage 7 Step 12).  Use SYS_TCB_FAULT_INFO
+ * SYS_PROCESS_FAULT_INFO — RETIRED.  Use SYS_TCB_FAULT_INFO
  * (123); the number returns NOT_SUPPORTED.
  *
  * The record has lived on the thread since Step 6, and since Step 12 so has
@@ -715,7 +715,7 @@ static inline long iris_syscall0(long nr) {
 #define SYS_PROCESS_FAULT_INFO 105
 
 /*
- * SYS_EXCEPTION_RESUME — RETIRED (ledger A-22).  A fault is answered by
+ * SYS_EXCEPTION_RESUME — RETIRED.  A fault is answered by
  * REPLYING to it; the number returns NOT_SUPPORTED.
  *
  * It was the third of the three mechanisms a fault used to need, and the one
@@ -734,7 +734,7 @@ static inline long iris_syscall0(long nr) {
  * instead of two values of one argument.
  */
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (A-22): the paragraph above is its obituary -- a reply capability is the authority and the one-shot at once. */
+ *   RETIRED: the paragraph above is its obituary -- a reply capability is the authority and the one-shot at once. */
 #define SYS_EXCEPTION_RESUME   66
 
 /*
@@ -744,10 +744,10 @@ static inline long iris_syscall0(long nr) {
  *   frame_cptr: KOBJ_FRAME with RIGHT_READ.
  *   Returns the byte size of the frame as it was retyped.
  *
- * Ledger D-5: this was SYS_VMO_SIZE and asked a KVmo.  The number and the
+ * This was SYS_VMO_SIZE and asked a KVmo.  The number and the
  * question are unchanged — how much memory does this capability name — and
  * the answer matters for the same reason it always did: SYS_FRAME_MAP covers
- * the WHOLE frame (D-10), so a caller supplying its own paging levels has to
+ * the WHOLE frame, so a caller supplying its own paging levels has to
  * know how many 2 MiB regions the map will touch.  A frame carries its size,
  * so this reads it off the object rather than making the holder remember.
  */
@@ -809,11 +809,11 @@ static inline long iris_syscall0(long nr) {
  *   Does not return IRIS_ERR_INTERRUPTED; always sleeps the full requested duration.
  */
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (A-24): the kernel cannot block a thread on time.  Waiting is a ring-3 timer service holding a capability. */
+ *   RETIRED: the kernel cannot block a thread on time.  Waiting is a ring-3 timer service holding a capability. */
 #define SYS_CLOCK_NANOSLEEP 70
 
 /*
- * SYS_PROCESS_EXIT_CODE (71) — RETIRED (Stage 7 Step 10).  Number permanently
+ * SYS_PROCESS_EXIT_CODE (71) — RETIRED.  Number permanently
  * reserved; answers IRIS_ERR_NOT_SUPPORTED.  The code belongs to the execution
  * that produced it: SYS_TCB_EXIT_CODE reads it off that thread, with
  * RIGHT_READ on the thread as the whole authority.
@@ -827,7 +827,7 @@ static inline long iris_syscall0(long nr) {
 #define SYS_WAIT_ANY_TIMEOUT 72  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 
 /*
- * SYS_THREAD_CREATE (48) — RETIRED (Stage 5 Step 4).  Number permanently
+ * SYS_THREAD_CREATE (48) — RETIRED.  Number permanently
  * reserved; returns IRIS_ERR_NOT_SUPPORTED.
  *
  * It carved a thread from the kernel's static task pool and returned a global
@@ -840,7 +840,7 @@ static inline long iris_syscall0(long nr) {
 #define SYS_THREAD_CREATE  48
 
 /*
- * SYS_THREAD_EXIT — RETIRED (ledger A-27).  Number permanently reserved;
+ * SYS_THREAD_EXIT — RETIRED.  Number permanently reserved;
  * answers IRIS_ERR_NOT_SUPPORTED.
  *
  * It ended the calling thread, which is what SYS_EXIT does — and SYS_EXIT also
@@ -881,10 +881,10 @@ static inline long iris_syscall0(long nr) {
  *   This is identity comparison only; it does not compare rights.
  */
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (Stage 4): the block above describes a handle table that no longer exists.  SYS_CAP_IDENTIFY answers for a CPtr. */
+ *   RETIRED: the block above describes a handle table that no longer exists.  SYS_CAP_IDENTIFY answers for a CPtr. */
 #define SYS_HANDLE_TYPE        52
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (Stage 4): the handle namespace is gone.  SYS_CAP_SAME_OBJECT asks the same question of two CPtrs. */
+ *   RETIRED: the handle namespace is gone.  SYS_CAP_SAME_OBJECT asks the same question of two CPtrs. */
 #define SYS_HANDLE_SAME_OBJECT 53
 
 /*
@@ -906,11 +906,11 @@ static inline long iris_syscall0(long nr) {
  * no message queue: every send blocks until a receiver is ready (or vice versa).
  * Message delivery is atomic — both sides unblock in the same scheduler step.
  *
- * SYS_ENDPOINT_CREATE — RETIRED (Phase S1) → IRIS_ERR_NOT_SUPPORTED.
+ * SYS_ENDPOINT_CREATE — RETIRED → IRIS_ERR_NOT_SUPPORTED.
  *   Endpoints are created via SYS_UNTYPED_RETYPE2 (Untyped storage, cap
  *   directly in CSpace).  Number permanently reserved.
  *
- * Ledger A-33: none of these take a message POINTER.  A message is a
+ * None of these take a message POINTER.  A message is a
  * MessageInfo word and message registers (`iris/ipc_msg.h` has the map), and
  * anything longer lives in the thread's registered IPC buffer.
  *
@@ -931,7 +931,7 @@ static inline long iris_syscall0(long nr) {
  *   is already waiting.  Otherwise identical to SYS_EP_RECV.
  */
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (Phase S1): an endpoint is RETYPED from an Untyped somebody holds, like every other object. */
+ *   RETIRED: an endpoint is RETYPED from an Untyped somebody holds, like every other object. */
 #define SYS_ENDPOINT_CREATE 73
 #define SYS_EP_SEND         74
 #define SYS_EP_RECV         75
@@ -953,7 +953,7 @@ static inline long iris_syscall0(long nr) {
  *   h itself is NOT deleted and remains valid after the call.
  *   O(N) scan over the caller's handle table where N = HANDLE_TABLE_MAX.
  *
- * SYS_CNODE_CREATE — RETIRED (Phase S1) → IRIS_ERR_NOT_SUPPORTED.
+ * SYS_CNODE_CREATE — RETIRED → IRIS_ERR_NOT_SUPPORTED.
  *   Runtime CNodes are created via SYS_UNTYPED_RETYPE2 (KOBJ_CNODE,
  *   obj_arg = num_slots).  Number permanently reserved.
  *
@@ -966,7 +966,7 @@ static inline long iris_syscall0(long nr) {
  */
 #define SYS_CAP_DERIVE    78
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (Phase S4 / Stage 3): the parallel handle derivation tree is gone.  SYS_CSPACE_REVOKE walks the one MDB. */
+ *   RETIRED: the parallel handle derivation tree is gone.  SYS_CSPACE_REVOKE walks the one MDB. */
 #define SYS_CAP_REVOKE    79
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
  *   RETIRED: a CNode is RETYPED from an Untyped somebody holds, like every other object. */
@@ -983,7 +983,7 @@ static inline long iris_syscall0(long nr) {
  *   Returns the previous priority on success.
  *   Default priority for all user threads is 128.  The idle task runs at 0.
  *
- * SYS_SC_CREATE — RETIRED (Phase S2) → IRIS_ERR_NOT_SUPPORTED.
+ * SYS_SC_CREATE — RETIRED → IRIS_ERR_NOT_SUPPORTED.
  *   SchedulingContexts are created via SYS_UNTYPED_RETYPE2 (KOBJ_SCHED_CONTEXT,
  *   Untyped storage, cap in CSpace) and configured with SYS_SC_CONFIGURE.
  *   Number permanently reserved.
@@ -995,12 +995,12 @@ static inline long iris_syscall0(long nr) {
  *   Resets remaining_budget to budget_ticks immediately.
  *
  * SYS_THREAD_SET_SC(sc_h) → 0 or negative iris_error_t
- *   LEGACY FROZEN (Phase S2): self-bind of the calling thread.  It may NOT take
+ *   LEGACY FROZEN: self-bind of the calling thread.  It may NOT take
  *   new consumers — the canonical binding path is SYS_SC_BIND(sc, tcb) by
  *   CPtr.  Kept for existing code; one-to-one enforced (BUSY if sc_h is
  *   already bound to another task).  Pass 0 to unbind.
  *
- * SYS_SC_BIND(sc_cptr, tcb_cptr) → 0 or negative iris_error_t   (Phase S2)
+ * SYS_SC_BIND(sc_cptr, tcb_cptr) → 0 or negative iris_error_t
  *   Explicitly binds a SchedulingContext to a TCB, both by CPtr, both live,
  *   one-to-one (BUSY if either is already bound to another).  The SC must be
  *   configured (SC_CONFIGURE).  tcb_cptr == 0 unbinds the SC.  Requires
@@ -1026,14 +1026,14 @@ static inline long iris_syscall0(long nr) {
  *   a HANDLE, kept during Phase S1 for the types that had not migrated yet.
  *   Stage 4 deleted the handle table and there is nothing left for it to
  *   return; every type is born the same way now, into a CSpace slot.  The one
- *   retype is `INV_UNTYPED_RETYPE` (ledger A-32), which is what
+ *   retype is `INV_UNTYPED_RETYPE`, which is what
  *   SYS_UNTYPED_RETYPE2 became.
  */
 #define SYS_UNTYPED_INFO   86
 #define SYS_UNTYPED_RETYPE 87
 #define SYS_UNTYPED_RESET  88
 
-/* Phase S1: userland-visible object-type codes for SYS_UNTYPED_RETYPE(2).
+/* Userland-visible object-type codes for SYS_UNTYPED_RETYPE(2).
  * ABI-stable mirrors of the kernel kobject_type_t enum (statically asserted
  * in syscall_untyped.c). */
 #define IRIS_KOBJ_NOTIFICATION   2u
@@ -1045,7 +1045,7 @@ static inline long iris_syscall0(long nr) {
 #define IRIS_KOBJ_TCB           13u
 #define IRIS_KOBJ_FRAME         15u
 #define IRIS_KOBJ_PAGE_TABLE    16u
-#define IRIS_KOBJ_ASID_POOL     17u  /* A-21: address-space identifiers */
+#define IRIS_KOBJ_ASID_POOL     17u  /* Address-space identifiers */
 /*
  * Stage 10-dma.  A device's reach becomes a capability: the frames it may
  * target, named by whoever grants them, revocable.  An IOSpace is one device's
@@ -1087,7 +1087,7 @@ struct iris_iommu_fault_info {
  * to be able to size its own address-space budget without asking the kernel
  * how big its objects are. */
 #define IRIS_ASID_POOL_SIZE    128u
-#define IRIS_KOBJ_VSPACE        14u  /* Stage 6-pure: an address space the holder retypes */
+#define IRIS_KOBJ_VSPACE        14u  /* An address space the holder retypes */
 
 /*
  * Block 6 — CNode slot operations (Ph82-84).
@@ -1098,7 +1098,7 @@ struct iris_iommu_fault_info {
  *   src_h is consumed (removed from HT) — seL4 Move semantics.
  *   If slot_idx was occupied, the old capability is released.
  *
- * SYS_CNODE_FETCH — RETIRED (Stage 4).  Number permanently reserved; returns
+ * SYS_CNODE_FETCH — RETIRED.  Number permanently reserved; returns
  * IRIS_ERR_NOT_SUPPORTED.  It copied a slot's capability into a HANDLE, with
  * no MDB edge back to the slot, so revoking the slot left the copy alive.
  * SYS_CSPACE_MINT is the slot-to-slot form and records the derivation.
@@ -1115,10 +1115,10 @@ struct iris_iommu_fault_info {
  *   No capability references change — only slot pointers are exchanged.
  */
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (Stage 4); see syscall_cnode_ops.c.  SYS_CSPACE_MOVE relocates the MDB node. */
+ *   RETIRED; see syscall_cnode_ops.c.  SYS_CSPACE_MOVE relocates the MDB node. */
 #define SYS_CNODE_MOVE    89
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (Stage 4); see syscall_cnode_ops.c. */
+ *   RETIRED; see syscall_cnode_ops.c. */
 #define SYS_CNODE_FETCH   90
 #define SYS_CNODE_DELETE  91
 #define SYS_CNODE_SWAP    92
@@ -1173,11 +1173,11 @@ struct iris_iommu_fault_info {
  *   levels without reaching a leaf.
  */
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (Stage 4).  The description above is PRE-Stage-4 and describes materialising a handle-table entry; there is no handle table.  Resolution is what every capability argument already does. */
+ *   RETIRED.  The description above is PRE-Stage-4 and describes materialising a handle-table entry; there is no handle table.  Resolution is what every capability argument already does. */
 #define SYS_CSPACE_RESOLVE 95
 
 /*
- * SYS_PROC_CSPACE_MINT (104) — RETIRED (Stage 7 Step 9).  Number permanently
+ * SYS_PROC_CSPACE_MINT (104) — RETIRED.  Number permanently
  * reserved; answers IRIS_ERR_NOT_SUPPORTED.
  *
  * It minted into a CSpace named by the PROCESS that owned it, and the kernel
@@ -1187,7 +1187,7 @@ struct iris_iommu_fault_info {
  * SYS_CSPACE_MINT is the whole replacement.  It has taken a destination CNode
  * since Phase S3, dest_cnode 0 meaning the caller's own root; minting into a
  * child is the same call with the child's root CNode as the destination, which
- * a spawner HAS because it retyped it (Stage 6-pure Step 5).  A spawner that
+ * a spawner HAS because it retyped it.  A spawner that
  * means to keep delegating keeps that capability; one that does not holds no
  * authority over its child's namespace at all — a distinction the
  * process-shaped form could not express.
@@ -1258,7 +1258,7 @@ struct iris_iommu_fault_info {
 #define SYS_VSPACE_SELF 106  /* RETIRED (D-6/A5) → IRIS_ERR_NOT_SUPPORTED */
 
 /*
- * SYS_PROCESS_VSPACE (107) — RETIRED (Stage 7 Step 15).  Number permanently
+ * SYS_PROCESS_VSPACE (107) — RETIRED.  Number permanently
  * reserved; answers IRIS_ERR_NOT_SUPPORTED.
  *
  * It was the map-into-target authority for a user pager: a supervisor holding
@@ -1278,19 +1278,19 @@ struct iris_iommu_fault_info {
  * this syscall's IRIS_CPTR_NULL case was always documented as equivalent to.
  */
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (Stage 7-proc): there is no KProcess.  A thread's address space is a capability it was configured with. */
+ *   RETIRED: there is no KProcess.  A thread's address space is a capability it was configured with. */
 #define SYS_PROCESS_VSPACE 107
 
 /*
  * SYS_VMO_MAP_PAGE(vmo_cptr, vspace_cptr, target_va, offset_flags)
- *                                          → 0 or negative iris_error_t   (Phase 26)
+ *                                          → 0 or negative iris_error_t
  *
  * Maps exactly ONE page of a memory object at a chosen byte offset into a
  * VSpace at a chosen VA.  This is the page-granular, offset-addressed
  * primitive a VMO-backed user pager uses to resolve a fault: it is to
  * SYS_FRAME_MAP what a VMO page is to a raw frame — same authority shape
  * (the VSpace WRITE cap is the map-into-target authority, no process MANAGE),
- * composing directly with SYS_PROCESS_VSPACE (Phase 25).
+ * composing directly with SYS_PROCESS_VSPACE.
  *
  *   vmo_cptr:     KOBJ_VMO with RIGHT_READ (+ RIGHT_WRITE if flags bit 0 set).
  *                 Dual resolver (CPtr slot or handle).
@@ -1319,7 +1319,7 @@ struct iris_iommu_fault_info {
  *   Returns IRIS_ERR_NO_MEMORY     — page/frame allocation or quota failure.
  *   Uses the 4-arg syscall ABI (offset_flags via r10).
  */
-#define SYS_VMO_MAP_PAGE 108  /* RETIRED (D-5) → IRIS_ERR_NOT_SUPPORTED */
+#define SYS_VMO_MAP_PAGE 108  /* RETIRED → IRIS_ERR_NOT_SUPPORTED */
 
 /*
  * SYS_VMO_CREATE_FOR(size, charge_target, dest, budget_cptr) → 0 or iris_error_t
@@ -1348,11 +1348,11 @@ struct iris_iommu_fault_info {
  *   Returns IRIS_ERR_NO_MEMORY     — object alloc or the target's quota is full.
  */
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (D-5): there is no KVmo.  Memory is a FRAME, retyped by the holder. */
+ *   RETIRED: there is no KVmo.  Memory is a FRAME, retyped by the holder. */
 #define SYS_VMO_CREATE_FOR 109
 
 /*
- * SYS_RESOURCE_INFO(proc_h, out_ptr) → 0 or iris_error_t (Phase 29)
+ * SYS_RESOURCE_INFO(proc_h, out_ptr) → 0 or iris_error_t
  *
  * Read-only resource-accounting snapshot for a process (its resource domain).
  * proc_h == IRIS_CPTR_NULL → self; otherwise a KProcess cap (any rights: the
@@ -1366,7 +1366,7 @@ struct iris_iommu_fault_info {
 #define SYS_RESOURCE_INFO 110
 
 /*
- * Phase S1 — seL4 Architectural Convergence.
+ * SeL4 Architectural Convergence.
  *
  * SYS_UNTYPED_RETYPE2(ut, type|count<<32, dest_cnode|slot<<32, obj_arg)
  *     → 0 or negative iris_error_t
@@ -1389,7 +1389,7 @@ struct iris_iommu_fault_info {
  *   object is live and no untyped range is consumed.
  *   Device untyped only produces KOBJ_UNTYPED / KOBJ_FRAME (U11/U12).
  *
- *   KOBJ_TCB (Phase S2 Step 0): the created TCB is a canonical, INACTIVE
+ *   KOBJ_TCB: the created TCB is a canonical, INACTIVE
  *   object — storage inside the untyped, capability in CSpace, observable
  *   (TCB_GET_INFO: state = SUSPENDED, task_id = 0) and delegable, but NOT
  *   runnable: it has no kstack, no registry slot and no process.  Execution
@@ -1416,7 +1416,7 @@ struct iris_iommu_fault_info {
 #define SYS_UNTYPED_QUERY   112
 
 /*
- * Phase S3 — CSpace-only derivation surface (native MDB/CDT).
+ * CSpace-only derivation surface (native MDB/CDT).
  * Source authority comes EXCLUSIVELY from the caller's CSpace (CPtr < 1024
  * resolved to a slot); a handle value in a source argument is INVALID_ARG.
  * See docs/architecture/cspace-cdt-mdb.md.
@@ -1429,7 +1429,7 @@ struct iris_iommu_fault_info {
  *   Requires RIGHT_DUPLICATE on the source.  Exclusive: occupied dest →
  *   IRIS_ERR_ALREADY_EXISTS.  On any error nothing changes.
  *
- *   Stage 7 Step 9: `dest_cnode` is how a capability reaches ANOTHER task's
+ *   `dest_cnode` is how a capability reaches ANOTHER task's
  *   CSpace — name that task's root CNode.  It is the whole of what the two
  *   retired process-shaped mints did, minus the part where the kernel read a
  *   CSpace root out of a process the caller named instead of the CSpace it
@@ -1441,7 +1441,7 @@ struct iris_iommu_fault_info {
  *   CNodes and processes — in deterministic order.  The invoked capability
  *   and its siblings survive.  delete(cap) ≠ revoke(cap).
  *
- * SYS_CSPACE_MINT_INTO (116) — RETIRED (Stage 7 Step 9).  Number permanently
+ * SYS_CSPACE_MINT_INTO (116) — RETIRED.  Number permanently
  * reserved; answers IRIS_ERR_NOT_SUPPORTED.  Same reasoning as
  * SYS_PROC_CSPACE_MINT: SYS_CSPACE_MINT with the destination CNode named by
  * the capability the caller holds.
@@ -1449,11 +1449,11 @@ struct iris_iommu_fault_info {
 #define SYS_CSPACE_MINT      114
 #define SYS_CSPACE_REVOKE    115
 /* RETIRED -- answers IRIS_ERR_NOT_SUPPORTED forever (AB-1).
- *   RETIRED (Stage 4). */
+ *   RETIRED. */
 #define SYS_CSPACE_MINT_INTO 116
 
 /*
- * Phase S4 (Stage 4) — CSpace-native capability introspection.  CPtr only; a
+ * CSpace-native capability introspection.  CPtr only; a
  * handle value is INVALID_ARG with no fallback (charter §3.6/§3.7).  These
  * replace SYS_HANDLE_TYPE (52) and SYS_HANDLE_SAME_OBJECT (53), which retire
  * with the handle namespace.
@@ -1471,10 +1471,10 @@ struct iris_iommu_fault_info {
 #define SYS_CAP_SAME_OBJECT  118
 
 /*
- * Stage 5 Step 4 — execution for a TCB retyped from an Untyped.
+ * Execution for a TCB retyped from an Untyped.
  *
  * RETYPE2(KOBJ_TCB) has produced cap-complete but INACTIVE threads since
- * Phase S2: no registry slot, no kernel stack, no address space, refused by
+ * No registry slot, no kernel stack, no address space, refused by
  * every execution syscall.  The operation that gives them those was missing
  * because ITS ARGUMENTS ARE CAPABILITIES — a CSpace root and a VSpace — and
  * those only became addressable as capabilities in Stages 3-5.
@@ -1516,7 +1516,7 @@ struct iris_iommu_fault_info {
 /*
  * SYS_VSPACE_MAP_TABLE(pt_cptr, vspace_cptr, vaddr) → 0 or negative iris_error_t
  *
- * Stage 6-pure Step 1 — seL4's seL4_X86_PageTable_Map.
+ * SeL4's seL4_X86_PageTable_Map.
  *
  * Installs a page table the caller RETYPED from its own Untyped
  * (IRIS_KOBJ_PAGE_TABLE, obj_arg 4096) at whichever paging level is the first
@@ -1545,7 +1545,7 @@ struct iris_iommu_fault_info {
  */
 #define SYS_VSPACE_MAP_TABLE 122
 /*
- * SYS_TCB_FAULT_INFO — RETIRED (ledger A-22).  The fault record IS the
+ * SYS_TCB_FAULT_INFO — RETIRED.  The fault record IS the
  * message; the number returns NOT_SUPPORTED.
  *
  * A handler used to be signalled, then have to come BACK to the kernel with a
@@ -1593,7 +1593,7 @@ struct iris_iommu_fault_info {
 /*
  * SYS_CSPACE_SET_GUARD(cptr, guard, guard_bits) → 0 or iris_error_t
  *
- * Stage 8-cap / ledger D-2 — install a GUARD on a CNode capability.
+ * Install a GUARD on a CNode capability.
  *
  *   cptr        a CPtr, resolved in the caller's own CSpace, addressing the
  *               SLOT that holds the CNode capability.  Holding the slot is the
@@ -1624,7 +1624,7 @@ struct iris_iommu_fault_info {
 /*
  * SYS_TCB_SET_TIMEOUT_HANDLER(tcb_c, notif_c, signal_bits, dest) → 0 or error
  *
- * Stage 8-mcs — arm a thread's TIMEOUT fault handler.
+ * Arm a thread's TIMEOUT fault handler.
  *
  * Identical arguments and identical authority to SYS_TCB_SET_FAULT_HANDLER
  * (126): RIGHT_WRITE on the thread, a notification with RIGHT_WRITE, non-zero
@@ -1653,7 +1653,7 @@ struct iris_iommu_fault_info {
 /*
  * SYS_REPLY_RECV(reply_cptr, msg_uptr, ep_cptr) → 0 or iris_error_t
  *
- * Stage 8-mcs — seL4's `seL4_ReplyRecv`: answer the outstanding call and wait
+ * SeL4's `seL4_ReplyRecv`: answer the outstanding call and wait
  * for the next one, with NO scheduling point in between.
  *
  * The atomicity is not an optimisation, it is what makes a PASSIVE server
@@ -1763,7 +1763,7 @@ struct iris_iommu_fault_info {
  *   → 0 or negative iris_error_t
  *
  * Name the RAM Untyped that pays for the object HEADERS of everything retyped
- * out of a DEVICE Untyped (ledger D-9).
+ * out of a DEVICE Untyped.
  *
  * A device region is MMIO.  The kernel can hand it out and a driver can map
  * it, but nothing can be STORED in it: a `struct KFrame` written into a
@@ -1799,7 +1799,7 @@ struct iris_iommu_fault_info {
  * Its predecessor, `SYS_FRAMEBUFFER_VMO`, answered this question AND
  * fabricated a KVMO over the region in the same call, which is why the
  * geometry could only be learned by accepting a kernel-made object.  Since
- * Stage 6 the region is published as a DEVICE Untyped (ledger D-9) and a
+ * Stage 6 the region is published as a DEVICE Untyped and a
  * driver retypes a frame from it, so the two halves are separable and only
  * one of them is still the kernel's business: the geometry is a fact about the
  * hardware that boot discovered, and a capability is not.
@@ -1815,7 +1815,7 @@ struct iris_iommu_fault_info {
 /*
  * SYS_ASID_POOL_ASSIGN(pool_cptr, vspace_cptr) → 0 or negative iris_error_t
  *
- * Give one address-space identifier from `pool` to `vspace` (ledger A-21).
+ * Give one address-space identifier from `pool` to `vspace`.
  * An address space that has not been assigned one cannot be bound to a thread:
  * it is a page and a header until somebody who holds a pool says otherwise.
  * seL4 spells it `seL4_X86_ASIDPool_Assign`, and the reason is the same — the
@@ -1829,7 +1829,7 @@ struct iris_iommu_fault_info {
 
 /*
  * SYS_TCB_BIND_NOTIFICATION(tcb_cptr, notif_cptr) → 0 or negative iris_error_t
- *   ledger A-23 — seL4's `seL4_TCB_BindNotification`.
+ *   SeL4's `seL4_TCB_BindNotification`.
  *
  *   tcb_cptr:   the thread, with RIGHT_WRITE.
  *   notif_cptr: the notification, with RIGHT_WRITE.  0 UNBINDS.
@@ -1842,7 +1842,7 @@ struct iris_iommu_fault_info {
  * thread, which every real driver needs and IRIS had no way to express: a
  * service holding both an IRQ notification and a control endpoint had to
  * choose which one to block on, or spend a second thread.  A-20's audit found
- * the absence; the timer service (A-24) is the first thing that needed it.
+ * the absence; the timer service is the first thing that needed it.
  *
  * At most one notification per thread and one thread per notification: a
  * second bind either way is IRIS_ERR_ALREADY_EXISTS, because "which thread
@@ -1852,7 +1852,7 @@ struct iris_iommu_fault_info {
 
 /*
  * SYS_NOTIFY_POLL(notif_cptr, out_bits) → 0, or IRIS_ERR_WOULD_BLOCK
- *   ledger A-24 — seL4's `seL4_Poll`.
+ *   SeL4's `seL4_Poll`.
  *
  * Take whatever is pending on a notification and return; never block.  A
  * caller that used SYS_NOTIFY_WAIT_TIMEOUT with a zero timeout was asking this
@@ -1863,7 +1863,7 @@ struct iris_iommu_fault_info {
 
 /*
  * SYS_EP_CANCEL_BADGED_SENDS(ep_cptr, badge) → number cancelled, or negative
- *   ledger A-25 — seL4's `seL4_CNode_CancelBadgedSends`.
+ *   SeL4's `seL4_CNode_CancelBadgedSends`.
  *
  *   ep_cptr: the endpoint, UNBADGED, with RIGHT_WRITE.
  *   badge:   the badge whose in-flight sends are to be cancelled.
@@ -1884,7 +1884,7 @@ struct iris_iommu_fault_info {
 
 /*
  * SYS_TCB_READ_REGS(tcb_cptr, out_uptr) → 0 or negative iris_error_t
- *   ledger A-28 — seL4's `seL4_TCB_ReadRegisters`.
+ *   SeL4's `seL4_TCB_ReadRegisters`.
  *
  *   tcb_cptr: the thread, with RIGHT_READ.
  *   out_uptr: where to write `struct iris_user_ctx` (22 words, user_ctx.h).
@@ -1908,7 +1908,7 @@ struct iris_iommu_fault_info {
 
 /*
  * SYS_CSPACE_MOVE(src_cptr, dest_cnode|slot<<32) → 0 or negative iris_error_t
- *   ledger A-28 — seL4's `seL4_CNode_Move`, across CSpaces.
+ *   SeL4's `seL4_CNode_Move`, across CSpaces.
  *
  *   src_cptr:   the capability to move; its slot is EMPTIED.
  *   dest:       CNode CPtr in the low half (0 = the caller's own root), slot in
@@ -1938,7 +1938,7 @@ struct iris_iommu_fault_info {
 
 /*
  * SYS_SC_CONSUMED(sc_cptr, out_uptr) → 0 or negative iris_error_t
- *   ledger A-28 — seL4's `seL4_SchedContext_Consumed`.
+ *   SeL4's `seL4_SchedContext_Consumed`.
  *
  *   sc_cptr:  the scheduling context, with RIGHT_READ.
  *   out_uptr: where to write the consumed TICKS (uint64_t).
@@ -1958,7 +1958,7 @@ struct iris_iommu_fault_info {
 
 /*
  * SYS_SC_YIELD_TO(sc_cptr, out_uptr) → 0 or negative iris_error_t
- *   ledger A-28 — seL4's `seL4_SchedContext_YieldTo`.
+ *   SeL4's `seL4_SchedContext_YieldTo`.
  *
  *   sc_cptr:  a scheduling context with a thread bound to it, RIGHT_WRITE.
  *   out_uptr: where to write what the CALLER consumed (uint64_t), or 0.
@@ -1977,7 +1977,7 @@ struct iris_iommu_fault_info {
 
 /*
  * SYS_IRQ_CLEAR(irqcap_cptr) → 1 if a route was cleared, 0 if none, or negative
- *   ledger A-28 — seL4's `seL4_IRQHandler_Clear`.
+ *   SeL4's `seL4_IRQHandler_Clear`.
  *
  *   irqcap_cptr: the IRQ capability, with RIGHT_ROUTE — the same authority that
  *                installs a route, because taking one back is the same power.
@@ -1995,7 +1995,7 @@ struct iris_iommu_fault_info {
 
 /*
  * SYS_INVOKE(cptr, label, a1 .. a7) -> whatever the method returns
- *   ledger A-32 — the invocation door.
+ *   The invocation door.
  *
  *   cptr:  the capability being invoked.  It is not an argument TO the method
  *          so much as the thing the method is a method OF.
@@ -2003,7 +2003,7 @@ struct iris_iommu_fault_info {
  *          way seL4's `enum invocation_label` is.  The dispatcher routes on
  *          the label alone; the TYPE is checked inside the method, by the
  *          resolver that fetches the capability with the type it requires, and
- *          a label sent to the wrong kind answers IRIS_ERR_WRONG_TYPE (A-30).
+ *          a label sent to the wrong kind answers IRIS_ERR_WRONG_TYPE.
  *          Labels 57..62 are methods on the SLOT rather than on the object,
  *          and are valid whatever it holds.
  *   a1-a3: the method's arguments.  Three is the widest any METHOD needs.
@@ -2061,7 +2061,7 @@ static inline long iris_invoke2(long cptr, unsigned long label, long a1, long a2
  * with the image copied into it and the tail zeroed, published RIGHT_READ as
  * an MDB child of the slot that authorised the read — so revoking the initrd
  * authority reaches the images it produced.  One `SYS_FRAME_MAP` maps the
- * whole thing (a frame maps as a whole, ledger D-10), which is what makes the
+ * whole thing (a frame maps as a whole), which is what makes the
  * VMO's page-at-a-time machinery unnecessary here.
  *
  * The SIZE is the return value rather than a second syscall: a caller that has
@@ -2077,7 +2077,7 @@ static inline long iris_invoke2(long cptr, unsigned long label, long a1, long a2
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u
 #define IRIS_UNTYPED_QUERY_ONE     2u
 #define IRIS_UNTYPED_QUERY_OBJECTS 3u
-#define IRIS_UNTYPED_QUERY_TASKOBJ 4u  /* Phase S2: TCB/SC gauges + CDT counters */
+#define IRIS_UNTYPED_QUERY_TASKOBJ 4u  /* TCB/SC gauges + CDT counters */
 
 #ifndef __ASSEMBLER__
 struct iris_untyped_query_global {
@@ -2092,7 +2092,7 @@ struct iris_untyped_query_global {
     uint64_t reuse_count;      /* RESETs that reclaimed a consumed region */
     uint64_t overlap_denials;  /* occupied-slot / range denials */
     /*
-     * Stage 7-mem: the GLOBAL half of what SYS_RESOURCE_INFO reported.
+     * The GLOBAL half of what SYS_RESOURCE_INFO reported.
      *
      * That syscall answered "how much has this PROCESS spent", which is a
      * question the Untyped it was given answers better and will answer after
@@ -2111,9 +2111,9 @@ struct iris_untyped_query_global {
     uint32_t global_failed_charges;
     uint32_t global_rollbacks;
     /*
-     * Stage 9-evt Step 1 — how many times a syscall has been RE-EXECUTED
+     * How many times a syscall has been RE-EXECUTED
      * because its handler parked the thread and asked to be re-entered
-     * (ledger D-1).
+     *.
      *
      * Instrumentation, never authority, like everything else in this struct.
      * It is here because the restart path is otherwise invisible: a
@@ -2123,8 +2123,8 @@ struct iris_untyped_query_global {
      */
     uint32_t syscall_restarts;
     /*
-     * Stage 9-evt Step 2 — syscalls that resumed on a FRESH kernel stack,
-     * their original frame abandoned (ledger D-1).
+     * Syscalls that resumed on a FRESH kernel stack,
+     * their original frame abandoned.
      *
      * Separate from `syscall_restarts` because a restart that yielded through
      * its own frame and one that threw it away are indistinguishable from
@@ -2132,9 +2132,9 @@ struct iris_untyped_query_global {
      */
     uint32_t syscall_abandons;
     /*
-     * Stage 9-evt Step 3 — ring-3 kernel entries whose user context was saved
+     * Ring-3 kernel entries whose user context was saved
      * into the interrupted thread's TCB rather than left on a kernel stack
-     * (ledger D-1).
+     *.
      *
      * Visible from ring 3 because the step it belongs to is otherwise
      * invisible: with per-thread kernel stacks still in place the save and the
@@ -2143,8 +2143,8 @@ struct iris_untyped_query_global {
      */
     uint32_t irq_ctx_saves;
     /*
-     * Stage 8-cap — threads currently holding a registered IPC buffer frame
-     * (ledger D-4).  A LIVE count, not a total.
+     * Threads currently holding a registered IPC buffer frame
+     *.  A LIVE count, not a total.
      *
      * Here because the migration off the kernel's 256-byte staging fails
      * silently by design: a service whose registration is refused keeps
@@ -2153,7 +2153,7 @@ struct iris_untyped_query_global {
      */
     uint32_t ipc_buffers;
     /*
-     * Stage 9-evt step 3 — free pages in the kernel's physical allocator.
+     * Free pages in the kernel's physical allocator.
      *
      * Here because the claim step 3 makes is about MEMORY and was otherwise
      * unobservable: every thread used to own two pages of kernel stack plus a
@@ -2163,7 +2163,7 @@ struct iris_untyped_query_global {
      */
     uint32_t kernel_free_pages;
     /*
-     * Stage 9-evt — 1 once the kernel's boot arena is SEALED.
+     * 1 once the kernel's boot arena is SEALED.
      *
      * seL4 has no kernel heap: its boot code carves the root task's initial
      * objects from a statically-known region and describes everything else as
@@ -2192,7 +2192,7 @@ struct iris_untyped_query_global {
      */
     uint32_t syscall_restarts_self;
     /*
-     * Ledger A-32 — calls that still came through the NUMBERED door.
+     * Calls that still came through the NUMBERED door.
      *
      * A total, not a live count, and it must be FALLING while the invocation
      * ABI is adopted and ZERO when it closes.  It does NOT count the calls
@@ -2229,7 +2229,7 @@ struct iris_untyped_query_objects {
     uint32_t cnodes_live;
 };
 
-/* Phase S2 — task-object gauges + CSpace-native derivation counters. */
+/* Task-object gauges + CSpace-native derivation counters. */
 struct iris_untyped_query_taskobj {
     uint32_t version;
     uint32_t struct_size;
@@ -2251,15 +2251,15 @@ struct iris_untyped_query_taskobj {
     /* Legacy handle-tree derivations for the migrated canonical types — must
      * be provably 0 (TCB/SC/CNode/EP/Notif/Reply). */
     uint32_t legacy_handle_derivation_migrated;
-    /* Phase S2 Step C — KTCB registry (references, not payload). */
+    /* KTCB registry (references, not payload). */
     uint32_t tcb_registry_active;
     uint32_t tcb_registry_hwm;
     uint32_t tcb_registry_exhaustions;
     uint32_t tcb_registry_generation_mismatch;
-    /* Phase S3 — native MDB/CDT gauges (prefix-compatible append, C.1). */
+    /* Native MDB/CDT gauges (prefix-compatible append, C.1). */
     uint32_t mdb_nodes_live;         /* occupied slots participating in the MDB */
     uint32_t mdb_nodes_hwm;
-    uint32_t mdb_legacy_roots;       /* live LEGACY_ROOT caps (must → 0, Etapas 2-4) */
+    uint32_t mdb_unparented_roots;       /* live LEGACY_ROOT caps (must → 0, Etapas 2-4) */
     uint32_t mdb_orphan_promotions;  /* children promoted to root by root-delete */
     uint32_t mdb_reparents;          /* children adopted by grandparent on delete */
     uint32_t mdb_revoked_nodes;      /* caps destroyed by revoke */
@@ -2347,15 +2347,15 @@ struct iris_tcb_info {
 #define IRIS_HANDLE_TYPE_UNTYPED        11u
 #define IRIS_HANDLE_TYPE_REPLY          12u
 #define IRIS_HANDLE_TYPE_TCB            13u
-#define IRIS_HANDLE_TYPE_VSPACE         14u  /* Phase 4: KVSpace — virtual address space */
-#define IRIS_HANDLE_TYPE_FRAME          15u  /* Phase 5: KFrame  — physical memory frame */
-#define IRIS_HANDLE_TYPE_PAGE_TABLE     16u  /* Stage 6-pure: a retyped paging level */
-#define IRIS_HANDLE_TYPE_ASID_POOL      17u  /* A-21: a range of address-space ids */
-#define IRIS_HANDLE_TYPE_IOSPACE        18u  /* Stage 10-dma: a DEVICE's address space */
-#define IRIS_HANDLE_TYPE_IO_PAGE_TABLE  19u  /* Stage 10-dma: one level of one */
+#define IRIS_HANDLE_TYPE_VSPACE         14u  /* KVSpace — virtual address space */
+#define IRIS_HANDLE_TYPE_FRAME          15u  /* KFrame  — physical memory frame */
+#define IRIS_HANDLE_TYPE_PAGE_TABLE     16u  /* A retyped paging level */
+#define IRIS_HANDLE_TYPE_ASID_POOL      17u  /* A range of address-space ids */
+#define IRIS_HANDLE_TYPE_IOSPACE        18u  /* A DEVICE's address space */
+#define IRIS_HANDLE_TYPE_IO_PAGE_TABLE  19u  /* One level of one */
 
 #ifndef __ASSEMBLER__
-/* struct iris_resource_info DELETED (Stage 7-mem) with SYS_RESOURCE_INFO.
+/* struct iris_resource_info DELETED with SYS_RESOURCE_INFO.
  * Per-process accounting is gone: a VMO's cost is the Untyped it was carved
  * from.  The three global gauges it carried are appended to
  * struct iris_untyped_query_global. */
@@ -2368,7 +2368,7 @@ void syscall_set_kstack(uint64_t kstack_top);
 void syscall_set_user_cr3(uint64_t val);
 
 /* Called from ASM handler — 9 params: num + EIGHT user args.
- * arg3 via r10, arg4 via r8 (A-32), arg5 via r9, arg6 via r15, arg7 via r14
+ * arg3 via r10, arg4 via r8, arg5 via r9, arg6 via r15, arg7 via r14
  * (A-33, the message ABI: r15 and r14 were already being pushed as
  * callee-saved, so carrying them costs nothing). */
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,

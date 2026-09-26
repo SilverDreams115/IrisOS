@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 /*
- * ip_ep_proto.h — ARP, IPv4 and UDP, as a service (Stage 10).
+ * ip_ep_proto.h — ARP, IPv4 and UDP, as a service.
  *
  * ── Why this is not in the driver ──────────────────────────────────────────
  *

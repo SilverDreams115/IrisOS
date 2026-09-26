@@ -32,7 +32,7 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Resolve the IRQ capability — it carries the authorized IRQ number */
     struct KObject  *irqcap_obj;
     iris_rights_t    irqcap_rights;
-    /* Phase 13: dual resolver — irqcap may be a CPtr slot or a handle. */
+    /* Dual resolver — irqcap may be a CPtr slot or a handle. */
     iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_IRQ_CAP, &irqcap_obj, &irqcap_rights);
     if (r != IRIS_OK) return syscall_err(r);
@@ -45,7 +45,7 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (irq_num >= IRQ_ROUTE_MAX) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    /* Phase 13/Track G: the destination is a KNotification (signal route) — the
+    /* The destination is a KNotification (signal route) — the
      * legacy KChannel message route is retired. */
     struct KObject  *ch_obj;
     iris_rights_t    ch_rights;
@@ -63,7 +63,7 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     /*
-     * Stage 7-mem: arg2 is RESERVED and ignored.
+     * Arg2 is RESERVED and ignored.
      *
      * It named the PROCESS that would own the route, and required
      * RIGHT_READ|RIGHT_ROUTE on it — a third party to an operation between an

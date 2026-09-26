@@ -3,7 +3,7 @@
 #define IRIS_IOMMU_H
 
 /*
- * iommu.h — DMA remapping (Stage 10-dma).
+ * iommu.h — DMA remapping.
  *
  * ── Why this exists at all ──────────────────────────────────────────────────
  *

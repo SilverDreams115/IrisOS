@@ -9,7 +9,7 @@
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>
 
-/* Ledger A-32: this header used to carry two arity wrappers of its own, so it
+/* This header used to carry two arity wrappers of its own, so it
  * could name syscall numbers without depending on a service's helpers.  It
  * names METHODS now, and `iris_invoke*` comes with the ABI. */
 
@@ -114,7 +114,7 @@ static inline void *iris_ipc_buffer_init_from(uint64_t untyped_c,
 
 /*
  * The common case: a service spawned by the loader, which was given a budget
- * and therefore also its own address space and thread (ledger D-6).
+ * and therefore also its own address space and thread.
  *
  * The general form above exists because not every holder is one of those — the
  * test suite owns a named Untyped of its own and no slot-12 budget, and

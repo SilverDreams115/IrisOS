@@ -36,13 +36,13 @@
 #define FB_IRIS   0x008800FFu
 
 
-/* Stage 6-pure Step 2: fb maps the framebuffer into a window nothing else has
+/* Fb maps the framebuffer into a window nothing else has
  * touched, so it owes every level under it.  IRIS_CPTR_OWN_UNTYPED is the
  * budget its own address space was built from, minted by svc_loader. */
 #define FB_SLOT_SELF_VS 40u
 #define FB_SLOT_PT      41u
 static long fb_self_vs(void);
-/* Ledger A-32: a label, not a syscall number. */
+/* A label, not a syscall number. */
 static inline long fb_invoke(long c, unsigned long label, long a1, long a2, long a3) {
     long r = iris_invoke(c, label, a1, a2, a3);
     if (r == (long)IRIS_ERR_MISSING_TABLE)
@@ -79,12 +79,12 @@ static void fb_draw_rect(uint32_t *pixels, uint32_t stride,
 }
 
 void fb_main_c(iris_cptr_t rbx_unused) {
-    /* Phase 13 (Track I): the framebuffer capability arrives as a pre-start
+    /* The framebuffer capability arrives as a pre-start
      * mint — SYS_FRAMEBUFFER_VMO resolves it by CPtr.  No bootstrap KChannel:
      * svc_loader passes RBX = 0, so this argument is not a handle and closing
      * it was closing handle 0.
      *
-     * Stage 5 Step 2: what fb holds is the FRAMEBUFFER CONTROL capability at
+     * What fb holds is the FRAMEBUFFER CONTROL capability at
      * IRIS_CPTR_FB_CONTROL — the whole of its boot authority.  It used to be a
      * narrowed clone of init's monolith, which is to say: an object of the
      * same type as the one that authorises spawning and poweroff, trusted to
@@ -95,7 +95,7 @@ void fb_main_c(iris_cptr_t rbx_unused) {
      * to sit on the error path, where cap_h had not yet been blanked, and
      * asked the handle table to close CPtr 6. */
     const long  cap_cptr = (long)IRIS_CPTR_FB_CONTROL;
-    /* Stage 4: the framebuffer VMO lands in a CSpace slot of fb's own choosing
+    /* The framebuffer VMO lands in a CSpace slot of fb's own choosing
      * instead of coming back as a handle.  fb's manifest is a single mint
      * (IRIS_CPTR_FB_CONTROL), so every other slot is free; 16 keeps a clear
      * gap from the well-known service range. */
@@ -109,13 +109,13 @@ void fb_main_c(iris_cptr_t rbx_unused) {
      * This used to be one call: SYS_FRAMEBUFFER_VMO answered "where and how
      * big is it" and fabricated a KVMO over the region in the same breath, so
      * the geometry could only be learned by accepting a kernel-made object —
-     * the last memory object in the system that nobody retyped (ledger D-5).
+     * the last memory object in the system that nobody retyped.
      *
      * Now the two halves are what they are.  The geometry is a fact boot
      * discovered and SYS_FRAMEBUFFER_INFO reports it, creating nothing.  The
-     * REGION arrives as a DEVICE Untyped (D-9), and fb retypes a frame out of
+     * REGION arrives as a DEVICE Untyped, and fb retypes a frame out of
      * it exactly as it would out of RAM — one frame for the whole thing, since
-     * a frame maps as a whole (D-10).
+     * a frame maps as a whole.
      *
      * A device Untyped cannot hold the headers of objects carved from it —
      * MMIO is not storage — so fb names the RAM that pays, out of the budget

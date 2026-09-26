@@ -2,7 +2,7 @@
 #include "syscall_priv.h"
 
 /*
- * sys_thread_priority — RETIRED (charter A5, ledger A-20).
+ * sys_thread_priority — RETIRED (charter A5).
  *
  * It set the CALLER's own priority, up to TASK_PRIORITY_MAX, taking NO
  * CAPABILITY at all — ambient authority over the scheduler, and the strongest
@@ -18,7 +18,7 @@
 
 uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                           uint64_t arg3) {
-    /* Stage 10-abi: this read `handle_id_t sc_h = (handle_id_t)arg0`, which
+    /* This read `handle_id_t sc_h = (handle_id_t)arg0`, which
      * truncated a 64-bit capability argument to 32 bits and then widened it
      * again at the resolver — a round trip that was only harmless because a
      * CPtr owns the low 31 bits.  A value above the boundary would have been
@@ -35,7 +35,7 @@ uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 
     /*
      * arg3 is the SCHEDCONTROL capability — the authority over CPU TIME
-     * (ledger A-20).  seL4 makes this the whole point of
+     *.  seL4 makes this the whole point of
      * `seL4_SchedControl_Configure`: a budget and a period do not come from
      * holding the scheduling context, they come from being granted time.
      * Holding the SC says WHICH context to configure; holding this says you
@@ -47,7 +47,7 @@ uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     struct KObject *obj;
     iris_rights_t   rights;
     /* A1 Increment 2b: dual resolver — the SchedContext may be a CPtr slot or
-     * a handle.  A-30: WRONG_TYPE travels. */
+     * a handle.  WRONG_TYPE travels. */
     iris_error_t err = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)sc_h,
                                  RIGHT_NONE, KOBJ_SCHED_CONTEXT, &obj, &rights);
     if (err != IRIS_OK) return syscall_err(err);
@@ -92,7 +92,7 @@ uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (tcb_cptr == 0u) {
         uint64_t f = irq_spinlock_lock(&sc->lock);
         struct task *bound = sc->bound_task;
-        /* A-44: this pointer is WRITTEN THROUGH after the unlock, and the
+        /* This pointer is WRITTEN THROUGH after the unlock, and the
          * thread it names can be torn down on another core in between. */
         if (bound) kobject_retain(&bound->base);
         irq_spinlock_unlock(&sc->lock, f);
@@ -121,7 +121,7 @@ uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    /* Phase S2 D2: the KTCB IS struct task (KObject at offset 0) — resolve
+    /* D2: the KTCB IS struct task (KObject at offset 0) — resolve
      * directly, no wrapper indirection.  A terminated thread cannot be bound. */
     struct task *target = (struct task *)tcb_obj;
     if (target->terminal) {
@@ -150,7 +150,7 @@ uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (target->sched_ctx != sc) {
         kobject_retain(&sc->base);       /* target's SC ref */
         target->sched_ctx = sc;
-        /* Stage 8-mcs: a fresh binding starts with the whole budget available
+        /* A fresh binding starts with the whole budget available
          * and no replenishments outstanding — anything queued was earned by a
          * different thread's execution and must not follow the SC. */
         sc->remaining_budget = sc->budget_ticks;
@@ -177,7 +177,7 @@ uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         /* The null capability is the UNBIND path, handled below; anything else
          * is a CPtr and is resolved as one.  The comment here used to say
          * "dual resolver (CPtr slot or handle)", which described a namespace
-         * Stage 4 deleted.  A-30: WRONG_TYPE travels. */
+         * Stage 4 deleted.  WRONG_TYPE travels. */
         iris_error_t err = cspace_resolve_only_obj(t->cspace_root, sc_h,
                                      RIGHT_NONE, KOBJ_SCHED_CONTEXT, &obj, &rights);
         if (err != IRIS_OK) return syscall_err(err);
@@ -186,7 +186,7 @@ uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
          * the resolver) transfers to t->sched_ctx */
         new_sc = (struct KSchedContext *)obj;
 
-        /* Phase S2: enforce one-to-one binding — a SC bound to another task
+        /* Enforce one-to-one binding — a SC bound to another task
          * cannot be self-bound here (S2.9). */
         iris_error_t berr = kschedctx_bind(new_sc, t);
         if (berr != IRIS_OK) {
@@ -280,7 +280,7 @@ uint64_t sys_sc_yield_to(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KSchedContext *sc = (struct KSchedContext *)obj;
     /*
-     * A-44: read under the SC's own lock and HELD across the checks below.
+     * Read under the SC's own lock and HELD across the checks below.
      *
      * It used to be read with no lock at all and then dereferenced three
      * times.  The `terminal || TASK_DEAD` test is not a substitute: it is the
@@ -307,7 +307,7 @@ uint64_t sys_sc_yield_to(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_release(obj);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }
-    kobject_release(&target->base);   /* A-44: not touched again below */
+    kobject_release(&target->base);   /* Not touched again below */
 
     uint64_t spent = 0;
     if (t->sched_ctx) {

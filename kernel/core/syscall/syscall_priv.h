@@ -56,7 +56,7 @@ static inline uint64_t syscall_ok_u64(uint64_t value) {
     return value;
 }
 
-/* Phase 13/Track G: user_kchanmsg_* / copy_kchanmsg_* helpers retired with the
+/* User_kchanmsg_* / copy_kchanmsg_* helpers retired with the
  * KChannel object.  Ledger A-24 took timeout_ns_to_deadline_ticks with the
  * timed-block machinery it existed for. */
 
@@ -131,7 +131,7 @@ static inline int task_kdebug_cap_named(struct task *t, uint64_t auth_cptr) {
     struct KObject *obj; iris_rights_t r;
     if (cspace_resolve_cap(t->cspace_root, (iris_cptr_t)auth_cptr, RIGHT_READ,
                            &obj, &r) != IRIS_OK) return 0;
-    /* Stage 5 Step 2: exact match.  Debug authority is its own capability, so
+    /* Exact match.  Debug authority is its own capability, so
      * a capability that merely includes the bit — which, before the split, was
      * every boot capability in the system — does not authorise draining the
      * kernel log or powering the machine off. */
@@ -190,7 +190,7 @@ uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* ── Forward declarations — VM ───────────────────────────────────── */
 /* The sys_vmo_* declarations are gone with the KVMO: no definition, no caller,
  * and no label reaches them.  A frame is retyped and mapped as a whole
- * (ledger D-10), which is what made the VMO's page-at-a-time surface
+ *, which is what made the VMO's page-at-a-time surface
  * unnecessary. */
 uint64_t sys_frame_size(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_frame_get_address(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -310,7 +310,7 @@ static inline int cspace_only_cptr(uint64_t v) {
  * cap always stays with its owner.  The single-shot consume-at-stage
  * wrappers were retired in A1.10 (zero callers; do not reintroduce).
  *
- * Phase S4 (Step 2): the SOURCE is a CSpace CPtr (<1024), resolved to its
+ * The SOURCE is a CSpace CPtr (<1024), resolved to its
  * terminal slot — never a handle.  The slot identity (out_src_cn/out_src_idx)
  * rides with the staged object so delivery can parent the delivered cap to it
  * in the MDB.  out_src_cn carries active+lifecycle refs; release them with
@@ -333,12 +333,12 @@ void syscall_ipc_stage_cap_release(struct KCNode *src_cn);
  * staged cap into that slot and returns the msg discriminator: a CPtr on
  * success, 0 when no capability was delivered.
  *
- * Stage 4: there is no handle leg.  A receive that declared no slot, or whose
+ * There is no handle leg.  A receive that declared no slot, or whose
  * slot cannot be installed into, gets the MESSAGE without the capability —
  * charter I1's destination half, matching the fail-closed shape the raced
  * slot has had since Step 2.
  *
- * Phase S4 (Step 2): src_cn/src_idx are the sender's source slot.  A slot
+ * Src_cn/src_idx are the sender's source slot.  A slot
  * delivery installs the cap as an MDB CHILD of that slot (real CSpace
  * ancestry) instead of a LEGACY_ROOT; the source must still be occupied at
  * delivery time, so a cap revoked while staged is never delivered. */
@@ -354,7 +354,7 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
  * successful SYS_CSPACE_RESOLVE materializations. */
 extern uint32_t iris_ipc_stat_slot_deliveries;    /* syscall_endpoint.c */
 extern uint32_t iris_ipc_stat_handle_deliveries;
-/* Phase S4 (Step 2): RETIRED — the TOCTOU slot→handle degradation is gone,
+/* RETIRED — the TOCTOU slot→handle degradation is gone,
  * so this counter is a STRUCTURAL ZERO.  It stays in the ABI (sys_sched_info
  * extended layout, offset w[8]) as the retirement witness: T094 forces the
  * race and T095 asserts the counter never moves.  If it ever becomes
@@ -363,16 +363,16 @@ extern uint32_t iris_ipc_stat_toctou_fallbacks;
 extern uint32_t iris_ipc_stat_reply_caps;
 extern uint32_t iris_cspace_stat_resolves;        /* syscall_cspace.c */
 
-/* ── Forward declarations — CSpace (Ph70-72, Ph82-84, Ph95) ─────── */
+/* ── Forward declarations — CSpace (Ph70-72, Ph82-84) ─────── */
 uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cnode_swap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-/* Phase S3 — CSpace-only MDB/CDT derivation surface. */
+/* CSpace-only MDB/CDT derivation surface. */
 uint64_t sys_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cap_identify(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cap_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-/* Stage 8-cap / D-2 — install a guard on a CNode capability. */
+/* Install a guard on a CNode capability. */
 uint64_t sys_cspace_set_guard(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-/* Stage 8-mcs — arm a thread's timeout fault handler. */
+/* Arm a thread's timeout fault handler. */
 uint64_t sys_tcb_set_ipc_buffer(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ioport_control_narrow(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                    uint64_t arg3);
@@ -382,7 +382,7 @@ uint64_t sys_framebuffer_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_initrd_frame(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                           uint64_t arg3);
 
-/* D-4 — bulk payload routing, defined in syscall_endpoint.c and shared with
+/* Bulk payload routing, defined in syscall_endpoint.c and shared with
  * syscall_reply.c.  See the comment block there. */
 uint8_t     *ipc_buf_kva(struct task *t);
 uint32_t     ipc_buf_capacity(struct task *t);
@@ -393,11 +393,11 @@ void         ipc_transfer_reply(struct task *server, struct task *caller,
                                 const struct ipc_stage *reply_msg);
 uint64_t sys_tcb_set_timeout_handler(uint64_t arg0, uint64_t arg1,
                                      uint64_t arg2, uint64_t arg3);
-/* Stage 8-mcs — atomic reply-then-receive (seL4_ReplyRecv). */
+/* Atomic reply-then-receive (seL4_ReplyRecv). */
 uint64_t sys_reply_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /*
- * Stage 9-evt Step 1 — ask to be re-executed (ledger D-1).
+ * Ask to be re-executed.
  *
  * A blocking handler parks the thread, calls this, and returns.  The
  * dispatcher reschedules and re-enters the SAME syscall with the SAME
@@ -411,14 +411,14 @@ uint32_t syscall_restart_count(void);
 /* Syscalls that resumed on a FRESH stack — the abandonment gauge. */
 uint32_t syscall_abandon_count(void);
 
-/* Stage 9-evt Step 2 — return to ring 3 with no syscall frame (assembly). */
+/* Return to ring 3 with no syscall frame (assembly). */
 __attribute__((noreturn)) void syscall_return_to_user(uint64_t rax_value,
                                                       uint64_t user_rip,
                                                       uint64_t user_rflags,
                                                       uint64_t user_rsp,
                                                       const uint64_t *callee_saved,
                                                       const uint64_t *ret_msg);
-/* A-33 — copy the return message from the thread into the syscall frame.
+/* Copy the return message from the thread into the syscall frame.
  * Called by syscall_entry between the dispatch and the register restore. */
 struct syscall_frame;
 void syscall_store_user_ret(struct syscall_frame *f);
@@ -429,7 +429,7 @@ __attribute__((noreturn)) void syscall_restart_trampoline(void);
 __attribute__((noreturn)) void task_park_restart(void);
 
 /*
- * Stage 9-evt / D-8 — capabilities revoked per preemptible slice.
+ * Capabilities revoked per preemptible slice.
  *
  * Chosen for the shape of the bound rather than for throughput: each victim
  * costs one mdb_lock acquisition plus a lifecycle release taken OUTSIDE that
@@ -452,7 +452,7 @@ uint64_t sys_cspace_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2);
  * TCB and the resolver for that lives there. */
 uint64_t sys_domain_set(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
-/* Stage 10-dma — what a DEVICE may reach. */
+/* What a DEVICE may reach. */
 uint64_t sys_iospace_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_iospace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_iospace_map_frame(uint64_t arg0, uint64_t arg1, uint64_t arg2,
@@ -495,7 +495,7 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_poweroff(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
-/* ── A-33: the message ABI (syscall_endpoint.c) ──────────────────── */
+/* ── The message ABI (syscall_endpoint.c) ──────────────────── */
 void ipc_msg_load(struct task *t);        /* argument words → staging  */
 void ipc_msg_store(struct task *t);        /* a receive → return words  */
 void ipc_msg_store_reply(struct task *t);  /* a call's completion       */

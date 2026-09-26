@@ -7,7 +7,7 @@
 #endif
 
 /*
- * ipc_msg.h — the message ABI (ledger A-33).
+ * ipc_msg.h — the message ABI.
  *
  * A message is a MESSAGE INFO word plus message registers, and for a payload
  * longer than that, the thread's registered IPC buffer.  It is not a struct in
@@ -32,7 +32,7 @@
 #define IRIS_MSG_WORDS    4
 #define IRIS_IPC_BUF_SIZE 256u  /* the floor a thread with no registered buffer
                                  * would have had; the real capacity is the
-                                 * frame's (D-4) */
+                                 * frame's */
 #define IRIS_MSG_NO_CAP   0     /* "no capability travelled" */
 
 /*
@@ -137,13 +137,13 @@ static inline uint32_t iris_capw_rights(uint64_t w) { return (uint32_t)(w >> IRI
 #endif
 
 /*
- * Ledger A-23 — the label a BOUND NOTIFICATION arrives under.
+ * The label a BOUND NOTIFICATION arrives under.
  *
  * A thread with a bound notification can be blocked receiving on an ENDPOINT
  * and still take signals: the signal wakes it out of the endpoint queue and is
  * delivered as a message.  A server therefore has to be able to tell "somebody
  * called me" from "somebody signalled me" on one receive, and the label is how
- * — the same way FAULT_MSG_NOTIFY distinguishes a fault (A-22).  mr0 carries
+ * — the same way FAULT_MSG_NOTIFY distinguishes a fault.  mr0 carries
  * the signal bits.
  */
 /* No `ull`: the assembler reads this too (kbd is a driver in asm). */

@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 /*
- * pci_ep_proto.h — the bus, as a service (Stage 10).
+ * pci_ep_proto.h — the bus, as a service.
  *
  * ── Why this is a service and not a library ────────────────────────────────
  *

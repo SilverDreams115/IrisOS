@@ -18,7 +18,7 @@ static void kioport_destroy(struct KObject *obj) {
 }
 
 /*
- * Stage 6 Step 6 — a device capability is a kernel object, so it is charged.
+ * A device capability is a kernel object, so it is charged.
  *
  * Claiming a port range fabricates an object the kernel used to pay for; the
  * claimer names the Untyped instead.  seL4 does not allocate for these at all

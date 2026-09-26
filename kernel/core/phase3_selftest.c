@@ -17,7 +17,7 @@
 
 
 /*
- * Phase S1: kernel-internal KNotification fixtures.
+ * Kernel-internal KNotification fixtures.
  *
  * The kslab-backed knotification_alloc is retired, so this boot selftest
  * places its notification objects in STATIC blocks shaped like an untyped
@@ -42,12 +42,12 @@ static struct KNotification *p3_notif_fixture(void) {
     return knotification_alloc_at(blk + KUNTYPED_ALIGN);
 }
 
-/* Phase 13/Track G: the channel-quota portion was retired with KChannel.
- * Phase S1: the NOTIFICATION quota is retired too (Untyped is the budget for
+/* The channel-quota portion was retired with KChannel.
+ * The NOTIFICATION quota is retired too (Untyped is the budget for
  * notifications), so this selftest now covers the remaining legacy quota:
  * KVmo ownership accounting (LEGACY_FOR_KPROCESS_KVMO in the ledger). */
 /*
- * phase3_quota_selftest DELETED (Stage 7-mem) — its subject was the per-process VMO
+ * phase3_quota_selftest DELETED — its subject was the per-process VMO
  * ceiling of 32, which is gone with the owner relation.  A VMO's accounting is
  * the Untyped it was carved from, and that is asserted where it belongs: on
  * the budget (T299, T304 and the drift checks), not on a number the kernel
@@ -55,21 +55,21 @@ static struct KNotification *p3_notif_fixture(void) {
  */
 
 /*
- * phase3_process_selftest DELETED (Stage 7-proc) — its subject was the
+ * phase3_process_selftest DELETED — its subject was the
  * KProcess object: allocating one, giving it an address space, and tearing it
  * down idempotently.  There is no process object.  What it also covered, that
  * VMOs are created with no physical pages behind them, is asserted at runtime
  * by T300 and the drift checks.
  */
 
-/* phase3_handle_selftest RETIRED (Stage 4) — its subject was the handle
+/* phase3_handle_selftest RETIRED — its subject was the handle
  * table, which no longer exists.  What it actually asserted (insert/get/close
  * round trips, rights stored per reference, generation defeating a stale id,
  * table-full behaviour) is asserted of CSpace slots by the host cspace/mdb
  * suites and by iris_test's CDT tests, against the namespace that stays. */
 
 
-/* A-44: the fake waiters below are hand-installed into a notification queue,
+/* The fake waiters below are hand-installed into a notification queue,
  * which now holds a reference on what it names.  They are statics that outlive
  * the check, so the destructor only has to exist. */
 static void selftest_waiter_destroy(struct KObject *o) { (void)o; }
@@ -92,7 +92,7 @@ static int phase3_notification_selftest(void) {
 
     for (uint32_t i = 0; i < sizeof(fake_waiter); i++) ((uint8_t *)&fake_waiter)[i] = 0;
     fake_waiter.state = TASK_BLOCKED_IRQ;
-    /* A-44: this installs a waiter WITHOUT going through the enqueue, so it
+    /* This installs a waiter WITHOUT going through the enqueue, so it
      * has to stand in for the reference the enqueue would have taken -- the
      * wake-all below gives one back for every waiter it empties. */
     kobject_init(&fake_waiter.base, KOBJ_TCB, &selftest_waiter_ops);
@@ -130,7 +130,7 @@ out:
  *   4. Reduced-rights handle cannot see bits that were removed
  *   5. Stale handle rejected after close (generation check)
  */
-/* phase41_rights_selftest RETIRED (Stage 4) — same reason: it proved rights
+/* phase41_rights_selftest RETIRED — same reason: it proved rights
  * are stored per HANDLE and reduce on dup.  Rights are stored per CSpace slot
  * and reduce on mint; the host rights/cspace suites and iris_test T130/T154
  * cover that. */
@@ -181,7 +181,7 @@ int phase3_selftest_run(void) {
     /* The marker names are kept: the headless gate greps for them, and what
      * they now attest is the lifecycle half — notification and process — after
      * the handle-table halves retired with the namespace and the quota half
-     * with the per-process VMO ceiling (Stage 7-mem). */
+     * with the per-process VMO ceiling. */
     serial_write("[IRIS][P3] handle/lifecycle selftests OK\n");
     serial_write("[IRIS][P41] rights selftests OK\n");
     return 1;

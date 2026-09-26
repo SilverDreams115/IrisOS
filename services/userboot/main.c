@@ -15,23 +15,23 @@ static inline long ub_sys1(long nr, long a0) {
     return iris_syscall4((long)nr, (long)a0, (long)0L, (long)0L, (long)0);
 }
 
-/* Stage 4: nothing userboot holds is a handle.  ub_close was the release
+/* Nothing userboot holds is a handle.  ub_close was the release
  * path for the kernel's dual-inserted bootstrap cap, which is CSpace-only
  * now. */
 static void ub_close(iris_cptr_t h) { (void)h; }
 
-/* Phase 28: bootstrap diagnostic.  A bootstrap-fatal condition (a broken initrd
+/* Bootstrap diagnostic.  A bootstrap-fatal condition (a broken initrd
  * catalog) must never manifest as a SILENT dead system.  userboot holds the
  * ioport CONTROL capability, so it can mint a serial KIoPort and emit a
  * diagnostic line directly to COM1 before exiting — visible even though no
  * console/svcmgr service has come up yet.  Crude (no LSR polling), but a boot
- * that reaches this path is already fatal.  Stage 5 Step 2: printing a panic
+ * that reaches this path is already fatal.  Printing a panic
  * used to require the same capability that authorises spawning processes and
  * powering the machine off. */
-/* Phase S4: the KIoPort is published into a CSpace slot as an MDB child of the
+/* The KIoPort is published into a CSpace slot as an MDB child of the
  * bootstrap-cap slot; the authority argument must be a CPtr.
  *
- * Stage 5: the destination slot is an ARGUMENT, taken from the free range the
+ * The destination slot is an ARGUMENT, taken from the free range the
  * BootInfo declares.  UB_PANIC_IOPORT_SLOT survives only as the last-resort
  * slot for the one panic that fires when the BootInfo itself is unreadable —
  * there is nothing to consult then, and a diagnostic that guesses wrong is
@@ -40,7 +40,7 @@ static void ub_close(iris_cptr_t h) { (void)h; }
 static void ub_boot_panic(uint64_t ioport_control_cptr, uint64_t ioport_slot,
                           const char *msg) {
     /*
-     * Stage 7 Step 14: base and count share arg1 (base | count << 16) so arg2
+     * Base and count share arg1 (base | count << 16) so arg2
      * can name the budget the KIoPort is charged to.
      *
      * BOOT_CPTR_UNTYPED_START is the first boot block, and the root task holds
@@ -72,7 +72,7 @@ static void ub_park_root_bootstrap(uint64_t boot_untyped_c, uint64_t own_cnode_c
      * putting first-task teardown back on the critical healthy-path IPC
      * boundary.
      *
-     * Ledger A-24: parked means BLOCKED, not sleeping in a loop.  It was
+     * Parked means BLOCKED, not sleeping in a loop.  It was
      * SYS_SLEEP(60000) forever — the root task waking on a timer it had no use
      * for, because a timed block was the only way it knew to stop.  A wait on
      * a notification nobody holds blocks once and never returns, which is
@@ -90,7 +90,7 @@ static void ub_park_root_bootstrap(uint64_t boot_untyped_c, uint64_t own_cnode_c
     for (;;) (void)ub_sys1(SYS_YIELD, 0);
 }
 
-/* Stage 5: validate one BootInfo untyped descriptor against the capability it
+/* Validate one BootInfo untyped descriptor against the capability it
  * claims to describe.  SYS_UNTYPED_INFO answers from the slot itself, so a
  * mismatch means the page and the CSpace disagree — which is exactly the class
  * of bug a written-down layout is supposed to make impossible, and the reason
@@ -108,7 +108,7 @@ static int ub_untyped_matches(const struct iris_bootinfo_untyped *e) {
 }
 
 void iris_userboot_main(uint64_t bootinfo_va) {
-    /* Stage 5: RBX carries the address of the BootInfo page.
+    /* RBX carries the address of the BootInfo page.
      *
      * It carried a bootstrap HANDLE until Stage 4 deleted that namespace, then
      * 0 until this page existed.  What arrives now is not authority — the page
@@ -135,7 +135,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     uint64_t    boot_untyped_c;
     uint64_t    own_cnode_c;  /* this task's own root CNode, as a capability */
     uint64_t    ws_slot;      /* loader workspace CNode — first free slot */
-    uint64_t    park_slot;    /* A-24: the notification the root task parks on */
+    uint64_t    park_slot;    /* The notification the root task parks on */
     uint64_t    panic_slot;   /* serial KIoPort for a boot diagnostic — last */
 
     if (!bi || bi->magic != IRIS_ROOT_BOOTINFO_MAGIC ||
@@ -153,7 +153,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     }
 
     /*
-     * Stage 10-abi: which ABI is this kernel?
+     * Which ABI is this kernel?
      *
      * The root task is the only thing that can ask, and it is the only thing
      * that has to: everything below it is started BY userboot and cannot be
@@ -189,7 +189,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         goto fail;
     }
 
-    /* Stage 5: the slots userboot writes into come from the free range the
+    /* The slots userboot writes into come from the free range the
      * kernel declared, not from constants chosen by reading the boot code.
      * "Slot 40 is free" and "slot 3 is free in the reserved range" were true
      * only for as long as nobody moved anything, and a collision here does not
@@ -209,7 +209,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     park_slot  = (uint64_t)bi->empty_slot_first + 1u;
     panic_slot = (uint64_t)bi->empty_slot_end - 1u;
 
-    /* Stage 5 Step 3: the root task holds a capability to its own root CNode
+    /* The root task holds a capability to its own root CNode
      * and to its own thread.  Both are validated by asking what they are — an
      * inventory that names the wrong object is worse than one that names
      * nothing — and the CNode capability is then USED: the slot deletes below
@@ -260,7 +260,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         goto fail;
     }
 
-    /* Stage 5: the Phase 3.4 liveness probe of BOOT_CPTR_UNTYPED_START is
+    /* The Phase 3.4 liveness probe of BOOT_CPTR_UNTYPED_START is
      * RETIRED.  It invoked a slot named by a compile-time constant, ignored
      * the answer, and documented itself as something boot was not gated on —
      * a probe that cannot fail proves nothing.  The BootInfo validation above
@@ -268,18 +268,18 @@ void iris_userboot_main(uint64_t bootinfo_va) {
      * says it granted must answer from its slot with the physical region the
      * page claims, or the boot stops here with a diagnostic. */
 
-    /* Phase 13 (Track I): deliver init's spawn/bootstrap cap as the
+    /* Deliver init's spawn/bootstrap cap as the
      * IRIS_CPTR_PROC_CONTROL (slot 6) pre-start mint instead of a post-spawn
      * KChannel SPAWN_CAP send — no SYS_CHAN.
      *
-     * Stage 4: both mint sources are CPtrs into our own root CSpace, not
+     * Both mint sources are CPtrs into our own root CSpace, not
      * handles.  Beyond retiring the SYS_HANDLE_DUP / SYS_CSPACE_RESOLVE pair,
      * this buys real authority: SYS_CSPACE_MINT_INTO installs each cap as an
      * MDB CHILD of our slot, so init's founding capabilities are revocable by
      * userboot (and by the kernel bootstrap slot above it) instead of being
      * handed over forever. */
     /*
-     * Ledger A-21: carve the address-space identifier pool.
+     * Carve the address-space identifier pool.
      *
      * This has to happen before init is loaded, because loading anything now
      * means giving its address space a NAME, and a name comes out of a pool
@@ -309,7 +309,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     }
 
     {
-        /* Phase 18: forward ONE boot KUntyped into init so it can be handed on
+        /* Forward ONE boot KUntyped into init so it can be handed on
          * to iris_test for the ring-3 authority suite (T125–T131).  Full rights
          * so retype (WRITE) and onward mint (DUPLICATE) both work.  Non-fatal:
          * if the grant is absent the mint fails, the slot stays empty and the
@@ -324,7 +324,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         init_mints[1].rights   = RIGHT_READ | RIGHT_WRITE |
                                  RIGHT_DUPLICATE | RIGHT_TRANSFER;
         init_mints[1].badge    = 0;
-        /* Stage 5 Step 2: device authority is delegated as itself.  init
+        /* Device authority is delegated as itself.  init
          * needs the ioport control capability for its early serial line and
          * for console's UART, and forwards both control capabilities to the
          * services whose job is claiming hardware. */
@@ -362,10 +362,10 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * that happened to match them: userboot now delegates what the kernel
          * says it holds, and carves the loader workspace out of the same first
          * boot untyped into a slot the kernel declared free. */
-        /* Stage 6: a second boot block, when the machine has one.  Memory is
+        /* A second boot block, when the machine has one.  Memory is
          * charged now, so one block is the ceiling on everything init's
          * subtree can spend; the drain hands us a dozen. */
-        /* Ledger A-20: authority over CPU time.  init holds it to pass on —
+        /* Authority over CPU time.  init holds it to pass on —
          * the same shape as the IRQ, ioport and debug controls above, and for
          * the same reason: a budget is something you are granted. */
         init_mints[7].slot     = IRIS_CPTR_SCHED_CONTROL;
@@ -373,7 +373,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         init_mints[7].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         init_mints[7].badge    = 0;
         /*
-         * Ledger A-21: authority over address-space NAMES, in its two halves.
+         * Authority over address-space NAMES, in its two halves.
          *
          * init receives the pool because it loads services and every service
          * needs its address space named, and the control because it is the
@@ -399,7 +399,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         init_mints[10].src_cptr = bi->cap_domain_control;
         init_mints[10].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         init_mints[10].badge    = 0;
-        /* And the authority over what a DEVICE may reach (Stage 10-dma).  It
+        /* And the authority over what a DEVICE may reach.  It
          * travels to init for the same reason SchedControl and DomainControl
          * do: init is what starts the tasks that drive hardware, so it is what
          * has to be able to bound what that hardware can touch. */
@@ -417,7 +417,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
             init_mint_count = 13u;
         }
         /*
-         * Ledger D-9 / Stage 10: the DEVICE untypeds, routed by KIND.
+         * The DEVICE untypeds, routed by KIND.
          *
          * There are four classes now — the framebuffer, the PCI hole and the
          * two ACPI regions — and each has a different consumer.  The kernel
@@ -514,7 +514,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
                                      SVC_LOADER_WS(boot_untyped_c, ws_slot),
                                8u << 20,
                                      /* init owns memory too, and with it its
-                                      * own address space and thread (D-6).
+                                      * own address space and thread.
                                       * The boot untypeds it receives by
                                       * manifest are what it DISTRIBUTES; this
                                       * is the budget it spends on itself. */

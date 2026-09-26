@@ -138,7 +138,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
      * instead of directly from the PMM, allowing all remaining PMM blocks to be
      * handed to userspace as KUntyped caps.
      *
-     * Phase 28.1: grown 4 MB → 16 MB.  Each spawned process consumes several
+     * Grown 4 MB → 16 MB.  Each spawned process consumes several
      * KB–32 KB of kernel objects (KProcess + a 256-slot root KCNode + KVSpace +
      * page-table nodes + handle table); the old 4 MB arena capped concurrent
      * live processes at ~9 (NO_MEMORY on the 10th), which the multi-target
@@ -246,7 +246,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     /* ── 7. Scheduler core ──────────────────────────────────────── */
     klog_write("[IRIS][SCHED] initializing...\n");
     scheduler_init();
-    /* Stage 9-evt step 3: publish this core's kernel stack before anything can
+    /* Publish this core's kernel stack before anything can
      * park — the dispatcher reads it GS-relative and has no fallback. */
     core_dispatch_init();
 
@@ -272,7 +272,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
         void        *bi_kva      = 0;
         uint32_t     bi_capacity = 0;
 
-        /* Stage 5: the root task's BootInfo page.
+        /* The root task's BootInfo page.
          *
          * Allocated and initialised BEFORE the task exists, because a root
          * task that cannot be TOLD what it holds must not be created: the
@@ -310,7 +310,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             klog_write("[IRIS][USER] FATAL: task_spawn_user(userboot) failed\n");
         } else if (ut) {
             /*
-             * Stage 5 Step 2: the boot authorities are published as SIX
+             * The boot authorities are published as SIX
              * capabilities, one per authority, each in its own slot.
              *
              * There used to be one object here carrying a permission mask —
@@ -366,7 +366,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                 }
             }
             /*
-             * Stage 5 Step 3: the root task's OWN objects, as capabilities.
+             * The root task's OWN objects, as capabilities.
              *
              * Its root CNode was reachable only through the "arg0 == 0 means
              * my own root" convention, and its thread only by asking
@@ -416,7 +416,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             klog_write("\n");
 
                     /*
-                     * Phase 6.2: KVSpace is now created inside task_create_user_impl
+                     * KVSpace is now created inside task_create_user_impl
                      * (before bootstrap maps so kframe_map_page can register back-refs).
                      * Here we only publish the existing vspace in root CNode slot
                      * BOOT_CPTR_VSPACE (slot 2).
@@ -453,7 +453,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                     }
 
             /*
-             * Ph76: drain free buddy blocks into KUntyped caps for userboot.
+             * Drain free buddy blocks into KUntyped caps for userboot.
              *
              * IRIS_PMM_KERNEL_RUNTIME_RESERVE pages are kept in the PMM for
              * kernel-internal runtime allocators that bypass the KUntyped model:
@@ -491,7 +491,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                 for (;;) {
                     if (pmm_free_pages() <= IRIS_PMM_KERNEL_RUNTIME_RESERVE)
                         break;
-                    /* Stage 5: the BootInfo page bounds the drain.  A block the
+                    /* The BootInfo page bounds the drain.  A block the
                      * root task cannot be told about is a block it cannot name,
                      * so the grant stops where the description stops rather
                      * than handing over a slot nobody documented. */
@@ -512,7 +512,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                         pmm_free_contig(blk_phys, blk_pages);
                         break;
                     }
-                    /* Stage 4: the boot untypeds are published into CSpace
+                    /* The boot untypeds are published into CSpace
                      * ONLY.  They used to be dual-inserted, and the handle
                      * half was never invoked — userboot names slot
                      * BOOT_CPTR_UNTYPED_START and mints from it, and init
@@ -526,7 +526,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                      * has to happen BEFORE the release, or the release is the
                      * last one and the object is destroyed under the slot. */
                     uint32_t cspace_slot = BOOT_CPTR_UNTYPED_START + ut_count;
-                    /* Stage 6-pure Step 3: the FIRST block is the one the
+                    /* The FIRST block is the one the
                      * root task's own address space will draw on once the
                      * bootstrap exception ends.  Keep a reference now, while
                      * the object is certainly alive. */
@@ -557,7 +557,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                 }
 
                 /*
-                 * Ledger D-9 — the framebuffer, as a DEVICE Untyped.
+                 * The framebuffer, as a DEVICE Untyped.
                  *
                  * seL4's BootInfo lists device Untypeds alongside RAM ones;
                  * that is how a driver is handed an MMIO region as a
@@ -768,7 +768,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                     }
                 }
 
-                /* Stage 10-abi: which ABI this kernel implements, said out
+                /* Which ABI this kernel implements, said out
                  * loud.  It is in BootInfo for the root task to ACT on; it is
                  * here so that a log from a machine somebody else ran answers
                  * the first question anybody asks about it. */
@@ -792,7 +792,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             }
 
             /*
-             * Stage 5: hand the root task its BootInfo.
+             * Hand the root task its BootInfo.
              *
              * Everything above has finished granting, so the description is
              * now complete and the free range is known: the slots past the
@@ -834,7 +834,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                 } else {
                     task_set_bootstrap_arg0(ut, USER_BOOTINFO_BASE);
                     /*
-                     * Stage 6-pure Step 3 — the bootstrap exception ends here.
+                     * The bootstrap exception ends here.
                      *
                      * Everything the kernel had to map on the root task's
                      * behalf is mapped: its text, its stack, and the page that
@@ -896,7 +896,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     __asm__ volatile ("sti");
 
     /*
-     * Stage 9-evt step 3 — boot ends by entering the DISPATCHER, and does not
+     * Boot ends by entering the DISPATCHER, and does not
      * come back.
      *
      * This used to be the idle loop: the boot thread yielding for ever, which

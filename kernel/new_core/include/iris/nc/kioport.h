@@ -39,7 +39,7 @@ struct KIoPort {
 /* kioport_alloc / kirqcap_alloc are DELETED (charter M3): an object's
  * header comes from a budget the caller NAMES, and there is no fallback. */
 
-/* Stage 6 Step 6 — the same object, charged to `pool` (NULL = kernel slab,
+/* The same object, charged to `pool` (NULL = kernel slab,
  * which is the boot path).  Claiming hardware fabricates a kernel object, and
  * the claimer names the budget it comes out of. */
 struct KUntyped;

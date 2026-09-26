@@ -11,11 +11,11 @@
  * blobs, etc.); those are not named by the ring-3 catalog and are loaded by
  * index/other means.  The boot invariant is therefore that the kernel has AT
  * LEAST this many images (so every named index resolves), not exactly this
- * many — see the Phase 28 boot-growth fix in userboot. */
-#define SL_CATALOG_COUNT 11u   /* index 10 = pager (own binary, Phase 28) */
+ * many — see the boot-growth fix in userboot. */
+#define SL_CATALOG_COUNT 11u   /* index 10 = pager (own binary) */
 
 /*
- * Stage 5 Step 2: spawning needs TWO authorities, and they are two
+ * Spawning needs TWO authorities, and they are two
  * capabilities.  `initrd_c` authorises reading boot images
  * (SYS_INITRD_COUNT / SYS_INITRD_VMO) and `proc_c` authorises creating a
  * process (SYS_PROCESS_CREATE).  They used to be one bit on one object, so a
@@ -53,7 +53,7 @@ long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
               iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h);
 
 /*
- * Phase 8: pre-start CSpace mint table.
+ * Pre-start CSpace mint table.
  *
  * svc_load_minted behaves like svc_load but additionally mints the given
  * capabilities into the child's root CNode (SYS_PROC_CSPACE_MINT) BEFORE
@@ -65,7 +65,7 @@ long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * they are no longer SILENT.  The loader writes each entry's outcome back into
  * `result`, because the alternative was the argument that a consumer's smoke
  * gate would catch it, and that is only true of capabilities some marker
- * happens to cover.  The domain authority (A-34) had none: its destination
+ * happens to cover.  The domain authority had none: its destination
  * slot was already occupied, the exclusive mint refused, the child started
  * without it, and nothing said so until a test three hundred cases later asked
  * for it and got ACCESS_DENIED.
@@ -82,15 +82,15 @@ struct svc_mint {
     uint64_t      slot;    /* destination CPtr slot in the child root CNode */
     iris_cptr_t   src_h;   /* source cap in the CALLER's handle table
                             * (legacy path: SYS_PROC_CSPACE_MINT) */
-    uint64_t      src_cptr;/* Phase S4: source cap in the CALLER's CSpace.  When
+    uint64_t      src_cptr;/* Source cap in the CALLER's CSpace.  When
                             * non-zero it WINS over src_h and the mint goes
                             * through SYS_CSPACE_MINT_INTO, so the child's cap
                             * becomes an MDB child of OUR slot — the delegation
                             * stays revocable from the supervisor.  The handle
                             * path is legacy and retires with the dual
-                            * namespace (Stage 4). */
+                            * namespace. */
     iris_rights_t rights;  /* rights mask (reduced against src rights) */
-    uint64_t      badge;   /* Phase 9: sender badge for the minted cap
+    uint64_t      badge;   /* Sender badge for the minted cap
                             * (0 = inherit source badge / unbadged).
                             * Packed into SYS_PROC_CSPACE_MINT arg3 high
                             * bits; subject to the kernel's no-re-badge
@@ -116,10 +116,10 @@ struct svc_mint {
 /* `child_budget` (bytes, 0 = the default) is the Untyped the child's KERNEL
  * memory is carved from: its address space, its process state, and the segment
  * and stack VMOs the loader charges to it.  It is recycled when the child dies
- * (Stage 6 Step 5), so it bounds concurrent cost rather than accumulating —
+ *, so it bounds concurrent cost rather than accumulating —
  * which is why the spawner, who knows what it is launching, chooses the size. */
 /*
- * `own_budget_slot` (Stage 6-pure Step 2): the slot to mint the child a
+ * `own_budget_slot`: the slot to mint the child a
  * capability to the budget its OWN address space was built from; 0 = none.
  *
  * A task that maps anything must now be able to retype a paging level, because
@@ -146,7 +146,7 @@ struct svc_mint {
  * alive past the child's death, blocking the RESET of the budget they were
  * charged to.  A spawner that keeps it must drop it.
  *
- * Stage 7 Step 9: minting into a child after it has started used to go through
+ * Minting into a child after it has started used to go through
  * its PROCESS capability, out of which the kernel read `child->cspace_root` —
  * so a spawner reached a CSpace it did not hold, by naming something else.  A
  * spawner that wants to keep delegating to its child keeps the CSpace root it

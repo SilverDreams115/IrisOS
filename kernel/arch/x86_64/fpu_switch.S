@@ -7,7 +7,7 @@
  * below records what the other half was and why it went.
  */
 /*
- * context_switch is DELETED (Stage 9-evt step 3).
+ * context_switch is DELETED.
  *
  * It saved one thread's callee-saved registers and kernel stack pointer and
  * restored another's — the only way the CPU changed hands, and the reason

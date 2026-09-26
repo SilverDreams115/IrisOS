@@ -42,7 +42,7 @@ static iris_error_t knotif_waiters_enqueue(struct KNotification *n, struct task 
     n->queue_tail = t;
     n->waiter_count++;
     /*
-     * Ledger A-44 — a wait queue holds what it names, here as on the endpoint.
+     * A wait queue holds what it names, here as on the endpoint.
      *
      * The two early returns above are deliberately NOT counted: a task already
      * on this queue is already held, and a second reference would never be
@@ -61,14 +61,14 @@ static void knotif_waiters_remove(struct KNotification *n, struct task *t) {
         if (n->queue_tail == w) n->queue_tail = prev;
         w->notif_next = 0;
         if (n->waiter_count) n->waiter_count--;
-        kobject_release(&w->base);   /* A-44: the queue's */
+        kobject_release(&w->base);   /* The queue's */
         return;
     }
 }
 
 /* Wake the first blocked waiter; remove it from the queue.  1 if one was
  * woken, 0 if nobody was waiting — which is what decides whether the BOUND
- * thread (A-23) gets the signal instead. */
+ * thread gets the signal instead. */
 static int knotif_waiters_wake_one(struct KNotification *n) {
     struct task *prev = 0;
     for (struct task *w = n->queue_head; w; prev = w, w = w->notif_next) {
@@ -80,7 +80,7 @@ static int knotif_waiters_wake_one(struct KNotification *n) {
         w->notif_next = 0;
         if (n->waiter_count) n->waiter_count--;
         task_wakeup(w);
-        kobject_release(&w->base);   /* A-44: the queue's */
+        kobject_release(&w->base);   /* The queue's */
         return 1;
     }
     return 0;
@@ -97,7 +97,7 @@ static void knotif_waiters_wake_all(struct KNotification *n) {
         w->notif_next = 0;
         if (w->state == TASK_BLOCKED_IRQ) {
             /*
-             * Stage 9-evt Step 1: tell the waiter WHY it woke.
+             * Tell the waiter WHY it woke.
              *
              * A restartable wait re-executes the syscall, which re-resolves the
              * capability — and the reason this wake happened is usually that
@@ -111,7 +111,7 @@ static void knotif_waiters_wake_all(struct KNotification *n) {
             w->ipc_ep_closed = 1u;
             task_wakeup(w);
         }
-        /* A-44: every waiter left the queue above, woken or not. */
+        /* Every waiter left the queue above, woken or not. */
         kobject_release(&w->base);
         w = next;
     }
@@ -125,11 +125,11 @@ static void knotification_close(struct KObject *obj) {
     n->closed = 1;
     knotif_waiters_wake_all(n);
     spinlock_unlock(&n->base.lock);
-    /* Stage 7-mem: and any interrupt bound to it stops being delivered.  The
+    /* And any interrupt bound to it stops being delivered.  The
      * binding is the notification's, so the last capability to it going is
      * what unbinds — seL4's rule, and the reason an IRQ route needs no owner. */
     irq_routing_unregister_notification(n);
-    /* A-23: and the same for a bound THREAD.  The bind holds an active+
+    /* And the same for a bound THREAD.  The bind holds an active+
      * lifecycle pair on this object, so `close` firing means the last OTHER
      * capability went; breaking the binding here is what lets the object
      * actually die instead of being kept alive by its own thread. */
@@ -137,7 +137,7 @@ static void knotification_close(struct KObject *obj) {
 }
 
 /*
- * Phase S1: the kslab-backed variant and the per-process owner/quota binding
+ * The kslab-backed variant and the per-process owner/quota binding
  * are RETIRED.  A KNotification is created only via Untyped retype; the
  * authority to create one is possession of sufficient KUntyped plus a free
  * CSpace destination slot — never a kernel-side numeric quota.
@@ -202,7 +202,7 @@ void knotification_signal(struct KNotification *n, uint64_t bits) {
     int woke = knotif_waiters_wake_one(n);
     struct task *bound = woke ? 0 : n->bound_tcb;
     /*
-     * A-44 — held across the unlock, because the claim below is about the
+     * Held across the unlock, because the claim below is about the
      * BITS and the hazard is about the THREAD.
      *
      * `bound` is walked after this lock is dropped: the delivery dequeues it
@@ -222,7 +222,7 @@ void knotification_signal(struct KNotification *n, uint64_t bits) {
     spinlock_unlock(&n->base.lock);
 
     /*
-     * Ledger A-23 — nobody was WAITING, so the bound thread gets it.
+     * Nobody was WAITING, so the bound thread gets it.
      *
      * Outside the notification's lock on purpose: delivering takes the
      * endpoint's lock to dequeue the thread, and taking the two in this order
@@ -243,7 +243,7 @@ void knotification_signal(struct KNotification *n, uint64_t bits) {
     }
 }
 
-/* A-23: take whatever is pending, atomically.  Used on the way into an
+/* Take whatever is pending, atomically.  Used on the way into an
  * endpoint receive by a thread with a bound notification. */
 uint64_t knotification_take_pending(struct KNotification *n) {
     if (!n) return 0;
@@ -251,7 +251,7 @@ uint64_t knotification_take_pending(struct KNotification *n) {
 }
 
 /*
- * A-23 — bind / unbind.
+ * Bind / unbind.
  *
  * One notification per thread and one thread per notification.  A second bind
  * either way is refused rather than silently replacing, because "which thread
@@ -339,7 +339,7 @@ iris_error_t knotification_wait(struct KNotification *n, uint64_t *out_bits) {
         }
         spinlock_unlock(&n->base.lock);
         /*
-         * Stage 9-evt step 3: WAIT, do not yield.
+         * WAIT, do not yield.
          *
          * This is a KERNEL-internal wait — its only caller is the boot
          * selftest, running on the boot thread before any other exists — and
@@ -366,7 +366,7 @@ iris_error_t knotification_wait(struct KNotification *n, uint64_t *out_bits) {
 }
 
 /*
- * Stage 9-evt Step 1 — one non-blocking attempt, then park.
+ * One non-blocking attempt, then park.
  *
  * This is knotification_wait's loop body with the loop and the task_yield
  * removed: the retry is the DISPATCHER re-executing the syscall, and the

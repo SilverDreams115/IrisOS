@@ -9,7 +9,7 @@
 
 static _Atomic uint32_t kuntyped_live;
 
-/* Phase S1 — global untyped/retype counters (SYS_UNTYPED_QUERY kind 1).
+/* Global untyped/retype counters (SYS_UNTYPED_QUERY kind 1).
  * Single writer discipline is not required: updates are relaxed atomics and
  * readers tolerate torn cross-field snapshots (diagnostics, not authority). */
 static _Atomic uint64_t s1_retype_count;
@@ -44,7 +44,7 @@ void kuntyped_stat_reset(uint64_t reclaimed, int was_used) {
         atomic_fetch_add_explicit(&s1_reuse_count, 1u, memory_order_relaxed);
 }
 
-/* Phase 18 — live KUntyped object count (additive diagnostics).  Exposed via
+/* Live KUntyped object count (additive diagnostics).  Exposed via
  * the SYS_SCHED_INFO ext3 tier so authority tests can prove untyped objects
  * (including RETYPE sub-untypeds) are destroyed, not leaked, after churn. */
 uint32_t kuntyped_live_count(void) {
@@ -61,19 +61,19 @@ static void kuntyped_obj_close(struct KObject *obj) {
 static void kuntyped_obj_destroy(struct KObject *obj) {
     struct KUntyped *u      = (struct KUntyped *)obj;
     struct KUntyped *parent = u->alloc_parent;
-    struct KUntyped *hdrs   = u->hdr_budget;   /* D-9: read before the free */
+    struct KUntyped *hdrs   = u->hdr_budget;   /* Read before the free */
 
     atomic_fetch_sub_explicit(&kuntyped_live, 1u, memory_order_relaxed);
     kobject_storage_free(obj, (uint32_t)sizeof(struct KUntyped), 0);
 
-    /* Ph80: if this KUntyped was itself a RETYPE child, notify the parent.
+    /* If this KUntyped was itself a RETYPE child, notify the parent.
      * Only the slab path has one — a block-backed sub-untyped's accounting
      * rides on the block itself, which kobject_storage_free just returned. */
     if (parent) {
         atomic_fetch_sub_explicit(&parent->child_count, 1u, memory_order_relaxed);
         kobject_release(&parent->base);
     }
-    /* D-9: the paired RAM budget's reference, held for as long as this device
+    /* The paired RAM budget's reference, held for as long as this device
      * Untyped could still carve headers out of it. */
     if (hdrs) kobject_release(&hdrs->base);
 }
@@ -84,7 +84,7 @@ static const struct KObjectOps kuntyped_ops = {
 };
 
 /*
- * Stage 6 Step 4 — a sub-untyped's header lives in its parent.
+ * A sub-untyped's header lives in its parent.
  *
  * Carving a sub-untyped used to take its region from the parent and its header
  * from the kernel slab, so delegating a budget quietly spent kernel memory.
@@ -150,7 +150,7 @@ static uint64_t kuntyped_bump(struct KUntyped *u, uint64_t bytes) {
     if (bytes > (uint64_t)-1 - (KUNTYPED_ALIGN - 1u)) return (uint64_t)-1;
     uint64_t aligned = (bytes + KUNTYPED_ALIGN - 1u) & ~(uint64_t)(KUNTYPED_ALIGN - 1u);
     uint64_t flags   = irq_spinlock_lock(&u->lock);
-    /* Stage 6 Step 1: the two ends meet exactly once.  Subtraction, for the
+    /* The two ends meet exactly once.  Subtraction, for the
      * reason spelled out in kuntyped_bump_alloc_phys_page. */
     if (u->used > u->total_size ||
         u->used_top > u->total_size - u->used ||
@@ -188,7 +188,7 @@ uint64_t kuntyped_bump_alloc_phys(struct KUntyped *u, uint64_t bytes) {
 }
 
 /*
- * Ph79: kuntyped_alloc_child
+ * Kuntyped_alloc_child
  *
  * Layout in the untyped region for each typed child:
  *   [0 .. KUNTYPED_ALIGN):  parent pointer (first 8 bytes) + padding
@@ -271,7 +271,7 @@ uint64_t kuntyped_alloc_page_child(struct KUntyped *u) {
     uint64_t phys = kuntyped_bump_alloc_phys_page(u, 4096u);
     if (!phys) return 0;
 
-    /* Stage 6 Step 2: a page table is a CHILD of the Untyped that paid for
+    /* A page table is a CHILD of the Untyped that paid for
      * it, even though it has no object header.  Without this, RESET — which
      * only refuses while child_count is non-zero — could reclaim a region
      * whose pages are live page tables of a running address space, handing
@@ -321,7 +321,7 @@ void kuntyped_release_child(void *obj_ptr, uint64_t obj_bytes) {
 }
 
 /*
- * Phase S1 — atomic batch carve (SYS_UNTYPED_RETYPE2 substrate).
+ * Atomic batch carve (SYS_UNTYPED_RETYPE2 substrate).
  *
  * The whole batch is validated and carved under ONE u->lock hold: either every
  * child block exists (zeroed, parent pointer written, child_count and parent
@@ -403,7 +403,7 @@ void kuntyped_unbump_exact(struct KUntyped *u, uint64_t start_used,
 }
 
 /*
- * D-9 — name the RAM that pays for a device Untyped's object headers.
+ * Name the RAM that pays for a device Untyped's object headers.
  *
  * Set ONCE.  A pairing that could move would let a holder point a live device
  * Untyped at a second budget and then RESET the first, stranding the headers
@@ -499,7 +499,7 @@ uint64_t kuntyped_bump_alloc_phys_page(struct KUntyped *u, uint64_t size) {
     irq_spinlock_unlock(&u->lock, irqfl);
 
     /*
-     * Ledger A-45 — retype hands out ZEROED memory.
+     * Retype hands out ZEROED memory.
      *
      * This is the carve that becomes a FRAME, and a frame is the one object
      * ring 3 reads directly.  Nothing cleared it: the top carve zeroes because

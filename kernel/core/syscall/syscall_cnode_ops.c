@@ -5,7 +5,7 @@
  * SYS_CNODE_DELETE: clear a CNode slot, releasing its capability reference.
  * SYS_CNODE_SWAP:   swap two slots within the same CNode (no refcount change).
  *
- * SYS_CNODE_MOVE and SYS_CNODE_FETCH are RETIRED (Stage 4): both crossed
+ * SYS_CNODE_MOVE and SYS_CNODE_FETCH are RETIRED: both crossed
  * between a CNode slot and the handle table, which is the direction that stage
  * deletes.  Slot-to-slot is SYS_CSPACE_MINT (+ SYS_CNODE_DELETE for a move),
  * which also records the derivation edge.
@@ -28,11 +28,11 @@ uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     iris_rights_t   cn_rights;
     iris_error_t    err;
 
-    /* Phase S1: arg0 == 0 names the CALLER'S OWN root CNode (mirrors the
+    /* Arg0 == 0 names the CALLER'S OWN root CNode (mirrors the
      * SYS_UNTYPED_RETYPE2 destination convention).  Deleting a slot of your
      * own CSpace only discards authority you already hold — no amplification. */
     if (cptr_or_h == 0u) {
-        /* Stage 4: structural root read. */
+        /* Structural root read. */
         if (!t->cspace_root)
             return syscall_err(IRIS_ERR_NOT_FOUND);
         struct KObject *root_obj = &t->cspace_root->base;
@@ -70,7 +70,7 @@ uint64_t sys_cnode_swap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (err != IRIS_OK)
         return syscall_err(err);
 
-    /* Phase S3: swap goes through the canonical primitive — the MDB links of
+    /* Swap goes through the canonical primitive — the MDB links of
      * both capabilities (parent, siblings, children) travel with them. */
     err = kcnode_swap(cn, slot_a, slot_b);
     kobject_active_release(&cn->base);

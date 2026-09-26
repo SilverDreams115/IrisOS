@@ -11,14 +11,14 @@
 struct task; /* forward — avoids circular include with task.h */
 
 /*
- * KReply — seL4-style reply object (Ph85; Phase S1: explicit MCS-style).
+ * KReply — seL4-style reply object (Ph85; Explicit MCS-style).
  *
- * Phase S1: reply objects are canonical kernel objects.  They are created
+ * Reply objects are canonical kernel objects.  They are created
  * ONLY via SYS_UNTYPED_RETYPE2 (storage inside the source KUntyped) and the
  * capability lives in the server's CSpace.  A server passes its reply CPtr
  * as arg2 of SYS_EP_RECV / SYS_EP_NB_RECV; the kernel BINDS the blocked
  * EP_CALL caller into that object at rendezvous.  The kernel never fabricates
- * a KReply during IPC (the Ph85 implicit kslab allocation is retired).
+ * a KReply during IPC (the implicit kslab allocation is retired).
  *
  * Lifecycle of one binding (one-shot per protocol):
  *   free (caller==NULL, staged==0)
@@ -41,10 +41,10 @@ struct KReply {
     struct KObject  base;   /* must be first */
     irq_spinlock_t  lock;
     struct task    *caller; /* NULL after reply or cancel */
-    uint8_t         staged; /* Phase S1: claimed by a receiver, not yet bound */
+    uint8_t         staged; /* Claimed by a receiver, not yet bound */
 
     /*
-     * Stage 8-mcs — SCHEDULING CONTEXT DONATION.
+     * SCHEDULING CONTEXT DONATION.
      *
      * When a client Calls an endpoint served by a PASSIVE thread — one with no
      * scheduling context of its own — the client's SC is lent to the server
@@ -68,7 +68,7 @@ struct KReply {
     struct task          *donated_to;  /* the server currently running on it */
 };
 
-/* Stage 8-mcs: record that `sc` moved from the caller to `to` for this
+/* Record that `sc` moved from the caller to `to` for this
  * binding.  Caller has already cleared its own sched_ctx and set the server's;
  * this only records where it must go back to. */
 void kreply_note_donation(struct KReply *r, struct KSchedContext *sc,
@@ -91,11 +91,11 @@ void kreply_donate_on_call(struct KReply *r, struct task *sender,
  * nothing was donated. */
 void kreply_return_donation(struct KReply *r, struct task *back_to);
 
-/* Phase S1: placement-init a KReply inside untyped-backed memory (the ONLY
+/* Placement-init a KReply inside untyped-backed memory (the ONLY
  * production creation path).  'mem' must be a kuntyped_alloc_child(ren) area. */
 struct KReply *kreply_alloc_at(void *mem);
 
-/* Phase S1: receiver-side claim/unclaim + rendezvous bind.
+/* Receiver-side claim/unclaim + rendezvous bind.
  *   stage:   free → staged (IRIS_ERR_BUSY if staged or bound)
  *   unstage: staged → free (idempotent)
  *   bind:    staged → bound to 'caller' (IRIS_ERR_BUSY unless staged)

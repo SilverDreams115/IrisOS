@@ -16,7 +16,7 @@
  * is a short loop over the levels; for a LARGE frame it is not, and the reason
  * is worth stating because it is not obvious.
  *
- * A map covers the whole frame (ledger D-10), so the walk that fails may be
+ * A map covers the whole frame, so the walk that fails may be
  * for any page in the range, not the first — and the map does not say which,
  * because a partial map unwinds and reports one error.  Retrying with a table
  * installed at the BASE address would therefore loop forever on a range whose

@@ -5,7 +5,7 @@
  * Serial output, pass/fail accounting, the CSpace slot helpers and the
  * rotating object pool, object fabrication (retype into a slot), the child
  * and thread bookkeeping, and the bounded wait that asks the timer service
- * instead of the kernel (ledger A-24).
+ * instead of the kernel.
  *
  * Nothing here tests anything.  It is the part of the old single file that
  * every one of the test files needs, which is why it is its own.
@@ -143,7 +143,7 @@ long it_child_vs_dest(void) {
 
 /* The thread a child was started with, or 0 if this child was not recorded. */
 /*
- * Stage 7-proc: the table's THREAD half has collapsed into an identity.
+ * The table's THREAD half has collapsed into an identity.
  *
  * It existed because the capability the suite passed around named a PROCESS
  * and the operations named a thread, so something had to map one to the other
@@ -160,7 +160,7 @@ long it_child_tcb(iris_cptr_t proc_h) {
     return (long)proc_h;
 }
 /*
- * Stage 7 Step 15 — and the address space it runs in.
+ * And the address space it runs in.
  *
  * SYS_PROCESS_VSPACE used to answer this: the kernel read `child->vspace` out
  * of a KProcess, so a supervisor reached an object it did not hold by naming a
@@ -184,7 +184,7 @@ void it_child_drop_vspace(iris_cptr_t proc_h) {
             (void)it_invoke1((long)IT_CHILD_CN_SLOT, INV_CNODE_DELETE, (long)(g_it_children[k].leaf + IT_CHILD_MAX));
 }
 /*
- * Stage 7 Step 13 — killing a child is stopping the EXECUTION you hold.
+ * Killing a child is stopping the EXECUTION you hold.
  *
  * SYS_PROCESS_KILL took a process capability and stopped every thread in it.
  * Every child the suite spawns is single-threaded (svc_loader composes exactly
@@ -201,7 +201,7 @@ long it_kill(long proc_cptr) {
 }
 
 /*
- * Stage 7 Step 13 — "is it still running" asked of the EXECUTION.
+ * "is it still running" asked of the EXECUTION.
  *
  * SYS_PROCESS_STATUS answered 1 or 0 for a process.  A thread answers with its
  * STATE, which is more than the question asked for and is the point: the two
@@ -319,7 +319,7 @@ long it_cs_reduce(long src_cptr, uint32_t rights) {
 }
 
 /*
- * ── Ledger A-24: waiting, without a kernel that knows how to wait ──────────
+ * ── Waiting, without a kernel that knows how to wait ──────────
  *
  * `SYS_SLEEP`, `SYS_CLOCK_NANOSLEEP` and `SYS_NOTIFY_WAIT_TIMEOUT` are
  * retired.  What the suite used them for was two different things wearing one
@@ -381,10 +381,10 @@ int it_await_more(struct it_await *w) {
     (void)it_sys1(SYS_YIELD, 0);
     w->spins++;
 
-    /* Phase 1: the yields the loop this replaces did, and no more. */
+    /* The yields the loop this replaces did, and no more. */
     if (w->spins < w->yields) return 1;
 
-    /* Phase 2: one scheduler tick, which is the unit in which another core
+    /* One scheduler tick, which is the unit in which another core
      * gets around to its run queue.  Entered only when phase 1 came up empty —
      * which on one processor means the wait was going to fail anyway. */
     if (w->spins == w->yields) { w->t0 = it_sys0(SYS_CLOCK_GET); return 1; }
@@ -413,7 +413,7 @@ void it_settle(uint32_t rounds) {
 }
 
 /*
- * Ledger A-27: ask the clock's OWNER what time it is.
+ * Ask the clock's OWNER what time it is.
  *
  * `SYS_CLOCK_GET` handed any task a timestamp for the asking and is retired.
  * The timer service counts the ticks of the line it holds, which is a clock,
@@ -460,7 +460,7 @@ long it_wait_timeout(long notif, long out_bits_uptr, long ns) {
         it_slot_delete((uint32_t)give);
         return (long)IRIS_ERR_NOT_FOUND;
     }
-    /* Ledger A-29: the transfer is a COPY — the service now holds a derivation
+    /* The transfer is a COPY — the service now holds a derivation
      * CHILD of `give`, and this slot is ours to drop.  Dropping it is the whole
      * point of deriving it: what the service keeps is a capability to signal
      * this notification and nothing else, and it stops being reachable from
@@ -493,7 +493,7 @@ long it_wait_timeout(long notif, long out_bits_uptr, long ns) {
  * memory-server), not something the slot introduces.  What changes here is
  * only WHERE the capability lives. */
 /*
- * Stage 7 Step 14 — a device capability is charged to a budget the caller
+ * A device capability is charged to a budget the caller
  * names.  base and count share arg1 (base | count << 16), which frees arg2 to
  * say who pays; the suite pays out of its own delegated pool.
  *
@@ -508,7 +508,7 @@ long it_ioport_create(long auth, long base, long count, long dest) {
     return it_invoke(auth, INV_BOOT_CREATE_IOPORT, (long)((uint64_t)(uint16_t)base |
                           ((uint64_t)(uint16_t)count << 16)), (long)IRIS_CPTR_TEST_UNTYPED, (long)((uint64_t)dest << 32));
 }
-/* Derive a narrowed I/O-port CONTROL capability into `dest` (Stage 5).  The
+/* Derive a narrowed I/O-port CONTROL capability into `dest`.  The
  * kernel has no port whitelist any more; the range that bounds what a holder
  * may claim travels on the authority, and this is how a holder hands out a
  * piece of its own. */
@@ -522,7 +522,7 @@ long it_irqcap_create(long auth, long irq, long dest) {
     return it_invoke(auth, INV_BOOT_CREATE_IRQCAP, irq, (long)IRIS_CPTR_TEST_UNTYPED, (long)((uint64_t)dest << 32));
 }
 
-/* An initrd image published into a CSpace slot as a FRAME (ledger D-5).  Same
+/* An initrd image published into a CSpace slot as a FRAME.  Same
  * rotating-pool contract as it_retype_slot_alloc.  The call returns the image
  * SIZE, so success is a positive number rather than zero. */
 /* The size of the image the last successful it_initrd_vmo_slot handed over.
@@ -533,7 +533,7 @@ long g_it_initrd_size;
 
 long it_initrd_vmo_slot(long auth_cptr, long index) {
     uint32_t leaf = it_pool_leaf_take();
-    /* Stage 6 Step 5: the image copy is charged to the suite's own budget,
+    /* The image copy is charged to the suite's own budget,
      * not to the small per-child pool its address space came from. */
     long r = it_invoke(auth_cptr, INV_BOOT_INITRD_FRAME, index, (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT), (long)IRIS_CPTR_TEST_UNTYPED);
     if (r <= 0) return (r == 0) ? (long)IRIS_ERR_NOT_FOUND : r;
@@ -561,7 +561,7 @@ long it_initrd_vmo_slot(long auth_cptr, long index) {
 /*
  * The caller's own TCB, DERIVED from the one its spawner delegated.
  *
- * `SYS_TCB_SELF` is retired (ledger A-18): it handed a thread a capability to
+ * `SYS_TCB_SELF` is retired: it handed a thread a capability to
  * itself asking for no capability at all, and published an MDB root nothing
  * could revoke.  The main thread's TCB is the one the loader configured, which
  * arrives at IRIS_CPTR_OWN_TCB, so this is a mint of it — a FRESH capability
@@ -580,7 +580,7 @@ long it_own_tcb_derived(void) {
 
 
 /* SYS_VSPACE_SELF into a rotating leaf: the caller's own address space as a
- * capability.  Stage 7 Step 15: this replaces it_proc_vspace_slot, which asked
+ * capability.  This replaces it_proc_vspace_slot, which asked
  * a PROCESS for an address space — the self case being the only one that
  * survives, because the others are held by whoever spawned the child. */
 long it_vspace_self_slot(void) {
@@ -591,13 +591,13 @@ long it_vspace_self_slot(void) {
 /*
  * A KFrame retyped into a CSpace slot: the memory the suite fabricates.
  *
- * Ledger D-5 — this replaces it_vmo_create_in and it_vmo_create_slot, which
+ * This replaces it_vmo_create_in and it_vmo_create_slot, which
  * produced a KVmo: a kernel-owned array of pages populated lazily, on a
  * schedule the holder did not choose.  A frame is the same memory with the
  * allocation decision back where the budget is, and the two factories were a
  * second way to spell a call RETYPE2 already made.
  *
- * `bytes` must be a page multiple; a frame maps as a whole (D-10).  Which
+ * `bytes` must be a page multiple; a frame maps as a whole.  Which
  * budget pays is the `ut` argument, which is the whole of "charged to X".
  */
 long it_frame_create_slot(long ut, uint64_t bytes) {
@@ -702,7 +702,7 @@ long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights) {
     return (r != 0) ? r : (long)slot;
 }
 
-/* ── Phase S4 (Step 3): native-CDT derivation helpers ─────────────────────
+/* ── Native-CDT derivation helpers ─────────────────────
  * The legacy handle tree (SYS_CAP_DERIVE/SYS_CAP_REVOKE) is being retired.
  * Its replacement is the CSpace CDT: derivation is SYS_CSPACE_MINT slot→slot
  * (a real MDB child of the source) and revocation is SYS_CSPACE_REVOKE, which
@@ -752,7 +752,7 @@ long it_xfer_dup(long src_h, uint32_t rights) {
     return it_xfer_slot((iris_cptr_t)src_h, slot, rights);
 }
 
-/* Ledger A-29: the transfer is a COPY, so a sender that meant to give the
+/* The transfer is a COPY, so a sender that meant to give the
  * capability away drops its own copy once the send has landed — send-then-
  * delete is seL4's move.  Every site that expects its transfer to succeed
  * calls this; the sites that expect it to FAIL keep the copy on purpose and
@@ -782,7 +782,7 @@ void it_fail(const char *id, const char *reason) {
 
 /* it_chan_msg_zero retired — Phase 13/Track I (no KChannel tests remain). */
 
-/* iris_msg_zero lives in common/iris_msg.h now, with the message (A-33). */
+/* iris_msg_zero lives in common/iris_msg.h now, with the message. */
 /* Release a capability the suite holds, whichever namespace names it.
  *
  * This is what lets the suite migrate WITHOUT moving a single release point.

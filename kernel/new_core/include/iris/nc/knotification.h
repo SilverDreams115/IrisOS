@@ -49,7 +49,7 @@ struct KNotification {
     uint8_t             closed;
     uint32_t            waiter_count;
     /*
-     * A-23: the thread this notification is BOUND to, if any.  A signal that
+     * The thread this notification is BOUND to, if any.  A signal that
      * finds no waiter is delivered to it even while it is blocked on an
      * endpoint.  One thread, because "which thread does a signal wake" must
      * have exactly one answer.
@@ -61,13 +61,13 @@ struct KNotification {
     struct KNotification *live_next;
 };
 
-/* Phase S1: Untyped retype is the ONLY creation path (the kslab variant and
+/* Untyped retype is the ONLY creation path (the kslab variant and
  * the per-process owner/quota binding are retired — Untyped is the budget). */
 struct KNotification *knotification_alloc_at(void *mem);
 void                  knotification_free (struct KNotification *n);
 void                  knotification_cancel_waiter(struct task *t);
 
-/* A-23: bind/unbind, and the teardown hooks that keep the two pointers from
+/* Bind/unbind, and the teardown hooks that keep the two pointers from
  * outliving each other. */
 iris_error_t          knotification_bind(struct KNotification *n, struct task *t);
 void                  knotification_unbind(struct KNotification *n);
@@ -82,7 +82,7 @@ void         knotification_signal(struct KNotification *n, uint64_t bits);
  * concurrently; returns IRIS_ERR_BUSY if the waiter table is full. */
 iris_error_t knotification_wait(struct KNotification *n, uint64_t *out_bits);
 /*
- * Stage 9-evt Step 1 — the RESTARTABLE half of knotification_wait.
+ * The RESTARTABLE half of knotification_wait.
  *
  * Does one non-blocking attempt.  Returns IRIS_OK with the bits, IRIS_ERR_CLOSED,
  * or IRIS_ERR_WOULD_BLOCK meaning "you are
@@ -96,7 +96,7 @@ iris_error_t knotification_wait(struct KNotification *n, uint64_t *out_bits);
  */
 iris_error_t knotification_wait_step(struct KNotification *n, uint64_t *out_bits);
 /*
- * Stage 9-evt Step 1 — the restartable half of knotification_wait_timeout.
+ * The restartable half of knotification_wait_timeout.
  *
  * Same contract as knotification_wait_step, plus a deadline: on the first
  * attempt it arms `wake_tick`, and it reports IRIS_ERR_TIMED_OUT when the

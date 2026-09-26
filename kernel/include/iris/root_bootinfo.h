@@ -8,7 +8,7 @@
 #endif
 
 /*
- * Stage 5 — the root task's BootInfo.
+ * The root task's BootInfo.
  *
  * NOT to be confused with <iris/boot_info.h>, which is the FIRMWARE→KERNEL
  * handoff (`struct iris_boot_info`: memory map + framebuffer, written by the
@@ -104,17 +104,17 @@ struct iris_root_bootinfo {
     uint64_t cap_proc_control;   /* SYS_PROCESS_CREATE */
     uint64_t cap_initrd_control; /* SYS_INITRD_COUNT / SYS_INITRD_VMO */
     uint64_t cap_fb_control;     /* SYS_FRAMEBUFFER_VMO (one-shot) */
-    /* v6: authority over CPU TIME (ledger A-20).  seL4 puts its SchedControl
+    /* v6: authority over CPU TIME.  seL4 puts its SchedControl
      * capability in BootInfo for the same reason every other authority is
      * there: the root task cannot be given time by anyone else. */
     uint64_t cap_sched_control;  /* SYS_SC_CONFIGURE */
-    /* v7: authority to carve address-space identifier pools (A-21). */
+    /* v7: authority to carve address-space identifier pools. */
     uint64_t cap_asid_control;   /* IRIS_KOBJ_ASID_POOL retype */
     /* v8: authority to place a thread in a scheduling DOMAIN — seL4's
      * seL4_CapDomain.  Here for the reason every other authority is: the root
      * task cannot be given a time partition by anyone else. */
     uint64_t cap_domain_control; /* Domain_Set */
-    uint64_t cap_iospace_control;/* Stage 10-dma: what a DEVICE may reach */
+    uint64_t cap_iospace_control;/* What a DEVICE may reach */
 
     /*
      * v9: WHICH ABI this kernel implements (Stage 10-abi, iris/abi.h).
@@ -136,7 +136,7 @@ struct iris_root_bootinfo {
     uint32_t abi_minor;
 
     /*
-     * v9: where ACPI's root pointer is (Stage 10).
+     * v9: where ACPI's root pointer is.
      *
      * The tables themselves arrive as device Untypeds in `untyped[]`, like the
      * framebuffer and the PCI hole — but a region is not a starting point.

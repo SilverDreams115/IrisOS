@@ -178,7 +178,7 @@ void test_t103(void) {
     iris_cptr_t n_h = (iris_cptr_t)n;
     if (ep < 0 || n < 0) { it_fail("T103", "create"); return; }
 
-    /* Phase S4 (Step 2): the staged SOURCE is a CSpace slot. */
+    /* The staged SOURCE is a CSpace slot. */
     g_t103_dup = it_xfer_dup(n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
     if (g_t103_dup < 0) { ok = 0; why = "xfer slot"; }
 
@@ -265,7 +265,7 @@ void test_t104(void) {
     iris_cptr_t n_h = (iris_cptr_t)n;
     if (ep < 0 || n < 0) { it_fail("T104", "create"); return; }
 
-    /* Phase S4 (Step 2): the staged EP_CALL source is a CSpace slot. */
+    /* The staged EP_CALL source is a CSpace slot. */
     g_t104_dup = it_xfer_dup(n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
     if (g_t104_dup < 0) { ok = 0; why = "xfer slot"; }
 
@@ -296,7 +296,7 @@ void test_t104(void) {
     it_close(&g_t104_ep_h);
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
-    /* +1 = the exited thread's KTcb handle (stays with the process, Ph96). */
+    /* +1 = the exited thread's KTcb handle (stays with the process). */
     if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
     if (ok && after[IT_SI_REPLY] != before[IT_SI_REPLY]) {
         ok = 0; why = "ghost kreply";
@@ -321,7 +321,7 @@ static void t105_caller(void) {
 }
 
 /* ── T105: reply cap transfer failure is atomic ─────────────────────────────
- * EP_REPLY supports one attached cap (Phase 7.1).  The deterministic failed
+ * EP_REPLY supports one attached cap.  The deterministic failed
  * delivery is the lost one-shot race: reply once without a cap (consumes
  * the KReply), then reply AGAIN with an attached cap.  The second reply
  * must fail NOT_FOUND, the server must KEEP its source cap (A1.10 — before,
@@ -351,7 +351,7 @@ void test_t105(void) {
     }
 
     /* Serve the call: the explicit reply object (slot 95) is staged via
-     * recv arg2 and echoed back in attached_handle (Phase S1). */
+     * recv arg2 and echoed back in attached_handle. */
     if (ok && it_reply_create_at(95) < 0) { ok = 0; why = "reply create"; }
     if (ok) {
         struct iris_msg m;
@@ -402,7 +402,7 @@ void test_t105(void) {
     it_slot_delete(95);
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
-    /* +1 = the exited thread's KTcb handle (stays with the process, Ph96). */
+    /* +1 = the exited thread's KTcb handle (stays with the process). */
     if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
     if (ok) it_pass("T105"); else it_fail("T105", why);
 }
@@ -450,7 +450,7 @@ void test_t106(void) {
     if (ep < 0 || n < 0) { it_fail("T106", "create"); return; }
 
     for (int i = 0; ok && i < 2; i++) {
-        /* Phase S4 (Step 2): each staged source is its own CSpace slot. */
+        /* Each staged source is its own CSpace slot. */
         g_t106_dup[i] = it_xfer_dup(n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
         if (g_t106_dup[i] < 0) { ok = 0; why = "xfer slot"; }
     }
@@ -490,7 +490,7 @@ void test_t106(void) {
     it_close(&g_t106_ep_h);
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
-    /* +2 = the two exited threads' KTcb handles (stay with the process, Ph96). */
+    /* +2 = the two exited threads' KTcb handles (stay with the process). */
     if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
     if (ok) it_pass("T106"); else it_fail("T106", why);
 }
@@ -590,7 +590,7 @@ static void fz_worker(int idx) {
             m.recv_slot = (uint32_t)c.words[3]; /* reply slot (0 = legacy) */
             r = iris_msg_call((long)g_fz_data_ep, &m);
         }
-        /* A-33: "did a capability arrive, and where?" is two facts now.  The
+        /* "did a capability arrive, and where?" is two facts now.  The
          * MessageInfo says whether one landed (seL4's `extraCaps`) and the
          * receiver already knows the slot, because it declared it; `got_cap`
          * is the reply object, which is a different question entirely. */
@@ -658,7 +658,7 @@ static void fz_workers_stop(int n) {
 }
 
 /* Dup a WRITE|TRANSFER cap of `src` for staging (returns handle or -err). */
-/* Phase S4 (Step 2): a transfer source is a CSpace slot, not a handle. */
+/* A transfer source is a CSpace slot, not a handle. */
 static long fz_dup_xfer(long src) {
     return it_xfer_dup(src, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
 }
@@ -675,7 +675,7 @@ void test_t107(void) {
     long ep    = it_ep_create_slot();   /* data endpoint */
     long n     = it_notify_create_slot();     /* transferable notification */
     long ep2   = it_ep_create_slot();   /* transferable endpoint */
-    /* Stage 4: invoked as a CPtr; never materialised into a handle. */
+    /* Invoked as a CPtr; never materialised into a handle. */
     const long selfp = (it_invoke0((long)IRIS_CPTR_TEST_PROC, INV_CAP_IDENTIFY) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
     iris_cptr_t n_h = (iris_cptr_t)n, ep2_h = (iris_cptr_t)ep2;
@@ -731,7 +731,7 @@ void test_t107(void) {
                 if (iris_msg_nb_send((long)s, &pm) !=
                     (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "cptr ep"; }
             }
-            /* Ledger A-29: COPY semantics — the sender KEEPS what it sent,
+            /* COPY semantics — the sender KEEPS what it sent,
              * as seL4 does, and the receiver's capability is a derivation
              * child of this slot.  It used to be a move, and the delivery
              * installed the child and then deleted its parent. */
@@ -763,7 +763,7 @@ void test_t107(void) {
             if (ok && (g_fz_res[0] != 0 || g_fz_att[0] != s)) {
                 ok = 0; why = "nb slot landing";
             }
-            /* A-29: NB_SEND transfers by copy too — same rule, same tree. */
+            /* NB_SEND transfers by copy too — same rule, same tree. */
             if (ok && it_invoke0(d, INV_CAP_IDENTIFY) < 0) {
                 ok = 0; why = "nb source lost on transfer";
             }
@@ -851,7 +851,7 @@ void test_t107(void) {
             /* pick 6: staging without RIGHT_TRANSFER → ACCESS_DENIED; the
              * blocked receiver gains NOTHING and then gets a clean plain
              * message (I1, I2, I6); the degraded dup survives. */
-            /* Phase S4 (Step 2): a SOURCE SLOT without RIGHT_TRANSFER. */
+            /* A SOURCE SLOT without RIGHT_TRANSFER. */
             long bad = it_xfer_slot_norights(n, IT_XFER_SLOT_D,
                                              (uint32_t)RIGHT_WRITE);
             if (bad < 0) { ok = 0; why = "bad slot"; break; }
@@ -896,7 +896,7 @@ void test_t107(void) {
     if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + exp_slot) {
         ok = 0; why = "slot count";
     }
-    /* Stage 4: handle delivery is retired, so this counter is a structural
+    /* Handle delivery is retired, so this counter is a structural
      * zero — exp_hand counts the deliveries that found NO destination, and
      * none of them may have landed in a handle table. */
     if (ok && after[IT_SI_HANDDEL] != before[IT_SI_HANDDEL]) {
@@ -1037,7 +1037,7 @@ void test_t108(void) {
     it_close(&n_h);
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
-    /* I16: exact balance; +2 = the two workers' KTcb handles (Ph96). */
+    /* I16: exact balance; +2 = the two workers' KTcb handles. */
     if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
     /* No call ever rendezvoused → not one KReply minted (T104 rule). */
     if (ok && after[IT_SI_REPLY] != before[IT_SI_REPLY]) {
@@ -1061,7 +1061,7 @@ void test_t109(void) {
 
     long ep    = it_ep_create_slot();
     long n     = it_notify_create_slot();
-    /* Stage 4: invoked as a CPtr; never materialised into a handle. */
+    /* Invoked as a CPtr; never materialised into a handle. */
     const long selfp = (it_invoke0((long)IRIS_CPTR_TEST_PROC, INV_CAP_IDENTIFY) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
     iris_cptr_t n_h = (iris_cptr_t)n;
@@ -1074,7 +1074,7 @@ void test_t109(void) {
         it_fail("T109", "occ fixture"); return;
     }
     if (!fz_workers_start(1)) { it_fail("T109", "worker"); return; }
-    /* Phase S1: ONE reusable explicit reply object serves every rendezvous
+    /* ONE reusable explicit reply object serves every rendezvous
      * round — free→staged→bound→free per call (S18 under stress). */
     if (it_reply_create_at(96) < 0) { it_fail("T109", "reply create"); return; }
 
@@ -1116,7 +1116,7 @@ void test_t109(void) {
         iris_msg_zero(&m);
         if ((m.reply = 96, iris_msg_recv((long)g_fz_data_ep, &m)) != 0 ||
             m.label != 0xF2ULL ||
-            m.got_cap != 96u) {   /* Phase S1: our reply CPtr echoed */
+            m.got_cap != 96u) {   /* Our reply CPtr echoed */
             ok = 0; why = "recv call"; break;
         }
         iris_cptr_t reply_h = (iris_cptr_t)m.got_cap;
@@ -1154,7 +1154,7 @@ void test_t109(void) {
             if (ok && (it_invoke1((long)s, INV_NOTIFY_SIGNAL, 1) != 0 ||
                        it_invoke1(n, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
                        bits != 1u)) { ok = 0; why = "cptr dead"; }
-            /* A-29: the sender keeps its copy (seL4's transfer is a COPY). */
+            /* The sender keeps its copy (seL4's transfer is a COPY). */
             if (ok && it_invoke0(d, INV_CAP_IDENTIFY) < 0) {
                 ok = 0; why = "source lost on reply transfer";
             }
@@ -1207,7 +1207,7 @@ void test_t109(void) {
     it_slot_delete(96);
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
-    /* I16: exact balance; +1 = the worker's KTcb handle (Ph96). */
+    /* I16: exact balance; +1 = the worker's KTcb handle. */
     if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
     /* Reply BINDINGS balance EXACTLY: one per rendezvous, zero per fail-fast
      * (Phase S1: the counter tracks bindings of the reusable reply object). */
@@ -1218,7 +1218,7 @@ void test_t109(void) {
     if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + exp_slot) {
         ok = 0; why = "slot count";
     }
-    /* Stage 4: handle delivery is retired, so this counter is a structural
+    /* Handle delivery is retired, so this counter is a structural
      * zero — exp_hand counts the deliveries that found NO destination, and
      * none of them may have landed in a handle table. */
     if (ok && after[IT_SI_HANDDEL] != before[IT_SI_HANDDEL]) {
@@ -1242,7 +1242,7 @@ void test_t110(void) {
 
     long ep    = it_ep_create_slot();
     long nf    = it_notify_create_slot();
-    /* Stage 4: invoked as a CPtr; never materialised into a handle. */
+    /* Invoked as a CPtr; never materialised into a handle. */
     const long selfp = (it_invoke0((long)IRIS_CPTR_TEST_PROC, INV_CAP_IDENTIFY) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
     iris_cptr_t ep_h = (iris_cptr_t)ep, nf_h = (iris_cptr_t)nf;
@@ -1420,7 +1420,7 @@ void test_t110(void) {
     if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + exp_slot) {
         ok = 0; why = "slot count";
     }
-    /* Stage 4: handle delivery is retired, so this counter is a structural
+    /* Handle delivery is retired, so this counter is a structural
      * zero — exp_hand counts the deliveries that found NO destination, and
      * none of them may have landed in a handle table. */
     if (ok && after[IT_SI_HANDDEL] != before[IT_SI_HANDDEL]) {
@@ -1564,7 +1564,7 @@ void test_t111(void) {
     if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + exp_slot) {
         ok = 0; why = "slot count";
     }
-    /* Stage 4: handle delivery is retired, so this counter is a structural
+    /* Handle delivery is retired, so this counter is a structural
      * zero — exp_hand counts the deliveries that found NO destination, and
      * none of them may have landed in a handle table. */
     if (ok && after[IT_SI_HANDDEL] != before[IT_SI_HANDDEL]) {
@@ -1664,7 +1664,7 @@ void it_quiesce_reaper(void) {
     }
 }
 
-/* ── Phase 16: lifecycle/process hardening (T113–T118) ───────────────────────
+/* ── Lifecycle/process hardening (T113–T118) ───────────────────────
  * The A1.11 deferred-reap fix (task.awaiting_reap) closed the one real bug in
  * this area; T113–T118 LOCK the surviving lifecycle contracts so a future
  * regression fails loudly.  Instrumentation: the Phase 16 SCHED_INFO words —

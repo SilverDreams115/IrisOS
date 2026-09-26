@@ -31,7 +31,7 @@ struct KIrqCap {
 #ifdef __KERNEL__
 /* See kioport.h: the slab-backed allocator is deleted. */
 
-/* Stage 6 Step 6 — the same object, charged to `pool` (NULL = kernel slab,
+/* The same object, charged to `pool` (NULL = kernel slab,
  * which is the boot path).  Claiming hardware fabricates a kernel object, and
  * the claimer names the budget it comes out of. */
 struct KUntyped;

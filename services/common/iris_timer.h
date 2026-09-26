@@ -3,7 +3,7 @@
 #define IRIS_COMMON_TIMER_H
 
 /*
- * iris_timer.h — waiting, as a request to a server (ledger A-24).
+ * iris_timer.h — waiting, as a request to a server.
  *
  * There is no syscall that blocks a thread on time.  `SYS_SLEEP`,
  * `SYS_CLOCK_NANOSLEEP` and `SYS_NOTIFY_WAIT_TIMEOUT` are retired, because a
@@ -40,7 +40,7 @@
  * which is a missing capability and reads as one).
  *
  * `notif_give` is a capability the caller gives away.  Transfer is a COPY
- * (ledger A-29), as it is in seL4, so giving something away is two steps and
+ *, as it is in seL4, so giving something away is two steps and
  * both belong to the caller: derive a fresh copy of the notification per arm —
  * RIGHT_WRITE (the service signals it) and RIGHT_TRANSFER (it may be handed
  * over at all) — and delete that slot once this returns 0.  What the service

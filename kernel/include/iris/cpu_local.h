@@ -13,7 +13,7 @@
  *               ring-0 context, without needing the RDGSBASE instruction.
  *   offset 8  : current_task pointer — the task currently executing on this CPU.
  *
- * SWAPGS ABI (Phase 2):
+ * SWAPGS ABI:
  *
  *   Ring-0 (kernel):   GS_BASE = &cpu_local[cpu_id],  KGS_BASE = 0
  *   Ring-3 (user):     GS_BASE = 0 (null),            KGS_BASE = &cpu_local[cpu_id]
@@ -69,7 +69,7 @@ struct iris_cpu_local {
     uint64_t               syscall_kstack;   /* offset 48 — current task's kstack top */
     uint64_t               syscall_user_cr3; /* offset 56 — current task's user CR3   */
     /*
-     * Stage 9-evt step 3 — THE kernel stack of this core.
+     * THE kernel stack of this core.
      *
      * seL4 has one per core and no thread ever blocks inside the kernel.  IRIS
      * reached the second half first: since step 2 a parked thread abandons its
@@ -83,7 +83,7 @@ struct iris_cpu_local {
      */
     uint64_t               core_stack_top;   /* offset 64 */
     /*
-     * Ledger A-32 — where the user's stack pointer waits while the kernel
+     * Where the user's stack pointer waits while the kernel
      * takes its own.
      *
      * It used to live in r8 for the three instructions between SWAPGS and the

@@ -15,7 +15,7 @@
 #include "../common/iris_msg.h"
 void test_t079(void) {
     /* init mints the self-proc cap post-load; retry briefly, then FAIL loud.
-     * Stage 4: the cap is USED as a CPtr — SYS_PROC_CSPACE_MINT resolves its
+     * The cap is USED as a CPtr — SYS_PROC_CSPACE_MINT resolves its
      * process argument through CSpace — so waiting for it is a liveness probe
      * on the slot, not a materialisation into a handle. */
     long selfp = -1;
@@ -66,7 +66,7 @@ void test_t079(void) {
 }
 
 void test_t080(void) {
-    /* Stage 4: the self-process cap is invoked as a CPtr; it never becomes
+    /* The self-process cap is invoked as a CPtr; it never becomes
      * a handle.  SYS_PROC_CSPACE_MINT resolves it through CSpace. */
     const long selfp = (long)IRIS_CPTR_TEST_PROC;
     if (it_invoke0(selfp, INV_CAP_IDENTIFY) < 0) { it_fail("T080", "self proc cptr"); return; }
@@ -110,7 +110,7 @@ void test_t080(void) {
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "delegate without DUP"; }
     if (ok && it_invoke2((long)IRIS_CPTR_TEST_FIX_A, INV_CSPACE_MINT, IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T080_DST_SLOT2), (long)RIGHT_READ) >= 0) { ok = 0; why = "delegate wrong type"; }
 
-    /* ── SYS_FRAME_MAP (vmo by CPtr; Stage 7 Step 9: the TARGET is the
+    /* ── SYS_FRAME_MAP (vmo by CPtr; The TARGET is the
      * child's address space, named directly, not its process) ── */
     long t080_vs = it_child_vspace(proc_h);
     if (ok && t080_vs < 0) { ok = 0; why = "child vspace"; }
@@ -129,7 +129,7 @@ void test_t080(void) {
 
     /* Cleanup: kill the child (auto-unmaps, T076-proven), close everything —
      * including the child's address space, which this test asked the spawn to
-     * keep and must therefore give back (Stage 7 Step 15). */
+     * keep and must therefore give back. */
     (void)it_kill((long)proc_h);
     it_child_drop_vspace(proc_h);
     it_close(&proc_h);
@@ -188,7 +188,7 @@ void test_t081(void) {
     if (ok && it_tcb_alive((long)IRIS_CPTR_TEST_FIX_A) !=
               (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "alive wrong-type"; }
 
-    /* EXIT_CODE by CPtr while alive → WOULD_BLOCK.  Ledger A-22: the
+    /* EXIT_CODE by CPtr while alive → WOULD_BLOCK.  The
      * FAULT_INFO half of this probe is RETIRED — there is no syscall that
      * reads a thread's fault any more, because the fault is a message its
      * handler received.  What survives is the assertion that the number is
@@ -203,7 +203,7 @@ void test_t081(void) {
     }
 
     /* KILL via the READ-only slot → ACCESS_DENIED (needs RIGHT_WRITE).
-     * Stage 7: the THREAD_START half of this check retired with the syscall —
+     * The THREAD_START half of this check retired with the syscall —
      * a spawned process's first thread is composed from capabilities now, and
      * T297 is where that authority is checked. */
     if (ok && it_invoke0(T081_SLOT_RO, INV_TCB_EXIT) !=
@@ -251,7 +251,7 @@ void test_t082(void) {
     iris_cptr_t cmd_ep_h = (iris_cptr_t)ep;
 
     iris_cptr_t proc_h = IRIS_CPTR_NULL;
-    /* Stage 7 Step 9: keep the child's ROOT CSPACE.  Delegating into a child
+    /* Keep the child's ROOT CSPACE.  Delegating into a child
      * names the CSpace, so a spawner that intends to keep delegating keeps it
      * — there is no longer a way to reach it by naming the process instead.
      * Step 15: and its ADDRESS SPACE, for the same reason, one object over. */
@@ -270,7 +270,7 @@ void test_t082(void) {
                              RIGHT_DUPLICATE)) != 0) ok = 0;
 
     /* MAP_INTO: VMO by CPtr + ADDRESS SPACE by CPtr; repeat → BUSY (PTEs
-     * real).  Stage 7 Step 9: the target argument is the VSpace. */
+     * real).  The target argument is the VSpace. */
     long t082_vs = it_child_vspace(proc_h);
     if (ok && t082_vs < 0) ok = 0;
     if (ok && it_invoke(T082_SLOT_VMO, INV_FRAME_MAP, t082_vs, (long)LP_MAP_VA, 1) != 0) ok = 0;
@@ -352,7 +352,7 @@ void test_t083(void) {
         ok = 0;
 
     /* GET_INFO by CPtr (both slots — READ suffices).
-     * Stage 5 Step 4: thread creation returns a capability, not a global
+     * Thread creation returns a capability, not a global
      * thread id, so the identity checked here is the one the helper's own TCB
      * capability reports — the two CPtrs must name the SAME object. */
     struct iris_tcb_info info, self_info;
@@ -412,7 +412,7 @@ void test_t083(void) {
     if (ok && it_invoke(T083_SLOT_SC_RO, INV_SC_CONFIGURE, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) !=
               (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
     if (ok && it_invoke(T079_SLOT_EMPTY, INV_SC_CONFIGURE, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) >= 0) ok = 0;
-    /* A-30: an endpoint where a SchedContext belongs is named, not flattened. */
+    /* An endpoint where a SchedContext belongs is named, not flattened. */
     if (ok && it_invoke((long)IRIS_CPTR_TEST_FIX_A, INV_SC_CONFIGURE, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) !=
               (long)IRIS_ERR_WRONG_TYPE) ok = 0;
 
@@ -470,7 +470,7 @@ void test_t084(void) {
     iris_cptr_t epx_h = (iris_cptr_t)epx;
     g_t084_cmd_ep = (iris_cptr_t)cmd;
 
-    /* Phase S4 (Step 2): transfer sources are CSpace SLOTS, not handles.
+    /* Transfer sources are CSpace SLOTS, not handles.
      * EP_SEND consumes the slot exactly as it used to consume the dup. */
     long c1 = it_xfer_slot(epx_h, IT_XFER_SLOT_A, RIGHT_WRITE);
     long c2 = it_xfer_slot(epx_h, IT_XFER_SLOT_B, RIGHT_WRITE);
@@ -589,7 +589,7 @@ void test_t085(void) {
     IT_AWAIT(g_t085_done, 200);
     if (!g_t085_done || g_t085_s1 != 0) ok = 0;
 
-    it_xfer_release((long)g_t085_cap);   /* A-29: sender's copy survived */
+    it_xfer_release((long)g_t085_cap);   /* Sender's copy survived */
     it_close(&n_h);
     it_close(&g_t085_cmd_ep);
 
@@ -698,10 +698,10 @@ static void t087_server(void) {
     struct iris_msg m;
     iris_msg_zero(&m);
     m.recv_slot = T087_SRV_SLOT;              /* receive-slot declaration */
-    /* Phase S1: explicit reply object (slot 94) staged via recv arg2. */
+    /* Explicit reply object (slot 94) staged via recv arg2. */
     long rr = (m.reply = 94, iris_msg_recv((long)g_t087_ep, &m));
     if (rr == 0) {
-        /* A-33: a receive of a CALL is handed TWO capabilities and they no
+        /* A receive of a CALL is handed TWO capabilities and they no
          * longer share a field.  The caller's gift is wherever the receiver
          * DECLARED it should go — the receiver knows that without being told
          * — and `got_cap` is the reply object it is now owed. */
@@ -780,7 +780,7 @@ void test_t087(void) {
     IT_AWAIT(g_t087_done, 200);
     if (!g_t087_done) ok = 0;
     if (ok && g_t087_got_cap != T087_SRV_SLOT) ok = 0;      /* landed as CPtr */
-    /* Phase S1: the reply value is the server's OWN reply-object CPtr (echoed
+    /* The reply value is the server's OWN reply-object CPtr (echoed
      * from recv arg2) — explicit MCS-style authority, never a fabricated
      * handle. */
     if (ok && g_t087_reply_h != 94u) ok = 0;
@@ -788,7 +788,7 @@ void test_t087(void) {
     if (ok && g_t087_r1 != 0) ok = 0;                       /* first reply ok */
     if (ok && g_t087_r2 != (int)IRIS_ERR_NOT_FOUND) ok = 0; /* one-shot (T074) */
 
-    it_xfer_release(cA);                 /* A-29: both copies survived */
+    it_xfer_release(cA);                 /* Both copies survived */
     it_xfer_release((long)g_t087_capB);
     it_close(&nA_h);
     it_close(&nB_h);
@@ -1140,7 +1140,7 @@ void test_t092(void) {
  * before/after comparisons of self_live are exact. */
 int it_sched_ext(uint32_t w[14]) {
     uint8_t buf[96];
-    /* Phase 16: request 96 bytes so the two lifecycle words (offsets 84/88)
+    /* Request 96 bytes so the two lifecycle words (offsets 84/88)
      * land too; a pre-Phase-16 kernel clamps to 88 and leaves w[11..13] zero —
      * the extra words are additive, never required by legacy asserts. */
     long r = it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO, (long)(uintptr_t)buf, 96);
@@ -1163,7 +1163,7 @@ int it_task_live(uint32_t *out) {
            ((uint32_t)buf[34] << 16) | ((uint32_t)buf[35] << 24);
     return 1;
 }
-/* Stage 7-mem: the GLOBAL live-VMO count (diag offset 132).  It replaces the
+/* The GLOBAL live-VMO count (diag offset 132).  It replaces the
  * per-process `vmos_usage` the retired SYS_RESOURCE_INFO reported, and it is
  * the stronger of the two: a leak by ANY principal shows here, where the
  * per-process form only ever caught the caller's own. */
@@ -1253,14 +1253,14 @@ int it_sched_ext5(uint32_t w5[5]) {
     return 1;
 }
 
-/* Phase 19: lazily mint a cap to iris_test's OWN VSpace into IRIS_CPTR_TEST_VSPACE
+/* Lazily mint a cap to iris_test's OWN VSpace into IRIS_CPTR_TEST_VSPACE
  * (via SYS_VSPACE_SELF + a self-mint through the self-proc cap, slot 25) so the
  * VM tests can pass it as the VSpace CPtr to SYS_FRAME_MAP/UNMAP.  Returns 1 on
  * success. */
 static int g_it_vspace_ready = 0;
 int it_setup_self_vspace(void) {
     if (g_it_vspace_ready) return 1;
-    /* Stage 4: SYS_VSPACE_SELF publishes into a destination slot, so the
+    /* SYS_VSPACE_SELF publishes into a destination slot, so the
      * suite's own address space is a capability from the moment it exists —
      * it used to arrive as a handle that had to be minted onward and closed. */
     /* Derived from the address space the spawner delegated, not fabricated by
@@ -1287,7 +1287,7 @@ long it_map_fixup_inv(unsigned long label, long c, long a1, long a2, long a3) {
 }
 
 /* The numbered wrappers still reach the fixup while the suite migrates
- * (ledger A-32).  One translation, and it goes with the last `it_sysN`. */
+ *.  One translation, and it goes with the last `it_sysN`. */
 long it_map_fixup(long nr, long a0, long a1, long a2, long a3) {
     return it_map_fixup_inv((nr == SYS_FRAME_MAP) ? (unsigned long)INV_FRAME_MAP
                                                   : 0ul,
@@ -1365,7 +1365,7 @@ long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg) {
     r = it_invoke(tcb, INV_TCB_WRITE_REGS, (long)entry, (long)rsp, (long)arg);
     if (r != 0) return r;
     /*
-     * A-33: each thread marshals in the page IT registered, and it knows which
+     * Each thread marshals in the page IT registered, and it knows which
      * page because it was told.  There is no `buf_uptr` for the kernel to
      * report one in — that field was the message ABI's way of telling a
      * receiver where its own buffer was, which is a thing a thread that
@@ -1376,7 +1376,7 @@ long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg) {
     if (arg == IT_THREAD_ARG_SELF_TCB) {
         /* The thread is handed its OWN TCB capability as its entry argument —
          * the only per-thread channel a freshly started thread has, and the
-         * reason SYS_TCB_SELF can go (ledger A-18).  Whoever creates a thread
+         * reason SYS_TCB_SELF can go.  Whoever creates a thread
          * holds its TCB; telling it which one it is costs a register. */
         r = it_invoke(tcb, INV_TCB_WRITE_REGS, (long)entry, (long)rsp, tcb);
         if (r != 0) return r;
@@ -1387,7 +1387,7 @@ long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg) {
 }
 
 /*
- * Every thread the suite makes gets an IPC BUFFER of its own (ledger D-4).
+ * Every thread the suite makes gets an IPC BUFFER of its own.
  *
  * Registration takes a TCB capability, so the CREATOR can do it — which is
  * what makes this one place instead of forty.  It happens between WRITE_REGS
@@ -1406,7 +1406,7 @@ static long     g_it_ipcbuf_ut = -1;   /* a pool of its own; see below */
 _Static_assert(IT_IPCBUF_CNODE_SLOT == 66u,
                "the slot guard names 66 by value; keep the two together");
 
-volatile uint64_t g_it_thread_buf;   /* A-33: see it_thread_create */
+volatile uint64_t g_it_thread_buf;   /* See it_thread_create */
 
 long it_thread_ipc_buffer(long tcb) {
     if (g_it_ipcbuf_ut < 0) {
@@ -1530,7 +1530,7 @@ void test_t094(void) {
     long nA = it_notify_create_slot();      /* the cap to transfer */
     long nB = it_notify_create_slot();      /* the slot-race winner */
     long ep = it_ep_create_slot();
-    /* Stage 4: invoked as a CPtr; never materialised into a handle. */
+    /* Invoked as a CPtr; never materialised into a handle. */
     const long selfp = (it_invoke0((long)IRIS_CPTR_TEST_PROC, INV_CAP_IDENTIFY) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
     if (nA < 0 || nB < 0 || ep < 0 || selfp < 0) { it_fail("T094", "create"); return; }
@@ -1634,7 +1634,7 @@ void test_t095(void) {
     it_serial_write("\n");
 
     int ok = 1;
-    /* Stage 4: the handle namespace is DRAINED.  This test used to assert
+    /* The handle namespace is DRAINED.  This test used to assert
      * `live > 0` — "we hold handles" — which was the honest reading while the
      * suite fabricated them.  It is now the opposite assertion, and it is the
      * one that matters: by this point the suite has exercised every creator,
@@ -1645,14 +1645,14 @@ void test_t095(void) {
     if (w[IT_SI_INSERTS] < w[IT_SI_REMOVES]) ok = 0;         /* books balance */
     if (w[IT_SI_INSERTS] - w[IT_SI_REMOVES] != w[IT_SI_LIVE]) ok = 0;
     if (w[IT_SI_SLOTDEL] < 8u) ok = 0;      /* T084+ / svcmgr registrations */
-    /* Stage 4: handle materialisation on delivery is RETIRED.  Every
+    /* Handle materialisation on delivery is RETIRED.  Every
      * transferred capability now lands in a declared receive slot, so this
      * counter is a STRUCTURAL zero and is the retirement witness — the
      * partition slot/handle/toctou has exactly one live member.  A non-zero
      * value means a capability entered a process through the handle namespace
      * again (charter I1). */
     if (w[IT_SI_HANDDEL] != 0u) ok = 0;
-    /* Phase S4 (Step 2): the CPtr→handle TOCTOU degradation is RETIRED.  T094
+    /* The CPtr→handle TOCTOU degradation is RETIRED.  T094
      * still forces the race; the counter must now stay at a STRUCTURAL zero.
      * This is the roadmap's retirement criterion for the last permitted
      * degradation (charter §3.7) — if it ever moves, the fallback is back. */
@@ -1802,7 +1802,7 @@ void test_t097(void) {
 /* ── T098: sharing a VMO with another process is a CSpace mint ──────────────
  * The only way to give a VMO to another process is a mint into a destination
  * slot of its CSpace.  SYS_VMO_SHARE, which wrote the destination's HANDLE
- * TABLE, is retired (Stage 4): the receiver could not name what it was given
+ * TABLE, is retired: the receiver could not name what it was given
  * and the grantor could not revoke it.
  *
  * The three properties that test asserted are real and are re-asserted here
@@ -1910,7 +1910,7 @@ long it_lp_cmd(iris_cptr_t cmd_ep_h, uint32_t label) {
 }
 
 /* Wait (≤ 2s) for a child to exit; returns its exit code or -1. */
-/* Stage 7 Step 10: wait on the THREAD the child was started with, which the
+/* Wait on the THREAD the child was started with, which the
  * child table kept.  A child the suite did not record has no thread to watch
  * and says so rather than falling back to the process form. */
 long it_lp_wait_exit(iris_cptr_t proc_h) {

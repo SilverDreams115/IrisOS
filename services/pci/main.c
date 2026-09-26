@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * pci/main.c — the PCI bus, as a service (Stage 10).
+ * pci/main.c — the PCI bus, as a service.
  *
  * The design and the reason for it are in `iris/pci_ep_proto.h`.  In one line:
  * one task holds the configuration ports and the PCI-hole device Untyped, so

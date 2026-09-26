@@ -5,10 +5,10 @@
 #include <iris/nc/spinlock.h>
 #include <iris/pic.h>
 
-/* Phase 13/Track G: IRQ routing is KNotification-only — the legacy KChannel
+/* IRQ routing is KNotification-only — the legacy KChannel
  * message route is fully retired (KChannel is no longer an IPC mechanism). */
 /*
- * Stage 7-mem: a route has no OWNER field any more.
+ * A route has no OWNER field any more.
  *
  * It used to name the KProcess that registered it, for exactly one purpose:
  * so process teardown could sweep the routes that process had installed.  That
@@ -70,7 +70,7 @@ int32_t irq_routing_signal(uint8_t irq, uint8_t data_byte) {
 
     if (!notif) return -1;
 
-    /* Phase 7.6: signal-only delivery (safe from IRQ context). */
+    /* Signal-only delivery (safe from IRQ context). */
     knotification_signal(notif, (uint64_t)1u << irq);
     kobject_release(&notif->base);
     return 0;

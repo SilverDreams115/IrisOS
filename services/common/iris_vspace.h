@@ -117,7 +117,7 @@ static inline long iris_vspace_ensure(long vspace_c, long untyped_c,
  * Fill the walk for EVERY 2 MiB region a [vaddr, vaddr+bytes) range touches.
  *
  * The single-address form is not enough for the syscall this header wraps.
- * SYS_FRAME_MAP covers the WHOLE frame (D-10), and a frame larger than what
+ * SYS_FRAME_MAP covers the WHOLE frame, and a frame larger than what
  * one page table covers — a framebuffer, a service image — crosses into a
  * region whose PT nobody supplied.  The kernel reports MISSING_TABLE, the
  * caller ensures the FIRST address, retries, and fails at exactly the same
@@ -184,7 +184,7 @@ static inline long iris_vspace_map(unsigned long label, long a0, long a1,
  * argument and the VA in its second.  Anything else that returned MISSING_TABLE
  * would be a kernel bug, so it is passed through unchanged.
  *
- * Ledger D-5: there used to be three more forms here, and the difference
+ * There used to be three more forms here, and the difference
  * between them was where each hid its address space — SYS_VMO_MAP in the
  * caller's own, SYS_VMO_MAP_INTO once inside a PROCESS capability.  One map
  * syscall that names the address space is the whole of what they said.

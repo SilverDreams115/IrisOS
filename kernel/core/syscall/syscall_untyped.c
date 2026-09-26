@@ -5,7 +5,7 @@
  * Phase S1 (seL4 Architectural Convergence):
  *
  * SYS_UNTYPED_INFO:    query phys_base and available bytes.
- * SYS_UNTYPED_RETYPE:  RETIRED (Stage 4).  The number stays permanently
+ * SYS_UNTYPED_RETYPE:  RETIRED.  The number stays permanently
  *   reserved and answers NOT_SUPPORTED.  It was the LEGACY single-object
  *   retype that published the new capability as a HANDLE.  Phase S1 already
  *   refused the migrated family (Endpoint / Notification / Reply / CNode) on
@@ -114,7 +114,7 @@ _Static_assert(IRIS_KOBJ_TCB           == (uint32_t)KOBJ_TCB,           "KOBJ AB
 /*
  * The two physical-region types, carved.
  *
- * Stage 6 Step 1/4: BOTH halves come from this Untyped — the region from the
+ * Step 1/4: BOTH halves come from this Untyped — the region from the
  * bottom and the object's header from the TOP, so paying for the header does
  * not push the page-aligned carve onto the next boundary, and the header can
  * never land inside a page that is about to be mapped into ring 3.  The header
@@ -149,7 +149,7 @@ static iris_error_t retype_sub_untyped(struct KUntyped *ut, uint64_t obj_arg,
      */
     if (ut->is_device) {
         /*
-         * D-9: the header comes from the RAM budget this device Untyped is
+         * The header comes from the RAM budget this device Untyped is
          * PAIRED with, never from the kernel slab.  A device region is MMIO —
          * a struct written into a framebuffer is pixels — so the header has to
          * be RAM, and the only answer that does not put the kernel back in the
@@ -198,7 +198,7 @@ static iris_error_t retype_sub_untyped(struct KUntyped *ut, uint64_t obj_arg,
 }
 
 /*
- * Stage 6-pure Step 1 — a paging level, retyped.
+ * A paging level, retyped.
  *
  * Same two-ended shape as a frame: the 4 KiB region from the bottom, the
  * header block from the top.  Two differences, both consequences of what the
@@ -262,7 +262,7 @@ static iris_error_t retype_page_table(struct KUntyped *ut, uint64_t obj_arg,
 }
 
 /*
- * Stage 6-pure Step 4 — an address space, retyped.
+ * An address space, retyped.
  *
  * The top level of a walk is a page like any other level, so a VSpace is
  * carved exactly like a page table: the PML4 from the bottom, the header from
@@ -400,7 +400,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         }
         case KOBJ_ASID_POOL:
             /*
-             * A-21: carving a pool needs the ASID CONTROL capability, which
+             * Carving a pool needs the ASID CONTROL capability, which
              * `obj_arg` names.  Retyping the memory is not the authority —
              * anyone can hold an Untyped; issuing address-space identifiers is
              * a separate grant, exactly as seL4 splits
@@ -415,7 +415,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
             break;
         case KOBJ_SCHED_CONTEXT:
             /*
-             * Stage 8-mcs: `obj_arg` is the REFILL DEPTH, seL4's `refill_max`,
+             * `obj_arg` is the REFILL DEPTH, seL4's `refill_max`,
              * and it sizes the object.  A passive server woken per request
              * needs many pending replenishments; a periodic task needs two.
              * Making it a kernel constant would put that memory back in the
@@ -442,7 +442,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
             new_rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
             break;
         case KOBJ_TCB:
-            /* Phase S2 Step 0: canonical TCB birth.  The object is INACTIVE
+            /* Canonical TCB birth.  The object is INACTIVE
              * (configured = 0): observable, delegable, destroyable — but not
              * runnable until TCB_CONFIGURE (roadmap Step 5/6).  Execution
              * syscalls refuse it with NOT_SUPPORTED. */
@@ -492,7 +492,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     /* ── resolve destination CNode (WRITE); 0 = caller's root ── */
     struct KCNode *cn = 0;
     if (dest_cnode == 0u) {
-        /* Stage 4: structural root read — retype into the caller's root CNode
+        /* Structural root read — retype into the caller's root CNode
          * no longer goes through the handle table. */
         if (!t->cspace_root) {
             kobject_active_release(&ut->base);
@@ -609,7 +609,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         return syscall_err(err);
     }
 
-    /* ── publish through the canonical slot primitive (Phase S3) ──
+    /* ── publish through the canonical slot primitive ──
      * Each created cap is installed as an MDB CHILD of the source untyped's
      * slot.  Exclusive installs re-verify occupancy; a conflict unwinds the
      * slots installed so far (fresh leaves — their delete has no reparent
@@ -629,7 +629,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     if (cspace_value_is_cptr(ut_cptr)) {
         if (cspace_resolve_slot(t->cspace_root, ut_cptr, &ut_slot_cn, &ut_slot_idx)
                 != IRIS_OK)
-            ut_slot_cn = 0;   /* defensive: fall back to legacy root */
+            ut_slot_cn = 0;   /* defensive: install it as an unparented root */
     }
 
     err = IRIS_OK;
@@ -713,7 +713,7 @@ uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_release(&ut->base);
         return syscall_err(IRIS_ERR_BUSY);
     }
-    /* Stage 6 Step 1: both ends are reclaimed.  A reset with live children is
+    /* Both ends are reclaimed.  A reset with live children is
      * BUSY (checked above), so the header region at the top cannot be taken
      * back from an object that is still alive. */
     uint64_t reclaimed = ut->used + ut->used_top;
@@ -729,7 +729,7 @@ uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * Phase S2 C.1 — versioned user-buffer copy hardening.
+ * C.1 — versioned user-buffer copy hardening.
  *
  * The kernel must never write beyond the buffer the caller declared, and must
  * never depend on the caller's struct matching the kernel's exact size.  The
@@ -795,7 +795,7 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             q.reclaimed_bytes = st.reclaimed_bytes;
             q.reuse_count     = st.reuse_count;
             q.overlap_denials = st.overlap_denials;
-            /* Stage 7-mem: the global gauges SYS_RESOURCE_INFO happened to
+            /* The global gauges SYS_RESOURCE_INFO happened to
              * carry, moved to where the rest of the global instrumentation
              * already lives. */
             q.kslab_used_bytes      = kslab_used_bytes();
@@ -804,7 +804,7 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             /* Roadmap review: both are PERMANENTLY ZERO.  The quota they
              * counted is retired — nothing charges one and nothing refuses on
              * one — and the fields stay only because this struct is frozen
-             * ABI (Stage 10-abi).  Zero here means "nothing counts this", not
+             * ABI.  Zero here means "nothing counts this", not
              * "no exhaustion occurred"; see kfault.h. */
             q.global_failed_charges = kfault_quota_failed_count();
             q.global_rollbacks      = kfault_quota_rollback_count();
@@ -864,13 +864,18 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             kcnode_cdt_stats(&q.cdt_derivation_count, &q.cdt_derivation_hwm,
                              &q.cdt_revoke_count, &q.cdt_delete_count,
                              &q.cdt_cross_cnode_descendants,
-                             &q.cdt_ipc_transfer_count,
-                             &q.legacy_handle_derivation_migrated);
+                             &q.cdt_ipc_transfer_count);
+            /* The counter behind this field is gone: it counted migrations off
+             * a second derivation tree that no longer exists, had no callers,
+             * and was a structural zero.  The FIELD stays because this struct
+             * is size-validated and prefix-compatible for ring 3, and removing
+             * one shifts every field after it. */
+            q.legacy_handle_derivation_migrated = 0u;
             task_registry_stats(&q.tcb_registry_active, &q.tcb_registry_hwm,
                                 &q.tcb_registry_exhaustions,
                                 &q.tcb_registry_generation_mismatch);
             kcnode_mdb_stats(&q.mdb_nodes_live, &q.mdb_nodes_hwm,
-                             &q.mdb_legacy_roots, &q.mdb_orphan_promotions,
+                             &q.mdb_unparented_roots, &q.mdb_orphan_promotions,
                              &q.mdb_reparents, &q.mdb_revoked_nodes,
                              &q.mdb_moves, &q.mdb_max_depth);
             return syscall_err(copy_versioned_to_user(buf_uptr, user_size, user_version,

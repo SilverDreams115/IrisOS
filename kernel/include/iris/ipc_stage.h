@@ -6,7 +6,7 @@
 #include <iris/ipc_msg.h>
 
 /*
- * The kernel's per-thread message staging (ledger A-33).
+ * The kernel's per-thread message staging.
  *
  * This used to be `struct IrisMsg` in the shared ABI header, and ring 3 handed
  * the kernel a POINTER to one.  It is not ABI any more — a message arrives in

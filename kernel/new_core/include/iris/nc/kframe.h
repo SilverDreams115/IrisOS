@@ -11,7 +11,7 @@
 
 
 /*
- * KFrame — Frame capability object (Phase 5).
+ * KFrame — Frame capability object.
  *
  * Represents formal authority over a contiguous physical memory region
  * suitable for mapping into a VSpace.  Created exclusively via
@@ -23,20 +23,20 @@
  *   - kframe_destroy decrements parent->child_count and releases the
  *     parent retain, mirroring the sub-untyped teardown pattern.
  *
- * Bootstrap frames (Phase 6.2):
+ * Bootstrap frames:
  *   bootstrap_kframe_map creates a KFrame with alloc_parent=NULL for
  *   one physical page and maps it immediately into a KVSpace.  The
  *   alloc retain is held by the caller (stored in KProcess.bootstrap_frames).
  *   Physical memory lifetime is managed externally (task struct fields);
  *   KFrame destroy only calls kslab_free.
  *
- * VMO-backed frames are GONE (ledger D-5).  A KFrame used to be able to point
+ * VMO-backed frames are GONE.  A KFrame used to be able to point
  * at a KVmo that owned its physical page, so destroying the frame only delayed
  * the VMO's destruction.  Physical memory has one owner now — the Untyped the
  * frame was retyped from — and the frame either has an alloc_parent or is a
  * bootstrap frame whose memory the boot path owns.
  *
- * Mapping lifecycle (Phase 5.1):
+ * Mapping lifecycle:
  *   mapped_count tracks how many PTEs currently point at this frame across
  *   all VSpaces.  kframe_map_page increments it; kframe_unmap_page decrements
  *   it.  kframe_obj_destroy asserts mapped_count == 0: callers must unmap
@@ -53,7 +53,7 @@ struct KFrame {
 /* Forward declaration — full definition in iris/nc/kvspace.h. */
 struct KVSpace;
 
-/* D-10: remove every PTE of the frame mapped at base_va.  One mapping record
+/* Remove every PTE of the frame mapped at base_va.  One mapping record
  * covers a whole frame, so every teardown path walks the frame's pages. */
 /*
  * `vs` and `cr3` are BOTH taken, which looks redundant and is not: a teardown
@@ -79,7 +79,7 @@ struct KFrame *kframe_alloc(uint64_t paddr, uint64_t size,
                              struct KUntyped *alloc_parent);
 
 /*
- * Stage 6 Step 1 — placement-init a KFrame whose HEADER storage is a child
+ * Placement-init a KFrame whose HEADER storage is a child
  * block of the Untyped that also produced its page (carved from the top by
  * kuntyped_alloc_child_top; the page comes from the bottom).  The destructor
  * returns the block with kuntyped_release_child, which is what carries the
@@ -129,7 +129,7 @@ iris_error_t kframe_unmap_page(struct KFrame *f, struct KVSpace *vs,
                                 uint64_t user_va);
 
 /*
- * bootstrap_kframe_map — Bootstrap-only internal helper (Phase 6.2).
+ * bootstrap_kframe_map — Bootstrap-only internal helper.
  *
  * Allocates a KFrame (alloc_parent=NULL) for the physical page at paddr
  * (4 KiB, page-aligned) and immediately maps it into vs at user_va with
@@ -163,10 +163,10 @@ static inline int kframe_va_valid(uint64_t va) {
     return 1;
 }
 
-/* Phase 18: live KFrame object count (additive diagnostics). */
+/* Live KFrame object count (additive diagnostics). */
 uint32_t kframe_live_count(void);
 
-/* Phase 19: mapping instrumentation (additive diagnostics; see kframe.c).
+/* Mapping instrumentation (additive diagnostics; see kframe.c).
  * kframe_stat_map/unmap/cleanup are called by the map/unmap/teardown paths. */
 uint32_t kframe_live_mapping_count(void);
 uint32_t kframe_map_success_count(void);

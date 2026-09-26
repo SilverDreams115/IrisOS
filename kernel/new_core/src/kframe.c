@@ -11,7 +11,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 
-/* Phase 18 — live KFrame object count (additive diagnostics).  Incremented on
+/* Live KFrame object count (additive diagnostics).  Incremented on
  * every kframe_alloc, decremented in kframe_obj_destroy, so authority tests can
  * prove a retyped/mapped frame is destroyed exactly once after unmap+release. */
 static _Atomic uint32_t kframe_live;
@@ -20,7 +20,7 @@ uint32_t kframe_live_count(void) {
     return atomic_load_explicit(&kframe_live, memory_order_relaxed);
 }
 
-/* Phase 19 — mapping instrumentation (additive, exposed via SYS_SCHED_INFO ext4).
+/* Mapping instrumentation (additive, exposed via SYS_SCHED_INFO ext4).
  *   kframe_live_mappings — KFrameMapping nodes currently installed across every
  *     VSpace.  Bumped on a successful map, dropped on every removal path
  *     (explicit unmap, VSpace invalidate, VSpace destroy) so it returns to
@@ -89,7 +89,7 @@ static const struct KObjectOps kframe_ops = {
 };
 
 /*
- * Stage 6 Step 1 — the Untyped-born frame.
+ * The Untyped-born frame.
  *
  * The frame's PAGE was always carved from the Untyped; its header was a kslab
  * allocation, so a caller who paid for a page also spent kernel memory that
@@ -169,7 +169,7 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
     }
 
     /*
-     * D-10: a map covers the WHOLE frame, and every page of it is checked
+     * A map covers the WHOLE frame, and every page of it is checked
      * before any of it is installed.
      *
      * Checking as we go would leave a partial mapping behind when page seven
@@ -204,14 +204,14 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
     if (map_flags & 4u)  page_flags |= PAGE_PCD | PAGE_PWT;
 
     /*
-     * Stage 6-pure Step 2: the kernel does not create paging levels — and
+     * The kernel does not create paging levels — and
      * since the purity gate learned to follow the PMM as well as the slab,
      * that is true of this function with no runtime condition attached.
      *
      * A missing level is REPORTED, not carved.  The holder retypes a
      * KOBJ_PAGE_TABLE, installs it with `PageTable_Map`, and retries — which
      * is what makes the level an object it owns rather than a side effect it
-     * paid for (ledger D-5).
+     * paid for.
      *
      * It used to branch on `vs->kernel_funded`, so that the root task's
      * bootstrap maps — its text, stack and BootInfo, installed before there is
@@ -316,7 +316,7 @@ struct KFrame *bootstrap_kframe_map(struct KVSpace *vs,
 /*
  * Remove every PTE of a frame mapped at `base_va`.
  *
- * One mapping record covers a WHOLE frame (ledger D-10), so every teardown
+ * One mapping record covers a WHOLE frame, so every teardown
  * path has to walk the frame's pages rather than the record's first one.  A
  * cleanup that removed only the first page would leave the rest of a large
  * frame mapped in an address space being reclaimed — the PTEs would outlive

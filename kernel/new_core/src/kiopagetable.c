@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * kiopagetable.c — one level of a device's translation tables (Stage 10-dma).
+ * kiopagetable.c — one level of a device's translation tables.
  *
  * The lifecycle is as thin as `KPageTable`'s and for the same reason: this is
  * storage plus the record of where it is installed.  Installing it and taking

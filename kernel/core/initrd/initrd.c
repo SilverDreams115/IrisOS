@@ -27,7 +27,7 @@
  *   [8] iris_test — ring-3 syscall test suite (Block 8)
  *   [9] lifecycle_probe — minimal ring-3 TEST child spawned by iris_test to
  *       exercise cross-process lifecycle paths (not a productive service)
- *   [10] pager — the ring-3 user pager SERVICE (Phase 27): supervised, driven
+ *   [10] pager — the ring-3 user pager SERVICE: supervised, driven
  *       request/reply over a control endpoint, resolves faults inside a
  *       capability manifest of target + VMO grants
  */
@@ -130,7 +130,7 @@ static const struct initrd_entry g_initrd[] = {
                 _binary_services_iris_test_iris_test_elf_end  },
     /* [9] */ { _binary_services_lifecycle_probe_lifecycle_probe_elf_start,
                 _binary_services_lifecycle_probe_lifecycle_probe_elf_end  },
-    /* [10] pager — the ring-3 user pager SERVICE (own binary, Phase 28) */
+    /* [10] pager — the ring-3 user pager SERVICE (own binary) */
     { _binary_services_pager_pager_elf_start,
       _binary_services_pager_pager_elf_end  },
     /* [11] bootfix/badelf — invalid-ELF blob: boot-growth + loader failure-path
@@ -153,34 +153,34 @@ static const struct initrd_entry g_initrd[] = {
      * EOF / short-file zero-fill edge (T220) and empty-tail reads.  "small.dat". */
     { _binary_services_filebk_small_dat_start,
       _binary_services_filebk_small_dat_end  },
-    /* [16] timer — the ring-3 TIMER SERVICE (ledger A-24).  The kernel has no
+    /* [16] timer — the ring-3 TIMER SERVICE.  The kernel has no
      * timed blocking; this holds the timer interrupt and signals a client's
      * notification when its deadline passes.  Appended rather than inserted:
      * every index below is a compile-time agreement with ring 3. */
     { _binary_services_timer_timer_elf_start,
       _binary_services_timer_timer_elf_end  },
-    /* [17] pci — the ring-3 PCI BUS SERVICE (Stage 10).  The kernel does not
+    /* [17] pci — the ring-3 PCI BUS SERVICE.  The kernel does not
      * enumerate PCI and never will; this holds the configuration ports and the
      * PCI-hole device Untyped, so a driver can be handed its own device's
      * register window without being handed the bus. */
     { _binary_services_pci_pci_elf_start,
       _binary_services_pci_pci_elf_end  },
-    /* [18] blk — the ring-3 AHCI DISK SERVICE (Stage 10).  It asks `pci` for
+    /* [18] blk — the ring-3 AHCI DISK SERVICE.  It asks `pci` for
      * its controller, contains the controller's DMA behind a remapping unit
      * when the machine has one, and reads sectors. */
     { _binary_services_blk_blk_elf_start,
       _binary_services_blk_blk_elf_end  },
-    /* [19] net — the ring-3 e1000 NETWORK SERVICE (Stage 10).  It moves
+    /* [19] net — the ring-3 e1000 NETWORK SERVICE.  It moves
      * Ethernet frames and parses nothing; a driver that understood ARP would
      * be policy inside a driver. */
     { _binary_services_net_net_elf_start,
       _binary_services_net_net_elf_end  },
-    /* [20] fs — the ring-3 PERSISTENT FILESYSTEM (Stage 10).  It holds no
+    /* [20] fs — the ring-3 PERSISTENT FILESYSTEM.  It holds no
      * disk: it asks the block service, which is the only thing between it and
      * the hardware. */
     { _binary_services_fs_fs_elf_start,
       _binary_services_fs_fs_elf_end  },
-    /* [21] ip — ARP, IPv4 and UDP (Stage 10).  Above the network driver, which
+    /* [21] ip — ARP, IPv4 and UDP.  Above the network driver, which
      * parses nothing: everything here is policy about what bytes mean. */
     { _binary_services_ip_ip_elf_start,
       _binary_services_ip_ip_elf_end  },

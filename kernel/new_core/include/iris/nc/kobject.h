@@ -17,7 +17,7 @@
 #include <iris/nc/spinlock.h>
 
 typedef enum {
-    /* KOBJ_PROCESS is RESERVED, not removed (Stage 7-proc): the enumerator's
+    /* KOBJ_PROCESS is RESERVED, not removed: the enumerator's
      * VALUE is the wire type SYS_CAP_IDENTIFY reports and renumbering the rest
      * would change what every other capability calls itself.  Nothing creates
      * one — struct KProcess is deleted — so no live capability carries it. */
@@ -25,7 +25,7 @@ typedef enum {
     KOBJ_CHANNEL,
     KOBJ_NOTIFICATION,
     KOBJ_BOOTSTRAP_CAP,
-    /* KOBJ_VMO is RESERVED, not removed (ledger D-5), for the reason above:
+    /* KOBJ_VMO is RESERVED, not removed, for the reason above:
      * the enumerator's VALUE is the wire type SYS_CAP_IDENTIFY reports.
      * struct KVmo is deleted and nothing creates one. */
     KOBJ_VMO,
@@ -34,21 +34,21 @@ typedef enum {
     /* KOBJ_INITRD_ENTRY is RESERVED, not removed, for the reason KOBJ_PROCESS
      * and KOBJ_VMO are: the enumerator's VALUE is the wire type
      * SYS_CAP_IDENTIFY reports.  struct KInitrdEntry is deleted and nothing
-     * creates one — a boot image is a FRAME now (ledger D-5/D-10), which is
+     * creates one — a boot image is a FRAME now, which is
      * what an image reference had no reason to be an object for. */
     KOBJ_INITRD_ENTRY,
     KOBJ_ENDPOINT,       /* seL4-style synchronous IPC rendezvous point */
     KOBJ_CNODE,          /* seL4-style capability node — fixed array of capability slots */
-    KOBJ_SCHED_CONTEXT,  /* Ph74: scheduling context — budget/period for time protection */
-    KOBJ_UNTYPED,        /* Ph76: seL4-style untyped memory cap — physical region for typed-object creation */
-    KOBJ_REPLY,          /* Ph85: seL4-style one-shot reply capability — delivered by EP_CALL rendezvous */
-    KOBJ_TCB,            /* Ph96: thread control block capability — wraps a live struct task */
-    KOBJ_VSPACE,         /* Phase 4: virtual address space capability — wraps a process PML4 */
-    KOBJ_FRAME,          /* Phase 5: physical memory frame capability — typed region from KUntyped */
-    KOBJ_PAGE_TABLE,     /* Stage 6-pure: a paging level the USER retyped and maps explicitly */
-    KOBJ_ASID_POOL,      /* A-21: a range of address-space identifiers, retyped */
-    KOBJ_IOSPACE,        /* Stage 10-dma: ONE device's DMA address space */
-    KOBJ_IO_PAGE_TABLE,  /* Stage 10-dma: one level of that address space's tables */
+    KOBJ_SCHED_CONTEXT,  /* Scheduling context — budget/period for time protection */
+    KOBJ_UNTYPED,        /* SeL4-style untyped memory cap — physical region for typed-object creation */
+    KOBJ_REPLY,          /* SeL4-style one-shot reply capability — delivered by EP_CALL rendezvous */
+    KOBJ_TCB,            /* Thread control block capability — wraps a live struct task */
+    KOBJ_VSPACE,         /* Virtual address space capability — wraps a process PML4 */
+    KOBJ_FRAME,          /* Physical memory frame capability — typed region from KUntyped */
+    KOBJ_PAGE_TABLE,     /* A paging level the USER retyped and maps explicitly */
+    KOBJ_ASID_POOL,      /* A range of address-space identifiers, retyped */
+    KOBJ_IOSPACE,        /* ONE device's DMA address space */
+    KOBJ_IO_PAGE_TABLE,  /* One level of that address space's tables */
 } kobject_type_t;
 
 struct KObject;
@@ -64,7 +64,7 @@ struct KObject {
     _Atomic uint32_t          active_refs; /* published handle/global refs */
     spinlock_t                lock;        /* guards mutable state — separate from lifecycle */
     const struct KObjectOps  *ops;         /* non-NULL for every initialized object */
-    /* Stage 6: where this object's STORAGE came from, and how much of it.
+    /* Where this object's STORAGE came from, and how much of it.
      * 0 = the kernel slab.  Non-zero = a child block of an Untyped, of exactly
      * this many bytes — what kuntyped_release_child needs to hand it back.
      *
@@ -75,7 +75,7 @@ struct KObject {
      * had to be re-derived seven times. */
     uint32_t                  ut_block_bytes;
     /*
-     * Ledger A-39 — the link that makes CNode teardown iterative.
+     * The link that makes CNode teardown iterative.
      *
      * Emptying a CNode slot that names another CNode ends that CNode's last
      * active reference, which runs ITS close hook, which empties ITS slots.

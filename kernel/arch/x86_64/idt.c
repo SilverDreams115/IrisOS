@@ -169,7 +169,7 @@ void isr_save_user_ctx(struct full_frame *frame) {
 }
 
 /*
- * Stage 9-evt step 3 — the exit decision.
+ * The exit decision.
  *
  * Called after the handler and before the restore.  If this interrupt came
  * from RING 3 and the thread it interrupted should not go straight back —
@@ -219,7 +219,7 @@ void isr_handler(struct full_frame *frame) {
         pic_eoi(0);
         scheduler_tick();
         /*
-         * Ledger A-24 — and the tick is offered to RING 3.
+         * And the tick is offered to RING 3.
          *
          * The kernel keeps this interrupt for preemption and for MCS budget
          * accounting, which is what seL4's kernel does with its own timer.
@@ -357,7 +357,7 @@ void isr_handler(struct full_frame *frame) {
                      * Blocked, not switched: the exit path sees a thread that
                      * is no longer runnable and dispatches past it.
                      *
-                     * Ledger A-22: the STATE is the delivery's to set, not
+                     * The STATE is the delivery's to set, not
                      * this path's.  A fault is a call on an endpoint, so the
                      * thread is either queued on it (BLOCKED_SEND) or already
                      * taken by a waiting handler and owed a reply
