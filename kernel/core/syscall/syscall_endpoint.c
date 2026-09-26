@@ -40,6 +40,29 @@ void ipc_msg_load(struct task *t) {
     if (t->ipc_msg.word_count > IRIS_MSG_WORDS)
         t->ipc_msg.word_count = IRIS_MSG_WORDS;
     t->ipc_msg.buf_len    = iris_mi_buf(mi);
+    /*
+     * ── All four words travel, whatever the count says ─────────────────────
+     *
+     * This was written as though `word_count` decided which words are part of
+     * the message, the way seL4's `length` does, and the comment above
+     * `ipc_msg_load` said so.  It is not true of this system, and the
+     * difference was measured rather than argued: making the kernel carry only
+     * the declared words failed nineteen tests immediately, in BOTH
+     * directions -- clients that fill words[0] without setting the count, and
+     * servers that answer with an error code in words[0] and never declare it.
+     * Ring 3 writes `words[]` 379 times and `word_count` 107.
+     *
+     * So the protocol is four words, always, and the count is advisory.  What
+     * that costs is a channel: the words a sender did not fill carry whatever
+     * its `struct iris_msg` held, and that reaches the receiver.
+     *
+     * What keeps it shut today is convention -- every sender in this tree
+     * zeroes the struct first, through `iris_msg_zero` and its siblings -- and
+     * a boundary held by convention is held until somebody writes a new
+     * caller.  Closing it means making every reply and every request declare
+     * its count, across the whole userland, which is its own change with its
+     * own gate.  Recorded in the ledger rather than half-done here.
+     */
     t->ipc_msg.words[0]   = a[IRIS_MSGA_MR0];
     t->ipc_msg.words[1]   = a[IRIS_MSGA_MR1];
     t->ipc_msg.words[2]   = a[IRIS_MSGA_MR2];
@@ -76,6 +99,22 @@ static void ipc_msg_store_ext(struct task *t, uint32_t caps) {
     r[IRIS_MSGR_INFO]  = iris_mi(t->ipc_msg.label, t->ipc_msg.word_count,
                                  caps, t->ipc_msg.buf_len);
     r[IRIS_MSGR_BADGE] = t->ipc_msg.sender_badge;
+    /*
+     * The REPLY path still carries all four, and that is a decision rather
+     * than an oversight.
+     *
+     * Ring 3 writes `words[]` far more often than it writes `word_count` --
+     * 379 sites against 107 -- so a great many replies put an error code in
+     * words[0] and never declare it.  Zeroing here drops those: nineteen
+     * tests failed instantly, all of them reading a reply whose count the
+     * server never set.
+     *
+     * What is exposed here is narrower than on the way in: the leftovers of a
+     * reply are the handler's own previous message, returned to a caller it is
+     * already answering.  Closing it properly means making every reply declare
+     * its count, which is a change across the whole userland and belongs in
+     * its own change with its own gate -- not smuggled into a boundary fix.
+     */
     r[IRIS_MSGR_MR0]   = t->ipc_msg.words[0];
     r[IRIS_MSGR_MR1]   = t->ipc_msg.words[1];
     r[IRIS_MSGR_MR2]   = t->ipc_msg.words[2];

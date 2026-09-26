@@ -171,6 +171,35 @@ UT-TOP-1..5 and T298.
 
 ## Structural divergences from seL4
 
+### A-38 — the message carries four words whatever the count says
+
+**Found while hardening, measured, and left open deliberately.**
+
+`ipc_msg_load` copies all four message registers and `ipc_msg_store_ext`
+returns all four, whatever `word_count` declared.  The comment above them said
+the count decides which words are part of the message, the way seL4's `length`
+does.  It does not.
+
+That was established by changing it.  Carrying only the declared words failed
+nineteen tests immediately, in BOTH directions: clients that fill `words[0]`
+and never set the count, and servers that answer with an error code in
+`words[0]` and never declare it.  Ring 3 writes `words[]` 379 times and
+`word_count` 107.
+
+So the protocol is four words, always.  What that costs is a channel: the
+words a sender did not fill carry whatever its `struct iris_msg` held, and
+that reaches the receiver.  The exposure is bounded by what senders leave
+there -- every one in this tree zeroes the struct first, through
+`iris_msg_zero` and its siblings -- so nothing is known to leak today.
+
+It is a boundary held by CONVENTION rather than by the kernel, which is
+exactly the shape this tree has spent a sweep removing elsewhere.  Closing it
+means making every request and every reply declare its count, across the whole
+userland; that is its own change with its own gate, and pretending otherwise
+by half-doing it here would have left a kernel whose comment and behaviour
+disagree in a new way instead of the old one.  The comment now states what is
+true.
+
 ### A-37 — the kernel halts on a ring-0 fault, and one path could take one  ✅ CLOSED
 
 **Found by audit rather than by a test, registered, and then closed in the
