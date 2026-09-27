@@ -35,11 +35,13 @@ UEFI → BOOTX64.EFI → KERNEL.ELF
           → kbd         (PS/2 keyboard driver; endpoint + IRQ notification)
           → vfs         (boot-namespace filesystem + file grants; endpoint-only)
           → sh          (interactive shell; pure CPtr-first client)
-        → pci           (the bus: configuration ports + the PCI-hole Untyped,
-                         and the only task that can reach either)
+        → pci           (the bus: configuration ports + the device Untypeds
+                         over the PCI windows, below and above 4 GiB, and the
+                         only task that can reach any of them)
           → blk         (AHCI disk driver; asks pci by class code)
             → fs        (a filesystem on a disk IRIS owns — holds no hardware)
-          → net         (e1000 driver; moves frames and parses nothing)
+          → net         (moves frames and parses nothing; one backend per
+                         card family — Intel e1000, virtio-net)
             → ip        (ARP, IPv4, UDP — holds one endpoint to net, and
                          no ports, no device Untyped, no DMA authority)
 ```
@@ -508,14 +510,19 @@ working:
   again once the mapping is revoked.  On a machine with no remapping unit the
   same driver reaches memory nobody granted it.
 - **The platform is services**: `pci` holds the PCI configuration ports and the
-  PCI-hole device Untyped and is the only task that can reach either — a driver
-  asks it for its device and gets a frame over that device's register window
-  and nothing else.  `blk` is an AHCI disk driver in ring 3 that finds its
+  device Untypeds over the PCI windows and is the only task that can reach any
+  of them — a driver asks it for its device and gets a frame over that device's
+  register window and nothing else.  There are two windows because a 64-bit
+  prefetchable BAR is assigned above four gigabytes and the low one stops below
+  the IOAPIC.  `blk` is an AHCI disk driver in ring 3 that finds its
   controller through `pci` by class code, contains the controller's DMA behind
   a remapping unit when the machine has one, and reads and writes sectors.
-  `net` is an e1000 driver that moves Ethernet frames and parses nothing, and
-  `ip` is ARP, IPv4 and UDP above it — a separate service holding one endpoint
-  to the driver and no hardware authority at all, which is what makes a stack
+  `net` moves Ethernet frames and parses nothing, with one backend per card
+  family behind a common interface — Intel e1000 and virtio-net today, and a
+  card nobody has written one for is REPORTED as such rather than driven with
+  the wrong register offsets.  `ip` is ARP, IPv4 and UDP above it — a separate
+  service holding one endpoint to the driver and no hardware authority at all,
+  which is what makes a stack
   replaceable without reimplementing a card.  It completes a TFTP read against
   a server that is not this machine, and a peer only answers a stack that got
   the ARP, the IPv4 checksum and the UDP pseudo-header checksum right.  Three
@@ -715,8 +722,8 @@ that was read back afterwards from the other operating system.  A second boot
 found the filesystem it had made rather than formatting again, so what it wrote
 survived the power going off — the claim `make smoke-persist` makes under QEMU,
 made on metal.  That is still one machine and there is no gate on it: every
-automated check here runs under QEMU, and that machine's network card is not an
-e1000.
+automated check here runs under QEMU, against an e1000 and against a virtio
+device, and that machine's card is neither.
 
 ## Positioning
 

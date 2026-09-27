@@ -52,6 +52,7 @@
 #define PCI_SLOT_IOPORT    6u   /* 0xCF8..0xCFF, and nothing else             */
 #define PCI_SLOT_REPLY     7u   /* the reply object its receive stages        */
 #define PCI_SLOT_MMIO_UT   8u   /* the PCI hole, as a device Untyped          */
+#define PCI_SLOT_MMIO_UT_HIGH 9u /* the 64-bit window, when there is one      */
 /* Its own budget arrives at IRIS_CPTR_OWN_UNTYPED (12) like every service's. */
 
 /*
@@ -143,6 +144,38 @@
  * the STEP that failed rather than the reason.
  */
 #define PCI_OP_CARVE       0x7006u
+
+/*
+ * A dword of CONFIGURATION SPACE, read only.
+ *   words[0] = index, words[1] = byte offset, dword-aligned and below 256.
+ *   Reply: words[0] = the dword.
+ *
+ * PCI_OP_INFO and PCI_OP_BAR answer the two questions every driver asks, and
+ * for a device whose registers sit at a fixed offset from a BAR that is the
+ * whole of it.  A device that instead DESCRIBES ITS OWN LAYOUT -- virtio is
+ * the one in this tree -- puts that description in the capability list, and a
+ * driver that cannot read config space cannot find its own registers.  So the
+ * read exists, and nothing else does: there is no matching write, because the
+ * one field a driver legitimately changes is the command register and
+ * PCI_OP_ENABLE changes it, with the bits it may set fixed in one place.
+ *
+ * Reading is bounded by the same `fn_ok` index check as the rest: a caller
+ * reaches the functions the scan found and no others, and cannot address a
+ * bus by number.  Config space of a device you can already name and claim
+ * tells you nothing claiming it did not.
+ */
+#define PCI_OP_CFG_READ    0x7007u
+
+/*
+ * Capability list, for a caller walking it.  Offsets are DWORD offsets
+ * because that is the granularity `PCI_OP_CFG_READ` answers at -- the status
+ * register is sixteen bits at 0x06, so it arrives as the HIGH half of the
+ * dword at 0x04 and its bits are named here already shifted.
+ */
+#define PCI_CFG_COMMAND     0x04u      /* status is this dword's high half */
+#define PCI_CFG_STATUS_CAPS (1u << 20) /* status bit 4: the list exists    */
+#define PCI_CFG_CAP_PTR     0x34u      /* low byte = first entry's offset  */
+#define PCI_CAP_ID_VENDOR   0x09u      /* vendor-defined; virtio uses it   */
 
 /* Reply labels. */
 #define PCI_REP_OK         0x7080u

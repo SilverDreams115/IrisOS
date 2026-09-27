@@ -52,7 +52,30 @@ struct net_hw {
     uint32_t rx_next;                    /* backend-owned ring cursor */
     uint32_t rx_skipping;                /* mid-way through an oversized frame */
     uint64_t rx_count;                   /* frames accepted, for the report */
+    /* Where a backend's own bring-up stopped, in whatever numbering that
+     * family finds useful.  Reported verbatim: the service does not know
+     * what the numbers mean and does not need to. */
+    uint32_t step;
+    /*
+     * The backend's own, carried from probe() through bring_up() and every
+     * call after.  A family whose registers sit at FIXED offsets from its BAR
+     * never touches it; a device that describes its own layout has to keep
+     * what it read somewhere, and the service has no business knowing what.
+     */
+    uint64_t priv[8];
 };
+
+/*
+ * What a backend may ask the bus BEFORE anything is claimed or mapped.
+ *
+ * Both are the service's, and both are READ ONLY.  A backend discovers; it
+ * does not configure, and it still never holds a capability -- claiming the
+ * BAR, enabling the device and containing its DMA stay above the line, where
+ * one implementation serves every card.
+ */
+uint32_t net_bus_cfg(uint32_t index, uint32_t off);
+int      net_bus_bar(uint32_t index, uint32_t bar,
+                     uint64_t *base, uint64_t *size, uint32_t *flags);
 
 struct net_backend {
     const char *name;
@@ -60,6 +83,17 @@ struct net_backend {
     /* Does this backend drive that device id?  Asked only after the vendor
      * matches and the class says Ethernet. */
     int (*matches)(uint32_t device);
+    /*
+     * Which BAR holds the registers, and any discovery that has to happen
+     * before it is claimed.  Returns the BAR index, or -1 to refuse the
+     * device after a closer look than the id allowed.
+     *
+     * It exists because "the registers are in BAR 0" is an e1000 fact that
+     * the service had quietly adopted as a rule.  A backend with a fixed
+     * layout leaves this null and gets BAR 0; one that has to read the device
+     * to find out fills in `hw->priv` here and uses it later.
+     */
+    int (*probe)(uint32_t index, struct net_hw *hw);
     /* Bring the card up: reset, rings, filters, link, MAC.  Returns 1 when
      * the card is usable.  A backend that cannot be sure returns 0 rather
      * than leaving a half-configured controller doing DMA. */
@@ -74,5 +108,6 @@ struct net_backend {
 
 /* The table.  One row per family somebody has actually run this against. */
 extern const struct net_backend net_backend_e1000;
+extern const struct net_backend net_backend_virtio;
 
 #endif /* IRIS_NET_NETDEV_H */

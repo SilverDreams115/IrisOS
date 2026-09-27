@@ -328,16 +328,16 @@ static long ut_info(long ut, uint64_t *base, uint64_t *used, uint64_t *total) {
  * would make the watermark a suggestion and let two holders carve the same
  * bytes.
  */
-static void pci_carve(void) {
+static void pci_carve_region(long ut_slot) {
     uint64_t base = 0, used = 0, total = 0;
-    if (ut_info((long)PCI_SLOT_MMIO_UT, &base, &used, &total) != 0) {
+    if (ut_info(ut_slot, &base, &used, &total) != 0) {
         g_carve_state = PCI_CARVE_NO_REGION;
         return;
     }
 
     /* The region pays for its object headers out of this service's own RAM;
      * MMIO is not storage.  Set once, so a second call is not an error. */
-    (void)iris_invoke1((long)PCI_SLOT_MMIO_UT, INV_UNTYPED_SET_DEVICE_BUDGET,
+    (void)iris_invoke1(ut_slot, INV_UNTYPED_SET_DEVICE_BUDGET,
                        (long)IRIS_CPTR_OWN_UNTYPED);
 
     uint64_t mark = base + used;
@@ -387,7 +387,7 @@ static void pci_carve(void) {
         if (pad_bytes != 0u) {
             /* Skipped, not wasted: these bytes belong to whatever the firmware
              * put below this window, and the service must not hand them out. */
-            long pad = iris_invoke((long)PCI_SLOT_MMIO_UT, INV_UNTYPED_RETYPE,
+            long pad = iris_invoke(ut_slot, INV_UNTYPED_RETYPE,
                                    (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
                                    (long)((uint64_t)(PCI_SLOT_BAR_BASE +
                                           PCI_MAX_WINDOWS) << 32),
@@ -404,7 +404,7 @@ static void pci_carve(void) {
 
         uint32_t leaf = PCI_SLOT_BAR_BASE + g_window_count;
         uint64_t size = g_fn[bf].bar_size[bb];
-        if (iris_invoke((long)PCI_SLOT_MMIO_UT, INV_UNTYPED_RETYPE,
+        if (iris_invoke(ut_slot, INV_UNTYPED_RETYPE,
                         (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
                         (long)((uint64_t)leaf << 32), (long)size) != 0)
             { g_carve_state = PCI_CARVE_NO_FRAME; break; }
@@ -417,6 +417,23 @@ static void pci_carve(void) {
         g_window_count++;
         mark = best + size;
     }
+}
+
+/*
+ * Both of them, low first.
+ *
+ * Two regions and not one because the low one stops below the IOAPIC: a
+ * 64-bit prefetchable BAR is assigned above four gigabytes, and until the
+ * kernel published a second device Untyped up there the bus service had
+ * nothing to carve over one.  A machine whose kernel publishes no high
+ * region leaves the slot empty, `ut_info` refuses it, and that is an ABSENCE
+ * rather than a failure -- so the state the low carve reported stands.
+ */
+static void pci_carve(void) {
+    pci_carve_region((long)PCI_SLOT_MMIO_UT);
+    uint32_t low = g_carve_state;
+    pci_carve_region((long)PCI_SLOT_MMIO_UT_HIGH);
+    if (g_carve_state == PCI_CARVE_NO_REGION) g_carve_state = low;
 }
 
 /* ── the service loop ────────────────────────────────────────────────────── */
@@ -524,6 +541,22 @@ void pci_main(iris_cptr_t bootstrap_ch_h) {
                     rep.cap        = (long)g_window[w].leaf;
                     rep.cap_rights = RIGHT_READ | RIGHT_WRITE;
                 }
+            }
+            break;
+
+        case PCI_OP_CFG_READ:
+            /*
+             * Dword-aligned and inside the 256-byte legacy window, because
+             * that is all 0xCF8/0xCFC reaches and `cfg_read` masks the offset
+             * to a dword anyway -- an unaligned request would silently read
+             * the dword below it and the caller would never know.
+             */
+            if (fn_ok(m.words[0]) && m.words[1] < 256u &&
+                (m.words[1] & 3u) == 0u) {
+                const struct pci_fn *f = &g_fn[m.words[0]];
+                rep.label      = PCI_REP_OK;
+                rep.words[0]   = cfg_read(f->devfn, (uint32_t)m.words[1]);
+                rep.word_count = 1u;
             }
             break;
 

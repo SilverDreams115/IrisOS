@@ -114,6 +114,23 @@
  * part of one.
  */
 #define NET_FRAME_BYTES  1024u
+
+/*
+ * How far bring-up got.  `link 0` says a card did not come up and names no
+ * cause, which on a machine whose card nobody has a backend for reads exactly
+ * like a machine with no card -- and the two want completely different work.
+ * Reported in NET_OP_INFO's flags word, service step in bits 16..23 and the
+ * backend's own in bits 24..31.
+ */
+#define NET_STEP_NONE     0u   /* no Ethernet controller matched a backend */
+#define NET_STEP_PROBE    1u   /* a backend looked closer and refused      */
+#define NET_STEP_CLAIM    2u   /* its BAR could not be claimed             */
+#define NET_STEP_ENABLE   3u   /* the device would not decode              */
+#define NET_STEP_MAP_BAR  4u
+#define NET_STEP_FRAMES   5u   /* a DMA buffer could not be retyped        */
+#define NET_STEP_MAP_BUF  6u
+#define NET_STEP_BACKEND  7u   /* the registers were reachable; it said no */
+#define NET_STEP_UP       8u
 #define NET_RX_PER_FRAME 4u      /* 4 * 1024 = one page */
 
 #endif /* IRIS_NET_EP_PROTO_H */

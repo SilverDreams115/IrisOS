@@ -567,6 +567,9 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * delete and T319 failed by name.
  */
 #define IRIS_CPTR_MMIO_UNTYPED      ((uint64_t)78)
+/* The same, above four gigabytes, where a 64-bit prefetchable BAR goes.
+ * A separate region because the low one stops at the IOAPIC. */
+#define IRIS_CPTR_MMIO_HIGH_UNTYPED ((uint64_t)79)
 /* ...and the slot iris_test receives it in, for the reason
  * IRIS_CPTR_IOSPACE_CONTROL_TEST exists: 78 is inside the suite's S1 scratch
  * window (64..87) and 62 is inside init's (INIT_SLOT_TEST_TCB).  Two crowded

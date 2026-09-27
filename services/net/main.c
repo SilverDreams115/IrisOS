@@ -57,6 +57,8 @@ static void net_msg_zero(struct iris_msg *m) {
 static uint32_t g_ready;
 static uint16_t g_source_id;
 static uint32_t g_contained;
+/* How far bring-up got, so that a machine that reports no link says why. */
+static uint32_t g_step = NET_STEP_NONE;
 /* Everything the chosen backend is given.  The service fills it in; the
  * backend reads it and owns the cursors inside it. */
 static struct net_hw g_hw;
@@ -72,6 +74,27 @@ static long net_pci(uint64_t op, uint64_t a0, uint64_t a1,
     if (out) *out = m;
     if (r != 0) return r;
     return (m.label == PCI_REP_OK) ? 0 : -1;
+}
+
+/*
+ * The two questions a backend may ask before anything is claimed.  Both go
+ * through the same `pci` endpoint as everything else here; neither can reach
+ * a function the scan did not find, and neither can write.
+ */
+uint32_t net_bus_cfg(uint32_t index, uint32_t off) {
+    struct iris_msg r;
+    if (net_pci(PCI_OP_CFG_READ, index, off, 0, &r) != 0) return 0xFFFFFFFFu;
+    return (uint32_t)r.words[0];
+}
+
+int net_bus_bar(uint32_t index, uint32_t bar,
+                uint64_t *base, uint64_t *size, uint32_t *flags) {
+    struct iris_msg r;
+    if (net_pci(PCI_OP_BAR, index, bar, 0, &r) != 0) return 0;
+    if (base)  *base  = r.words[0];
+    if (size)  *size  = r.words[1];
+    if (flags) *flags = (uint32_t)r.words[2];
+    return 1;
 }
 
 /* Class 02 subclass 00: an Ethernet controller.  By class, not by identity,
@@ -100,6 +123,7 @@ static long net_pci(uint64_t op, uint64_t a0, uint64_t a1,
  */
 static const struct net_backend *const NET_BACKENDS[] = {
     &net_backend_e1000,
+    &net_backend_virtio,
 };
 #define NET_BACKEND_COUNT (sizeof(NET_BACKENDS) / sizeof(NET_BACKENDS[0]))
 
@@ -203,16 +227,34 @@ static void net_bring_up(void) {
     uint32_t dev;
     if (!net_find(&dev)) return;
 
+    /*
+     * WHICH BAR, asked before it is claimed.  The e1000's registers are in
+     * BAR 0 and this service used to write that number down as though it were
+     * a property of Ethernet cards.  It is a property of one family: a virtio
+     * device puts its registers wherever it likes and says where in its own
+     * capability list, which is a thing only the backend can read.
+     */
+    int bar = 0;
+    if (g_drv->probe) {
+        bar = g_drv->probe(dev, &g_hw);
+        if (bar < 0) { g_step = NET_STEP_PROBE; g_drv = 0; return; }
+    }
+
     struct iris_msg r;
     (void)iris_invoke1(0, INV_CNODE_DELETE, (long)NET_SLOT_BAR);
-    if (net_pci(PCI_OP_CLAIM, dev, 0u, (long)NET_SLOT_BAR, &r) != 0) return;
+    g_step = NET_STEP_CLAIM;
+    if (net_pci(PCI_OP_CLAIM, dev, (uint64_t)(uint32_t)bar,
+                (long)NET_SLOT_BAR, &r) != 0) return;
     if (r.got_caps == 0u) return;
+    g_step = NET_STEP_ENABLE;
     if (net_pci(PCI_OP_ENABLE, dev,
                 PCI_CMD_MEMORY | PCI_CMD_BUS_MASTER, 0, &r) != 0) return;
+    g_step = NET_STEP_MAP_BAR;
     if (iris_map_frame(NET_SLOT_BAR, IRIS_CPTR_OWN_VSPACE,
                        IRIS_CPTR_OWN_UNTYPED, NET_SLOT_PT,
                        NET_VA_BAR, r.words[1], 1ull | 4ull) != 0) return;
 
+    g_step = NET_STEP_FRAMES;
     if (net_frame(NET_SLOT_RING,  &g_hw.ring_phys) != 0) return;
     for (uint32_t i = 0; i < NET_RX_FRAMES; i++)
         if (net_frame(NET_SLOT_RXBUF(i), &g_hw.rx_phys[i]) != 0) return;
@@ -221,6 +263,7 @@ static void net_bring_up(void) {
     /* Decide what the card may reach BEFORE telling it any address. */
     g_contained = (uint32_t)net_contain();
 
+    g_step = NET_STEP_MAP_BUF;
     if (iris_map_frame(NET_SLOT_RING, IRIS_CPTR_OWN_VSPACE,
                        IRIS_CPTR_OWN_UNTYPED, NET_SLOT_PT,
                        NET_VA_RING, 4096u, 1ull) != 0) return;
@@ -239,8 +282,10 @@ static void net_bring_up(void) {
     /* Everything above is the same for any card.  Everything the card's own
      * registers need is the backend's, and it is only reached once its memory
      * is retyped, mapped and contained. */
+    g_step = NET_STEP_BACKEND;
     g_hw.bar_len = r.words[1];
     g_ready = (uint32_t)(g_drv && g_drv->bring_up(&g_hw));
+    if (g_ready) g_step = NET_STEP_UP;
 }
 
 /* ── moving a frame ──────────────────────────────────────────────────────── */
@@ -277,6 +322,8 @@ void net_main(iris_cptr_t bootstrap_ch_h) {
             rep.words[2]   = g_source_id;
             rep.words[3]   = (g_contained ? 1u : 0u) |
                              ((uint64_t)(g_seen_eth & 0xFFu) << 8) |
+                             ((uint64_t)(g_step & 0xFFu) << 16) |
+                             ((uint64_t)(g_hw.step & 0xFFu) << 24) |
                              ((uint64_t)g_seen_vd << 32);
             rep.word_count = 4u;
         } else if (m.label == NET_OP_TXBUF && g_ready) {

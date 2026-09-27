@@ -60,7 +60,15 @@ EDU_ARGS=(-device edu,dma_mask=0xffffffffff)
 TFTP_DIR="$PROJECT_ROOT/build/tftp"
 mkdir -p "$TFTP_DIR"
 printf 'IRIS-TFTP-OK\n' > "$TFTP_DIR/hello.txt"
-NET_ARGS=(-device e1000,netdev=n0 -netdev "user,id=n0,tftp=$TFTP_DIR")
+#
+# WHICH card, because there is now more than one backend and a backend nothing
+# ever runs is a backend nobody knows is broken.  The default stays e1000, so
+# the numbers the gate has always reported keep meaning the same thing; a run
+# with IRIS_QEMU_NIC=virtio-net-pci exercises the other one end to end against
+# the same peer, the same TFTP server and the same assertions.
+#
+NIC="${IRIS_QEMU_NIC:-e1000}"
+NET_ARGS=(-device "$NIC,netdev=n0" -netdev "user,id=n0,tftp=$TFTP_DIR")
 
 # A disk IRIS OWNS, separate from the one it boots from.
 #
@@ -415,7 +423,11 @@ if ! grep -Eq "^\[USER\]\[INIT\] fs: mounted gen [0-9]+ (formatted|existing) fil
   exit 1
 fi
 
-# Networking: a ring-3 e1000 driver moved a frame in both directions (Stage 10).
+# Networking: a ring-3 driver moved a frame in both directions.
+#
+# WHICH driver depends on the card QEMU was told to present, and these
+# assertions do not care: that is the point of them.  `make smoke-net-virtio`
+# runs this same file against a virtio device and reaches this same check.
 #
 # Two lines, and the second is the one that means something.  `link 1` says the
 # driver brought a card up; it does not say a frame ever left the machine, and

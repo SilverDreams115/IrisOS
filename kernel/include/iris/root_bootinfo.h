@@ -75,6 +75,7 @@
 #define IRIS_UT_KIND_FRAMEBUFFER 1u
 #define IRIS_UT_KIND_MMIO        2u  /* the 32-bit PCI hole                  */
 #define IRIS_UT_KIND_ACPI        3u  /* firmware tables: reclaimable or NVS  */
+#define IRIS_UT_KIND_MMIO_HIGH   4u  /* above 4 GiB: 64-bit prefetchable BARs */
 
 /* One untyped region the root task owns, and the slot it owns it in. */
 struct iris_bootinfo_untyped {

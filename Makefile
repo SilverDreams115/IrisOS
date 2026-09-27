@@ -284,7 +284,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_main.c
 TEST_UNIT_BIN   := $(BUILD_DIR)/test_unit
 
-.PHONY: all dirs run run-headless clean help check check-abi check-purity smoke smoke-runtime smoke-runtime-selftests smoke-persist smoke-screen config-sync test-unit
+.PHONY: all dirs run run-headless clean help check check-abi check-purity smoke smoke-runtime smoke-runtime-selftests smoke-net-virtio smoke-persist smoke-screen config-sync test-unit
 
 all: config-sync $(BOOT_APP) $(KERNEL_DST)
 
@@ -750,7 +750,7 @@ $(KERNEL_BLK_BIN_OBJ): $(SERVICE_BLK_ELF) | dirs
 	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
 	    $(SERVICE_BLK_ELF) $@
 
-# ── net (Stage 10: an e1000 driver in ring 3) ───────────────────────────────
+# ── net (a ring-3 network service, one file per card family) ────────────────
 $(BUILD_DIR)/net_entry.o: services/net/entry.S | dirs
 	gcc $(SERVICE_ASFLAGS) -c $< -o $@
 
@@ -760,7 +760,10 @@ $(BUILD_DIR)/net_main.o: services/net/main.c | dirs
 $(BUILD_DIR)/net_e1000.o: services/net/e1000.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_NET_ELF): $(BUILD_DIR)/net_entry.o $(BUILD_DIR)/net_main.o $(BUILD_DIR)/net_e1000.o $(STACK_GUARD_OBJ)
+$(BUILD_DIR)/net_virtio.o: services/net/virtio.c | dirs
+	gcc $(SERVICE_CFLAGS) -c $< -o $@
+
+$(SERVICE_NET_ELF): $(BUILD_DIR)/net_entry.o $(BUILD_DIR)/net_main.o $(BUILD_DIR)/net_e1000.o $(BUILD_DIR)/net_virtio.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 
 $(KERNEL_NET_BIN_OBJ): $(SERVICE_NET_ELF) | dirs
@@ -911,11 +914,11 @@ smoke-runtime: all
 
 # The budget is 90s and a caller's own is honoured.
 #
-# It was a hardcoded 35, which stopped being enough twice over: Stage 9 step 5
-# added four adversarial tests that wait out eight ticks of REAL time apiece,
-# and Stage 10-dma step 6 added a driver that waits out six DMA transfers the
-# device schedules a hundred milliseconds apart.  The suite takes about fifty
-# seconds on one processor now.  A hardcode also silently ignored the
+# It was a hardcoded 35, which stopped being enough twice over: four
+# adversarial scheduling tests that wait out eight ticks of REAL time apiece,
+# and a DMA driver that waits out six transfers the device schedules a hundred
+# milliseconds apart.  The suite takes about fifty seconds on one processor
+# now.  A hardcode also silently ignored the
 # `IRIS_QEMU_TIMEOUT_SECS=60` that CI passes on the command line, which is how
 # a lane can be tuned and never change.
 smoke-runtime-selftests: all
@@ -931,6 +934,21 @@ smoke-full: all
 smoke-full-selftests: all
 	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-90}" IRIS_QEMU_EXPECT_SELFTESTS=1 \
 		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-full-selftests.log \
+		bash scripts/run_qemu_headless.sh
+
+#
+# The OTHER card.  Same image, same peer, same assertions -- only the device
+# QEMU presents changes, so what this proves is that the backend under it
+# brought a card up and moved a frame both ways.
+#
+# It is a lane of its own because a backend nothing ever runs is a backend
+# nobody knows is broken, and the default stays e1000 so the numbers the gate
+# has always reported keep meaning what they meant.
+#
+smoke-net-virtio: all
+	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-90}" \
+		IRIS_QEMU_NIC=virtio-net-pci \
+		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-virtio.log \
 		bash scripts/run_qemu_headless.sh
 
 # The one claim that takes two boots to check.  See the script's header.

@@ -183,7 +183,7 @@ int init_spawn_pci(void) {
                          INIT_SLOT_PCI_UT, 1 << 20) < 0) { init_log("[USER] pci: ut\n"); return 0; }
 
     {
-        struct svc_mint pc[5] = { 0 };
+        struct svc_mint pc[6] = { 0 };
         uint32_t n = 0;
         pc[n].slot = PCI_SLOT_CTRL_EP;  pc[n].src_cptr = INIT_SLOT_PCI_EP;
         pc[n].rights = RIGHT_READ;      pc[n].badge = 0; n++;
@@ -192,6 +192,13 @@ int init_spawn_pci(void) {
         pc[n].slot = PCI_SLOT_REPLY;    pc[n].src_cptr = INIT_SLOT_PCI_REPLY;
         pc[n].rights = RIGHT_READ | RIGHT_WRITE; pc[n].badge = 0; n++;
         pc[n].slot = PCI_SLOT_MMIO_UT;  pc[n].src_cptr = IRIS_CPTR_MMIO_UNTYPED;
+        pc[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        pc[n].badge = 0; n++;
+        /* The 64-bit window, when the kernel published one.  A machine
+         * without it simply gets a slot that never answers, and the carve
+         * over it reports no region rather than failing. */
+        pc[n].slot = PCI_SLOT_MMIO_UT_HIGH;
+        pc[n].src_cptr = IRIS_CPTR_MMIO_HIGH_UNTYPED;
         pc[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         pc[n].badge = 0; n++;
         pc[n].slot = IRIS_CPTR_OWN_UNTYPED; pc[n].src_cptr = INIT_SLOT_PCI_UT;
@@ -674,13 +681,31 @@ int init_spawn_net(void) {
                 b[k++] = hx[(v >> 4) & 0xFu]; b[k++] = hx[v & 0xFu];
             }
             b[k++] = ' '; b[k++] = 'd'; b[k++] = 'm'; b[k++] = 'a'; b[k++] = ' ';
-            if (m.words[3]) { b[k++]='c'; b[k++]='o'; b[k++]='n'; b[k++]='t';
+            /* Bit 0, not the whole word: the other bits are the count of
+             * controllers seen, how far bring-up got and a vendor:device,
+             * and any of them made this read "contained" on a machine
+             * whose DMA was wide open. */
+            if (m.words[3] & 1u)
+                            { b[k++]='c'; b[k++]='o'; b[k++]='n'; b[k++]='t';
                               b[k++]='a'; b[k++]='i'; b[k++]='n'; b[k++]='e';
                               b[k++]='d'; }
             else            { b[k++]='o'; b[k++]='p'; b[k++]='e'; b[k++]='n'; }
             b[k++] = '\n'; b[k] = 0;
             init_log(b);
-            if (!(m.words[0] & 1u)) return 0;
+            if (!(m.words[0] & 1u)) {
+                /* No link names no cause.  These two say where it stopped:
+                 * the service's step, then the backend's own. */
+                char w[48] = "[USER][INIT] net: stopped at step ";
+                uint32_t j = 0; while (w[j]) j++;
+                uint32_t sv = (uint32_t)((m.words[3] >> 16) & 0xFFu);
+                uint32_t bk = (uint32_t)((m.words[3] >> 24) & 0xFFu);
+                w[j++] = hx[(sv >> 4) & 0xFu]; w[j++] = hx[sv & 0xFu];
+                w[j++] = '/';
+                w[j++] = hx[(bk >> 4) & 0xFu]; w[j++] = hx[bk & 0xFu];
+                w[j++] = '\n'; w[j] = 0;
+                init_log(w);
+                return 0;
+            }
             /* A card that is up is not a network that works. */
             if (!init_net_arp_probe())
                 init_log("[USER][INIT] net: the gateway did not answer\n");

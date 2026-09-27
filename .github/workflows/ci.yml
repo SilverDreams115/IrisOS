@@ -97,6 +97,15 @@ jobs:
       - name: Run headless runtime smoke
         run: IRIS_QEMU_TIMEOUT_SECS=60 make smoke-runtime
 
+      # The same boot, the same peer and the same assertions against a
+      # DIFFERENT card, because the network service has more than one backend
+      # now and a backend nothing ever runs is a backend nobody knows is
+      # broken.  virtio is the one that can be checked here: the machine has
+      # no Intel card and no Realtek card, but every machine can be told to
+      # present a virtio device.
+      - name: Run headless runtime smoke against virtio-net
+        run: IRIS_QEMU_TIMEOUT_SECS=60 make smoke-net-virtio
+
       # The one check that does not read the serial port, because what it
       # checks is that the serial port is not needed: the kernel log has to be
       # legible on the framebuffer, which is all a real machine usually has.
@@ -116,7 +125,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: iris-runtime-log
-          path: build/qemu-headless.log
+          path: |
+            build/qemu-headless.log
+            build/qemu-headless-virtio.log
 
       - name: Upload what the screen said
         if: always()

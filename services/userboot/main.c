@@ -437,7 +437,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * services that need it say so themselves.
          */
         {
-            int have[4] = { 0, 0, 0, 0 };
+            int have[5] = { 0, 0, 0, 0, 0 };
             for (uint32_t i = 0; i < bi->untyped_count &&
                                  init_mint_count < 17u; i++) {
                 if (!bi->untyped[i].is_device) continue;
@@ -446,6 +446,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
                 switch (kind) {
                 case IRIS_UT_KIND_FRAMEBUFFER: slot = IRIS_CPTR_DEVICE_UNTYPED; break;
                 case IRIS_UT_KIND_MMIO:        slot = IRIS_CPTR_MMIO_UNTYPED;   break;
+                case IRIS_UT_KIND_MMIO_HIGH:   slot = IRIS_CPTR_MMIO_HIGH_UNTYPED; break;
                 case IRIS_UT_KIND_ACPI:
                     /*
                      * One slot, and this machine has FIVE ACPI regions — so

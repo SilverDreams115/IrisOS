@@ -765,6 +765,81 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                             }
                         }
                     }
+
+                    /*
+                     * And the same again ABOVE four gigabytes, because that
+                     * is where a 64-bit prefetchable BAR goes.
+                     *
+                     * The region above could not simply be widened: between
+                     * 0xFEC00000 and four gigabytes sit the IOAPIC, the LAPIC
+                     * and the firmware flash, which is precisely what its
+                     * ceiling excludes.  So the high window is a SECOND
+                     * region -- and without it no 64-bit prefetchable BAR on
+                     * the machine is reachable at all.  A virtio device under
+                     * OVMF puts its modern registers at 0xC000000000, the bus
+                     * service had no window to carve there, and the driver
+                     * could not claim its own BAR.
+                     *
+                     * Bounded below by RAM and above by what the processor
+                     * can physically address: CPUID.80000008H:EAX[7:0] is the
+                     * count of physical address bits, and nothing decodes
+                     * past it.  A processor that will not answer publishes
+                     * nothing, rather than having the kernel pick a ceiling.
+                     *
+                     * It is a wide region containing a great deal of nothing,
+                     * which is the same caveat the low one carries and states
+                     * at length: a device Untyped is a physical RANGE, not a
+                     * claim that the range is backed by anything.
+                     */
+                    uint32_t pa_bits = 0;
+                    {
+                        uint32_t a, b, c, d;
+                        __asm__ volatile ("cpuid"
+                            : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
+                            : "a"(0x80000000u), "c"(0u));
+                        if (a >= 0x80000008u) {
+                            __asm__ volatile ("cpuid"
+                                : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
+                                : "a"(0x80000008u), "c"(0u));
+                            pa_bits = a & 0xFFu;
+                        }
+                    }
+                    /* Outside this range the answer is not believable, and a
+                     * ceiling the kernel invented is worse than none. */
+                    if (pa_bits >= 36u && pa_bits <= 52u &&
+                        ut_count < bi_capacity) {
+                        uint64_t hi_start = ram_top > 0x100000000ull
+                                          ? ram_top : 0x100000000ull;
+                        hi_start = (hi_start + 0x1FFFFFull) & ~0x1FFFFFull;
+                        uint64_t hi_end = (1ull << pa_bits) & ~0x1FFFFFull;
+
+                        uint32_t hi_slot = BOOT_CPTR_UNTYPED_START + ut_count;
+                        if (hi_start < hi_end && hi_slot < KCNODE_DEFAULT_SLOTS) {
+                            struct KUntyped *hi_ut = kuntyped_create(
+                                hi_start, hi_end - hi_start, /*is_device*/1);
+                            if (hi_ut) {
+                                iris_error_t he = kcnode_mint(
+                                    ut->cspace_root, hi_slot, &hi_ut->base,
+                                    RIGHT_READ | RIGHT_WRITE |
+                                    RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                                kobject_release(&hi_ut->base);
+                                if (he == IRIS_OK) {
+                                    (void)root_bootinfo_add_untyped(
+                                        bi_kva, IRIS_ROOT_BOOTINFO_BYTES,
+                                        (uint64_t)hi_slot, hi_start,
+                                        hi_end - hi_start, /*is_device*/1,
+                                        IRIS_UT_KIND_MMIO_HIGH);
+                                    ut_cspace_count++;
+                                    ut_count++;
+                                    klog_write("[IRIS][USER] MMIO64 0x");
+                                    klog_write_hex(hi_start);
+                                    klog_write("..0x");
+                                    klog_write_hex(hi_end);
+                                    klog_write(" published as a device untyped\n");
+                                }
+                            }
+                        }
+                    }
                 }
 
                 /* Which ABI this kernel implements, said out
