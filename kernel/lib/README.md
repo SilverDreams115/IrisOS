@@ -17,8 +17,6 @@ specific subsystem.
 - `string/` — Not implemented. The kernel uses manual memory-copy operations.
   If memcpy/memset are added as functions, they go here.
 
-**Phase 0 decision:** Do not implement. The current uses do not need this
-abstraction.
-
-**Future decision:** Implement only if there is clear duplication between two
-subsystems. Do not create it preemptively.
+**Decision:** Do not implement. The current uses do not need the
+abstraction, and it is added only when there is clear duplication between two
+subsystems — never preemptively.

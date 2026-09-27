@@ -2,7 +2,7 @@
 /*
  * test_syscall_tcb.c — the THREAD authority layer, under host unit test.
  *
- * Since Stage 7 a thread capability is what a supervisor names for everything
+ * A thread capability is what a supervisor names for everything
  * a process capability used to be named for: configuring what CSpace and
  * address space it runs in, arming its fault handlers, watching it die,
  * reading its exit code, killing it.  That makes this file's refusals the
@@ -89,8 +89,8 @@ void test_syscall_tcb(void) {
     }
 
     /* ── TB-2: CONFIGURE takes CAPABILITIES, and a handle value is not one ─
-     * The CSpace and VSpace arguments are CPtrs.  Stage 4 made a value in the
-     * retired handle range a malformed argument rather than an address in
+     * The CSpace and VSpace arguments are CPtrs.  A value in the retired
+     * handle range is a malformed argument rather than an address in
      * another table, and this is where a thread's most basic authority — what
      * namespace it resolves in — would be established from one. */
     {
@@ -153,7 +153,7 @@ void test_syscall_tcb(void) {
     /* ── TB-5: the fault handler must be an ENDPOINT (ledger A-22) ───────
      * WRONG_TYPE travels rather than being flattened: "that is not an
      * endpoint" is what a supervisor needs to hear, and the family has
-     * reported it that way since Stage 7 Step 4.  A NOTIFICATION is the
+     * reported it that way ever since.  A NOTIFICATION is the
      * natural wrong type to offer, because it is what this argument took
      * before a fault became an IPC message. */
     {

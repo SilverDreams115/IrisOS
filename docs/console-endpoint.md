@@ -1,7 +1,7 @@
-# Console Endpoint Protocol (Phase 7.3)
+# Console Endpoint Protocol
 
 `iris/console_ep_proto.h` defines the KEndpoint protocol for the serial
-console service. Since Phase 13 it is the ONLY console path: the legacy
+console service. It is the ONLY console path: the legacy
 `CONSOLE_MSG_WRITE` KChannel route is retired and every writer — init, sh,
 vfs, iris_test and svcmgr's klog drain — goes through `console.ep`.
 
@@ -9,8 +9,8 @@ vfs, iris_test and svcmgr's klog drain — goes through `console.ep`.
 
 The legacy console was **asynchronous**: writers enqueued `CONSOLE_MSG_WRITE`
 into the service KChannel and continued; the console task drained the backlog
-to the UART later. That asynchrony caused a real interleaving bug (Phase 7.1:
-the S10 marker was split mid-line by iris_test's raw COM1 output) which had
+to the UART later. That asynchrony caused a real interleaving bug — the S10
+marker was split mid-line by iris_test's raw COM1 output — which had
 to be patched with a barrier message. The endpoint removes the problem at the
 root: `EP_Call` is synchronous rendezvous, so **every write is its own flush
 barrier** — when the call returns, the bytes are on the UART.
@@ -90,5 +90,5 @@ console EP path cannot pass CI.
 | Limit | Value |
 |-------|-------|
 | Max bytes per WRITE | the writer's registered IPC buffer (a 4 KiB frame) — clients chunk |
-| Writers on any other path | none (Phase 13) |
+| Writers on any other path | none |
 | Replies per request | exactly 1 (KReply one-shot) |

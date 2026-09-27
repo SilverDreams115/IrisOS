@@ -75,7 +75,7 @@ the service capability lands in the slot the caller declared in msg.recv_slot,
 and msg.got_caps comes back holding the RIGHTS it was granted
 ```
 
-A caller that declares no receive slot is handed nothing: since Stage 4 there
+A caller that declares no receive slot is handed nothing: there
 is no handle namespace to fall back to, and since A-33 the reply reports what
 it delivered rather than what the server asked to deliver.  `msg.got_caps == 0`
 means nothing arrived.
@@ -98,11 +98,11 @@ registered under them.
 |------|------------|----------------|
 | `"svcmgr.ep"` | svcmgr's own discovery endpoint | `RIGHT_WRITE \| RIGHT_TRANSFER \| RIGHT_DUPLICATE` (distributable discovery cap — TRANSFER for KChannel attach, DUPLICATE for CSpace mint; only grants EP_CALL, never recv) |
 | `"<image_name>.ep"` | the service's endpoint, if its catalog entry has `own_service_ep = 1` (today: `"vfs.ep"`, `"kbd.ep"`) | `RIGHT_WRITE` |
-| `"console.ep"` | the console endpoint (Phase 7.3) — console is init-spawned, not catalog, so **init** creates the endpoint and delivers the send side to svcmgr at bootstrap (kind 0x22); see `docs/console-endpoint.md` | `RIGHT_WRITE` |
+| `"console.ep"` | the console endpoint — console is init-spawned, not catalog, so **init** creates the endpoint and delivers the send side to svcmgr at bootstrap (kind 0x22); see `docs/console-endpoint.md` | `RIGHT_WRITE` |
 
 `SVCMGR_MSG_REGISTER` rejects dynamic names ending in `".ep"` with
 `IRIS_ERR_INVALID_ARG` so a rogue service cannot shadow an endpoint name.
-Runtime coverage (Phase 7.2): init S4 attempts to register `"spoof.ep"` and
+Runtime coverage: init S4 attempts to register `"spoof.ep"` and
 verifies the name stays unresolvable; iris_test T031 verifies the EP lookup
 of an unpublished `".ep"` name returns `NOT_FOUND` with no cap attached.
 
@@ -112,7 +112,7 @@ Register a service endpoint with svcmgr.
 
 > **Status: unimplementable as specified.** The kernel forbids request-side
 > capability transfer on `EP_CALL`, so a service cannot attach its endpoint
-> cap to a REGISTER request. Phase 7.1 inverts the ownership instead: svcmgr
+> cap to a REGISTER request. The ownership is inverted instead: svcmgr
 > **creates** the endpoint for catalog services flagged `own_service_ep = 1`,
 > sends the receive side at bootstrap (kind `SVCMGR_BOOTSTRAP_KIND_SERVICE_EP`
 > = 0x21) and publishes the send side as `"<image_name>.ep"`. This also keeps
@@ -165,31 +165,31 @@ msg.words[0] = service_id (uint32_t)
 | Kind | Value | Carries |
 |------|-------|---------|
 | `SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP` | 0x20 | svcmgr discovery endpoint (send side) — every catalog service receives it; init forwards it to iris_test |
-| `SVCMGR_BOOTSTRAP_KIND_SERVICE_EP` | 0x21 | the service's **own** endpoint (receive side, `RIGHT_READ`) for catalog entries with `own_service_ep = 1`; sent **before** `INITRD_CAP` so bootstrap loops that exit on the initrd cap still see it. Also reused by init→console for the console endpoint's receive side (Phase 7.3) |
-| `SVCMGR_BOOTSTRAP_KIND_CONSOLE_EP` | 0x22 | send side of the console endpoint (`RIGHT_WRITE \| RIGHT_DUPLICATE \| RIGHT_TRANSFER`), init → svcmgr; svcmgr publishes it as `"console.ep"` (Phase 7.3) |
-| `SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY` | 0x23 | WAIT side of the IRQ KNotification for catalog entries with `irq_notify = 1` (Phase 7.6; today: kbd). The kernel signals bit `1 << irq` on each routed IRQ; the service drains device state via its KIoPort cap and re-arms with `SYS_IRQ_ACK` |
+| `SVCMGR_BOOTSTRAP_KIND_SERVICE_EP` | 0x21 | the service's **own** endpoint (receive side, `RIGHT_READ`) for catalog entries with `own_service_ep = 1`; sent **before** `INITRD_CAP` so bootstrap loops that exit on the initrd cap still see it. Also reused by init→console for the console endpoint's receive side |
+| `SVCMGR_BOOTSTRAP_KIND_CONSOLE_EP` | 0x22 | send side of the console endpoint (`RIGHT_WRITE \| RIGHT_DUPLICATE \| RIGHT_TRANSFER`), init → svcmgr; svcmgr publishes it as `"console.ep"` |
+| `SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY` | 0x23 | WAIT side of the IRQ KNotification for catalog entries with `irq_notify = 1`. The kernel signals bit `1 << irq` on each routed IRQ; the service drains device state via its KIoPort cap and re-arms with `SYS_IRQ_ACK` |
 
-## Well-known CPtr slots (Phase 8)
+## Well-known CPtr slots
 
 CPtr-first bootstrap handoff: the spawner mints capabilities directly into
 the child's root CNode with `SYS_CSPACE_MINT(src, dest_slot, rights|badge<<32,
 dest_cnode)`, where `dest_cnode` is the child's root CNode — the spawner holds
-it because it retyped it (Stage 6-pure).  It needs `RIGHT_DUPLICATE` on the
+it because it retyped it.  It needs `RIGHT_DUPLICATE` on the
 source cap, rights can only be reduced, and an occupied destination slot fails
 `ALREADY_EXISTS`.  Minting happens **pre-start** — after the child's objects
 are retyped and before `SYS_TCB_RESUME` — so the child sees its slots populated
 from its first instruction: no bootstrap barrier, no races.  The child invokes
 the cap **by CPtr** — e.g. `SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg)`.
 
-(Until Stage 7 Step 9 this was `SYS_PROC_CSPACE_MINT(proc_h, slot, src_h,
+(This used to be `SYS_PROC_CSPACE_MINT(proc_h, slot, src_h,
 rights)`, syscall 104, which named the PROCESS owning the destination CSpace.
 It is retired: naming a process to reach a namespace you were never handed was
 the last place a process capability granted access to an object its holder did
 not hold.)
 
-There is ONE argument namespace.  Stage 4 deleted the handle table, so a
+There is ONE argument namespace.  The handle table was deleted, so a
 syscall argument is a CPtr or it is `INVALID_ARG`.  Historically CPtrs and
-handle_ids shared the namespace and, since Phase 8, the dual
+handle_ids shared the namespace and the dual
 resolvers **enforced** the split: values < 1024 resolved through the CSpace only
 (missing slot fails cleanly, `ACCESS_DENIED` is a hard stop, no
 handle-table fallback) and values ≥ 1024 (`slot | generation << 10`,

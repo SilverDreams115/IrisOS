@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * test_root_bootinfo.c — Stage 5, Step 1: the root task's BootInfo builder.
+ * test_root_bootinfo.c — the root task's BootInfo builder.
  *
  * The builder writes the page the root task reads to learn what the kernel put
  * in its CSpace.  Two failure modes matter and neither is observable from a
@@ -45,7 +45,7 @@ static struct iris_root_bootinfo *rbi_buf(unsigned char *raw) {
 }
 
 void test_root_bootinfo(void) {
-    TEST_SUITE("root bootinfo (Stage 5)");
+    TEST_SUITE("root bootinfo");
 
     unsigned char *page = (unsigned char *)malloc(RBI_PAGE);
     ASSERT_NOT_NULL(page);
@@ -127,7 +127,7 @@ void test_root_bootinfo(void) {
             ASSERT_EQ(bi->untyped[i].paddr, 0x100000ULL * (i + 1u));
             ASSERT_EQ(bi->untyped[i].size_bytes, 0x4000ULL * (i + 1u));
             ASSERT_EQ(bi->untyped[i].is_device, (uint32_t)(i & 1u));
-            /* Stage 10: `reserved` became `kind`, because four classes of
+            /* `reserved` became `kind`, because four classes of
              * device region needed telling apart and the kernel is the only
              * thing that knows which is which. */
             ASSERT_EQ(bi->untyped[i].kind,
@@ -186,7 +186,7 @@ void test_root_bootinfo(void) {
 
     /* ── [RBI-9] the machine's own description travels with it ──────
      *
-     * Stage 10 added two things the root task cannot ask anyone for: which ABI
+     * Two things the root task cannot ask anyone for: which ABI
      * this kernel implements, and where ACPI's root pointer is.  Both are
      * facts about the BUILD and the MACHINE rather than about any capability,
      * so BootInfo is where they belong — and a zero in either would read as a
@@ -313,7 +313,7 @@ void test_root_bootinfo(void) {
                       IRIS_BOOTCAP_ASID_CONTROL, 12u), IRIS_OK);
         ASSERT_EQ(root_bootinfo_set_control_cap(page, RBI_PAGE,
                       IRIS_BOOTCAP_DOMAIN_CONTROL, 13u), IRIS_OK);
-        /* And the fourth, added with Stage 10-dma.  Covered HERE the day it
+        /* And the fourth, added with DMA containment.  Covered HERE the day it
          * was added, which is the whole point of the note above: the domain
          * authority's missing case was found by a boot that went FATAL. */
         ASSERT_EQ(root_bootinfo_set_control_cap(page, RBI_PAGE,

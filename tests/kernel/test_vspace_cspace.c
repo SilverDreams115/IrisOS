@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * test_vspace_cspace.c — Phase 4 unit tests for KVSpace capability model.
+ * test_vspace_cspace.c — unit tests for KVSpace capability model.
  *
  * Tests (VS-1..VS-14):
  *   [VS-1]  KOBJ_VSPACE enum exists and is != 0.
@@ -44,7 +44,7 @@ static struct cs_fixture *vs_make_proc(void) {
 }
 
 static void vs_free_proc(struct cs_fixture *p) {
-    /* Stage 4: structural root — the fixture drops its refs explicitly. */
+    /* Structural root — the fixture drops its refs explicitly. */
     if (p->cspace_root) {
         kobject_active_release(&p->cspace_root->base);
         kobject_release(&p->cspace_root->base);
@@ -61,7 +61,7 @@ static struct KCNode *vs_setup_root(struct cs_fixture *p) {
     return root;
 }
 
-/* Stage 4: structural-root shim preserving the fixtures' fetch/release shape. */
+/* Structural-root shim preserving the fixtures' fetch/release shape. */
 static iris_error_t vs_root_fetch(struct cs_fixture *p, struct KObject **out,
                                   iris_rights_t *rights_out) {
     if (!p || !p->cspace_root) return IRIS_ERR_NOT_FOUND;
@@ -150,7 +150,7 @@ void test_vspace_cspace(void) {
         kobject_retain(&vs->base);
 
         kvspace_invalidate(vs);
-        /* Stage 7 Step 11: `valid` is what makes an address space unusable, and
+        /* `valid` is what makes an address space unusable, and
          * cr3 SURVIVES it — the walk is torn down by the destructor, when the
          * last capability goes, and the destructor needs the cr3 to do it.
          * Every reader checks `valid` before touching cr3. */
@@ -400,7 +400,7 @@ void test_vspace_cspace(void) {
         /* State: refcount=2, active_refs=1 */
 
         /* Simulate the address-space reap: invalidate then release process
-         * ref.  Stage 7 Step 11: invalidation makes the address space unusable
+         * ref.  Invalidation makes the address space unusable
          * and nothing more — cr3 stays for the destructor, which is what tears
          * the walk down once the LAST capability goes, not the process. */
         kvspace_invalidate(vs);

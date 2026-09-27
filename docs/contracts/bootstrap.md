@@ -4,7 +4,7 @@
 
 Defines how the kernel, `init`, `svcmgr`, and child services exchange
 bootstrap authority in the healthy path. Every grant below is a CSpace slot:
-Stage 4 deleted the handle table, and Phase 13 the bootstrap channel, so a
+The handle table is gone, and the bootstrap channel with it, so a
 child's authority is what its root CNode holds when it starts.
 
 ## Root bootstrap model
@@ -20,7 +20,7 @@ This keeps normal service image loading and topology in userland while leaving o
 
 ## Kernel bootstrap authority contract
 
-Stage 5: **one capability, one authority.**  The kernel publishes six boot
+**One capability, one authority.**  The kernel publishes six boot
 capabilities into the root task's CSpace, each carrying exactly one authority
 and each matched by exact equality — a capability that merely contains an
 authority cannot be constructed:
@@ -30,7 +30,7 @@ authority cannot be constructed:
 | `BOOT_CPTR_IRQ_CONTROL` (3) | IRQ control | `Boot_CreateIRQCap` |
 | `BOOT_CPTR_IOPORT_CONTROL` (4) | ioport control | `Boot_CreateIOPort`, `Boot_IOPortNarrow` |
 | `BOOT_CPTR_DEBUG_CONTROL` (5) | debug control | `Boot_KlogDrain`, `Boot_SchedInfo`, `Boot_Poweroff` |
-| `BOOT_CPTR_PROC_CONTROL` (6) | process control | **nothing, since Stage 7-proc**: it authorised `SYS_PROCESS_CREATE`, which is retired.  A child is a TCB, a CNode and a VSpace retyped from a budget the spawner holds, and holding that budget IS the authority — seL4 has no spawn capability either.  The slot is still minted and still passed around; the number it guarded is gone (A-32 left three), so what remains is a slot nobody consults |
+| `BOOT_CPTR_PROC_CONTROL` (6) | process control | **nothing any more**: it authorised `SYS_PROCESS_CREATE`, which is retired.  A child is a TCB, a CNode and a VSpace retyped from a budget the spawner holds, and holding that budget IS the authority — seL4 has no spawn capability either.  The slot is still minted and still passed around; the number it guarded is gone (A-32 left three), so what remains is a slot nobody consults |
 | `BOOT_CPTR_INITRD_CONTROL` (7) | initrd | `Boot_InitrdCount`, `Boot_InitrdFrame` |
 | `BOOT_CPTR_FB_CONTROL` (8) | framebuffer | `Boot_FramebufferInfo` (one-shot) |
 
@@ -62,10 +62,10 @@ A spawn needs the **initrd** capability (`Boot_InitrdCount` /
 child out of.  That is
 all: holding the budget is the authority to retype, exactly as in seL4.
 
-It used to need a second capability, process control, and before Stage 5 both
+It used to need a second capability, process control, and before the split both
 were one permission bit — which is why `vfs`, a file server that only reads
-boot images, used to hold the authority to create processes.  Stage 5 split
-them; Stage 7-proc removed the need for the second one.  `svc_load_minted_ws`
+boot images, used to hold the authority to create processes.  They were split;
+then the need for the second one went away with the process object.  `svc_load_minted_ws`
 still takes it as an argument and ignores it, recorded rather than hidden.
 
 On success:
@@ -78,14 +78,14 @@ On success:
   whole frame (ledger D-10)
 - the parent RETYPES the child's address space and root CSpace out of the
   child's budget (`Untyped_Retype` of `IRIS_KOBJ_VSPACE` and
-  `IRIS_KOBJ_CNODE`) — the kernel builds neither (Stage 6-pure)
+  `IRIS_KOBJ_CNODE`) — the kernel builds neither
 - prepared segments are mapped into that address space with `Frame_Map`, and
   the parent supplies any paging level the map reports missing
   (`IRIS_ERR_MISSING_TABLE` → `PageTable_Map`)
 - the first thread is composed the same way any thread is: retype an
   `IRIS_KOBJ_TCB`, `TCB_Configure` it with the child's CSpace and VSpace,
   `TCB_WriteRegs`, `TCB_Resume`.  `SYS_THREAD_START` and
-  `SYS_PROCESS_CREATE` are both RETIRED (Stage 7)
+  `SYS_PROCESS_CREATE` are both RETIRED
 - every capability the child starts with is a pre-start `CSpace_Mint` with the
   child's root CNode as the destination — the parent has it because it retyped
   it — sourced from the parent's own slots so the delegation stays revocable
@@ -122,7 +122,7 @@ After spawning a child service, `svcmgr` does two things:
 
 1. Registers IRQ ownership, if the manifest requires one:
    - `IRQ_SetNotification(irqcap, notification)` — the route's owner is the
-     **notification it is bound to** (Stage 7-mem), not a process
+     **notification it is bound to**, not a process
 2. Arms one exit watch on the child's **first thread**:
    - `TCB_Watch(tcb, notification, service_id)`
 

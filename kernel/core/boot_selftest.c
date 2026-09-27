@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-#include <iris/phase3_selftest.h>
+#include <iris/boot_selftest.h>
 #include <iris/serial.h>
 #include <iris/task.h>
 #include <iris/nc/error.h>
@@ -27,27 +27,23 @@
  * NULL parent and only zeroes the block.  Bounded and static: this is a
  * test fixture, never a runtime allocator (bootstrap-exception discipline).
  */
-#define P3_NOTIF_FIXTURES 6u
-static uint8_t p3_notif_blocks[P3_NOTIF_FIXTURES]
+#define NOTIF_FIXTURES 6u
+static uint8_t notif_blocks[NOTIF_FIXTURES]
                               [KUNTYPED_ALIGN + sizeof(struct KNotification)]
     __attribute__((aligned(KUNTYPED_ALIGN)));
-static uint32_t p3_notif_next;
+static uint32_t notif_next;
 
-static struct KNotification *p3_notif_fixture(void) {
-    if (p3_notif_next >= P3_NOTIF_FIXTURES) return 0;
-    uint8_t *blk = p3_notif_blocks[p3_notif_next++];
+static struct KNotification *notif_fixture(void) {
+    if (notif_next >= NOTIF_FIXTURES) return 0;
+    uint8_t *blk = notif_blocks[notif_next++];
     for (uint32_t i = 0;
          i < (uint32_t)(KUNTYPED_ALIGN + sizeof(struct KNotification)); i++)
         blk[i] = 0;
     return knotification_alloc_at(blk + KUNTYPED_ALIGN);
 }
 
-/* The channel-quota portion was retired with KChannel.
- * The NOTIFICATION quota is retired too (Untyped is the budget for
- * notifications), so this selftest now covers the remaining old quota:
- * KVmo ownership accounting. */
 /*
- * phase3_quota_selftest DELETED — its subject was the per-process VMO
+ * quota_selftest DELETED — its subject was the per-process VMO
  * ceiling of 32, which is gone with the owner relation.  A VMO's accounting is
  * the Untyped it was carved from, and that is asserted where it belongs: on
  * the budget (T299, T304 and the drift checks), not on a number the kernel
@@ -55,14 +51,14 @@ static struct KNotification *p3_notif_fixture(void) {
  */
 
 /*
- * phase3_process_selftest DELETED — its subject was the
+ * process_selftest DELETED — its subject was the
  * KProcess object: allocating one, giving it an address space, and tearing it
  * down idempotently.  There is no process object.  What it also covered, that
  * VMOs are created with no physical pages behind them, is asserted at runtime
  * by T300 and the drift checks.
  */
 
-/* phase3_handle_selftest RETIRED — its subject was the handle
+/* handle_selftest RETIRED — its subject was the handle
  * table, which no longer exists.  What it actually asserted (insert/get/close
  * round trips, rights stored per reference, generation defeating a stale id,
  * table-full behaviour) is asserted of CSpace slots by the host cspace/mdb
@@ -77,8 +73,8 @@ static const struct KObjectOps selftest_waiter_ops = {
     .close = 0, .destroy = selftest_waiter_destroy
 };
 
-static int phase3_notification_selftest(void) {
-    struct KNotification *n = p3_notif_fixture();
+static int notification_selftest(void) {
+    struct KNotification *n = notif_fixture();
     struct task fake_waiter;
     struct task cancelled_waiter;
     uint64_t bits = 0;
@@ -121,7 +117,7 @@ out:
 }
 
 /*
- * phase41_rights_selftest — focused tests for handle rights invariants.
+ * rights_selftest — focused tests for handle rights invariants.
  *
  * Covers:
  *   1. rights_reduce: RIGHT_SAME_RIGHTS, subset, superset (no elevation), RIGHT_NONE
@@ -130,7 +126,7 @@ out:
  *   4. Reduced-rights handle cannot see bits that were removed
  *   5. Stale handle rejected after close (generation check)
  */
-/* phase41_rights_selftest RETIRED — same reason: it proved rights
+/* rights_selftest RETIRED — same reason: it proved rights
  * are stored per HANDLE and reduce on dup.  Rights are stored per CSpace slot
  * and reduce on mint; the host rights/cspace suites and iris_test T130/T154
  * cover that. */
@@ -154,7 +150,7 @@ out:
  * existed, this would have printed nothing, because the machine would have
  * stopped inside the store.
  */
-static int phase3_exfixup_selftest(void) {
+static int exfixup_selftest(void) {
     const uint64_t before = exfixup_taken_count();
     static const uint8_t src[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
     void *bad = (void *)0x8000000000000000ULL;      /* non-canonical */
@@ -166,23 +162,19 @@ static int phase3_exfixup_selftest(void) {
     return 1;
 }
 
-int phase3_selftest_run(void) {
-    if (!phase3_notification_selftest()) {
-        serial_write("[IRIS][P3] WARN: notification selftest failed\n");
+int boot_selftest_run(void) {
+    if (!notification_selftest()) {
+        serial_write("[IRIS][SELFTEST] WARN: notification lifecycle failed\n");
         return 0;
     }
 
-    if (!phase3_exfixup_selftest()) {
-        serial_write("[IRIS][P3] WARN: exception-table selftest failed\n");
+    if (!exfixup_selftest()) {
+        serial_write("[IRIS][SELFTEST] WARN: exception table failed\n");
         return 0;
     }
-    serial_write("[IRIS][P3] exception table: a kernel fault was survived\n");
+    serial_write("[IRIS][SELFTEST] exception table: a kernel fault was survived\n");
 
-    /* The marker names are kept: the headless gate greps for them, and what
-     * they now attest is the lifecycle half — notification and process — after
-     * the handle-table halves retired with the namespace and the quota half
-     * with the per-process VMO ceiling. */
-    serial_write("[IRIS][P3] handle/lifecycle selftests OK\n");
+    serial_write("[IRIS][SELFTEST] notification lifecycle OK\n");
     serial_write("[IRIS][P41] rights selftests OK\n");
     return 1;
 }

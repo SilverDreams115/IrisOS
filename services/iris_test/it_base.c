@@ -385,7 +385,7 @@ int it_await_more(struct it_await *w) {
     if (w->spins < w->yields) return 1;
 
     /* One scheduler tick, which is the unit in which another core
-     * gets around to its run queue.  Entered only when phase 1 came up empty —
+     * gets around to its run queue.  Entered only when the first pass came up empty —
      * which on one processor means the wait was going to fail anyway. */
     if (w->spins == w->yields) { w->t0 = it_sys0(SYS_CLOCK_GET); return 1; }
     if (w->spins > w->yields + IT_AWAIT_TAIL_SPINS) return 0;

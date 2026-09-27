@@ -70,10 +70,13 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *   offset 72: uint32_t ipc_cap_toctou_fallbacks   — declared-slot races
  *   offset 76: uint32_t reply_caps_created
  *   offset 80: uint32_t cspace_resolves
- *   offset 84: uint32_t live_process_count    — (KProcess objects live)
+ *   offset 84: uint32_t _pad_live_processes   — always 0; the object it
+ *                                              counted is gone, and a
+ *                                              versioned struct does not
+ *                                              renumber its fields
  *   offset 88: uint32_t reap_queue_hwm        — (deferred-reap depth hwm)
  *   offset 92: uint32_t reap_queue_drops    — dead tasks the ring refused;
- *                                             structurally zero (SMP step 1)
+ *                                             structurally zero
  * Extended total: 96 bytes.
  *
  * A caller passing 88..95 still gets the historical 88-byte snapshot; only a
@@ -217,8 +220,8 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
          * spaces, all already reported here. */
         w[11] = 0u;
         w[12] = sched_reap_queue_hwm();
-        /* SMP step 1: the ring holds one entry per CPU and a task dies on the
-         * CPU it ran on, so this cannot move.  Reported because a leaked slot
+        /* The ring holds one entry per CPU and a task dies on the CPU it ran
+         * on, so this cannot move.  Reported because a leaked slot
          * and a queue that has simply not drained yet look identical from
          * outside, and only one of them is a bug. */
         w[13] = sched_reap_queue_drops();

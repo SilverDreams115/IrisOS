@@ -87,7 +87,7 @@ Operational consequence:
 
 ### `KBootstrapCap`
 
-Current delivery path (Stage 5 — one capability, one authority):
+Current delivery path:
 
 - kernel -> root task's CSpace at spawn time, one capability per slot
 - rights on each: `RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER`
@@ -95,7 +95,7 @@ Current delivery path (Stage 5 — one capability, one authority):
 
 Current use:
 
-- `IRIS_BOOTCAP_PROC_CONTROL`: authorized `SYS_PROCESS_CREATE`, which is retired (Stage 7-proc). It now authorizes nothing — a child is a TCB, a CNode and a VSpace retyped from a budget the spawner holds, and holding that budget is the authority
+- `IRIS_BOOTCAP_PROC_CONTROL`: authorized `SYS_PROCESS_CREATE`, which is retired. It now authorizes nothing — a child is a TCB, a CNode and a VSpace retyped from a budget the spawner holds, and holding that budget is the authority
 - `IRIS_BOOTCAP_INITRD_CONTROL`: authorizes `SYS_INITRD_COUNT` and `SYS_INITRD_VMO`
 - `IRIS_BOOTCAP_IRQ_CONTROL`: authorizes `SYS_CAP_CREATE_IRQCAP`
 - `IRIS_BOOTCAP_IOPORT_CONTROL`: authorizes `SYS_CAP_CREATE_IOPORT`

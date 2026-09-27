@@ -5,10 +5,12 @@ debug. Correctly in the kernel because the debug console predates any server.
 
 **All other subdirectories are empty (only `.gitkeep`):**
 
-- `acpi/` — Not implemented. ACPI parsing would require a full AML table.
-  In a proper microkernel, ACPI is handled by a user-space server. For now
-  boot uses the bootloader (UEFI) information directly.
-- `audio/` — Not implemented. Out of scope for Phase 0-2.
+- `acpi/` — Empty. The kernel DOES read ACPI, in `kernel/core/acpi/`: enough
+  of the fixed tables to find the LAPIC, the IOAPICs and the DMAR remapping
+  units, which are things it cannot ask a server about because they are what
+  it needs to start one. It interprets no AML, and anything that would need
+  an interpreter belongs in a server.
+- `audio/` — Not implemented, and out of scope: sound is a user-space server.
 - `dma/` — Not implemented. There are no active DMA devices in the kernel today.
 - `framebuffer/` — The framebuffer is managed by the `services/fb/` service.
   There must be no framebuffer driver in the kernel except the base-address
@@ -17,12 +19,12 @@ debug. Correctly in the kernel because the debug console predates any server.
   always. A premature placeholder that gives a false impression of GPU support.
 - `input/` — Not implemented. The PS/2 keyboard lives in `services/kbd/`.
 - `keyboard/` — Duplicate of `input/`. Both empty.
-- `pci/` — Not implemented. PCI enumeration is needed before any PCIe driver.
-  A real candidate for Phase 2, but only if there are PCIe devices the kernel
-  must handle directly (rare in a microkernel).
+- `pci/` — Empty, and it stays empty. PCI enumeration is the `pci` SERVICE in
+  ring 3, which holds the configuration ports and the device Untypeds over the
+  PCI windows and is the only task that can reach either. The kernel
+  enumerates no bus.
 
-**Phase 0 decision:** Do not add any new driver. Only `serial.c` stays.
+**Decision:** Do not add any new driver. Only `serial.c` stays.
 
 **Risk:** The presence of `gpu/nvidia/` etc. creates a false expectation of
-support. Phase 1 proposal: remove driver subdirectories that are not planned
-for the next 3 roadmap phases.
+support. The empty subdirectories should be removed, not filled.

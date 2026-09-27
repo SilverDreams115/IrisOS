@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Every SYS_* number the dispatcher cannot reach must SAY it is retired.
 #
-# Stage 10-abi froze the surface and drew its own lesson from its opening
+# The freeze that fixed this surface drew its own lesson from its opening
 # paragraph: "a description nothing checks is a description that goes stale".
 # AB-1 already pins the BEHAVIOUR — every number the dispatcher can see answers
 # NOT_SUPPORTED.  Nothing pinned the DECLARATION, and eleven numbers drifted:
 # retired in fact, documented as live, three of them with no retirement note
-# anywhere in the tree and one still describing a handle table deleted in
-# Stage 4.
+# anywhere in the tree and one still describing a handle table that had been
+# deleted.
 #
 # Reachable means: a case in the numbered dispatcher, or an INV_ label, or a
 # sys_<name>() handler.  Anything else must carry RETIRED/reserved within the

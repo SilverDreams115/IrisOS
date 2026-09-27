@@ -19,7 +19,7 @@ static struct cs_fixture *make_test_proc(void) {
 }
 
 static void free_test_proc(struct cs_fixture *p) {
-    /* Stage 4: structural root — released here instead of by
+    /* Structural root — released here instead of by
      * handle_table_close_all, which no longer owns it. */
     if (p->cspace_root) {
         kobject_active_release(&p->cspace_root->base);
@@ -71,7 +71,7 @@ void test_cspace(void) {
 
         struct KCNode *root = kcnode_alloc(8);
         ASSERT_NOT_NULL(root);
-        /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+        /* Structural CSpace root — kcnode_alloc's ref is the
          * lifecycle ref, plus the active ref the handle used to own. */
         kobject_active_retain(&root->base);
         p->cspace_root = root;
@@ -90,7 +90,7 @@ void test_cspace(void) {
 
         struct KCNode *root = kcnode_alloc(8);
         ASSERT_NOT_NULL(root);
-        /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+        /* Structural CSpace root — kcnode_alloc's ref is the
          * lifecycle ref, plus the active ref the handle used to own. */
         kobject_active_retain(&root->base);
         p->cspace_root = root;
@@ -130,7 +130,7 @@ void test_cspace(void) {
 
         struct KCNode *root = kcnode_alloc(8);
         ASSERT_NOT_NULL(root);
-        /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+        /* Structural CSpace root — kcnode_alloc's ref is the
          * lifecycle ref, plus the active ref the handle used to own. */
         kobject_active_retain(&root->base);
         p->cspace_root = root;
@@ -165,7 +165,7 @@ void test_cspace(void) {
         ASSERT_NOT_NULL(root);
         ASSERT_NOT_NULL(child);
 
-        /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+        /* Structural CSpace root — kcnode_alloc's ref is the
          * lifecycle ref, plus the active ref the handle used to own. */
         kobject_active_retain(&root->base);
         p->cspace_root = root;
@@ -193,7 +193,7 @@ void test_cspace(void) {
         ASSERT_EQ(g_destroyed, 1);
     }
 
-    /* ── Stage 4: a CPtr addresses exactly one capability ──
+    /* ── A CPtr addresses exactly one capability ──
      * Resolution consumes radix bits per level and is terminal when the CPtr
      * is EXHAUSTED.  It used to also be terminal at the first non-CNode slot,
      * which discarded the remaining bits: with an 8-slot root, CPtr 3, 11, 19,
@@ -253,7 +253,7 @@ void test_cspace(void) {
 
         struct KCNode *root = kcnode_alloc(8);
         ASSERT_NOT_NULL(root);
-        /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+        /* Structural CSpace root — kcnode_alloc's ref is the
          * lifecycle ref, plus the active ref the handle used to own. */
         kobject_active_retain(&root->base);
         p->cspace_root = root;
@@ -280,7 +280,7 @@ void test_cspace(void) {
 
         struct KCNode *root = kcnode_alloc(8);
         ASSERT_NOT_NULL(root);
-        /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+        /* Structural CSpace root — kcnode_alloc's ref is the
          * lifecycle ref, plus the active ref the handle used to own. */
         kobject_active_retain(&root->base);
         p->cspace_root = root;
@@ -307,7 +307,7 @@ void test_cspace(void) {
         struct KCNode *inner = kcnode_alloc(16);
         ASSERT_NOT_NULL(root); ASSERT_NOT_NULL(inner);
 
-        /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+        /* Structural CSpace root — kcnode_alloc's ref is the
          * lifecycle ref, plus the active ref the handle used to own. */
         kobject_active_retain(&root->base);
         p->cspace_root = root;

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * test_schedctx_refill.c — sporadic replenishment (Stage 8-mcs).
+ * test_schedctx_refill.c — sporadic replenishment.
  *
  * The model this replaces refilled `remaining_budget` in exactly one place:
  * the exhaustion branch.  A thread that blocked before exhausting carried its
@@ -60,7 +60,7 @@ static uint64_t rf_total(const struct KSchedContext *sc) {
 }
 
 void test_schedctx_refill(void) {
-    TEST_SUITE("sporadic replenishment (Stage 8-mcs)");
+    TEST_SUITE("sporadic replenishment");
 
     /* ── R-1: a fresh SC has the whole budget and owes nothing ─────────── */
     {

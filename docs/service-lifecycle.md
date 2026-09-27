@@ -1,13 +1,13 @@
-# Service lifecycle, death/relookup & badge policy (Phase 10)
+# Service lifecycle, death/relookup & badge policy
 
-Phase 10 turns the Phase 9 sender **identity** (kernel-stamped badges) into
+This turns the sender **identity** (kernel-stamped badges) into
 real **policy**: badge-authenticated registration, tightened `.ep` lookup
 grants, a liveness/generation oracle, real death→respawn recovery, and a
 notification close-while-wait guarantee. It builds entirely on existing
 kernel primitives (at the time `SYS_PROCESS_KILL/WATCH/STATUS`, endpoint and
 notification close) — no memory-model or namespace changes.
 
-> **Naming note (Stage 7).**  The policy below is unchanged, but the primitives
+> **Naming note.**  The policy below is unchanged, but the primitives
 > it names are: a supervisor watches, kills and reads the exit code of the
 > **thread** it holds — `SYS_TCB_WATCH`, `SYS_TCB_EXIT`, `SYS_TCB_EXIT_CODE`,
 > `SYS_TCB_GET_INFO` — because `svc_load_minted_ws` hands back the child's
@@ -40,7 +40,7 @@ privileged lifecycle ops (RESTART).
   (`vfs`, `kbd`, `sh`, …) can never be registered at runtime
   (`IRIS_ERR_ACCESS_DENIED`). This is the anti-spoofing rule that keeps a
   looked-up `vfs.ep` authoritative.
-- **EP REGISTER** (`0xF002`) is **badge-authenticated and cap-backed** (Phase 11):
+- **EP REGISTER** (`0xF002`) is **badge-authenticated and cap-backed**:
   the caller transfers its service endpoint with the message (`msg.cap`, in
   the capability argument word since ledger A-33); svcmgr validates it is an
   endpoint and stores the real cap, so `LOOKUP_NAME` returns a usable cap.
@@ -60,7 +60,7 @@ children, holds one (T046).
 ## Death model, generation & STATUS oracle
 
 Each catalog service carries a `generation` (1 at first boot). The exit-watch
-path (`SYS_TCB_WATCH` on the child's first thread) respawns a service on exit; Phase 10 bumps
+path (`SYS_TCB_WATCH` on the child's first thread) respawns a service on exit; the supervisor bumps
 `generation` on every respawn. `IRIS_SVCMGR_EP_STATUS` (`0xF005`, open to any
 caller) maps a name to `{alive, generation}` and is the **non-blocking
 liveness oracle** that lets a client poll a restart without blocking on a
@@ -77,7 +77,7 @@ recovering VFS.
 
 ## Revocation (initial / logical)
 
-Phase 10 implements **logical revocation by generation**: caps are not
+**Logical revocation by generation**: caps are not
 force-closed (a CSpace slot holds an active ref, so an endpoint with live
 client caps cannot be kernel-closed). Instead the supervisor's registry is
 the source of truth — a client validates freshness against `STATUS`; a cached
@@ -100,7 +100,7 @@ kbd IRQ-notification path is unaffected.
 ## Legacy svcmgr loop (retired)
 
 The KChannel `SVCMGR_MSG_*` loop was the second transport this document was
-written to describe. It went with KChannel itself in Phase 13: there is one
+written to describe. It went with KChannel itself: there is one
 endpoint protocol, every registration carries a real `owner_badge`, and every
 number that loop used answers `NOT_SUPPORTED` — as does every other retired
 number, since ledger A-32 left exactly three (`EXIT`, `YIELD`, `CLOCK_GET`).

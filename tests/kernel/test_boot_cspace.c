@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * test_boot_cspace.c — Phase 3.4 + Phase 3.5 unit tests for bootstrap CSpace grants.
+ * test_boot_cspace.c — unit tests for bootstrap CSpace grants.
  *
- * Phase 3.4 tests (BC-1..BC-10): Boot KUntyped in slots 16-255.
+ * BC-1..BC-10: boot KUntyped in slots 16-255.
  *   [BC-1]  Insert at BOOT_CPTR_UNTYPED_START and resolve via CPtr.
  *   [BC-2]  CNode slot rights match handle-table rights (equal, not greater).
  *   [BC-3]  IRIS_CPTR_NULL slot (0) remains empty after boot grants.
@@ -14,7 +14,7 @@
  *   [BC-9]  ACCESS_DENIED on read-only CNode slot blocks write-required resolve.
  *   [BC-10] Slot just past BOOT_CPTR_UNTYPED_END (slot 256) is out-of-range for mint.
  *
- * Phase 3.5 tests (BB-1..BB-10): KBootstrapCap well-known slot 1.
+ * BB-1..BB-10: KBootstrapCap well-known slot 1.
  *   [BB-1]  BOOT_CPTR_BOOTSTRAP_CAP == 1 and != IRIS_CPTR_NULL.
  *   [BB-2]  Slots 2-15 remain empty after inserting KBootstrapCap in slot 1.
  *   [BB-3]  KBootstrapCap in slot 1 resolves via CPtr; type == KOBJ_BOOTSTRAP_CAP.
@@ -51,7 +51,7 @@ static struct cs_fixture *bc_make_proc(void) {
 }
 
 static void bc_free_proc(struct cs_fixture *p) {
-    /* Stage 4: the root is held structurally, so the fixture drops its refs
+    /* The root is held structurally, so the fixture drops its refs
      * explicitly instead of relying on handle_table_close_all. */
     if (p->cspace_root) {
         kobject_active_release(&p->cspace_root->base);
@@ -71,7 +71,7 @@ static struct KCNode *bc_setup_root(struct cs_fixture *p) {
     return root;
 }
 
-/* Stage 4: the CSpace root is no longer addressed by a handle.  This shim
+/* The CSpace root is no longer addressed by a handle.  This shim
  * keeps the fixtures' fetch-then-release shape while reading it structurally,
  * so the assertions below still exercise the same ref discipline. */
 static iris_error_t bc_root_fetch(struct cs_fixture *p, struct KObject **out,
@@ -91,7 +91,7 @@ static struct KUntyped *bc_make_ut(uint64_t size) {
 
 /* Simulate the kernel_main Ph76 boot-block publish at drain_idx.
  *
- * Stage 4: the kernel publishes each boot Untyped into the root CNode ONLY;
+ * The kernel publishes each boot Untyped into the root CNode ONLY;
  * the parallel handle insert this helper used to mirror is deleted, and with
  * it the "CSpace failure is non-fatal because the handle still works" shape
  * the tests below were written around. */
@@ -318,10 +318,10 @@ void test_boot_cspace(void) {
         bc_free_proc(p);
     }
 
-    /* ── Phase 3.5 tests (BB-1..BB-10) ──────────────────────────────────────── */
+    /* ── The KBootstrapCap slot (BB-1..BB-10) ───────────────────────────── */
 
     /* [BB-1] BOOT_CPTR_BOOTSTRAP_CAP == 1 and != IRIS_CPTR_NULL.
-     * Stage 5 Step 2 emptied that slot for good — the monolithic boot
+     * That slot was emptied for good — the monolithic boot
      * capability it held cannot be constructed any more — but the number
      * stays reserved, which is what this pins. */
     {
@@ -329,7 +329,7 @@ void test_boot_cspace(void) {
         ASSERT_NE((uint32_t)BOOT_CPTR_BOOTSTRAP_CAP, (uint32_t)IRIS_CPTR_NULL);
     }
 
-    /* ── Stage 5 Step 3: a CSpace that names itself (BC-11..BC-13) ────────
+    /* ── A CSpace that names itself (BC-11..BC-13) ────────
      *
      * The root task holds a capability to its own root CNode, so the CNode is
      * reachable from inside itself and its slot holds refs on it.  Nothing
@@ -392,7 +392,7 @@ void test_boot_cspace(void) {
      * empties the slots never ran, and the CSpace outlived every holder.  The
      * process papered over it by emptying the root pre-emptively.
      *
-     * Stage 7-proc: a slot naming its own CNode takes no ACTIVE reference.  An
+     * A slot naming its own CNode takes no ACTIVE reference.  An
      * object reachable only from itself is reachable by nobody, and the count
      * now says so.  The LIFECYCLE reference stays — the slot must keep alive
      * what it names — so close fires, empties the slot, and that release is

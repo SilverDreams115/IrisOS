@@ -16,10 +16,8 @@ capability-limited access.
 - Authentication: not implemented
 - User sessions: not implemented
 
-**Phase 0 decision:** Implement nothing here.
-
-**Phase 1+ decision:** If audit is needed, implement it as a user-space server,
-not a kernel module. Consider removing this directory if it remains empty
-after Phase 2.
+**Decision:** Implement nothing here. If audit is ever needed it is a
+user-space server holding the capabilities it audits, not a kernel module —
+and this directory should be removed rather than filled.
 
 Empty subdirectories: `audit/`, `auth/`, `capabilities/`, `identity/`, `session/`

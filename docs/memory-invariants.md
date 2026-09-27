@@ -1,14 +1,14 @@
-# IRIS Memory Invariants (Phase 6.4, extended in Stage 6)
+# IRIS Memory Invariants
 
 This document is the authoritative reference for the memory safety invariants of the
 IRIS kernel.  Each invariant names where it is enforced and where it is
 tested.  Future phases must not regress any of these invariants.
 
-Stage 6 added a second axis to every one of them: **where the memory came
+A second axis runs through every one of them: **where the memory came
 from**.  The safety invariants below say a mapping is tracked, counted and torn
 down exactly once; the budget invariants at the end say who paid for it.  Both
 must hold — a correctly tracked mapping funded by kernel memory nobody
-authorised is exactly what Stage 6 removed.
+authorised is exactly what the budget rule removed.
 
 ---
 
@@ -26,7 +26,7 @@ authorised is exactly what Stage 6 removed.
 | I-08 | `KFrame.mapped_count` increments on `kframe_map_page` success | `kframe.c:132` | FR-26, FR-45, FR-68 | wrong destroy guard |
 | I-09 | `KFrame.mapped_count` decrements on any successful unmap path | `kframe.c:194`, `kvspace.c:72,113` | FR-28, FR-54, FR-63, FR-68 | destroy guard fires early/late |
 | I-10 | `kframe_obj_destroy` asserts `mapped_count == 0` | `kframe.c:21-23` | FR-28, FR-63, FR-67 | use-after-free of physical page |
-| I-11 | `mapped_count` is decremented BEFORE `kobject_release` on every unmap path | `kframe.c:194-195` (fixed Phase 6.4), `kvspace.c:72-73`, `kvspace.c:113-114`, `kvspace.c:25-26` | FR-63 (regression test for the Phase 6.4 fix) | `kframe_obj_destroy` panics when mapping retain is last |
+| I-11 | `mapped_count` is decremented BEFORE `kobject_release` on every unmap path | `kframe.c:194-195` (fixed), `kvspace.c:72-73`, `kvspace.c:113-114`, `kvspace.c:25-26` | FR-63 (regression test for that fix) | `kframe_obj_destroy` panics when mapping retain is last |
 | I-12 | `rollback_vmo_maps` leaves no stale PTEs after partial map failure | `syscall_vm.c:rollback_vmo_maps` calls `kvspace_unmap_page` per page | FR-66 | leaked PTEs on OOM error path |
 | I-13 | `rollback_vmo_maps` leaves `mapping_count` at the pre-map value | same | FR-66 | count divergence after partial failure |
 | I-14 | `kvspace_invalidate` on a VSpace with zero mappings is a safe no-op | `kvspace.c:66` — empty loop body | FR-41 (empty VSpace variant) | crash on double invalidate |
@@ -40,7 +40,7 @@ authorised is exactly what Stage 6 removed.
 | I-22 | W^X: `kframe_map_page` rejects `MAP_WRITABLE | MAP_EXEC` | `kframe.c:88` | executable writable pages |
 | I-23 | `kframe_map_page` rejects `flags > 3` (bits beyond W|X) | `kframe.c:84` | FR-61 | undefined flag leak |
 
-## Budget invariants (Stage 6)
+## Budget invariants
 
 | # | Invariant | Implementation | Tests | Risk if broken |
 |---|-----------|----------------|-------|----------------|
@@ -62,7 +62,7 @@ them for the whole run.
 
 ---
 
-## Ordering Invariant (Critical — Fixed in Phase 6.4)
+## Ordering Invariant (Critical — Fixed)
 
 **I-11** is the most subtle invariant.  Every unmap path must follow this order:
 
@@ -77,7 +77,7 @@ them for the whole run.
 
 If step 5 and step 6 are swapped, `kframe_obj_destroy` is called while `mapped_count == 1`,
 triggering the IRIS_ASSERT and aborting.  This bug existed in `kframe_unmap_page` prior to
-Phase 6.4.  All kvspace paths (`kvspace_unmap_page`, `kvspace_invalidate`, `kvspace_obj_destroy`)
+All kvspace paths (`kvspace_unmap_page`, `kvspace_invalidate`, `kvspace_obj_destroy`)
 had the correct order; only `kframe_unmap_page` was wrong.
 
 The fix (one-line swap in `kframe.c:193-194`) is tested by FR-63, which exercises the exact
@@ -105,26 +105,26 @@ mapping retain remaining.
 | Item | Risk | Phase |
 |------|------|-------|
 | ~~SMP TLB shootdown~~ | **DONE** (SMP roadmap §9.3 step 2) | — |
-| ~~KChannel migration to KEndpoint~~ | **DONE** (Phase 13/Track I): `KChannel` is removed; IPC is endpoints | — |
-| ~~`handle_id_t` removal~~ | **DONE** (Stage 4 deleted the table; Stage 10-abi deleted the NAME).  What survives is the value-range BOUNDARY, `IRIS_CPTR_LIMIT` in `nc/cptr.h`, because values a caller written against the old ABI would send must be REFUSED rather than resolved | — |
-| Userland pager | Kernel-side demand paging is gone; no userland fault handler yet | Post-Phase 7 |
-| ~~Device frames (IOMMU)~~ | **DONE** (Stage 10-dma): translation is on with every device blocked; a device reaches the frames somebody mapped into its `IOSpace` and nothing else.  T353 watches a device be refused, granted and refused again | — |
-| Large frames (2 MiB, 1 GiB) | Only 4 KiB pages supported | Post-Phase 7 |
+| ~~KChannel migration to KEndpoint~~ | **DONE**: `KChannel` is removed; IPC is endpoints | — |
+| ~~`handle_id_t` removal~~ | **DONE**.  What survives is the value-range BOUNDARY, `IRIS_CPTR_LIMIT` in `nc/cptr.h`, because values a caller written against the old ABI would send must be REFUSED rather than resolved | — |
+| Userland pager | Kernel-side demand paging is gone; no userland fault handler yet | Not started |
+| ~~Device frames (IOMMU)~~ | **DONE**: translation is on with every device blocked; a device reaches the frames somebody mapped into its `IOSpace` and nothing else.  T353 watches a device be refused, granted and refused again | — |
+| Large frames (2 MiB, 1 GiB) | Only 4 KiB pages supported | Not started |
 | Formal verification | Invariants documented but not machine-verified | Long-term |
 | External fuzzing | No AFL/libFuzzer harness for syscall_vm paths | Long-term |
 
 ---
 
-## Test Coverage Summary (Phase 6.4)
+## Test Coverage Summary
 
 | Suite | Count | FR range |
 |-------|-------|----------|
-| Phase 5 — alloc/destroy/CSpace | 22 | FR-1..FR-22 |
-| Phase 5.1 — paging stub + lifecycle | 18 | FR-23..FR-40 |
-| Phase 6.1 — demand paging regression | 1 | FR-41 |
-| Phase 6.2 — bootstrap KFrame maps | 9 | FR-42..FR-50 |
-| Phase 6.3 — VMO-to-Frame migration | 12 | FR-51..FR-62 |
-| Phase 6.4 — stress / invariant audit | 7 | FR-63..FR-69 |
+| Alloc/destroy/CSpace | 22 | FR-1..FR-22 |
+| Paging stub + lifecycle | 18 | FR-23..FR-40 |
+| Demand paging regression | 1 | FR-41 |
+| Bootstrap KFrame maps | 9 | FR-42..FR-50 |
+| VMO-to-Frame migration | 12 | FR-51..FR-62 |
+| Stress / invariant audit | 7 | FR-63..FR-69 |
 | **Total** | **69** | — |
 
 Total assertions across all suites: **10433** (including 1000-cycle loop in

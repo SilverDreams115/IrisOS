@@ -4,7 +4,7 @@ IRIS has one IPC mechanism for messages — the **KEndpoint**, a synchronous
 rendezvous — and one for signals, the **KNotification**. Both are seL4's.
 
 This document described two mechanisms for most of its life: KChannel, an
-asynchronous ring buffer, was the original and is fully retired (Phase 13). Its
+asynchronous ring buffer, was the original and is fully retired. Its
 syscall numbers are permanently reserved and answer `NOT_SUPPORTED`. What
 follows is what exists.
 

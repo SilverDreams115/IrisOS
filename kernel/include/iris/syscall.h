@@ -1477,7 +1477,7 @@ struct iris_iommu_fault_info {
  * No registry slot, no kernel stack, no address space, refused by
  * every execution syscall.  The operation that gives them those was missing
  * because ITS ARGUMENTS ARE CAPABILITIES — a CSpace root and a VSpace — and
- * those only became addressable as capabilities in Stages 3-5.
+ * those only became addressable as capabilities later.
  *
  * SYS_CSPACE_SELF(dest) → 0 or negative iris_error_t
  *   Publishes a capability to the CALLER'S OWN root CNode into `dest`

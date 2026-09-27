@@ -48,14 +48,14 @@ void test_syscall_dispatch(void) {
      * One number from each retirement, because they were retired for different
      * reasons and a table edit that resurrected any of them would reopen a
      * closed convergence stage:
-     *   15  SYS_HANDLE_INSERT      — the handle namespace (Stage 4)
+     *   15  SYS_HANDLE_INSERT      — the handle namespace
      *   19  SYS_NOTIFY_CREATE      — fabricating creators (Phase S1)
      *   25  SYS_NS_LOOKUP          — the kernel name service (pre-capability)
-     *   56  SYS_PROCESS_CREATE     — the process object (Stage 7-proc)
-     *   58  SYS_THREAD_START       — pool-born threads (Stage 7)
+     *   56  SYS_PROCESS_CREATE     — the process object
+     *   58  SYS_THREAD_START       — pool-born threads
      *  104  SYS_PROC_CSPACE_MINT   — minting through a process (Step 9)
      *  109  SYS_RESOURCE_INFO      — the per-process resource domain (7-mem)
-     *   55  SYS_INITRD_VMO         — a boot image as a KVMO (Stage 6, D-5)
+     *   55  SYS_INITRD_VMO         — a boot image as a KVMO
      */
     {
         /* Ledger A-22 adds two: 66 (SYS_EXCEPTION_RESUME) and 123

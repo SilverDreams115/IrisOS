@@ -56,7 +56,7 @@ python3 "$PROJECT_ROOT/scripts/checkfs.py" "$IMG" "$PRISTINE" 2 || exit 1
 
 echo "[persist] a filesystem written by IRIS survived the machine being off"
 
-# ── Phase 3: a disk with nothing of ours on it is not touched ───────────────
+# ── Third: a disk with nothing of ours on it is not touched ────────────────
 #
 # This is the check that protects data rather than proving a feature, and it
 # exists because the opposite behaviour shipped twice over.  `blk` handed an

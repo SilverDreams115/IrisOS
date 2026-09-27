@@ -124,8 +124,7 @@ Kernel implementation note: the dispatcher still moves return values through
 Every allocation names the Untyped it is carved from. `Untyped_Retype` names
 its budget by construction, and `Boot_InitrdFrame` takes one as an argument
 (0 = the caller's own). `SYS_VMO_CREATE` and `SYS_INITRD_VMO` were the other
-two and went with the VMO; `SYS_PROCESS_CREATE` went with the process object
-(Stage 7-proc).
+two and went with the VMO; `SYS_PROCESS_CREATE` went with the process object.
 
 Everything carved from an Untyped is a **child** of it, so `Untyped_Reset`
 refuses while it lives and reclaims the whole region once it does not. A bump
@@ -139,7 +138,7 @@ holder retypes each from its own Untyped and passes it in.
 
 | Method | Arguments | What the caller supplies |
 |---|---|---|
-| `TCB_Configure` | tcb, cspace, vspace | the CSpace root and the address space the thread runs in, both retyped by the caller. This is `seL4_TCB_Configure`: since Stage 7-proc there is no identity check against a third object, and threads sharing a CSpace and a VSpace is what a "process" IS |
+| `TCB_Configure` | tcb, cspace, vspace | the CSpace root and the address space the thread runs in, both retyped by the caller. This is `seL4_TCB_Configure`: there is no identity check against a third object, and threads sharing a CSpace and a VSpace is what a "process" IS |
 | `PageTable_Map` | pt, vspace, vaddr | a `IRIS_KOBJ_PAGE_TABLE` to fill the first level missing for `vaddr` |
 
 A map whose walk is incomplete answers `IRIS_ERR_MISSING_TABLE` and names

@@ -8,16 +8,16 @@ These mappings historically bypassed the normal seL4-style capability path
 (`KUntyped → retype → KFrame → SYS_FRAME_MAP`) and were called
 **bootstrap direct maps**.
 
-**Phase 6.2** migrated these bootstrap user mappings to be KFrame-backed,
-closing the main tracking gap documented in Phase 6.1.
+These bootstrap user mappings were migrated to be KFrame-backed,
+closing the main tracking gap the previous pass had documented.
 
-**Stage 6** left this path deliberately unchanged, and it is now the only one
+The budget rule left this path deliberately unchanged, and it is now the only one
 like it: the root task's text, stack and BootInfo pages, its page tables, its
 PML4, its KVSpace and its root CNode all come from the kernel's PMM/slab,
 because they are built *before the first Untyped exists*.  Every other address
 space in the system names the Untyped that pays for it.
 
-**Stage 7** settled what happens to this exception: it does **not** retire.
+What happens to this exception is settled: it does **not** retire.
 There is no process object left to move to user space — `KProcess` is deleted
 and a child's CSpace, address space and first thread are retyped by its spawner
 — but the ROOT task still has to be given an address space by something, and
@@ -28,11 +28,11 @@ growing.
 
 ---
 
-## Bootstrap Memory After Phase 6.2
+## Bootstrap Memory Today
 
 ### Demand paging
 
-Demand paging was eliminated in **Phase 6**.  `#PF` ring-3 never allocates
+Demand paging is **eliminated**.  `#PF` ring-3 never allocates
 physical pages.  There is no in-kernel demand-fault resolver of any kind: the
 `#PF` handler records the fault on the faulting thread and signals the
 notification its handler was armed with.
@@ -113,7 +113,7 @@ slot `BOOT_CPTR_VSPACE` (slot 2).
 
 Physical page lifetime is tracked by `task` struct fields (`ustack_phys`,
 `utext_phys`).  `free_user_stack_pages` and `free_user_text_pages` free the
-PMM blocks on teardown paths (unchanged from Phase 6.1).
+PMM blocks on teardown paths (unchanged).
 
 ### Mapping records
 
@@ -125,7 +125,7 @@ PMM blocks on teardown paths (unchanged from Phase 6.1).
 ### Bootstrap alloc retains
 
 After `kvspace_invalidate`, the KVSpace releases each KFrame alloc retain
-stored in `vs->bootstrap_frames[]` (they moved off the process in Stage 7-proc,
+stored in `vs->bootstrap_frames[]` (they moved off the process,
 where they belonged all along — they are frames mapped into that address
 space).  Since
 `mapped_count == 0` at that point, `kframe_obj_destroy` fires without the
@@ -134,7 +134,7 @@ is **not** freed here (managed externally by task struct fields).
 
 ### Order at address-space teardown
 
-Driven by the KVSpace's own `close`/`destroy` hooks since Stage 7-proc — the
+Driven by the KVSpace's own `close`/`destroy` hooks — the
 moment its last capability goes, rather than the moment its last thread exits:
 
 ```
@@ -159,9 +159,9 @@ If `bootstrap_kframe_map` fails mid-loop:
 
 | Invariant | Status |
 |-----------|--------|
-| No demand paging | ✓ eliminated in Phase 6 |
+| No demand paging | ✓ eliminated |
 | No `#PF` ring-3 allocation | ✓ confirmed |
-| Bootstrap user pages have KFrame | ✓ Phase 6.2 |
+| Bootstrap user pages have KFrame | ✓ |
 | Bootstrap KFrames registered in `proc->bootstrap_frames[]` | ✓ |
 | KFrame mappings in `KVSpace.mappings[]` | ✓ |
 | `mapped_count` reflects bootstrap mappings | ✓ |
@@ -169,15 +169,15 @@ If `bootstrap_kframe_map` fails mid-loop:
 | `mapping_count` reaches 0 on teardown | ✓ |
 | No stale PTEs after teardown | ✓ |
 | No leaked KFrame alloc retains | ✓ |
-| VMO maps via KFrame | ✓ Phase 6.3 — sys_vmo_map / sys_vmo_map_into rewritten |
+| VMO maps via KFrame | ✓ sys_vmo_map / sys_vmo_map_into rewritten |
 | T001–T017 pass | ✓ iris_test 17/17 |
 | FR-1..FR-62 pass | ✓ 2143/2143 unit tests |
 
 ---
 
-## Phase 6.3 Changes
+## The VMO-to-Frame migration
 
-**Phase 6.3** completed VMO-to-Frame capability migration.
+It completed the VMO-to-Frame capability migration.
 
 ### sys_vmo_map / sys_vmo_map_into rewritten
 
@@ -220,7 +220,7 @@ list, removes the PTE, and releases the frame retain — the inverse of
 
 ---
 
-## Verification (Phase 6.3)
+## Verification
 
 - `make` — 0 warnings, 0 errors
 - `make test-unit` — 2143/2143 tests pass (FR-1..FR-62)
@@ -231,7 +231,7 @@ list, removes the PTE, and releases the frame retain — the inverse of
 
 ---
 
-## Phase 6.4 Changes (Memory stress / invariant audit)
+## Memory stress / invariant audit
 
 ### Bug fixed: `kframe_unmap_page` ordering
 
@@ -262,7 +262,7 @@ already had the correct order.  The fix is a one-line swap in `kframe.c`.
 | FR-68 | 1000-cycle map/unmap stress on a single VA |
 | FR-69 | mapping_count consistency with interleaved non-sequential unmap |
 
-### Verification (Phase 6.4)
+### Verification
 
 - `make` — 0 warnings, 0 errors
 - `make test-unit` — 10274/10274 tests pass (FR-1..FR-69)

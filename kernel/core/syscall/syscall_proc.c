@@ -46,46 +46,11 @@ uint64_t sys_yield(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /* ── Process lifecycle query ──────────────────────────────────────── */
 
 /*
- * sys_process_status(proc_handle) → 1 (alive), 0 (dead), or iris_error_t
+ * sys_process_status, sys_process_kill and sys_process_fault_info RETIRED.
  *
- * Non-blocking.  Returns immediately regardless of the target state.
- * Requires RIGHT_READ on proc_handle.
- *
- * Lifecycle contract:
- *   - Returns 1 while the process is running or blocked (main_thread alive).
- *   - Returns 0 once the process has called SYS_EXIT or been reaped;
- *     thread teardown has run and TASK_DEAD has been set.
- *   - The handle remains valid after death until the caller closes it;
- *     this allows the caller to detect and then clean up in one pass.
- *   - Closing the handle (SYS_HANDLE_CLOSE) is the caller's responsibility
- *     after observing death; the KProcess is released when refcount hits zero.
+ * All three named a PROCESS by a handle, and there is neither any more: the
+ * object was deleted and the handle table with it.  What they did is asked of
+ * the THREAD now, by capability — SYS_TCB_WATCH, SYS_TCB_EXIT,
+ * SYS_TCB_EXIT_CODE and SYS_TCB_FAULT_INFO — and their syscall numbers answer
+ * IRIS_ERR_NOT_SUPPORTED for ever, because a retired number is never reused.
  */
-/* ── Process termination ──────────────────────────────────────────── */
-
-/*
- * sys_process_kill(proc_handle) → 0 or iris_error_t
- *
- * Requires RIGHT_MANAGE on proc_handle.
- * Cannot be used for self-termination — use SYS_EXIT for that (IRIS_ERR_INVALID_ARG).
- * Idempotent: if the target is already dead, returns 0 immediately.
- *
- * Internally calls task_kill_external which: runs thread teardown (fires exit
- * watches, closes the process's own handle table, unregisters IRQ routes),
- * frees user stack pages, reaps the address space (safe since the caller's CR3
- * is different from the target's), and releases the kernel's creation reference.
- *
- * The caller's handle to the proc remains valid until the caller closes it;
- * the KProcess object is freed when all handles to it are closed.
- */
-/* ── Threading (D2) ──────────────────────────────────────────────── */
-
-/*
- * sys_process_fault_info(proc_handle, out_uptr) → 0 or iris_error_t
- *
- * Reads the last fault recorded for proc_handle (or self when
- * proc_handle == IRIS_CPTR_NULL) into a 32-byte user buffer laid out per
- * iris/fault_proto.h (FAULT_OFF_VECTOR/TASK_ID/RIP/ERROR/CR2).  The exception
- * handler calls this after its KNotification fires.  Returns IRIS_ERR_WOULD_BLOCK
- * if no fault is pending.  Requires RIGHT_READ on a non-self proc_handle.
- */
-

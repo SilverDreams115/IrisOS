@@ -32,7 +32,7 @@
 #include <iris/lapic.h>
 #include <iris/kslab.h>
 #ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
-#include <iris/phase3_selftest.h>
+#include <iris/boot_selftest.h>
 #endif
 
 #include <iris/fbcon.h>
@@ -133,15 +133,15 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     klog_write("[IRIS][PMM] buddy allocator active\n");
 
     /* Reserve 16 MB (4096 pages) from the PMM as the kernel object slab.
-     * All typed kernel object headers (KProcess, KVSpace, root KCNode, page
+     * All typed kernel object headers (KTcb, KVSpace, root KCNode, page
      * tables, KEndpoint, …) are allocated from this pool via kslab_alloc
      * instead of directly from the PMM, allowing all remaining PMM blocks to be
      * handed to userspace as KUntyped caps.
      *
-     * Grown 4 MB → 16 MB.  Each spawned process consumes several
-     * KB–32 KB of kernel objects (KProcess + a 256-slot root KCNode + KVSpace +
-     * page-table nodes + handle table); the old 4 MB arena capped concurrent
-     * live processes at ~9 (NO_MEMORY on the 10th), which the multi-target
+     * Grown 4 MB → 16 MB.  Each spawned task consumes several
+     * KB–32 KB of kernel objects (a TCB + a 256-slot root KCNode + KVSpace +
+     * page-table nodes); the old 4 MB arena capped concurrent
+     * live tasks at ~9 (NO_MEMORY on the 10th), which the multi-target
      * pager suite (16 concurrent targets + the pager + the supervisor + core
      * services) exceeds.  This is a kernel-object-MEMORY bound, wholly distinct
      * from the per-process notification quota already resolved via the
@@ -240,7 +240,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     tlb_init();
 
 #ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
-    phase3_selftest_run();
+    boot_selftest_run();
 #endif
 
     /* ── 7. Scheduler core ──────────────────────────────────────── */

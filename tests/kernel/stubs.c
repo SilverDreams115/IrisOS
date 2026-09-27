@@ -12,7 +12,7 @@
 int iris_smap_enabled = 0;
 int iris_pcid_enabled = 0;
 
-/* ── Failure injection state (Phase 6.4) — declared early, used by kslab/paging stubs ── */
+/* ── Failure injection state — declared early, used by kslab/paging stubs ── */
 static int g_kslab_fail_countdown = -1; /* -1=never; 0=fail next; N=fail after N more successes */
 static int g_paging_force_fail    =  0; /* non-zero = fail next paging_map_checked_in */
 
@@ -99,7 +99,7 @@ uint32_t test_restart_count(void) { return syscall_restart_count(); }
 #include <iris/nc/kframe.h>
 #include <iris/nc/kobject.h>
 
-/* Bootstrap-frame stubs RETIRED (Stage 7-proc): the frames belong to the
+/* Bootstrap-frame stubs RETIRED: the frames belong to the
  * ADDRESS SPACE they are mapped in, and kvspace.c — which this build already
  * compiles — provides kvspace_register_bootstrap_frame for real.  A stub here
  * would shadow the thing under test. */
@@ -116,7 +116,7 @@ __attribute__((noreturn)) void iris_panic(const char *msg) {
     abort();
 }
 
-/* ── Failure injection API (Phase 6.4) ─────────────────────────────────────
+/* ── Failure injection API ─────────────────────────────────────
  *
  * Test-only hooks to simulate allocation failures at specific points.
  * State variables are declared at the top of this file (g_kslab_fail_countdown,
@@ -143,7 +143,7 @@ void kslab_clear_fail(void)        { g_kslab_fail_countdown = -1; }
 void paging_force_fail_next(void)  { g_paging_force_fail = 1; }
 void paging_clear_force_fail(void) { g_paging_force_fail = 0; }
 
-/* ── Stateful paging stubs for Phase 5.1 KFrame mapping tests ─────────────
+/* ── Stateful paging stubs for the KFrame mapping tests ───────────────────
  *
  * Previously these stubs were trivial no-ops (always succeed, always return 0).
  * That made any test using paging_virt_to_phys_in a false positive: duplicate
@@ -244,7 +244,7 @@ static int stub_pt_has(uint64_t cr3, uint64_t virt, int level) {
 static int stub_pt_strict = 0;
 void paging_stub_strict_levels(int on) { stub_pt_strict = on; stub_pt_n = 0; }
 
-/* Stage 6-pure Step 4: no MMU on the host, so a PML4 needs no contents —
+/* No MMU on the host, so a PML4 needs no contents —
  * what the tests observe is that the object exists and behaves, not what the
  * hardware would read out of the page. */
 void paging_init_user_pml4(uint64_t pml4_page_phys) { (void)pml4_page_phys; }
@@ -274,7 +274,7 @@ int paging_install_table_in(uint64_t cr3, uint64_t virt, uint64_t table_phys,
     return level;
 }
 
-/* Stage 6-pure: the level leaves the walk again.  Identity-checked like the
+/* The level leaves the walk again.  Identity-checked like the
  * real one, so a test can prove a stale (va, level) record detaches nothing. */
 void paging_flush_table_walk(uint64_t virt) {
     /* No MMU on the host.  The kernel owes this after detaching an interior
@@ -311,7 +311,7 @@ void paging_destroy_user_space_from(uint64_t cr3, int pml4_pooled) {
 }
 
 /*
- * Stage 6-pure Step 1: the host models the WALK, not the hardware.
+ * The host models the WALK, not the hardware.
  *
  * What the tests need to observe is the level arithmetic — that a fresh
  * address space is missing a PDPT, that installing one leaves it missing a PD,
@@ -338,7 +338,7 @@ void paging_unmap_in(uint64_t cr3, uint64_t virt) {
 }
 
 /*
- * Stage 7-mem: a notification's close hook unbinds any interrupt routed to it,
+ * A notification's close hook unbinds any interrupt routed to it,
  * so the host build needs the routing symbol.  The IRQ table is kernel-only
  * (PIC masks, an interrupt-time signal path), and nothing the host suite
  * exercises registers a route — so the honest stub is a no-op that records
@@ -480,7 +480,7 @@ void     smp_send_reschedule(uint32_t c)      { (void)c; }
 
 #include <iris/iommu.h>
 /*
- * DMA remapping (Stage 10-dma).  A host test has no ACPI tables and no VT-d
+ * DMA remapping.  A host test has no ACPI tables and no VT-d
  * unit, so the machine it runs on has none — and answering "no unit, nothing
  * usable, nothing translating" is that machine described rather than a
  * placeholder.  It is also the answer that makes `iommu_dma_is_contained`
@@ -514,7 +514,7 @@ void     iommu_invalidate_iotlb(uint32_t u)  { (void)u; }
 void     scheduler_sleep_current(uint64_t ticks) { (void)ticks; }
 
 /*
- * Stage 9-evt Step 2 — the abandoning park and the frameless return.
+ * The abandoning park and the frameless return.
  *
  * A unit test has one stack and no scheduler, so there is nothing to abandon
  * TO: the park declines, which is exactly the fallback the real one takes when

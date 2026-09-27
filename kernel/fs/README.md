@@ -18,8 +18,6 @@ by `kernel/core/initrd/`.
   today. A user-space ramfs (in the VFS server) would be the correct place.
 - `vfs/` — The real VFS is in `services/vfs/`, NOT here. This directory is empty.
 
-**Phase 0 decision:** Implement nothing here.
-
-**Future decision:** Consider removing `kernel/fs/` entirely. The VFS lives in
+**Decision:** Implement nothing here. Consider removing `kernel/fs/` entirely. The VFS lives in
 `services/vfs/`. If an in-kernel filesystem is ever needed (e.g. for early
 debug), document it as a justified exception before adding code.

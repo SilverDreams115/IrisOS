@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * test_ipc_cspace.c — Phase 3.2 unit tests for IPC dual-resolve helpers.
+ * test_ipc_cspace.c — unit tests for IPC dual-resolve helpers.
  *
  * Covers cspace_resolve_only_endpoint/reply/notification, verifying:
  *   - CSpace path resolves correct typed objects
@@ -34,7 +34,7 @@ static struct cs_fixture *make_proc(void) {
 }
 
 static void free_proc(struct cs_fixture *p) {
-    /* Stage 4: structural root — released here instead of by
+    /* Structural root — released here instead of by
      * handle_table_close_all, which no longer owns it. */
     if (p->cspace_root) {
         kobject_active_release(&p->cspace_root->base);
@@ -48,7 +48,7 @@ static void free_proc(struct cs_fixture *p) {
 static struct KCNode *setup_cspace(struct cs_fixture *p, uint32_t num_slots) {
     struct KCNode *root = kcnode_alloc(num_slots);
     if (!root) return NULL;
-    /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+    /* Structural CSpace root — kcnode_alloc's ref is the
      * lifecycle ref, plus the active ref the handle used to own. */
     kobject_active_retain(&root->base);
     p->cspace_root = root;
@@ -213,7 +213,7 @@ void test_ipc_cspace(void) {
 
 
 
-    /* ── [Phase 9] badges: per-cap identity ───────────────────────────── */
+    /* ── Badges: per-cap identity ─────────────────────────────────────── */
     {
         struct cs_fixture *p = make_proc();
         ASSERT_NOT_NULL(p);
@@ -267,7 +267,7 @@ void test_ipc_cspace(void) {
         kobject_active_release(o); kobject_release(o);
         ASSERT_EQ(b2, 0xAAu);                 /* unaffected by delete */
 
-        /* Stage 4: a non-CPtr value is malformed, and a failed resolve must
+        /* A non-CPtr value is malformed, and a failed resolve must
          * not write through the badge out-parameter. */
         badge = 99u;
         ASSERT_EQ(cspace_resolve_only_endpoint_badged(p->cspace_root, (iris_cptr_t)0x80000401u,

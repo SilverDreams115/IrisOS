@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * test_cnode_guard.c — CNode guards (Stage 8-cap, ledger D-2).
+ * test_cnode_guard.c — CNode guards (ledger D-2).
  *
  * A guard belongs to the CAPABILITY, not to the CNode: seL4 stores it in
  * cap_cnode_cap, so two capabilities to one CNode can carry different guards
@@ -56,7 +56,7 @@ static struct KObject *cg_two_level(struct KCNode **out_root,
 }
 
 void test_cnode_guard(void) {
-    TEST_SUITE("CNode guards (Stage 8-cap / D-2)");
+    TEST_SUITE("CNode guards (ledger D-2)");
 
     /* ── G-1: the default is no guard, and resolves exactly as before ──────
      * Every slot ever installed starts guard_bits = 0.  This is the assertion
@@ -148,7 +148,7 @@ void test_cnode_guard(void) {
     }
 
     /* ── G-6: leftover bits are still rejected, guard or no guard ──────────
-     * Stage 4 Step 6b made CPtr resolution injective: bits remaining at a
+     * CPtr resolution is injective: bits remaining at a
      * non-CNode terminal are INVALID_ARG, not a silent alias.  A guard
      * consumes bits, so this rule has to be re-derived on top of it or the
      * alias comes back one level up. */

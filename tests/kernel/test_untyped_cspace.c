@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * test_untyped_cspace.c — Phase 3.3 unit tests for cspace_resolve_only_untyped.
+ * test_untyped_cspace.c — unit tests for cspace_resolve_only_untyped.
  *
  * Covers:
  *   - CSpace path resolves correct KUntyped objects
@@ -37,7 +37,7 @@ static struct cs_fixture *make_proc(void) {
 }
 
 static void free_proc(struct cs_fixture *p) {
-    /* Stage 4: structural root — released here instead of by
+    /* Structural root — released here instead of by
      * handle_table_close_all, which no longer owns it. */
     if (p->cspace_root) {
         kobject_active_release(&p->cspace_root->base);
@@ -50,7 +50,7 @@ static void free_proc(struct cs_fixture *p) {
 static struct KCNode *setup_cspace(struct cs_fixture *p, uint32_t num_slots) {
     struct KCNode *root = kcnode_alloc(num_slots);
     if (!root) return NULL;
-    /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+    /* Structural CSpace root — kcnode_alloc's ref is the
      * lifecycle ref, plus the active ref the handle used to own. */
     kobject_active_retain(&root->base);
     p->cspace_root = root;
@@ -161,7 +161,7 @@ void test_untyped_cspace(void) {
 
     /* ── [UT] no CSpace returns NOT_FOUND ── */
     {
-        /* Stage 7 Step 4: the first argument is the CSpace ROOT, not a
+        /* The first argument is the CSpace ROOT, not a
          * process, so NULL now means "this caller has no CSpace" — the same
          * situation a process with an unset root was already in, and it gets
          * the same answer.  It used to be two codes for one state: NOT_FOUND

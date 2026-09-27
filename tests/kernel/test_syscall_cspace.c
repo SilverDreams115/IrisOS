@@ -94,7 +94,7 @@ void test_syscall_cspace(void) {
     }
 
     /* ── SC-2: a HANDLE value is INVALID_ARG, with no fallback ────────────
-     * Stage 4 deleted the handle table; the boundary survives as a rejection.
+     * The handle table was deleted; the boundary survives as a rejection.
      * This is the charter's "one authority namespace" made testable: a value
      * at or above IRIS_CPTR_LIMIT is not an address in some other table, it is a
      * malformed argument. */

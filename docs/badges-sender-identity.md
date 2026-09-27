@@ -1,6 +1,6 @@
-# Badges & sender identity (Phase 9)
+# Badges & sender identity
 
-Phase 9 gives IRIS seL4-style **sender identity**: every endpoint message
+IRIS has seL4-style **sender identity**: every endpoint message
 carries a kernel-stamped badge identifying the *capability* the sender
 invoked. This closes the S0 P1 debt "no sender identity" and is the
 foundation for service death/relookup, secure REGISTER, per-client state
@@ -12,7 +12,7 @@ and the retirement of the svcmgr legacy loop.
   two caps to the same endpoint can carry different badges.
 - **Where it lives**: in the CNode slot (`KCSlot.badge`, 64-bit storage).
   There is nowhere else — the handle table that held a parallel badge array
-  was deleted in Stage 4.  The effective badge space is **32 bits**, because
+  was deleted.  The effective badge space is **32 bits**, because
   it must fit the `rights | badge << 32` packing of the mint argument.
 - **Badge 0 = unbadged** (masters, legacy caps). Servers treat it as
   "unidentified legacy client".
@@ -104,15 +104,15 @@ assembly) replies to `IRIS_EP_OP_PING` with
 - **svcmgr legacy loop retirement**: REGISTER/UNREGISTER over EP can now
   be authenticated by badge.
 - **Stateful protocols**: per-client server state keyed by badge becomes
-  safe (the Phase 7 "stateless because no identity" constraint is lifted).
+  safe (the "stateless because no identity" constraint is lifted).
 - **Revocation**: per-badge cap accounting.
 
-## Phase 10 follow-up
+## What the supervisor does with them
 
-Phase 10 consumes these badges as **policy** (see
+The supervisor consumes these badges as **policy** (see
 [service-lifecycle.md](service-lifecycle.md)): `iris_badge_is_supervisor()`
 gates `.ep` lookup DUPLICATE grants and the privileged RESTART op; EP REGISTER
 binds an `owner_badge`; UNREGISTER checks it; and the STATUS/generation oracle
 plus respawn driven by a real kill — `TCB_Exit` on the child's first thread
-since Stage 7, `SYS_PROCESS_KILL` when Phase 10 was written — give death
+now, `SYS_PROCESS_KILL` when this was written — give death
 detection and relookup.

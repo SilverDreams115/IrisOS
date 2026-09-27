@@ -8,7 +8,7 @@ TIMEOUT_SECS="${IRIS_QEMU_TIMEOUT_SECS:-25}"
 EXPECT_SELFTESTS="${IRIS_QEMU_EXPECT_SELFTESTS:-0}"
 SMP="${IRIS_QEMU_SMP:-1}"
 
-# An Intel IOMMU on the machine, when asked for (Stage 10-dma).  Off by default
+# An Intel IOMMU on the machine, when asked for.  Off by default
 # for the same reason -smp defaults to 1: the interesting runs are the ones
 # that differ from the ordinary one, and a gate that can only be run one way
 # proves nothing about the other.
@@ -22,7 +22,7 @@ fi
 # `edu` is QEMU's teaching device: a PCI function with one MMIO BAR, an
 # internal 4 KiB buffer and a DMA engine that will copy between that buffer and
 # any physical address a driver writes into its registers.  It is here because
-# Stage 10-dma could not otherwise prove its central claim.  Everything up to
+# The containment claim could not otherwise be proved.  Everything up to
 # §10.2 step 5 shows the kernel programming a remapping unit and refusing to
 # hand out a space for a device no unit covers; none of it shows a DEVICE being
 # stopped, because there was no device under IRIS's control that could try.
@@ -111,7 +111,7 @@ DISK_ARGS=(-drive "file=$IRIS_DISK,format=raw,if=none,id=irisdisk"
 # about the host.
 if ! qemu-system-x86_64 -device edu,help >/dev/null 2>&1; then
   echo "[headless] this qemu has no 'edu' device; the DMA containment gate"
-  echo "           (Stage 10-dma §10.2 step 6) cannot run without it"
+  echo "           the containment check cannot run without it"
   exit 1
 fi
 
@@ -286,8 +286,8 @@ if [ "$EXPECT_CPUS" -gt 1 ] && grep -Fq "[IRIS][TEST] T346 online=" "$LOG_FILE";
   fi
 fi
 
-# The DMA remapping units, when the machine was given one (Stage 10-dma §10.2
-# step 1).  Two claims, and they fail apart: with an IOMMU attached the kernel
+# The DMA remapping units, when the machine was given one.  Two claims, and
+# they fail apart: with an IOMMU attached the kernel
 # must FIND it, and without one it must say so rather than stay quiet — a
 # kernel that silently found nothing and a kernel that silently skipped looking
 # read the same from outside.
@@ -298,7 +298,7 @@ if [ "${IRIS_QEMU_IOMMU:-0}" != "0" ]; then
     cat "$LOG_FILE"
     exit 1
   fi
-  # ...and finding it is not containing it (Stage 10-dma §10.2 step 3).  A unit
+  # ...and finding it is not containing it.  A unit
   # that was found and left switched off is a machine where every device still
   # reaches all of memory, and it passes every other check in this script.
   if ! grep -Fq "[IRIS][IOMMU] translating units:" "$LOG_FILE" ||
@@ -316,7 +316,7 @@ else
   fi
 fi
 
-# ...and a DEVICE was actually stopped (Stage 10-dma §10.2 step 6).
+# ...and a DEVICE was actually stopped.
 #
 # Every check above is about what the KERNEL did — it found the units, it
 # switched them on, it says DMA is contained.  All of that is consistent with
@@ -394,7 +394,7 @@ if [ "$EXPECT_SELFTESTS" = "1" ]; then
 fi
 
 # The ABI the kernel implements, and the fact that the root task accepted it
-# (Stage 10-abi).  userboot halts the boot on a major mismatch, so reaching the
+# userboot halts the boot on a major mismatch, so reaching the
 # scheduler already implies agreement — what this gate adds is that the kernel
 # SAYS which ABI, because a log that does not is a log nobody can interpret
 # later, and because a version silently reading 0.0 would pass every other
@@ -406,7 +406,7 @@ if ! grep -Eq "^\[IRIS\]\[ABI\] version [1-9][0-9]*\.[0-9]+ " "$LOG_FILE"; then
   exit 1
 fi
 
-# A filesystem, on a disk, written by a task that holds no hardware (Stage 10).
+# A filesystem, on a disk, written by a task that holds no hardware.
 #
 # `gen N` is how many times a boot has mounted this disk, read from the medium
 # and written back — so it is the number that makes persistence VISIBLE from
@@ -459,7 +459,7 @@ if [ "${IRIS_QEMU_IOMMU:-0}" != "0" ]; then
     echo "[headless] the NIC is loose on a machine that can contain it"; cat "$LOG_FILE"; exit 1; }
 fi
 
-# Protocol: ARP, IPv4 and UDP above that driver, as a separate service (Stage 10).
+# Protocol: ARP, IPv4 and UDP above that driver, as a separate service.
 #
 # The line is a completed TFTP read against the server QEMU's userspace network
 # carries at the gateway, and it is here rather than a self-test because every
@@ -494,15 +494,15 @@ fi
 # marker could not have been printed, because the machine would have stopped
 # inside the store.
 if [ "${IRIS_QEMU_EXPECT_SELFTESTS:-0}" != "0" ]; then
-  if ! grep -Fq "[IRIS][P3] exception table: a kernel fault was survived" "$LOG_FILE"; then
+  if ! grep -Fq "[IRIS][SELFTEST] exception table: a kernel fault was survived" "$LOG_FILE"; then
     echo "[headless] the kernel did not survive a fault it is supposed to survive:"
-    grep -F "[IRIS][P3]" "$LOG_FILE" | sed 's/^/           /'
+    grep -F "[IRIS][SELFTEST]" "$LOG_FILE" | sed 's/^/           /'
     cat "$LOG_FILE"
     exit 1
   fi
 fi
 
-# Storage: a ring-3 AHCI driver brought a real disk up (Stage 10).
+# Storage: a ring-3 AHCI driver brought a real disk up.
 #
 # Three claims in one line, and they fail apart.  `disk N` is a COUNT of the
 # disks the driver brought up — this machine has two, the one it boots from and
@@ -545,7 +545,7 @@ else
   fi
 fi
 
-# The firmware's own description is reachable from ring 3 (Stage 10).
+# The firmware's own description is reachable from ring 3.
 #
 # ACPI tables live in memory that is neither usable RAM nor unmapped address
 # space, so until this stage no capability in the system named it and ring 3
@@ -561,7 +561,7 @@ if ! grep -Fq "[USERBOOT] ACPI: root pointer reachable from ring 3" "$LOG_FILE";
   exit 1
 fi
 
-# The PCI bus service came up and described the machine (Stage 10).
+# The PCI bus service came up and described the machine.
 #
 # Three separate claims, and they fail apart: the service STARTED (init's call
 # returned), it FOUND devices, and it CARVED a frame over every window in the
@@ -588,7 +588,7 @@ if ! grep -Fq "[USER][INIT][BOOT] healthy path OK" "$LOG_FILE"; then
   exit 1
 fi
 
-# Phase 13 (Track I): the init "[USER] kbd shared reply OK" legacy-KChannel probe
+# The init "[USER] kbd shared reply OK" legacy-KChannel probe
 # is retired — kbd is endpoint-only. kbd.ep liveness is covered by
 # "[SH] kbd cptr OK" plus iris_test T034/T035/T044/T058.
 
@@ -599,15 +599,15 @@ if ! grep -Fq "VFS ready" "$LOG_FILE"; then
 fi
 
 if ! grep -Fq "[VFS] ep ready" "$LOG_FILE"; then
-  echo "[headless] missing VFS endpoint-ready marker (Phase 7.1)"
+  echo "[headless] missing VFS endpoint-ready marker"
   cat "$LOG_FILE"
   exit 1
 fi
 
-# Phase 8: sh is a pure CPtr-first client — every core service path is gated
+# Sh is a pure CPtr-first client — every core service path is gated
 # on a "cptr OK" marker printed only after a live PING through the slot.
 if ! grep -Fq "[SH] vfs cptr OK" "$LOG_FILE"; then
-  echo "[headless] missing SH vfs-CPtr marker (Phase 8)"
+  echo "[headless] missing SH vfs-CPtr marker"
   cat "$LOG_FILE"
   exit 1
 fi
@@ -617,57 +617,57 @@ fi
 # iris_test T034/T035/T044 instead.
 
 if ! grep -Fq "[USER] console ep OK" "$LOG_FILE"; then
-  echo "[headless] missing init console-endpoint marker (Phase 7.3)"
+  echo "[headless] missing init console-endpoint marker"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[SH] console cptr OK" "$LOG_FILE"; then
-  echo "[headless] missing SH console-CPtr marker (Phase 8)"
+  echo "[headless] missing SH console-CPtr marker"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[VFS] console cptr OK" "$LOG_FILE"; then
-  echo "[headless] missing VFS console-CPtr marker (Phase 8)"
+  echo "[headless] missing VFS console-CPtr marker"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[IRIS][TEST] console cptr write OK" "$LOG_FILE"; then
-  echo "[headless] missing iris_test console-CPtr write marker (Phase 8 / T043)"
+  echo "[headless] missing iris_test console-CPtr write marker"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[SH] svcmgr cptr OK" "$LOG_FILE"; then
-  echo "[headless] missing SH CPtr-first discovery marker (Phase 8)"
+  echo "[headless] missing SH CPtr-first discovery marker"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[SH] kbd cptr OK" "$LOG_FILE"; then
-  echo "[headless] missing SH kbd-CPtr marker (Phase 8)"
+  echo "[headless] missing SH kbd-CPtr marker"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[USER] vfs ep list OK" "$LOG_FILE"; then
-  echo "[headless] missing init VFS-endpoint LIST marker (Phase 7.2)"
+  echo "[headless] missing init VFS-endpoint LIST marker"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[USER] vfs ep read OK" "$LOG_FILE"; then
-  echo "[headless] missing init VFS-endpoint READ_AT marker (Phase 7.2)"
+  echo "[headless] missing init VFS-endpoint READ_AT marker"
   cat "$LOG_FILE"
   exit 1
 fi
 
-# Phase 13 (Track E/F): legacy KChannel DIAG marker retired — diagnostics are
+# Legacy KChannel DIAG marker retired — diagnostics are
 # now served over IRIS_SVCMGR_EP_DIAG and covered by runtime test T067.
 
-# Phase 13 (Track F): the init TIMED / S9 (channel seal) / S10 (rights reduction)
+# The init TIMED / S9 (channel seal) / S10 (rights reduction)
 # KChannel selftests are retired — their coverage moved to iris_test endpoint /
 # notification / cap-transfer tests (T010/T019/T052/T064).
 
@@ -697,35 +697,35 @@ if ! grep -Fq "[IRIS][TEST] SUITE PASS" "$LOG_FILE"; then
 fi
 
 if ! grep -Fq "[SVCMGR] ep ready" "$LOG_FILE"; then
-  echo "[headless] missing svcmgr endpoint-ready marker (Phase 7)"
+  echo "[headless] missing svcmgr endpoint-ready marker"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[IRIS][USER] boot untyped CSpace grants:" "$LOG_FILE"; then
-  echo "[headless] missing boot-untyped-CSpace-grants marker (Phase 3.4)"
+  echo "[headless] missing boot-untyped-CSpace-grants marker"
   cat "$LOG_FILE"
   exit 1
 fi
 
-# Stage 5 Step 2: the monolithic bootstrap capability is gone, so its marker
+# The monolithic bootstrap capability is gone, so its marker
 # is too.  What the boot must now announce is the six control capabilities —
 # one per authority — because a boot that published only some of them aborts
 # the root task rather than continuing with partial authority.
 if ! grep -Fq "[IRIS][USER] boot control caps CSpace grants OK" "$LOG_FILE"; then
-  echo "[headless] missing boot-control-caps-CSpace-grants marker (Stage 5)"
+  echo "[headless] missing boot-control-caps-CSpace-grants marker"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[IRIS][USER] boot vspace CSpace grants OK" "$LOG_FILE"; then
-  echo "[headless] missing boot-vspace-CSpace-grants marker (Phase 4)"
+  echo "[headless] missing boot-vspace-CSpace-grants marker"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if [ "$EXPECT_SELFTESTS" = "1" ]; then
-  if ! grep -Fq "[IRIS][P3] handle/lifecycle selftests OK" "$LOG_FILE"; then
+  if ! grep -Fq "[IRIS][SELFTEST] notification lifecycle OK" "$LOG_FILE"; then
     echo "[headless] missing phase-3 selftest marker"
     cat "$LOG_FILE"
     exit 1
@@ -735,7 +735,7 @@ if [ "$EXPECT_SELFTESTS" = "1" ]; then
     cat "$LOG_FILE"
     exit 1
   fi
-  # Phase 13 (Track E/F): legacy svcmgr KChannel DIAG kbd-status aggregation
+  # Legacy svcmgr KChannel DIAG kbd-status aggregation
   # retired; svcmgr diagnostics are served over IRIS_SVCMGR_EP_DIAG (T067).
 fi
 

@@ -3,12 +3,12 @@
 ## Purpose
 
 Defines the current userland VFS contract: an **endpoint-only, stateless**
-read-only namespace service (since Phase 7.2/7.5).
+read-only namespace service.
 
-> **Historical note (retired ABI).** Until Phase 7.5 the VFS spoke a stateful
+> **Historical note (retired ABI).** The VFS used to speak a stateful
 > KChannel protocol (`vfs_proto.h`: `VFS_MSG_OPEN/READ/CLOSE/STATUS/LIST`
 > with per-client `file_id` state and process-watch dead-client reclaim).
-> That protocol and its header were **removed in Phase 7.5** and are no longer
+> That protocol and its header were **removed** and are no longer
 > ABI. This document used to describe it; see git history if you need the old
 > contract. The wire protocol of record is now `iris/vfs_ep_proto.h`,
 > documented in `docs/vfs-endpoint.md`.
@@ -22,7 +22,7 @@ read-only namespace service (since Phase 7.2/7.5).
 
 `vfs` deliberately owns **no per-client state**: the endpoint protocol is
 stateless (full addressing in every request). It was designed that way
-because a message carried no sender identity; badges (Phase 9) lifted that
+because a message carried no sender identity; badges lifted that
 constraint and it stayed, because there are no `file_id`s, no open-file table,
 and therefore no dead-client reclaim — nothing to reclaim.
 
@@ -32,7 +32,7 @@ and therefore no dead-client reclaim — nothing to reclaim.
 and `endpoint_only = 1`:
 
 - it receives `RBX` = 0: the bootstrap channel retired with KChannel
-  (Phase 13) and there is no handle to keep;
+ and there is no handle to keep;
 - its well-known CSpace slots are **pre-start-minted**: slot 5
   (`IRIS_CPTR_OWN_EP`) = the receive side of its KEndpoint (`RIGHT_READ`),
   slot 3 = the console endpoint, slots 1/2/4 = the other core service
@@ -53,7 +53,7 @@ Wire format: a MessageInfo word plus message registers (ledger A-33) over
 - `VFS_EP_OP_LIST` (0x0101) — enumerate exports by visible index
 - `VFS_EP_OP_STAT` (0x0102) — size of a named export
 - `VFS_EP_OP_READ_AT` (0x0103) — stateless read: path + offset + length
-- `VFS_EP_OP_STATUS` (0x0104) — bounded service summary (Phase 7.5)
+- `VFS_EP_OP_STATUS` (0x0104) — bounded service summary
 - `IRIS_EP_OP_PING` (0xFF01) — health check
 
 Replies: `IRIS_EP_REPLY_OK`, or `IRIS_EP_REPLY_ERR` with
@@ -79,5 +79,5 @@ requests fail cleanly with `IRIS_ERR_INVALID_ARG`.
 
 - `sh`: `ls` / `cat` via `EP_Call` on `"vfs.ep"` (endpoint-only since 7.2).
 - `init`: S5/S6 healthy-path probes (LIST / STAT / READ_AT), fail-fast.
-- `svcmgr`: diagnostics via `VFS_EP_OP_STATUS` (Phase 7.5).
+- `svcmgr`: diagnostics via `VFS_EP_OP_STATUS`.
 - `iris_test`: T026–T030 protocol conformance, T031 `.ep` anti-spoof.

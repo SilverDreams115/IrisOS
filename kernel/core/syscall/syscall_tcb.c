@@ -61,12 +61,12 @@ static iris_error_t tcb_resolve(struct KCNode *root, iris_cptr_t cptr,
  * Untyped is born cap-complete but inactive — no registry slot, no kernel
  * stack, no address space — and every execution syscall refuses it.  What was
  * missing was not the code but the ARGUMENTS: a thread runs in a CSpace and a
- * VSpace, and neither was addressable as a capability until Stages 3-5 made
+ * VSpace, and neither was addressable as a capability until the CSpace made
  * them so.
  *
- * Both must be the caller's own CSpace root and VSpace.  IRIS still composes a
- * thread's authority through KProcess, so a thread in a foreign address space
- * is process-server work — accepting foreign capabilities here and
+ * Both must be the caller's own CSpace root and VSpace.  A thread in a
+ * FOREIGN address space is the business of whoever holds both, not of this
+ * syscall — accepting foreign capabilities here and
  * quietly running the thread somewhere else would be a lie in the signature.
  * The check is by object identity, not by convention: the caller must HOLD
  * capabilities to the CSpace and VSpace it names, which is why SYS_CSPACE_SELF

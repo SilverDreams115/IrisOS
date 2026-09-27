@@ -7,7 +7,7 @@ publication, bootstrap delegation, supervision, and global status aggregation.
 
 > The KChannel half of this contract — `SVCMGR_MSG_LOOKUP`, `LOOKUP_NAME`,
 > `REGISTER`, `UNREGISTER`, `STATUS`, `DIAG` and the reply messages — was
-> retired with KChannel itself in Phase 13. The opcodes stay defined in
+> retired with KChannel itself. The opcodes stay defined in
 > `iris/svcmgr_proto.h` as retirement witnesses; nothing serves them. What
 > follows is the endpoint contract, which is the whole contract.
 
@@ -20,7 +20,7 @@ publication, bootstrap delegation, supervision, and global status aggregation.
 - dynamic runtime publication of extra service endpoints
 - service endpoint rights reduction for lookup replies
 - service lifecycle supervision through `TCB_Watch` on the child's first
-  thread (`SYS_PROCESS_WATCH` retired with the process object, Stage 7)
+  thread (`SYS_PROCESS_WATCH` retired with the process object)
 - bounded restart policy for autostart services
 - global aggregated diagnostics over kernel and service-local status surfaces
 
@@ -102,7 +102,7 @@ means handing over the real authority.
   a no-op.
 - Automatic cleanup on publisher death is not implemented.
 
-## Lifecycle contract (Phase 10)
+## Lifecycle contract
 
 ### `IRIS_SVCMGR_EP_STATUS` (0xF005)
 
@@ -126,7 +126,7 @@ It is svcmgr-local by construction: four counters svcmgr already has, no
 round-trip to anybody. The wider view is assembled by whoever wants it —
 `vfs` answers `VFS_EP_OP_STATUS` on its own endpoint, and a client that needs
 both makes both calls. `SYS_DIAG_SNAPSHOT` is not called; it was retired in
-Phase 51. Service-local status remains the source of truth.
+Service-local status remains the source of truth.
 
 Unknown or malformed opcodes fail with `INVALID_ARG` — there is no silent
 fallback anywhere (T068).
@@ -136,7 +136,7 @@ fallback anywhere (T068).
 For each tracked service slot, `svcmgr` stores the first thread's TCB, the
 IRQ number, the service id and a short name.
 
-On the death notification (Phase 13 / Track B — the kernel signals bit
+On the death notification (the kernel signals bit
 `1 << service_id` on `svcmgr`'s death notification, so the bit index names the
 exiting slot directly):
 

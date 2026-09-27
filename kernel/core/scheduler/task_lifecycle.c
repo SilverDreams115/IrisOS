@@ -1352,7 +1352,7 @@ void task_abort_spawned_user(struct task *t) {
  * and no address space, refused by every execution syscall.  What was missing
  * was the operation that gives it those — and it was missing because its
  * arguments are capabilities (a CSpace root and a VSpace) that only became
- * addressable as capabilities in Stages 3-5.
+ * addressable as capabilities.
  *
  * ktcb_configure builds exactly the execution state task_thread_create builds
  * for a pool-born thread, in the same order, minus the storage: the caller

@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * test_kframe.c — Phase 5 / 5.1 unit tests for KFrame capability model.
+ * test_kframe.c — unit tests for the KFrame capability model.
  *
- * Tests (FR-1..FR-22): Phase 5 — alloc/destroy/CSpace resolution.
+ * Tests (FR-1..FR-22): alloc/destroy/CSpace resolution.
  *   [FR-1]  KOBJ_FRAME enum exists, is non-zero, and distinct from all others.
  *   [FR-2]  kframe_alloc returns non-NULL for valid paddr/size/parent.
  *   [FR-3]  kframe_alloc sets paddr, size, alloc_parent correctly.
@@ -27,7 +27,7 @@
  *   [FR-21] kframe_va_valid rejects address below USER_PRIVATE_BASE.
  *   [FR-22] kframe_va_valid rejects address >= USER_SPACE_TOP.
  *
- * Tests (FR-23..FR-40): Phase 5.1 — paging stub integrity + mapping lifecycle.
+ * Tests (FR-23..FR-40): paging stub integrity + mapping lifecycle.
  *   [FR-23] paging stub: map is visible via paging_virt_to_phys_in; isolated by cr3.
  *   [FR-24] paging stub: duplicate (cr3,va) returns non-zero (BUSY); original unchanged.
  *   [FR-25] paging stub: paging_unmap_in removes entry; virt_to_phys returns 0 after.
@@ -38,23 +38,23 @@
  *   [FR-30] kframe_unmap_page returns IRIS_ERR_INVALID_ARG if VA maps a different frame.
  *   [FR-31] kframe_map_page returns IRIS_ERR_INVALID_ARG for unaligned VA.
  *   [FR-32] kframe_map_page returns IRIS_ERR_BAD_HANDLE for invalidated VSpace.
- *   [FR-33] kvspace_invalidate auto-unmaps KFrame mappings; mapped_count==0 after (Phase 6).
+ *   [FR-33] kvspace_invalidate auto-unmaps KFrame mappings; mapped_count==0 after.
  *   [FR-34] W^X enforcement: WRITABLE+EXEC simultaneously rejected by kframe_map_page.
  *   [FR-35] After map+unmap, mapped_count==0; parent child_count unaffected by map/unmap.
  *   [FR-36] kframe_alloc initialises mapped_count to 0.
  *   [FR-37] Multiple sequential map+unmap cycles leave mapped_count==0.
  *
- * Tests (FR-38..FR-40): Phase 6 / 6.3 — KVSpace dynamic mapping model.
+ * Tests (FR-38..FR-40): the KVSpace dynamic mapping model.
  *   [FR-38] kframe_map_page registers a back-ref node; kframe_unmap_page clears it.
  *   [FR-39] kvspace_invalidate clears all mapping records and auto-unmaps every PTE.
  *   [FR-40] Dynamic pool supports 64 pages (>32 old fixed limit); kvspace_invalidate
  *           cleans all.
  *
- * Tests (FR-41): Phase 6.1 — demand paging removed regression.
+ * Tests (FR-41): demand paging removed regression.
  *   [FR-41] No PTE installed for an unmapped VA: paging_virt_to_phys_in returns 0 and
  *           no frame has mapped_count > 0 after VSpace ops without an explicit map call.
  *
- * Tests (FR-42..FR-50): Phase 6.2 — bootstrap_kframe_map / bootstrap Frame-backed maps.
+ * Tests (FR-42..FR-50): bootstrap_kframe_map / bootstrap Frame-backed maps.
  *   [FR-42] bootstrap_kframe_map returns non-NULL for valid vs/paddr/va/flags.
  *   [FR-43] bootstrap_kframe_map installs a PTE; paging_virt_to_phys_in returns paddr.
  *   [FR-44] bootstrap_kframe_map increments KVSpace mapping_count by 1.
@@ -65,8 +65,8 @@
  *           mapping_count==0; no stale PTE remains.
  *   [FR-49] kvspace_register_bootstrap_frame rejects NULL vspace or NULL frame.
  *   [FR-50] kvspace_register_bootstrap_frame enforces its slot limit, and the
- *           address space's own settle drops every retain (Stage 7-proc: the
- *           frames belong to the space they are mapped in, not to a process).
+ *           address space's own settle drops every retain — the frames
+ *           belong to the space they are mapped in, and to nothing else.
  *
  * Tests (FR-54..FR-62): frame lifetime under mappings.
  *   FR-51..FR-53 RETIRED with the KVmo (ledger D-5): they tested that a frame
@@ -81,11 +81,11 @@
  *   [FR-61] kframe_map_page with flags > 3 returns IRIS_ERR_INVALID_ARG.
  *   [FR-62] Dynamic pool can hold far more than 32 entries without failure.
  *
- * Tests (FR-63..FR-69): Phase 6.4 — Memory stress / fuzz / invariant audit.
+ * Tests (FR-63..FR-69): Memory stress / fuzz / invariant audit.
  *   [FR-63] kframe_unmap_page safely handles the case where the mapping retain is the
  *           last retain on the frame (alloc retain already released).  mapped_count
  *           must be decremented BEFORE kobject_release so kframe_obj_destroy always
- *           sees mapped_count == 0.  Tests the ordering bug fixed in Phase 6.4.
+ *           sees mapped_count == 0.  Tests an ordering bug that was fixed.
  *   [FR-64] kslab_alloc failure in kframe_map_page → IRIS_ERR_NO_MEMORY; no PTE
  *           installed; mapping_count and mapped_count unchanged.
  *   [FR-65] paging_map_checked_in failure in kframe_map_page (after kslab_alloc
@@ -130,7 +130,7 @@ static struct cs_fixture *fr_make_proc(void) {
 }
 
 static void fr_free_proc(struct cs_fixture *p) {
-    /* Stage 4: structural root — released here instead of by
+    /* Structural root — released here instead of by
      * handle_table_close_all, which no longer owns it. */
     if (p->cspace_root) {
         kobject_active_release(&p->cspace_root->base);
@@ -143,7 +143,7 @@ static void fr_free_proc(struct cs_fixture *p) {
 static struct KCNode *fr_setup_root(struct cs_fixture *p) {
     struct KCNode *root = kcnode_alloc(KCNODE_DEFAULT_SLOTS);
     if (!root) return NULL;
-    /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+    /* Structural CSpace root — kcnode_alloc's ref is the
      * lifecycle ref, plus the active ref the handle used to own. */
     kobject_active_retain(&root->base);
     p->cspace_root = root;
@@ -179,7 +179,7 @@ static struct KUntyped *fr_make_untyped(uint64_t phys, uint64_t size) {
 /* ── Tests ───────────────────────────────────────────────────────────── */
 
 void test_kframe(void) {
-    TEST_SUITE("FR: KFrame capability model (Phase 5)");
+    TEST_SUITE("FR: KFrame capability model");
 
     /* FR-1: KOBJ_FRAME enum */
     ASSERT_NE((int)KOBJ_FRAME, 0);
@@ -393,7 +393,7 @@ void test_kframe(void) {
         ASSERT_TRUE(!kframe_va_valid(0xFFFF800000000000ULL));
     }
 
-    /* ── Phase 5.1: paging stub integrity ─────────────────────────────── */
+    /* ── Paging stub integrity ─────────────────────────────── */
 
     /* FR-23: paging stub tracks real state; result isolated by cr3.
      * Verifies that paging_virt_to_phys_in now returns the recorded phys
@@ -443,7 +443,7 @@ void test_kframe(void) {
         paging_stub_reset();
     }
 
-    /* ── Phase 5.1: kframe_map_page / kframe_unmap_page lifecycle ─────── */
+    /* ── The kframe_map_page / kframe_unmap_page lifecycle ───────────── */
 
     /* FR-26: kframe_map_page increments mapped_count on success. */
     {
@@ -598,7 +598,7 @@ void test_kframe(void) {
         paging_stub_reset();
     }
 
-    /* FR-33: kvspace_invalidate auto-unmaps KFrame mappings (Phase 6).
+    /* FR-33: kvspace_invalidate auto-unmaps KFrame mappings.
      * After invalidation: mapped_count == 0, PTE gone, frame destroy succeeds.
      * Subsequent kframe_unmap_page via the dead VSpace returns BAD_HANDLE. */
     {
@@ -705,7 +705,7 @@ void test_kframe(void) {
         paging_stub_reset();
     }
 
-    /* ── Phase 6: KVSpace back-reference model ────────────────────────── */
+    /* ── KVSpace back-reference model ────────────────────────── */
 
     /* FR-38: kframe_map_page registers a back-reference slot in KVSpace;
      * kframe_unmap_page clears it.  mapping_count tracks both transitions. */
@@ -777,7 +777,7 @@ void test_kframe(void) {
         ASSERT_NOT_NULL(vs);
         kobject_retain(&vs->base); /* keep object alive past kvspace_invalidate */
 
-        /* Stage 6 Step 6: an address space with a BUDGET carves its mapping
+        /* An address space with a BUDGET carves its mapping
          * records from it and returns them at teardown.  Mapping at this scale
          * is exactly what the budgeted path is for — the bootstrap arena that
          * serves a pool-less VSpace is sized for the root task's handful of
@@ -818,7 +818,7 @@ void test_kframe(void) {
 #undef FR40_COUNT
     }
 
-    /* FR-41: Phase 6.1 regression — no silent demand allocation.
+    /* FR-41: a regression guard — no silent demand allocation.
      * A VSpace with no explicit kframe_map_page call must have no PTEs.
      * Validates that neither KVSpace creation, kvspace_invalidate, nor any
      * internal kernel path installs a PTE without an explicit map operation.
@@ -846,7 +846,7 @@ void test_kframe(void) {
         paging_stub_reset();
     }
 
-    /* ── Phase 6.2: bootstrap_kframe_map tests ──────────────────────────────── */
+    /* ── The bootstrap_kframe_map tests ─────────────────────────────────── */
 
     /* FR-42: bootstrap_kframe_map returns non-NULL for valid inputs. */
     {
@@ -1024,14 +1024,14 @@ void test_kframe(void) {
         /* kvspace_invalidate clears all mapping slots first. */
         kvspace_invalidate(vs);
 
-        /* Stage 7-proc: the address space releases its own bootstrap frames
+        /* The address space releases its own bootstrap frames
          * when it settles — no process reaches into it to do that. */
         kobject_release(&f_extra->base);
         kvspace_free(vs);
         paging_stub_reset();
     }
 
-    /* ── Phase 6.3: frame lifetime under mappings ─────────────────────────
+    /* ── Frame lifetime under mappings ─────────────────────────
      *
      * FR-51..FR-53 RETIRED with the object (ledger D-5).  Their subject was
      * kframe_alloc_vmo_page: a frame that pointed at a KVmo owning its
@@ -1238,8 +1238,8 @@ void test_kframe(void) {
     /* FR-61: kframe_map_page with flags beyond W|X|UNCACHED returns
      * IRIS_ERR_INVALID_ARG; no PTE installed, no mapping node created.
      *
-     * Bit 2 used to be in that set and is now the UNCACHED bit (Stage 10-dma
-     * §10.2 step 6), so the boundary moved to bit 3 — and the bit that moved
+     * Bit 2 used to be in that set and is now the UNCACHED bit, so the
+     * boundary moved to bit 3 — and the bit that moved
      * is asserted below rather than merely removed from here, because a flag
      * that is accepted and then ignored is the failure this test exists for. */
     {
@@ -1340,7 +1340,7 @@ void test_kframe(void) {
 #undef FR62_COUNT
     }
 
-    TEST_SUITE("FR: KFrame stress / invariant audit (Phase 6.4)");
+    TEST_SUITE("FR: KFrame stress / invariant audit");
 
     /* FR-63: kframe_unmap_page must decrement mapped_count BEFORE calling
      * kobject_release.  If the mapping retain is the last retain on the frame,
@@ -1392,7 +1392,7 @@ void test_kframe(void) {
         ASSERT_NOT_NULL(f);
         uint64_t va = USER_PRIVATE_BASE + 0x8000ULL;
 
-        /* Stage 6 Step 6: a mapping record is carved from the address
+        /* A mapping record is carved from the address
          * space's BUDGET, so exhaustion is what a full budget looks like —
          * this fixture gets one too small to hold a single record.  What the
          * case asserts is unchanged and is the point: a failed record

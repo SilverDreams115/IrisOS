@@ -20,7 +20,7 @@ The kernel still owns:
 ## Bootstrap contract
 
 `kbd` is spawned by `svcmgr` with `RBX` = 0 — the bootstrap channel went with
-KChannel in Phase 13. Everything it holds is a pre-start CSpace mint:
+KChannel. Everything it holds is a pre-start CSpace mint:
 
 | Slot | Capability |
 |---|---|
@@ -33,15 +33,14 @@ KChannel in Phase 13. Everything it holds is a pre-start CSpace mint:
 A missing endpoint leaves kbd with no request surface and fails the smoke
 gate.
 
-## IRQ-facing contract (Phase 7.6: KNotification)
+## IRQ-facing contract
 
 Keyboard IRQ delivery uses the generic IRQ routing layer with a
 **KNotification** destination (catalog flag `irq_notify = 1`):
 
 - svcmgr owns the notification master (kept across restarts) and registers
   it as the IRQ1 route; the WAIT side reaches `kbd` as a pre-start CSpace
-  mint at `IRIS_CPTR_IRQ_NOTIFY` (slot 7; bootstrap kind 0x23 retired in
-  Phase 8)
+  mint at `IRIS_CPTR_IRQ_NOTIFY` (slot 7; bootstrap kind 0x23 is retired)
 - on each IRQ the kernel signals bit `1 << irq` (signal-only; no message)
 - `kbd` binds that notification to its own thread (`TCB_BindNotification`,
   ledger A-23), so the signal wakes it out of its blocking endpoint receive
@@ -50,7 +49,7 @@ Keyboard IRQ delivery uses the generic IRQ routing layer with a
   `IRQ_Ack`. One blocking point, and idle costs nothing — before A-23 the
   loop woke a hundred times a second to serve two wait surfaces
 
-> **Historical (retired in Phase 7.6):** IRQ1 used to be routed to the kbd
+> **Historical (retired):** IRQ1 used to be routed to the kbd
 > public service channel as `KBD_MSG_IRQ_SCANCODE` messages. That delivery
 > path is no longer dispatched; the opcode remains defined only as a
 > historical constant.
@@ -69,7 +68,7 @@ Everything reaches consumers over the `"kbd.ep"` KEndpoint. Full semantics in
 Requests carry no payload (`buf_len > 0` → `INVALID_ARG`); unknown opcodes →
 `NOT_SUPPORTED`; exactly one reply per request.
 
-> **Historical (retired with KChannel, Phase 13).** The client surface used to
+> **Historical (retired with KChannel).** The client surface used to
 > be `KBD_MSG_HELLO` / `STATUS` / `SUBSCRIBE` with `HELLO_REPLY`,
 > `STATUS_REPLY` and `SCANCODE_EVENT` over a shared reply channel, and one
 > subscriber at a time that a new subscription silently replaced. `POLL` and

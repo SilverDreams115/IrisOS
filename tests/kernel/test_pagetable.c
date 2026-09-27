@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * test_pagetable.c — the page table as a capability (Stage 6-pure).
+ * test_pagetable.c — the page table as a capability.
  *
  * The runtime suite proves this end to end on real hardware (T302), which is
  * the only place the MMU is real.  What the host can do that the runtime
@@ -51,7 +51,7 @@ static struct KPageTable *pt_make(struct KUntyped *ut) {
 }
 
 void test_pagetable(void) {
-    TEST_SUITE("page table as a capability (Stage 6-pure)");
+    TEST_SUITE("page table as a capability");
     paging_stub_strict_levels(1);
 
     void *mem = aligned_alloc(4096u, 512u * 1024u);

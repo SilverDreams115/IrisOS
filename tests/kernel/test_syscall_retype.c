@@ -83,7 +83,7 @@ void test_syscall_retype(void) {
         ASSERT_EQ(rt_err(sys_untyped_retype2(1, rt_type(0x7FFFu, 1),
                                              rt_dest(0, 4), 0)),
                   (long)IRIS_ERR_NOT_SUPPORTED);
-        /* KOBJ_PROCESS is a RESERVED enumerator since Stage 7-proc: no live
+        /* KOBJ_PROCESS is a RESERVED enumerator: no live
          * capability carries it and nothing may create one. */
         ASSERT_EQ(rt_err(sys_untyped_retype2(1, rt_type(KOBJ_PROCESS, 1),
                                              rt_dest(0, 4), 0)),

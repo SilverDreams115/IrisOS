@@ -1,4 +1,4 @@
-# VMO Memory Model (Phase 6.3, budgeted in Stage 6)
+# VMO Memory Model
 
 > **Historical — the KVMO is retired.**  seL4 has no VMO: memory is Untyped
 > that a holder retypes into FRAMES and maps.  IRIS's VMO was one of the three
@@ -14,7 +14,7 @@
 > because the ownership and teardown reasoning is what the frame model
 > inherited.
 >
-> **Stage 6 Step 5 (while it lived).**  A VMO's pages, its page-address array and its object
+> **While it lived.**  A VMO's pages, its page-address array and its object
 > header are carved from an **Untyped the caller names** — `SYS_VMO_CREATE`'s
 > second argument, `SYS_INITRD_VMO`'s fourth — not from the PMM.  Zero means
 > "the budget my address space was built from".  Everything below still
@@ -48,7 +48,7 @@ creation through mapping, copying, and teardown.
 Backed by PMM pages.  Pages in `v->pages[]` are either 0 (unallocated) or a physical address.
 `sys_vmo_map` and `sys_vmo_map_into` allocate any zero entries via `pmm_alloc_page` before
 installing PTEs — allocation is **eager at map time**; there is no fault-driven demand paging
-(removed in Phase 6.1, guarded by the FR-41 regression test).
+(removed, guarded by the FR-41 regression test).
 `kframe_alloc_vmo_page(phys, v)` creates the KFrame and retains the VMO so
 that `kvmo_destroy` (and thus `pmm_free_page`) cannot run while the mapping is live.
 (The field was named `demand` until Phase V1; it was renamed because the old
@@ -94,7 +94,7 @@ skipped.  `kvspace_unmap_page`:
 
 ## Address Space Teardown
 
-Since Stage 7-proc an address space is invalidated by its **own `close` hook** —
+An address space is invalidated by its **own `close` hook** —
 the moment its last capability goes, not when its last thread exits — which
 calls `kvspace_invalidate`, which:
 1. Atomically removes the whole `mappings` list and zeros `vs->cr3` / `vs->valid` under `vs->lock`.
@@ -111,7 +111,7 @@ Both `sys_vmo_map` and `sys_vmo_map_into` reject `flags` with both WRITABLE (bit
 
 ## Process Creation
 
-There is none.  `SYS_PROCESS_CREATE` is retired (Stage 7-proc) and `KProcess`
+There is none.  `SYS_PROCESS_CREATE` is retired and `KProcess`
 is deleted.  A "process" is a thread configured — `SYS_TCB_CONFIGURE(tcb,
 cnode, vspace)` — with an address space and a root CSpace the CALLER retyped
 (`IRIS_KOBJ_VSPACE` / `IRIS_KOBJ_CNODE`), plus any further threads configured
@@ -135,26 +135,26 @@ After `sys_vmo_unmap(va)`:
 | KFrame `f` | mapping retain released → refcount 0 → `kframe_obj_destroy` |
 | KVmo `v` | vmo_owner released by `kframe_obj_destroy` → may reach 0 → `kvmo_destroy` |
 
-## Critical Ordering Note (Phase 6.4)
+## Critical Ordering Note
 
 `kframe_obj_destroy` asserts `mapped_count == 0`.  Therefore, every path that releases
 the mapping retain (i.e. the `kobject_release(&f->base)` that may trigger destroy) **must**
 decrement `mapped_count` first.  This ordering is enforced consistently across:
 
-- `kframe_unmap_page` (fixed in Phase 6.4 — was the only path with wrong order)
+- `kframe_unmap_page` (fixed — was the only path with wrong order)
 - `kvspace_unmap_page`
 - `kvspace_invalidate`
 - `kvspace_obj_destroy`
 
 Invariant I-11 in `docs/memory-invariants.md` documents this formally.
 
-## Stress Coverage (Phase 6.4)
+## Stress Coverage
 
-Failure injection tests added in Phase 6.4 verify:
+Failure injection tests verify:
 
 - budget exhaustion inside `kframe_map_page` (no mapping record can be carved)
   → no PTE, no mapping node (FR-64); the record comes from the address space's
-  own budget since Stage 6 Step 6
+  own budget
 - paging OOM after the record was obtained → mapping node returned to the
   address space's free list (FR-65)
 - Partial multi-page rollback → no stale PTEs, correct counts (FR-66)

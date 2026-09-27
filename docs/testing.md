@@ -16,7 +16,7 @@ Four gates, and a green tree means all four — on **one processor and on four**
 
 ### The IOMMU dimension
 
-`IRIS_QEMU_IOMMU=1` attaches an Intel VT-d unit to the machine (Stage 10-dma).
+`IRIS_QEMU_IOMMU=1` attaches an Intel VT-d unit to the machine.
 Off by default for the same reason `-smp` defaults to 1: the interesting run is
 the one that differs from the ordinary one, and a gate that can only be run one
 way proves nothing about the other.
@@ -30,7 +30,7 @@ must CONTAIN with it (`DMA is contained`), and without one it must still say
 so — a kernel that silently found nothing and a kernel that silently skipped
 looking read the same from outside.
 
-### The platform, as of Stage 10
+### The platform
 
 Three services the gate now requires, and each is checked by what it DID rather
 than by having started:
@@ -39,7 +39,7 @@ than by having started:
 |---|---|
 | `[IRIS][ABI] version 1.0 - 4 syscall numbers, 77 invocation labels` | the kernel says which ABI it implements; the root task halts the boot on a major it was not built against |
 | `[USERBOOT] ACPI: root pointer reachable from ring 3` | the firmware's tables are named by a capability ring 3 holds |
-| `[IRIS][P3] exception table: a kernel fault was survived` | the kernel deliberately faulted at CPL 0 on the one instruction that can take a fault it did not choose -- the store into user memory, whose mapping another CPU can retire between the range check and the write -- and came back from it.  `idt.c` halts on every other ring-0 exception, so before the exception table existed this line could not have been printed: the machine would have stopped inside the store.  Requires `IRIS_QEMU_EXPECT_SELFTESTS` |
+| `[IRIS][SELFTEST] exception table: a kernel fault was survived` | The kernel deliberately faulted at CPL 0 on the one instruction that can take a fault it did not choose -- the store into user memory, whose mapping another CPU can retire between the range check and the write -- and came back from it.  `idt.c` halts on every other ring-0 exception, so before the exception table existed this line could not have been printed: the machine would have stopped inside the store.  Requires `IRIS_QEMU_EXPECT_SELFTESTS` |
 | `[USER][INIT] pci: functions N windows M carve 0` | the bus service scanned, and carved a frame over **every** window in the region it owns.  `carve 0` is required: a service that found devices and carved nothing refuses every driver's claim, which from outside is indistinguishable from an empty machine |
 | `[USER][INIT] blk: disk 1 sid 0x.. dma contained\|open window N` | a ring-3 AHCI driver claimed a controller, brought a port up and **read a sector**.  `contained` is required with an IOMMU and `open` without one — either word on the wrong machine is a lie the gate catches.  `window N` is how many sectors anything may address on the data disk, which is the IRIS partition and nothing else; it is required NON-ZERO here, and a zero is correct behaviour on a stranger's drive.  `home N` is WHICH disk carries an IRIS partition, asked by identity rather than assumed by index -- under QEMU the answer always matches the old hardcoded constant, so it is printed to keep the lookup observable: a mechanism whose right answer is indistinguishable from its fallback is one nobody can tell has stopped working |
 | `[USER][INIT] net: link 1 mac .. dma contained\|open` | a ring-3 driver brought a network card up.  WHICH driver depends on the card: `make smoke-net-virtio` runs the same boot and the same assertions against a virtio device instead of the e1000, because a backend nothing ever runs is a backend nobody knows is broken |
@@ -224,7 +224,7 @@ A new test that waits by counting its own syscalls is a test that will pass on
 one processor and flake on four.  Use `IT_AWAIT`.
 
 The suite count moves when a stage retires the mechanism a test was about, or
-adds one.  Stage 7 took it from 276 to 273: T144 and T184 lost their "a process
+adds one.  Retiring the process object took it from 276 to 273: T144 and T184 lost their "a process
 capability is not a thread" checks because a spawn hands back a thread.
 
 The runtime suite is the gate that matters for capability behaviour: it runs in
@@ -276,7 +276,7 @@ Both lanes:
 
 The selftest lane additionally asserts:
 
-- `[IRIS][P3] handle/lifecycle selftests OK`
+- `[IRIS][SELFTEST] notification lifecycle OK`
 - `[USER][INIT][DIAG] reply`
 - `[SVCMGR][DIAG] kbd status OK`
 
@@ -326,38 +326,38 @@ names itself rather than showing up as a boot hang:
 
 | Test | Pins |
 |---|---|
-| T351, T352 | Stage 10-dma.  T351: the remapping units found, usable and ENFORCING — `translating == units`, or, on a machine with none, nothing translating AND no containment claimed.  T352: the whole capability arc — retyping an IOSpace (anyone with an Untyped may), binding it to a device (only with IOSpaceControl), installing the three translation levels one at a time out of the holder's own memory, mapping a frame, refusing a second mapping at one address, unmapping, and then destroying the space with a mapping still live so the baseline proves every object came back |
-| T353 | Stage 10-dma §10.2 step 6, and the thing T351/T352 cannot do: a DEVICE is watched being refused.  A ring-3 driver finds QEMU's `edu` DMA engine through the `pci` service, takes its BAR as a frame capability, maps it uncached and programs a transfer.  With a unit and no IOSpace mapping the target frame is untouched and the unit's fault record names the device's source-id; with the frame mapped the data arrives; revoked, it is refused again.  On a machine with no unit the same driver reaches memory nobody granted it, which is the other half of the claim and why the device is attached to those runs too |
-| T354 | Stage 10.  Ring 3 reads the firmware's own description: the ACPI region is device memory, one frame covers it, and the root pointer inside it is found by searching for the signature — the way every firmware reader does — and validated by its checksum |
-| T355 | Stage 10.  Storage, end to end: the ring-3 AHCI driver's read of sector zero carries the FAT boot signature, the controller's DMA is contained exactly when the machine has a unit to contain it with, the buffer arrives READ-ONLY, and a capability from the previous read no longer works — the service revokes before it reuses the frame |
+| T351, T352 | T351: the remapping units found, usable and ENFORCING — `translating == units`, or, on a machine with none, nothing translating AND no containment claimed.  T352: the whole capability arc — retyping an IOSpace (anyone with an Untyped may), binding it to a device (only with IOSpaceControl), installing the three translation levels one at a time out of the holder's own memory, mapping a frame, refusing a second mapping at one address, unmapping, and then destroying the space with a mapping still live so the baseline proves every object came back |
+| T353 | The thing T351/T352 cannot do: a DEVICE is watched being refused.  A ring-3 driver finds QEMU's `edu` DMA engine through the `pci` service, takes its BAR as a frame capability, maps it uncached and programs a transfer.  With a unit and no IOSpace mapping the target frame is untouched and the unit's fault record names the device's source-id; with the frame mapped the data arrives; revoked, it is refused again.  On a machine with no unit the same driver reaches memory nobody granted it, which is the other half of the claim and why the device is attached to those runs too |
+| T354 | Ring 3 reads the firmware's own description: the ACPI region is device memory, one frame covers it, and the root pointer inside it is found by searching for the signature — the way every firmware reader does — and validated by its checksum |
+| T355 | Storage, end to end: the ring-3 AHCI driver's read of sector zero carries the FAT boot signature, the controller's DMA is contained exactly when the machine has a unit to contain it with, the buffer arrives READ-ONLY, and a capability from the previous read no longer works — the service revokes before it reuses the frame |
 | T347–T350 | SMP roadmap §9.3 step 5, the adversarial phase — four tests that AIM four processors at ONE object rather than merely running on several.  T347: four callers on four cores calling one server, each requiring its own answer, which is how a reply delivered to the wrong caller becomes visible at all.  T348: four cores minting and deleting from one capability while a fifth revokes it.  T349: four cores retyping into the SAME slot, where exactly one may win and the losers must lose cleanly — and the sub-untyped's budget must come all the way back after a RESET, which is the assertion about the ROLLBACK.  T350: four cores killing the same four threads, so one kill always races the thread's own core.  Between them they found four defects — a retype rollback that freed another core's memory, a reference released on the line above the call that used it, a teardown gate that was a plain byte tested unlocked, and a dispatch that overwrote a `Suspend` on a thread already dequeued (that one surfaced in T333, which suspends a thread and then reads its registers).  Each reports how many distinct cores its workers landed on, so a run that was taking turns rather than contending says so |
 | T346 | SMP roadmap §9.3 step 4: the other processors SCHEDULE.  On one processor, exactly one has ever dispatched and no tick was broadcast — that zero is not a formality, since the timer ISR calls the broadcast on every tick and a version that did not check would be firing IPIs into an empty destination mask a hundred times a second.  On more than one: every processor that is ONLINE has dispatched a thread (not "at least two" — a machine that brought four up and schedules on three has a quarter of its cores idle for ever and looks healthy from everywhere else), and the tick broadcast is still ADVANCING across real elapsed time, because a processor that stops being told the time never charges its thread's budget and never runs its slice down |
 | T345 | SMP roadmap §9.3 step 2, and it asks the machine how many processors it has rather than assuming: always, an unmap still issues its LOCAL `invlpg`; on one processor, zero shootdowns, which is the evidence the target scan skips the CALLING CPU — without that skip the first unmap would IPI itself and spin, with interrupts off, for an acknowledgement it cannot deliver; on several, shootdowns have HAPPENED, and reaching the assertion at all is the ack handshake working, since a core that did not answer would have hung the machine rather than failed a comparison |
-| T095, T096 | Stage 4's structural zeros: no handle is live, delivered, or produced by a TOCTOU fallback |
+| T095, T096 | The structural zeros: no handle is live, delivered, or produced by a TOCTOU fallback |
 | T292–T295 | CSpace-native introspection; a CPtr addresses exactly one capability |
-| T296 | Stage 5: one capability, one authority — each boot control capability authorises its own syscall and nothing else |
-| T297 | Stage 5: a retyped TCB executes; an unconfigured one cannot be started, written or exited; foreign CSpace/VSpace refused |
-| T298 | Stage 6: an Untyped pays for its frames' headers, and frames stay page-dense |
-| T299 | Stage 6: page tables are charged to a named budget, which cannot be RESET while they live |
-| T300 | Stage 6: user memory comes out of a named budget, and the region is reclaimable once the VMO is gone |
-| T301 | Stage 6: a REFUSED spawn leaves its budget untouched — no stranded children, still RESET-able, swept across the boundary in sub-page steps |
-| T302 | Stage 6-pure: a page table is a capability — retyped by the holder, installed one level per invocation, refused at a kernel address, and the walk it builds really maps |
-| T303 | Stage 7: a running thread outlives every capability to it — the execution reference a retyped TCB never took |
-| T304 | Stage 7: the live-process ceiling is gone — more than 64 children out of one budget, a clean error when that budget ends, and a RESET afterwards that proves nothing leaked |
-| T187, T188, T196, T210 (re-derived) | Stage 7-proc: an address space outlives its threads while a capability to it lives, so a late map into a dead target's space SUCCEEDS — seL4's shape, where a page directory outlives its threads.  What the tests were always about (the books return to baseline once the capability is dropped) still holds |
-| T239–T250 (re-derived) | Stage 7-mem: budget accounting and reclamation drift, read off `SYS_UNTYPED_QUERY` after `SYS_RESOURCE_INFO` retired with the per-process resource domain |
+| T296 | One capability, one authority — each boot control capability authorises its own syscall and nothing else |
+| T297 | A retyped TCB executes; an unconfigured one cannot be started, written or exited; foreign CSpace/VSpace refused |
+| T298 | An Untyped pays for its frames' headers, and frames stay page-dense |
+| T299 | Page tables are charged to a named budget, which cannot be RESET while they live |
+| T300 | User memory comes out of a named budget, and the region is reclaimable once the VMO is gone |
+| T301 | A REFUSED spawn leaves its budget untouched — no stranded children, still RESET-able, swept across the boundary in sub-page steps |
+| T302 | A page table is a capability — retyped by the holder, installed one level per invocation, refused at a kernel address, and the walk it builds really maps |
+| T303 | A running thread outlives every capability to it — the execution reference a retyped TCB never took |
+| T304 | The live-process ceiling is gone — more than 64 children out of one budget, a clean error when that budget ends, and a RESET afterwards that proves nothing leaked |
+| T187, T188, T196, T210 (re-derived) | An address space outlives its threads while a capability to it lives, so a late map into a dead target's space SUCCEEDS — seL4's shape, where a page directory outlives its threads.  What the tests were always about (the books return to baseline once the capability is dropped) still holds |
+| T239–T250 (re-derived) | Budget accounting and reclamation drift, read off `SYS_UNTYPED_QUERY` after `SYS_RESOURCE_INFO` retired with the per-process resource domain |
 | T312 | Ledger D-2 closed: the ROOT CSpace capability carries a guard, installed by `SYS_TCB_CONFIGURE`'s arg3 (seL4's `cspace_root_data`).  Asserts the property that would be lost by putting the guard on the KCNode: a parent and a child share ONE root CNode object and address it DIFFERENTLY, because a guard belongs to a capability and not to what it names.  Also that an oversized guard is refused rather than truncated — a root guard meaning something other than what was asked for would change what every CPtr in that thread's CSpace means |
 | T311 | Ledger D-8: `SYS_CSPACE_REVOKE` is PREEMPTIBLE.  Builds a derivation subtree wider than one slice and asserts both halves of the claim: the restart counter advances (it really gave the CPU up part-way) and the reported count is the whole job rather than the last slice — the accounting mistake a sliced operation invites.  Then checks every descendant is actually gone, because a preemption point that loses work is worse than none |
-| T310 | Stage 9-evt / D-1 step 1: a blocking syscall is RE-EXECUTED, not parked.  From ring 3 a restartable sleep and a stack-parked one are indistinguishable, so the assertion is on the kernel's restart gauge: it must advance across a blocking sleep and must NOT advance for a zero-length one, because a syscall that can complete must never take the slow path |
-| T309 | Stage 8-mcs: a passive server serves a LOOP through `SYS_REPLY_RECV` — the donation is re-established on every call, the reply object is re-staged without reallocation, and each answer reaches the right caller.  A server that leaked its donation would stop after one request; one that failed to re-stage would fail the second call.  It also found the footgun the syscall now removes: the buffer arrives holding the kernel's echo of the staged reply CPtr, so a naive reply asks the kernel to transfer away the reply object itself |
-| T308 | Stage 8-mcs: a PASSIVE server runs on its client's donated scheduling context.  Discriminating by construction: before donation a thread with no SC was never charged at all, so it ran with unlimited time; the test arms a timeout handler on the SERVER and has it spin, and the fault can only fire if the server was charged against a scheduling context it does not own.  It caught the real bug — donation was wired into two of the three rendezvous paths, so a server ran unbudgeted or not depending on which side arrived first |
-| T307 | Stage 8-mcs: budget exhaustion is a FAULT a supervisor can answer.  Starts a thread that only spins, gives it one tick of budget in a long period, arms a timeout handler, and asserts the handler is signalled, the record carries `IRIS_FAULT_VECTOR_TIMEOUT` (so an overrun is distinguishable from a page fault), the thread is really BLOCKED rather than still burning budget, and the supervisor can end it.  Every other test in the suite is the unarmed case, which is what says the change was additive |
-| T306 | Stage 8-cap / D-2: a CNode capability carries a GUARD — the default resolves as before (additivity), the guarded address resolves, the plain one stops resolving, a wrong guard fails NOT_FOUND rather than landing elsewhere, width 0 restores the original address, and a guard on a non-CNode is refused.  Ring-3 half of the property; `test_cnode_guard` G-1..G-8 is the host half |
-| T305 | Charter A9: every capability is traceable to an ancestor — reads `mdb_legacy_roots`, the gauge the ABI calls "must → 0", and pins it against growth across a spawn/kill and a mint/revoke cycle.  Reports the inventory (43 roots of 335 MDB nodes, max depth 6, at Stage 7 close) so the number is visible rather than assumed; the absolute count moves with what is alive, so the assertion is on the DELTA across the cycle |
-| T140–T147, T181–T238 (re-derived) | Stage 7: a fault is answered by naming the faulting THREAD's capability, delivered into a mailbox the registrant declared.  The suite's own targets deliver to the suite; a target handed to a pager is re-aimed to a CNode shared with it; a victim is never re-aimed, which is what makes a cross-target attempt fail for want of a capability rather than by a rejected id.  The pager manifests lost bit 20: it holds no process capability for any target it serves |
-| PT-1..PT-11 (host) | Stage 6-pure: the paging walk driven exhaustively — level order, spent-vs-complete, kernel-address refusal, dead VSpace, teardown returning every level, the bootstrap exception being one-way, a reused level entering the walk empty, teardown detaching exactly the holder's levels, and a failed composition giving its bind claim back |
+| T310 | Ledger D-1: a blocking syscall is RE-EXECUTED, not parked.  From ring 3 a restartable sleep and a stack-parked one are indistinguishable, so the assertion is on the kernel's restart gauge: it must advance across a blocking sleep and must NOT advance for a zero-length one, because a syscall that can complete must never take the slow path |
+| T309 | A passive server serves a LOOP through `SYS_REPLY_RECV` — the donation is re-established on every call, the reply object is re-staged without reallocation, and each answer reaches the right caller.  A server that leaked its donation would stop after one request; one that failed to re-stage would fail the second call.  It also found the footgun the syscall now removes: the buffer arrives holding the kernel's echo of the staged reply CPtr, so a naive reply asks the kernel to transfer away the reply object itself |
+| T308 | A PASSIVE server runs on its client's donated scheduling context.  Discriminating by construction: before donation a thread with no SC was never charged at all, so it ran with unlimited time; the test arms a timeout handler on the SERVER and has it spin, and the fault can only fire if the server was charged against a scheduling context it does not own.  It caught the real bug — donation was wired into two of the three rendezvous paths, so a server ran unbudgeted or not depending on which side arrived first |
+| T307 | Budget exhaustion is a FAULT a supervisor can answer.  Starts a thread that only spins, gives it one tick of budget in a long period, arms a timeout handler, and asserts the handler is signalled, the record carries `IRIS_FAULT_VECTOR_TIMEOUT` (so an overrun is distinguishable from a page fault), the thread is really BLOCKED rather than still burning budget, and the supervisor can end it.  Every other test in the suite is the unarmed case, which is what says the change was additive |
+| T306 | Ledger D-2: a CNode capability carries a GUARD — the default resolves as before (additivity), the guarded address resolves, the plain one stops resolving, a wrong guard fails NOT_FOUND rather than landing elsewhere, width 0 restores the original address, and a guard on a non-CNode is refused.  Ring-3 half of the property; `test_cnode_guard` G-1..G-8 is the host half |
+| T305 | Charter A9: every capability is traceable to an ancestor — reads `mdb_legacy_roots`, the gauge the ABI calls "must → 0", and pins it against growth across a spawn/kill and a mint/revoke cycle.  Reports the inventory (43 roots of 335 MDB nodes, max depth 6) so the number is visible rather than assumed; the absolute count moves with what is alive, so the assertion is on the DELTA across the cycle |
+| T140–T147, T181–T238 (re-derived) | A fault is answered by naming the faulting THREAD's capability, delivered into a mailbox the registrant declared.  The suite's own targets deliver to the suite; a target handed to a pager is re-aimed to a CNode shared with it; a victim is never re-aimed, which is what makes a cross-target attempt fail for want of a capability rather than by a rejected id.  The pager manifests lost bit 20: it holds no process capability for any target it serves |
+| PT-1..PT-11 (host) | The paging walk driven exhaustively — level order, spent-vs-complete, kernel-address refusal, dead VSpace, teardown returning every level, the bootstrap exception being one-way, a reused level entering the walk empty, teardown detaching exactly the holder's levels, and a failed composition giving its bind claim back |
 
-**The syscall layer is under host test as of Stage 8-cap.**  Until then 76% of
+**The syscall layer is under host test.**  Before it was, 76% of
 the kernel's C had no unit tests and the largest untested piece was the layer
 whose entire job is validating arguments and checking authority — covered only
 through the syscall boundary, where a rejection and a crash look alike from
@@ -412,8 +412,8 @@ blocking server starve itself, and the guarantee that no thread gets more than
 its budget in a window of its period), and `G-1..G-8` (CNode guards,
 including the one property that makes a guard seL4's guard: it is
 capability-local, so two capabilities to the same CNode resolve at different
-addresses).  `BC-13` changed meaning in
-Stage 7-proc and is worth reading for it: a slot naming its own CNode now takes
+addresses).  `BC-13` changed meaning when an address space stopped belonging to a process,
+and is worth reading for it: a slot naming its own CNode now takes
 no ACTIVE reference — an object reachable only from itself is reachable by
 nobody — so the case that used to be the negative control ("without the
 explicit teardown the object is NOT freed") is now the positive one.

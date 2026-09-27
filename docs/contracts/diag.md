@@ -8,7 +8,7 @@ Defines the current observability split between kernel-owned diagnostics and ser
 
 IRIS diagnostics are surfaced entirely through the `svcmgr` IPC layer.
 
-`SYS_DIAG_SNAPSHOT` (syscall 30) was retired in Phase 51 and returns
+`SYS_DIAG_SNAPSHOT` (syscall 30) was retired and returns
 `IRIS_ERR_NOT_SUPPORTED`.  Kernel-side counters are no longer exposed via a
 direct user-buffer snapshot path.
 
@@ -31,7 +31,7 @@ The current single-layer model:
   - live task and process counts (maintained internally)
   - active IRQ route count (maintained internally)
   - scheduler tick snapshot (maintained internally)
-- `vfs` status values from `VFS_EP_OP_STATUS` (EP_CALL on `"vfs.ep"`; legacy `VFS_MSG_STATUS` retired in Phase 7.5)
+- `vfs` status values from `VFS_EP_OP_STATUS` (EP_CALL on `"vfs.ep"`; legacy `VFS_MSG_STATUS` retired)
 - `kbd` status values from `KBD_MSG_STATUS`
 
 The resulting `SVCMGR_MSG_DIAG_REPLY` is the current system-health gate used by `init`.

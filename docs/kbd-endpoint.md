@@ -1,10 +1,10 @@
-# KBD Endpoint Protocol (Phase 7.4)
+# KBD Endpoint Protocol
 
 The keyboard service delivers key events to sh **exclusively** over KEndpoint
 (`"kbd.ep"`). The wire format is `kernel/include/iris/kbd_ep_proto.h`; the
 server is `services/kbd/main.S` (ring-3 assembly). It replaced the Class D
 KChannel debt `kbd event channel (sh ← kbd)` from `docs/kchannel-migration.md`,
-and since Phase 13 there is nothing else left: kbd is endpoint-only.
+and there is nothing else left: kbd is endpoint-only.
 
 ## Design: pull with parked reply (seL4-style deferred reply)
 
@@ -92,8 +92,8 @@ included from C (iris_test does).
 
 - Catalog: kbd has `own_service_ep = 1`; svcmgr creates the endpoint,
   pre-start-mints the recv side at `IRIS_CPTR_OWN_EP` (slot 5; bootstrap
-  kind 0x21 retired in Phase 8) and publishes `"kbd.ep"`.
-- sh (Phase 8) reaches kbd through the well-known slot `IRIS_CPTR_KBD_EP`
+  kind 0x21 retired) and publishes `"kbd.ep"`.
+- sh reaches kbd through the well-known slot `IRIS_CPTR_KBD_EP`
   (4), verified with a PING; prints `[SH] kbd cptr OK` / `FAILED` (gated by
   `scripts/run_qemu_headless.sh`; no silent fallback, no lookup).
 - `SVCMGR_BOOTSTRAP_KIND_KBD_CAP` (9) and the `give_kbd` catalog flag are
@@ -101,14 +101,14 @@ included from C (iris_test does).
 - kbd's own TCB is `IRIS_CPTR_OWN_TCB` (slot 19) — it has to name itself to
   bind its notification, which is what a thread capability is for.
 
-## IRQ delivery (Phase 7.6: KNotification)
+## IRQ delivery
 
 IRQ1 no longer arrives as a `KBD_MSG_IRQ_SCANCODE` KChannel message. The
 catalog flags kbd `irq_notify = 1`: svcmgr creates a KNotification master
 (kept across restarts), registers it as the kernel IRQ route
-(`SYS_IRQ_ROUTE_REGISTER` accepts a KNotification with `RIGHT_WRITE` since
-Phase 7.6) and pre-start-mints the WAIT side at `IRIS_CPTR_IRQ_NOTIFY`
-(slot 7; bootstrap kind 0x23 retired in Phase 8 — kbd uses the slot as a
+(`SYS_IRQ_ROUTE_REGISTER` accepts a KNotification with `RIGHT_WRITE`) and
+pre-start-mints the WAIT side at `IRIS_CPTR_IRQ_NOTIFY`
+(slot 7; bootstrap kind 0x23 retired — kbd uses the slot as a
 constant). On each IRQ the kernel masks the line, signals bit `1 << irq`
 (signal-only — safe from IRQ context, no allocation) and EOIs; kbd wakes out
 of its endpoint receive (A-23), reads port 0x60 via its KIoPort cap and
@@ -117,7 +117,7 @@ re-arms with `IRQ_Ack`. `KBD_MSG_IRQ_SCANCODE` is no longer dispatched.
 ## What remains on KChannel
 
 Nothing. The legacy probe pair (`HELLO`, `SUBSCRIBE`, svcmgr `STATUS`) and the
-bootstrap one-shot channel went with KChannel in Phase 13; every capability
+bootstrap one-shot channel went with KChannel; every capability
 kbd holds is a pre-start CSpace mint and every message it serves is an
 endpoint message.
 
