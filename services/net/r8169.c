@@ -93,6 +93,12 @@
 #define FCS_BYTES        4u
 
 #define NET_TX_MS        1000u
+/* And how long to wait for the LINK.  Long, because what is being waited for
+ * is a real autonegotiation; free where the link is already up.  The Intel
+ * backend learned the cost of being impatient here against a hypervisor that
+ * models the delay honestly -- every frame sent before it finished was
+ * dropped, on a card that then worked perfectly. */
+#define NET_LINK_MS      8000u
 
 /*
  * Where bring-up stopped, in `hw->step`, reported through NET_OP_INFO.
@@ -284,11 +290,23 @@ static int r8169_bring_up(struct net_hw *hw) {
     w32(R_RCR, RCR_APM | RCR_AB | RCR_MXDMA_UNLIM | RCR_RXFTH_NONE);
 
     /*
-     * The link, reported and not waited for.  Autonegotiation on real copper
-     * takes seconds, and a driver that refused to come up until it finished
-     * would report a broken card for an unplugged cable — which is the one
-     * failure that is not this file's.
+     * WAIT for the link, bounded, and then report it either way.
+     *
+     * Nothing transmits until autonegotiation finishes, so a driver that
+     * answered "up" first would hand its caller a card that silently drops
+     * everything it is given.  Not fatal when the link never comes: a cable
+     * nobody plugged in is not a broken driver, and 13 rather than 12 is how
+     * the boot report says which of the two this is.
      */
+    {
+        long t0 = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
+        for (;;) {
+            if (r8(R_PHYSTATUS) & PHY_LINK_OK) break;
+            long now = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
+            if (t0 <= 0 || now <= 0) break;   /* no clock: do not spin */
+            if ((uint64_t)(now - t0) > (uint64_t)NET_LINK_MS * 1000000ull) break;
+        }
+    }
     hw->step = (r8(R_PHYSTATUS) & PHY_LINK_OK) ? 12u : 13u;
     return 1;
 }

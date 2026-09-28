@@ -844,11 +844,32 @@ static int init_net_arp_probe(void) {
         f[38] = 10; f[39] = 0; f[40] = 2; f[41] = 2;                 /* 10.0.2.2  */
     }
 
+    /*
+     * Sent, and RE-SENT while we wait.
+     *
+     * The first version sent one request and then listened for two seconds,
+     * which is a probe that reports "no gateway" whenever the single frame it
+     * ever sent is lost -- and one frame is lost far more often than a
+     * gateway is absent.  It showed up as a card that worked for everything
+     * except this check: under one hypervisor the `ip` service, which retries
+     * its own ARP, completed a whole TFTP transfer over the same card that
+     * this probe had just declared unreachable.
+     *
+     * ARP is a protocol nobody acknowledges, so retrying is not an
+     * optimisation; it is how the protocol is used.
+     */
+#define ARP_RESEND_NS 250000000ull
     { uint8_t *z = (uint8_t *)&m;
       for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
     m.label = NET_OP_SEND; m.words[0] = 42u; m.word_count = 1u;
     if (iris_msg_call((long)INIT_SLOT_NET_EP, &m) != 0 ||
-        m.label != NET_REP_OK) return 0;
+        m.label != NET_REP_OK) {
+        /* The frame never left.  Distinct from a silent return, because
+         * "the card would not send" and "nobody answered" are opposite
+         * conclusions about the same missing reply. */
+        init_log("[USER][INIT] net: the arp request would not go out\n");
+        return 0;
+    }
 
     /*
      * Wait for the answer, bounded in TIME.
@@ -871,17 +892,35 @@ static int init_net_arp_probe(void) {
      * `SYS_CLOCK_GET` is one of the four syscalls that survived the ABI freeze
      * (the counter is unprivileged on this architecture anyway).
      */
+    uint32_t seen = 0, seen_type[4] = { 0, 0, 0, 0 }, seen_op[4] = { 0, 0, 0, 0 };
     long t0 = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
+    long last_send = t0;
     for (;;) {
         long now = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
         if (t0 > 0 && now > 0 && (uint64_t)(now - t0) > 2000000000ull) break;
+
+        if (last_send > 0 && now > 0 &&
+            (uint64_t)(now - last_send) > ARP_RESEND_NS) {
+            /* The frame is still in the transmit buffer -- nothing has
+             * written it since, and this task is the only holder until `ip`
+             * is spawned -- so asking for it to go out again is one call. */
+            struct iris_msg rs;
+            { uint8_t *z = (uint8_t *)&rs;
+              for (uint32_t i = 0; i < (uint32_t)sizeof(rs); i++) z[i] = 0; }
+            rs.label = NET_OP_SEND; rs.words[0] = 42u; rs.word_count = 1u;
+            (void)iris_msg_call((long)INIT_SLOT_NET_EP, &rs);
+            last_send = now;
+        }
 
         { uint8_t *z = (uint8_t *)&m;
           for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) z[i] = 0; }
         m.label     = NET_OP_RECV;
         m.recv_slot = (long)INIT_SLOT_NET_RX;
         (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_NET_RX);
-        if (iris_msg_call((long)INIT_SLOT_NET_EP, &m) != 0) return 0;
+        if (iris_msg_call((long)INIT_SLOT_NET_EP, &m) != 0) {
+            init_log("[USER][INIT] net: the driver stopped answering\n");
+            return 0;
+        }
         if (m.label != NET_REP_OK || m.words[0] == 0u) {
             (void)iris_syscall4(SYS_YIELD, 0, 0, 0, 0);
             continue;
@@ -911,10 +950,38 @@ static int init_net_arp_probe(void) {
                                (long)IRIS_CPTR_OWN_VSPACE, (long)RX_VA);
             return 1;
         }
-        /* Some other frame — QEMU's stack sends a few.  Unmap and keep
-         * waiting; the next RECV takes this buffer back anyway. */
+        /* Some other frame — QEMU's stack sends a few.  Remember what it
+         * was: "nothing came back" and "something came back and it was not
+         * the reply" are different facts, and the line printed on timeout
+         * used to name neither. */
+        if (seen < 4u) {
+            seen_type[seen] = (uint32_t)((uint32_t)f[12] << 8 | f[13]);
+            seen_op[seen]   = (uint32_t)((uint32_t)f[20] << 8 | f[21]);
+        }
+        seen++;
         (void)iris_invoke2((long)INIT_SLOT_NET_RX, INV_FRAME_UNMAP,
                            (long)IRIS_CPTR_OWN_VSPACE, (long)RX_VA);
+    }
+
+    {
+        static const char hx[] = "0123456789abcdef";
+        char d[80] = "[USER][INIT] net: no arp reply; frames seen ";
+        uint32_t k = 0; while (d[k]) k++;
+        if (seen >= 100u) d[k++] = (char)('0' + (seen / 100u) % 10u);
+        if (seen >= 10u)  d[k++] = (char)('0' + (seen / 10u) % 10u);
+        d[k++] = (char)('0' + seen % 10u);
+        for (uint32_t i = 0; i < 4u && i < seen; i++) {
+            d[k++] = ' ';
+            d[k++] = hx[(seen_type[i] >> 12) & 0xFu];
+            d[k++] = hx[(seen_type[i] >> 8) & 0xFu];
+            d[k++] = hx[(seen_type[i] >> 4) & 0xFu];
+            d[k++] = hx[seen_type[i] & 0xFu];
+            d[k++] = '/';
+            d[k++] = hx[(seen_op[i] >> 4) & 0xFu];
+            d[k++] = hx[seen_op[i] & 0xFu];
+        }
+        d[k++] = '\n'; d[k] = 0;
+        init_log(d);
     }
     return 0;
 }

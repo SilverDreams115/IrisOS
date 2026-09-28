@@ -42,6 +42,12 @@
 
 #define CTRL_SLU      (1u << 6)    /* set link up */
 #define CTRL_ASDE     (1u << 5)    /* auto-speed detect */
+#define STATUS_LU     (1u << 1)    /* link up */
+
+/* How long to wait for it.  Long, because what is being waited for is a real
+ * autonegotiation and the cost of being impatient is every frame sent before
+ * it finishes; free where the link is already up. */
+#define NET_LINK_MS   8000u
 
 #define RCTL_EN       (1u << 1)
 #define RCTL_BAM      (1u << 15)   /* accept broadcast */
@@ -93,6 +99,8 @@ static int e1000_bring_up(struct net_hw *hw) {
     wr(E1000_CTRL, rd(E1000_CTRL) | CTRL_SLU | CTRL_ASDE);
     for (uint32_t i = 0; i < 128u; i++) wr(E1000_MTA + i * 4u, 0u);
 
+
+
     /* The MAC the card came with.  QEMU programs RAL/RAH from the command
      * line, so reading them is both simpler and more correct than walking the
      * EEPROM — the address that matters is the one the card will answer to. */
@@ -141,7 +149,33 @@ static int e1000_bring_up(struct net_hw *hw) {
                        (0x10u << TCTL_CT_SHIFT) | (0x40u << TCTL_COLD_SHIFT));
     }
 
-    hw->step = 12u;   /* up; see netdev.h for why the number is shared */
+    /*
+     * WAIT for the link, because a card whose link is down cannot transmit
+     * and a driver that answers "up" for one is answering the wrong question.
+     *
+     * Free where the link is already up: the status bit is set inside the
+     * write on an emulation that does not model negotiation, so this costs
+     * one register read on the gate's machine.  Where it is NOT free it is
+     * necessary -- one hypervisor models the real thing and holds every
+     * frame until it finishes, which is several seconds, and a transmit
+     * issued before that never reports done.  It cost the ARP probe its
+     * request and the protocol stack its first datagram, on a card that then
+     * worked perfectly.
+     *
+     * Bounded, and not fatal: a cable nobody plugged in is not a broken
+     * driver.  12 = up with a link, 13 = up without one, and the step pair
+     * in the boot report is where that shows.
+     */
+    {
+        long t0 = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
+        for (;;) {
+            if (rd(E1000_STATUS) & STATUS_LU) break;
+            long now = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
+            if (t0 <= 0 || now <= 0) break;   /* no clock: do not spin */
+            if ((uint64_t)(now - t0) > (uint64_t)NET_LINK_MS * 1000000ull) break;
+        }
+    }
+    hw->step = (rd(E1000_STATUS) & STATUS_LU) ? 12u : 13u;
     return 1;
 }
 
