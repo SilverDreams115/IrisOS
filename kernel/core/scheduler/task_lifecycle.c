@@ -402,7 +402,13 @@ static void rq_unlink_locked(struct CpuRunQueue *rq, struct task *t) {
     uint32_t dom = rq_dom_of(t);
     struct task *prev = 0, *cur = rq->head[dom][prio];
     while (cur && cur != t) { prev = cur; cur = cur->rq_next; }
-    if (!cur) { t->rq_queued = 0; rq_live_dec(); return; }
+    if (!cur) {
+        /* Not in the bucket its key names.  Reaching here means a writer of
+         * `domain`, `priority` or `home_cpu` is still outside the lock; the
+         * flag is cleared so the thread can be relinked, and the stale node
+         * is left for the bucket's own unlink to find. */
+        t->rq_queued = 0; rq_live_dec(); return;
+    }
     struct task *nxt = t->rq_next;
     if (!prev)                        rq->head[dom][prio] = nxt;
     else                              prev->rq_next       = nxt;
@@ -412,6 +418,36 @@ static void rq_unlink_locked(struct CpuRunQueue *rq, struct task *t) {
     t->rq_queued = 0;
     t->rq_next   = 0;
     rq_live_dec();
+}
+
+/*
+ * Tell the core that owns this queue to come and look at it.
+ *
+ * Making a thread dispatchable on ANOTHER core is a write into that core's
+ * run queue, and a write into a queue reaches nothing: a core halted in its
+ * idle loop stays halted until some interrupt it was already going to get
+ * arrives.  On a machine whose timer reaches one core and the rest by IPI,
+ * "was already going to get" is not a guarantee -- and a runnable thread can
+ * then sit in a perfectly well-formed queue, linked, with its priority bit
+ * set, for as long as its core sleeps.
+ *
+ * `task_wakeup` has always done this, which is why it is not needed on the
+ * enqueue itself and MUST NOT be put there: `rq_enqueue` is also the
+ * context switch putting its outgoing thread back, the hottest path the
+ * scheduler has, and `lapic_send_ipi` begins by SPINNING on the delivery
+ * status of the previous one.  Poking there sends a second IPI for every
+ * wakeup and a spin for every switch; the IPC fuzz tests went from passing
+ * to not finishing.
+ *
+ * What had no poke is the pair below: moving a thread's DOMAIN or its
+ * PRIORITY makes it dispatchable again without ever going through
+ * `task_wakeup`.  Under one hypervisor a thread moved out of the scheduled
+ * domain and back stayed READY and QUEUED for fifteen seconds -- in its
+ * bucket's list, with its bucket's bit set, on a core that never looked --
+ * while the same test passed on every QEMU configuration.
+ */
+static inline void rq_poke(const struct task *t) {
+    smp_send_reschedule((uint32_t)t->home_cpu);
 }
 
 void rq_enqueue(struct task *t) {
@@ -525,6 +561,7 @@ void sched_set_priority(struct task *t, uint8_t priority) {
     t->priority = priority;
     if (was_queued) rq_link_locked(rq, t);
     irq_spinlock_unlock(&rq->lock, flags);
+    if (was_queued) rq_poke(t);
 }
 
 void sched_set_domain(struct task *t, uint8_t domain) {
@@ -559,6 +596,7 @@ void sched_set_domain(struct task *t, uint8_t domain) {
     t->domain = domain;
     if (was_queued) rq_link_locked(rq, t);
     irq_spinlock_unlock(&rq->lock, flags);
+    if (was_queued) rq_poke(t);
 }
 
 /*

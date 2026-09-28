@@ -1149,7 +1149,13 @@ void test_t109(void) {
             if (g_fz_att[0] != (uint32_t)IRIS_MSG_NO_CAP) { ok = 0; why = "ghost cap"; }
         } else if (ok && pick == 1u) {
             /* I12: the reply cap landed at the declared slot, invocable. */
-            if (g_fz_att[0] != s) { ok = 0; why = "slot landing"; }
+            if (g_fz_att[0] != s) {
+                ok = 0; why = "slot landing";
+                /* WHERE it landed instead, because "not the declared slot"
+                 * and "no capability at all" are different failures and the
+                 * message named neither. */
+                it_fz_note("T109", g_fz_att[0], (uint32_t)s, (uint32_t)pick);
+            }
             uint64_t bits = 0;
             if (ok && (it_invoke1((long)s, INV_NOTIFY_SIGNAL, 1) != 0 ||
                        it_invoke1(n, INV_NOTIFY_WAIT, (long)(uintptr_t)&bits) != 0 ||
