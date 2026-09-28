@@ -211,6 +211,10 @@ struct init_findings {
     uint32_t net_step;
     uint64_t net_mac;
     uint32_t ip_ok, ip_bytes;
+    /* The TFTP opcode that came back: 3 = data, 5 = the server refused
+     * the file, 0 = nothing recognisable.  A round trip happened for
+     * either of the first two. */
+    uint32_t ip_reply;
 };
 extern struct init_findings g_init_found;
 void init_report_findings(void);

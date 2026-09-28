@@ -58,6 +58,24 @@ fi
 
 NIC="${IRIS_VBOX_NIC:-82540EM}"
 echo "[vbox] network card: $NIC"
+
+#
+# ...and something on the other end of it that speaks TFTP.
+#
+# VirtualBox's NAT carries a TFTP server like QEMU's does, but it ships
+# DISABLED and with no prefix, so a read of any file is answered -- correctly,
+# and from a real server -- with "access violation".  That is a complete round
+# trip and IRIS reports it as one, but it is not the same check: the strong
+# claim is that the bytes THIS repository wrote came back.  So the server is
+# turned on, pointed at the same file the QEMU lane serves, and answered at
+# the gateway address the stack sends to.
+#
+mkdir -p "$DIR/tftp"
+printf 'IRIS-TFTP-OK\n' > "$DIR/tftp/hello.txt"
+"$VBM" modifyvm "$VM" --nat-enable-tftp1 on \
+                     --nat-tftp-prefix1 "$WIN\\tftp\\" \
+                     --nat-tftp-server1 10.0.2.2 >/dev/null 2>&1 || \
+    echo "[vbox] note: could not configure the NAT TFTP server"
 "$VBM" modifyvm "$VM" --nictype1 "$NIC" >/dev/null 2>&1 || {
     echo "[vbox] VirtualBox will not present a '$NIC'"; exit 1; }
 

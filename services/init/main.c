@@ -261,9 +261,19 @@ void init_main(iris_cptr_t rbx_unused) {
     if (!init_spawn_fs())
         init_log("[USER] fs spawn FAILED\n");
 
-    /* The protocol stack, which needs the network card above it. */
+    /*
+     * The protocol stack, which needs the network card above it.
+     *
+     * "FAILED" here used to be printed for a stack that had come up and
+     * round-tripped a datagram, because the probe that follows the spawn
+     * demanded a particular FILE from the peer -- and one hypervisor's TFTP
+     * server answers, correctly, that it does not have it.  A message that
+     * says a service did not start when it did is worse than no message.
+     * Each step inside logs its own reason; this one only says the stack is
+     * not usable.
+     */
     if (!init_spawn_ip())
-        init_log("[USER] ip spawn FAILED\n");
+        init_log("[USER] ip: the stack is not usable\n");
 
     sm_h = init_spawn_svcmgr();
     if (sm_h == IRIS_CPTR_NULL) {

@@ -403,18 +403,65 @@ int init_spawn_ip(void) {
         const volatile uint8_t *p = (const volatile uint8_t *)(uintptr_t)0x80B5000000ULL;
         uint32_t len = (uint32_t)m.words[0];
         /* DATA, block one, and the bytes this repository put in the file. */
-        int ok = (len >= 4u + 12u && p[0] == 0 && p[1] == 3 &&
-                  p[2] == 0 && p[3] == 1 &&
-                  p[4] == 'I' && p[5] == 'R' && p[6] == 'I' && p[7] == 'S');
+        /*
+         * WHAT came back, in three cases, because they are three different
+         * facts and this used to report them as one.
+         *
+         * A TFTP DATA block carrying the bytes this repository wrote is the
+         * strong claim: the stack round-tripped AND the peer has the file.
+         * A TFTP ERROR is the same round trip -- ARP answered, an IPv4
+         * checksum accepted, a UDP checksum over a pseudo-header accepted,
+         * and the reply matched to the ephemeral port the request went out
+         * FROM, because a server answers from a port of its own -- against a
+         * peer that simply does not serve that file.  Everything this check
+         * exists to prove is proved by either.
+         *
+         * Only the third case, an answer that is not a TFTP reply at all,
+         * says something is wrong here.
+         */
+        uint8_t p8[8];
+        for (uint32_t i = 0; i < 8u; i++) p8[i] = (i < len) ? p[i] : 0u;
+        uint32_t op = (len >= 2u) ? ((uint32_t)p8[0] << 8 | p8[1]) : 0u;
+        int ok = (len >= 4u + 12u && op == 3u && p8[2] == 0 && p8[3] == 1 &&
+                  p8[4] == 'I' && p8[5] == 'R' && p8[6] == 'I' && p8[7] == 'S');
+        int refused = (op == 5u && len >= 4u);
         (void)iris_invoke2((long)INIT_SLOT_IP_BUF, INV_FRAME_UNMAP,
                            (long)IRIS_CPTR_OWN_VSPACE, (long)0x80B5000000ULL);
+        if (!ok && refused) {
+            /* A real server, answering.  The round trip is the claim; the
+             * file is the peer's business. */
+            g_init_found.ip_reply = (uint32_t)((uint32_t)p8[2] << 8 | p8[3]);
+            char e[80] = "[USER][INIT] ip: udp round trip ok, the server refused the file, error ";
+            uint32_t j = 0; while (e[j]) j++;
+            uint32_t ec = g_init_found.ip_reply;
+            if (ec >= 10u) e[j++] = (char)('0' + (ec / 10u) % 10u);
+            e[j++] = (char)('0' + ec % 10u);
+            e[j++] = '\n'; e[j] = 0;
+            init_log(e);
+            return 1;
+        }
         if (!ok) {
-            init_log("[USER][INIT] ip: the answer was not the file\n");
+            static const char hx[] = "0123456789abcdef";
+            char d[72] = "[USER][INIT] ip: the answer was not a tftp reply, len=";
+            uint32_t k = 0; while (d[k]) k++;
+            if (len >= 100u) d[k++] = (char)('0' + (len / 100u) % 10u);
+            if (len >= 10u)  d[k++] = (char)('0' + (len / 10u) % 10u);
+            d[k++] = (char)('0' + len % 10u);
+            d[k++] = ' '; d[k++] = 'b'; d[k++] = 'y'; d[k++] = 't';
+            d[k++] = 'e'; d[k++] = 's'; d[k++] = ':';
+            for (uint32_t i = 0; i < 8u && i < len; i++) {
+                d[k++] = ' ';
+                d[k++] = hx[(p8[i] >> 4) & 0xFu];
+                d[k++] = hx[p8[i] & 0xFu];
+            }
+            d[k++] = '\n'; d[k] = 0;
+            init_log(d);
             return 0;
         }
 
         {
             g_init_found.ip_ok = 1u;
+            g_init_found.ip_reply = 3u;
             g_init_found.ip_bytes = len - 4u;
             char b[80] = "[USER][INIT] ip: udp round trip ok, tftp data ";
             uint32_t k = 0; while (b[k]) k++;
@@ -2061,6 +2108,12 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
     if (g_init_found.ip_ok) {
         rep_str(b, &k, lim, "udp round trip ok, "); rep_num(b, &k, lim, g_init_found.ip_bytes);
         rep_str(b, &k, lim, " bytes from a real server");
+    } else if (g_init_found.ip_reply) {
+        /* The stack worked and the peer refused the file.  Distinguished from
+         * "no answer" because they want completely different work: one is a
+         * server without that file, the other is a stack that does not. */
+        rep_str(b, &k, lim, "udp round trip ok, server refused the file, error ");
+        rep_num(b, &k, lim, g_init_found.ip_reply);
     } else {
         rep_str(b, &k, lim, "no answer");
     }
