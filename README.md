@@ -41,7 +41,8 @@ UEFI → BOOTX64.EFI → KERNEL.ELF
           → blk         (AHCI disk driver; asks pci by class code)
             → fs        (a filesystem on a disk IRIS owns — holds no hardware)
           → net         (moves frames and parses nothing; one backend per
-                         card family — Intel e1000, virtio-net)
+                         card family — Intel e1000, virtio-net, Realtek
+                         RTL8111/8168/8411)
             → ip        (ARP, IPv4, UDP — holds one endpoint to net, and
                          no ports, no device Untyped, no DMA authority)
 ```
@@ -518,9 +519,12 @@ working:
   controller through `pci` by class code, contains the controller's DMA behind
   a remapping unit when the machine has one, and reads and writes sectors.
   `net` moves Ethernet frames and parses nothing, with one backend per card
-  family behind a common interface — Intel e1000 and virtio-net today, and a
-  card nobody has written one for is REPORTED as such rather than driven with
-  the wrong register offsets.  `ip` is ARP, IPv4 and UDP above it — a separate
+  family behind a common interface — Intel e1000, virtio-net and Realtek
+  RTL8111/8168/8411 — and a card nobody has written one for is REPORTED as
+  such rather than driven with the wrong register offsets.  Two of the three
+  are verified on every commit; the Realtek is not, because nothing that runs
+  here presents the chip, and the driver says how far it got so that the
+  machine which has one can answer instead.  `ip` is ARP, IPv4 and UDP above it — a separate
   service holding one endpoint to the driver and no hardware authority at all,
   which is what makes a stack
   replaceable without reimplementing a card.  It completes a TFTP read against

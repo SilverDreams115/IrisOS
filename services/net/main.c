@@ -124,6 +124,7 @@ int net_bus_bar(uint32_t index, uint32_t bar,
 static const struct net_backend *const NET_BACKENDS[] = {
     &net_backend_e1000,
     &net_backend_virtio,
+    &net_backend_r8169,
 };
 #define NET_BACKEND_COUNT (sizeof(NET_BACKENDS) / sizeof(NET_BACKENDS[0]))
 

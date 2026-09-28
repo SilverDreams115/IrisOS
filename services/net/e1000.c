@@ -141,6 +141,7 @@ static int e1000_bring_up(struct net_hw *hw) {
                        (0x10u << TCTL_CT_SHIFT) | (0x40u << TCTL_COLD_SHIFT));
     }
 
+    hw->step = 12u;   /* up; see netdev.h for why the number is shared */
     return 1;
 }
 

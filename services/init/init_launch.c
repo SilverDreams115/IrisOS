@@ -692,10 +692,18 @@ int init_spawn_net(void) {
             else            { b[k++]='o'; b[k++]='p'; b[k++]='e'; b[k++]='n'; }
             b[k++] = '\n'; b[k] = 0;
             init_log(b);
-            if (!(m.words[0] & 1u)) {
-                /* No link names no cause.  These two say where it stopped:
-                 * the service's step, then the backend's own. */
-                char w[48] = "[USER][INIT] net: stopped at step ";
+            /*
+             * How far bring-up got: the service's step, then the backend's.
+             *
+             * Printed ALWAYS and not only on failure.  `link 0` names no
+             * cause and reads the same on a machine with no card as on one
+             * whose card nobody has written a backend for; and a card that
+             * IS up still has something to say — 08/0d is a Realtek that
+             * came up behind an unplugged cable, which is a fact about the
+             * room and not about this system.
+             */
+            {
+                char w[48] = "[USER][INIT] net: bring-up ";
                 uint32_t j = 0; while (w[j]) j++;
                 uint32_t sv = (uint32_t)((m.words[3] >> 16) & 0xFFu);
                 uint32_t bk = (uint32_t)((m.words[3] >> 24) & 0xFFu);
@@ -704,8 +712,8 @@ int init_spawn_net(void) {
                 w[j++] = hx[(bk >> 4) & 0xFu]; w[j++] = hx[bk & 0xFu];
                 w[j++] = '\n'; w[j] = 0;
                 init_log(w);
-                return 0;
             }
+            if (!(m.words[0] & 1u)) return 0;
             /* A card that is up is not a network that works. */
             if (!init_net_arp_probe())
                 init_log("[USER][INIT] net: the gateway did not answer\n");

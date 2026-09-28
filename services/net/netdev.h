@@ -52,9 +52,16 @@ struct net_hw {
     uint32_t rx_next;                    /* backend-owned ring cursor */
     uint32_t rx_skipping;                /* mid-way through an oversized frame */
     uint64_t rx_count;                   /* frames accepted, for the report */
-    /* Where a backend's own bring-up stopped, in whatever numbering that
+    /*
+     * Where a backend's own bring-up got to, in whatever numbering that
      * family finds useful.  Reported verbatim: the service does not know
-     * what the numbers mean and does not need to. */
+     * what the numbers mean and does not need to.
+     *
+     * Two values are shared, so that a reader who does not have the backend
+     * in front of them can still tell the two cases apart: 0 is "this
+     * backend says nothing", and 12 is "up".  Everything else is the
+     * backend's, and its own file lists what it means.
+     */
     uint32_t step;
     /*
      * The backend's own, carried from probe() through bring_up() and every
@@ -106,8 +113,17 @@ struct net_backend {
     uint32_t (*recv)(struct net_hw *hw, uint32_t *out_off);
 };
 
-/* The table.  One row per family somebody has actually run this against. */
+/*
+ * The table.  One row per family.
+ *
+ * "Somebody has run this" is not the same claim for every row and the file
+ * headers say which: the e1000 and virtio-net backends are exercised by the
+ * gate on every commit, and the Realtek one was written from the documented
+ * register layout because nothing available here presents that chip.  That is
+ * the honest state of it, and it is why bring-up reports where it stopped.
+ */
 extern const struct net_backend net_backend_e1000;
 extern const struct net_backend net_backend_virtio;
+extern const struct net_backend net_backend_r8169;
 
 #endif /* IRIS_NET_NETDEV_H */

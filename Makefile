@@ -763,7 +763,10 @@ $(BUILD_DIR)/net_e1000.o: services/net/e1000.c | dirs
 $(BUILD_DIR)/net_virtio.o: services/net/virtio.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_NET_ELF): $(BUILD_DIR)/net_entry.o $(BUILD_DIR)/net_main.o $(BUILD_DIR)/net_e1000.o $(BUILD_DIR)/net_virtio.o $(STACK_GUARD_OBJ)
+$(BUILD_DIR)/net_r8169.o: services/net/r8169.c | dirs
+	gcc $(SERVICE_CFLAGS) -c $< -o $@
+
+$(SERVICE_NET_ELF): $(BUILD_DIR)/net_entry.o $(BUILD_DIR)/net_main.o $(BUILD_DIR)/net_e1000.o $(BUILD_DIR)/net_virtio.o $(BUILD_DIR)/net_r8169.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 
 $(KERNEL_NET_BIN_OBJ): $(SERVICE_NET_ELF) | dirs

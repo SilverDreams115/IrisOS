@@ -402,6 +402,7 @@ static int virtio_bring_up(struct net_hw *hw) {
         for (uint32_t i = 0; i < 6u; i++) mac |= (uint64_t)dc[i] << (8u * i);
         hw->mac = mac;
     }
+    hw->step = 12u;
     return 1;
 }
 
