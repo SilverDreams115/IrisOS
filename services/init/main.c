@@ -336,6 +336,20 @@ void init_main(iris_cptr_t rbx_unused) {
     init_log("[USER] vfs ep stat OK\n");
     init_log("[USER] vfs ep read OK\n");
 
+    /*
+     * ── The program spawner, and the first program ──
+     *
+     * Here rather than with the drivers because `proc` reads its images
+     * through the VFS, and the VFS session capability is only resolved above.
+     * A spawner started before the filesystem it reads from would be a spawner
+     * holding an endpoint to nothing.
+     *
+     * Not fatal: a machine whose program spawner did not come up is still a
+     * machine with a shell on it, and the line below says which.
+     */
+    if (!init_spawn_proc(vfs_ep_h))
+        init_log("[USER] proc: no program ran\n");
+
     /* KBD SUBSCRIBE / shared-reply probes retired — kbd is
      * endpoint/notification-only and sh consumes keystrokes via "kbd.ep" (pull).
      * init no longer subscribes to a push channel. */

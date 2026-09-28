@@ -291,6 +291,15 @@ static void vfs_seed_fixture_exports(struct vfs_state *state) {
     (void)vfs_seed_one_fixture(state, 13u, "fbk2.dat");
     (void)vfs_seed_one_fixture(state, 14u, "elfseg.dat");
     (void)vfs_seed_one_fixture(state, 15u, "small.dat");
+    /*
+     * And the first PROGRAM, under a name.  This is the whole difference
+     * between a service and a program in this tree today: a service is an
+     * initrd INDEX that `init` starts, a program is a NAME that something
+     * looks up.  `hello` is exported the same way a data fixture is —
+     * mapped, at its real size — because an ELF is just a file, and the
+     * service that spawns it has no business knowing it came from the initrd.
+     */
+    (void)vfs_seed_one_fixture(state, 22u, "hello");
 }
 
 /* Single-threaded server: static IPC buffers, no stack pressure. */

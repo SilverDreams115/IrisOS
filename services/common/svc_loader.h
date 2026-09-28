@@ -3,6 +3,16 @@
 #include <stdint.h>
 #include <iris/nc/cptr.h>
 #include <iris/nc/rights.h>
+#include <iris/paging.h>
+
+/* The stack this loader maps, and where it starts.
+ *
+ * One guard page below it is deliberately left out of both, so a stack
+ * overflow faults instead of walking into whatever the service mapped next.
+ * See step 14. */
+#define SVC_STACK_MAPPED   (USER_STACK_SIZE - 4096ULL * USER_STACK_GUARD_PAGES)
+#define SVC_STACK_MAP_BASE (USER_STACK_BASE + 4096ULL * USER_STACK_GUARD_PAGES)
+
 
 /* Number of entries in the ring-3 name→index catalog (must match the FIRST
  * SL_CATALOG_COUNT entries of initrd.c).  Index 9 = lifecycle_probe, a
@@ -175,9 +185,34 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * loaders that would drift apart.
  *
  * The loader takes ownership of the image slot either way.
+ *
+ * `keep_stack_dest`, when non-zero, mints the child's STACK frame there and
+ * leaves the thread SUSPENDED.  The two go together because the only reason to
+ * want the stack is to write a program's `argv`, `envp` and auxiliary vector
+ * into it, and a thread started before that reaches its entry point with an
+ * `argc` nobody has put there.  The caller reads the entry back with
+ * `TCB_ReadRegs`, writes its own `%rsp`, and resumes.
  */
+/* Where the image goes, in the two spellings a capability needs: the CPtr to
+ * INVOKE it by, and the destination packing to RETYPE it into.  A caller that
+ * computed either one itself would be computing the loader's private leaf
+ * numbering, which is exactly the coupling this seam exists to avoid. */
 uint32_t svc_image_slot(uint64_t ws);
-long svc_load_image_ws(uint64_t elf_bytes,
+uint64_t svc_image_dest(uint64_t ws);
+
+/*
+ * ...and the workspace itself, because a caller that puts the image THERE has
+ * to be able to make it exist first.
+ *
+ * The loader creates it on entry, which is early enough for every caller that
+ * only names a service.  It is not early enough for one that has already
+ * written into the workspace by the time the loader is called — that retype
+ * lands in a CNode nobody has retyped, reports INVALID_ARG, and the spawn
+ * fails one step before it started.  Idempotent: an existing workspace is
+ * success, which is what makes it safe to call every spawn.
+ */
+int svc_ws_ensure(uint64_t ws);
+long svc_load_image_ws(uint64_t elf_bytes, uint64_t keep_stack_dest,
                        iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h,
                        struct svc_mint *mints, uint32_t mint_count,
                        uint64_t ws, uint64_t child_budget,

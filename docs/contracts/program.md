@@ -168,6 +168,38 @@ Their numbers are allocated from the private `AT_` range and are defined in
 
 ---
 
+## 4b. What `proc` fills in TODAY, and what is a zero on purpose
+
+Written because a contract that describes the finished system and a service
+that implements half of it disagree silently, and the half that is missing is
+invisible to a program that reads a field and gets a plausible number.
+
+| the contract says | today | when it changes |
+|---|---|---|
+| slots 2, 3 | filled: the VFS and the console, `RIGHT_WRITE` | — |
+| slots 12, 18, 19 | filled by the loader, once a budget slot is named | — |
+| slots 5, 13 (own endpoint, own reply) | **EMPTY.**  They would have to be retyped per spawn out of memory nothing reclaims when the program dies, and the contract already says an ungranted slot is empty.  A program that means to serve retypes one from its own budget | if a program ever needs one before it can allocate |
+| slots 64..127, `AT_IRIS_OBJC` | **0.**  There is no object registry yet | step 4 |
+| `AT_BASE` | **0.**  There is no interpreter yet, and an ELF with a `PT_INTERP` is REFUSED with `PROC_STEP_INTERP` rather than started unrelocated | step 5 |
+| `AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_ENTRY` | filled, from the file's own account of where its headers are: `PT_PHDR` when it has one, else the `PT_LOAD` whose file range contains `e_phoff`.  A program whose headers are in NEITHER is refused, because a wrong `AT_PHDR` sends a runtime walking arbitrary memory | — |
+| `AT_RANDOM` | filled, pointing at sixteen bytes at the BOTTOM of the program's own stack — the one place in the region the stack builder provably never reaches | — |
+
+`AT_ENTRY` and the bias are obtained by ASKING: the loader randomises the image
+and the thread's entry register is the only thing that knows where it landed,
+so `proc` reads it back with `TCB_ReadRegs` and computes `bias = rip - e_entry`.
+That is exact, and it costs one syscall instead of another return value out of
+the loader.
+
+### A program links with its own script
+
+`services/link_program.ld`, not `link_service.ld`.  One line differs — the
+image starts at `SIZEOF_HEADERS` rather than at 0 — and that line is what puts
+the ELF header and the program header table inside the first `PT_LOAD`, which
+is what makes `AT_PHDR` a mapped address rather than a file offset.  A service
+never needed it because nothing ever asks a service where its own headers are.
+
+---
+
 ## 5. What a program may NOT assume
 
 - **That it can `fork`.**  It cannot; charter §6 registers the absence as

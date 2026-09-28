@@ -2980,27 +2980,37 @@ the answer in `IT_THREAD_ARG_SELF_TCB`, which hands a new thread its own TCB in
 its entry register.  **This is the mechanism `proc` will use to give a program
 its initial capabilities**, and step 2 should not invent another.
 
-**Step 2 — `proc`, and the address-space plan.**  ◐ **IN PROGRESS — three of
-six pieces landed.**  Spawn from a VFS path.  A WRITTEN contract for a child's
-initial CSpace.  `argv`, `envp`, `auxv`.  Exit status and `wait`.  And the
-virtual-address allocator, which lives here because deciding where things go is
-policy.
+**Step 2 — `proc`, and the address-space plan.**  ✅ **CLOSED.**  Spawn from a
+VFS path.  A WRITTEN contract for a child's initial CSpace.  `argv`, `envp`,
+`auxv`.  Exit status and `wait`.
 
-*The close condition is AMENDED, and this is the reason.*  It said "a binary
-written to the IRIS partition by `fs`".  `fs` is one sector per file — 512
-bytes — so an ELF cannot be written to it, and the VFS caps a COPIED export at
-512 too.  Neither is a defect; they are what those services are.  What the VFS
-does have is MAPPED exports of arbitrary size, backed by initrd image frames,
-which is how it already serves content larger than a message.  So the binary is
-read BY PATH through the VFS — which is also the capability the program
-contract gives a program — and the property this step is for, spawned by path
-at runtime rather than by initrd index at boot, is what that demonstrates.
-Growing `fs` to multi-sector files changes an on-disk format and belongs to
-`fs`, not to this stage.
+*The close condition was AMENDED before the step was done, and this is the
+reason.*  It said "a binary written to the IRIS partition by `fs`".  `fs` is
+one sector per file — 512 bytes — so an ELF cannot be written to it, and the
+VFS caps a COPIED export at 512 too.  Neither is a defect; they are what those
+services are.  What the VFS does have is MAPPED exports of arbitrary size,
+backed by initrd image frames, which is how it already serves content larger
+than a message.  So the binary is read BY PATH through the VFS — which is also
+the capability the program contract gives a program — and the property this
+step is for, spawned by path at runtime rather than by initrd index at boot, is
+what that demonstrates.  Growing `fs` to multi-sector files changes an on-disk
+format and belongs to `fs`, not to this stage.
 
-*Closes when:* an ELF read by path through the VFS is spawned, runs, and its
-exit status reaches the parent; and the CSpace contract is a document, not a
-comment.
+*Closed by:* the boot itself, on every runtime lane and at smp1/2/4.  `init`
+resolves `vfs.ep`, spawns `proc`, and asks it for the path `hello`.  `proc`
+reads that ELF through the VFS into a frame it retyped, hands it to the same
+loader a service goes through, writes a System V initial stack into the child's
+stack frame before the thread has run, and replies with the child's THREAD.
+`init` watches that thread, reads its exit status, and gets **42**.
+
+42 is the whole assertion, and the reason the program is written the way it is.
+`hello` returns a DIFFERENT number for every piece of the stack that is missing
+or wrong — a bad `argc`, an `argv` whose NULL is misplaced, an `envp` that does
+not terminate, an absent or wrong `AT_PAGESZ`, a missing `AT_IRIS_*` pair, a
+budget slot that is not the one the contract fixes.  A spawn that "worked" with
+a subtly wrong stack exits with one of those.  The headless lane requires the
+exact line, and the boot report carries it to disk, so a regression shows up as
+a number rather than as a missing feature.
 
 Landed:
   - **the contract** — `docs/contracts/program.md` and `iris/program_abi.h`,
@@ -3010,20 +3020,58 @@ Landed:
     pick by hand — four of which already have more than one owner.
   - **the loader seam** — the image source was one call, so it is a parameter
     now.  `svc_load_image_ws` loads an ELF the caller supplies; one loader
-    rather than the two that would have drifted.
+    rather than the two that would have drifted.  `keep_stack_dest` is the
+    second half of it: it mints the child's stack frame to the caller and
+    leaves the thread SUSPENDED, because a thread started before its stack is
+    written reaches its entry point with an `argc` nobody put there.
   - **the initial stack** — `services/common/prog_stack.c`, System V AMD64
     process initialisation, with a host test that reads the layout back byte
     for byte.  Its assertion of record is that every pointer is a CHILD
     address: a builder that wrote its own mapping's would pass every structural
     check and hand the program five pointers into the spawner.
+  - **`services/proc`** — the service.  It holds an endpoint to the VFS, an
+    endpoint to the console it never writes and only hands on, a budget, and
+    the ASID pool, because a spawner must be able to NAME the address spaces it
+    creates.  It holds no initrd capability: a program comes from a filesystem,
+    and a spawner that could also reach the kernel's boot images would be two
+    mechanisms wearing one name.
+  - **`services/hello`** — the first program.  It is in the initrd because the
+    initrd is where a file comes from before there is a disk to put one on, and
+    it is NOT in the ring-3 name catalog, because a name there is what makes a
+    thing startable by index without a filesystem.
+  - **`services/link_program.ld`** — one line different from the service
+    script, and the difference is the step.  A service is never told where its
+    own program headers are, so the existing script leaves them at file offsets
+    no `PT_LOAD` covers.  `AT_PHDR` is a MAPPED address, and a dynamic runtime
+    walks that table first; reserving `SIZEOF_HEADERS` is what makes the
+    question answerable at all.
 
-Remaining: the `proc` service itself; a program to spawn and its place in the
-initrd and the VFS's export table; `init` wiring; and the runtime test that
-closes the step.
+Three things the work found that nothing had written down:
+  - A spawner needs the **ASID pool**.  A retyped address space has no
+    identifier and no thread can be bound to one, so naming it is not an
+    optimisation — it is the step that makes the space usable.  svcmgr and
+    iris_test hold it; `proc` is the third and the rule is now stated where a
+    fourth will read it.
+  - `keep_tcb_dest` minted **without `RIGHT_TRANSFER`**, which made the kept
+    thread unpassable: a spawner could supervise its child but not hand that
+    role to whoever asked for the spawn.  `proc` is the first caller that is
+    not the supervisor, so it is the first that could notice.
+  - A frame is whole pages and a file is whatever length it is.  The retype
+    refuses anything else, and the loader is told the FILE's size because that
+    is what bounds every offset it reads out of the image.
+
+*Moved to step 3, and stated rather than quietly dropped:* the virtual-address
+ALLOCATOR.  This step fixes the REGIONS — image, interpreter, heap, `mmap`,
+stack — in `program_abi.h`, and `test_program_abi` pins that they are ordered
+and disjoint.  What hands out an address inside the `mmap` region is a cursor
+that only exists once there is an `mmap`, so it lands with it.
 
 **Step 3 — memory a program can ask for.**  `brk` and `mmap` over
 `UNTYPED_RETYPE` plus frame mapping, bounded by the process's own Untyped.
-`mprotect` as unmap-and-remap, which is what RELRO needs.
+`mprotect` as unmap-and-remap, which is what RELRO needs.  It also inherits the
+virtual-address CURSOR from step 2: the regions are fixed and pinned already,
+and what hands out an address inside the `mmap` region only has meaning once
+there is an `mmap` to hand one to.
 *Closes when:* a program exhausts its budget and gets a clean failure rather
 than taking anything down with it, and an `Untyped_Reset` after it dies returns
 exactly what it was given.

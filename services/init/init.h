@@ -151,6 +151,15 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
 #define INIT_SLOT_IP_REPLY    108u
 #define INIT_SLOT_IP_UT       109u
 #define INIT_SLOT_IP_BUF      110u
+/* ...and the PROGRAM spawner's.  `proc` is the first service init starts that
+ * exists to start something else, so init keeps what a supervisor keeps: the
+ * endpoint it talks to, and the thread of the program it asked for. */
+#define INIT_SLOT_PROC_EP     111u
+#define INIT_SLOT_PROC_REPLY  112u
+#define INIT_SLOT_PROC_UT     113u
+#define INIT_SLOT_PROC_CHILD  114u  /* the program's own thread               */
+#define INIT_SLOT_PROC_NOTIF  115u  /* where its death is signalled           */
+#define INIT_SLOT_PROC_GIVE   116u  /* the copy the timer service holds       */
 #define INIT_SLOT_S8_TCB       59u
 /* Where a fault delivers the faulting thread's capability.
  * init arms the handler for ITSELF, so its own root CNode is the mailbox and
@@ -187,6 +196,10 @@ int init_spawn_blk(void);
 int init_spawn_net(void);
 int init_spawn_fs(void);
 int init_spawn_ip(void);
+/* The program spawner, and the first program.  Takes the vfs.ep session cap
+ * init resolved through svcmgr, because `proc` reads its images through the
+ * filesystem and there is nothing else to give it. */
+int init_spawn_proc(iris_cptr_t vfs_ep_h);
 
 /*
  * What this machine turned out to be.
@@ -215,6 +228,12 @@ struct init_findings {
      * the file, 0 = nothing recognisable.  A round trip happened for
      * either of the first two. */
     uint32_t ip_reply;
+    /* The first PROGRAM: the step `proc` reached, and what the program exited
+     * with.  `prog_step == PROC_STEP_RUNNING` and `prog_exit == 42` is the
+     * whole claim — a file was read by path, laid out, given a System V
+     * initial stack, and READ ITS OWN STACK BACK correctly.  Any other exit is
+     * `hello` naming the piece that was wrong. */
+    uint32_t prog_step, prog_exit, prog_ran;
 };
 extern struct init_findings g_init_found;
 void init_report_findings(void);
@@ -305,6 +324,12 @@ INIT_SLOT_CHECK(INIT_SLOT_IP_EP);
 INIT_SLOT_CHECK(INIT_SLOT_IP_REPLY);
 INIT_SLOT_CHECK(INIT_SLOT_IP_UT);
 INIT_SLOT_CHECK(INIT_SLOT_IP_BUF);
+INIT_SLOT_CHECK(INIT_SLOT_PROC_EP);
+INIT_SLOT_CHECK(INIT_SLOT_PROC_REPLY);
+INIT_SLOT_CHECK(INIT_SLOT_PROC_UT);
+INIT_SLOT_CHECK(INIT_SLOT_PROC_CHILD);
+INIT_SLOT_CHECK(INIT_SLOT_PROC_NOTIF);
+INIT_SLOT_CHECK(INIT_SLOT_PROC_GIVE);
 INIT_SLOT_CHECK(INIT_SLOT_TIMER_EP);
 INIT_SLOT_CHECK(INIT_SLOT_TIMER_IRQCAP);
 INIT_SLOT_CHECK(INIT_SLOT_TIMER_NOTIF);

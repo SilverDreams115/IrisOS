@@ -84,6 +84,22 @@
  * table or the budget moves, and one that hardcodes the constant does not.
  * The indirection is the whole point of spending two auxv entries on it.
  */
+/*
+ * The standard entries, by their System V numbers.  They are written here
+ * rather than taken from a libc header because there is no libc here yet and
+ * the spawner has to emit them before there is one — and because a contract
+ * that names `AT_PHDR` in prose and nowhere in code is a contract the compiler
+ * cannot check.
+ */
+#define AT_NULL                   0ULL
+#define AT_PHDR                   3ULL
+#define AT_PHENT                  4ULL
+#define AT_PHNUM                  5ULL
+#define AT_PAGESZ                 6ULL
+#define AT_BASE                   7ULL
+#define AT_ENTRY                  9ULL
+#define AT_RANDOM                25ULL
+
 #define AT_IRIS_OBJC              0x49520001ULL   /* objects the table holds  */
 #define AT_IRIS_OBJV              0x49520002ULL   /* the first object's slot  */
 #define AT_IRIS_UNTYPED           0x49520003ULL   /* the budget's slot        */

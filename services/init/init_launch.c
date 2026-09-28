@@ -11,6 +11,10 @@
  * smoke script scales by the core count, is the outer bound.
  */
 #define INIT_TEST_WATCHDOG_NS 120000000000ull
+/* A program that does nothing but read its own stack has five seconds.  Short
+ * on purpose: this bound exists to keep a broken spawn from hanging the boot,
+ * not to accommodate a slow program. */
+#define INIT_PROC_WATCHDOG_NS   5000000000ull
 
 /*
  * init_launch.c — service launch for init.
@@ -29,6 +33,7 @@
 #include <iris/net_ep_proto.h>
 #include <iris/fs_ep_proto.h>
 #include <iris/ip_ep_proto.h>
+#include <iris/program_abi.h>
 
 struct init_findings g_init_found;
 #include "../common/iris_map.h"
@@ -2186,6 +2191,20 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
     }
     rep_ch(b, &k, lim, '\n');
 
+    rep_str(b, &k, lim, " prog  ");
+    if (g_init_found.prog_ran) {
+        rep_str(b, &k, lim, "hello ran from the filesystem, exit ");
+        rep_num(b, &k, lim, g_init_found.prog_exit);
+        if (g_init_found.prog_exit != 42u)
+            rep_str(b, &k, lim, " (42 is the one that means the stack was right)");
+    } else if (g_init_found.prog_step) {
+        rep_str(b, &k, lim, "hello did not start, step ");
+        rep_num(b, &k, lim, g_init_found.prog_step);
+    } else {
+        rep_str(b, &k, lim, "no spawner");
+    }
+    rep_ch(b, &k, lim, '\n');
+
     rep_str(b, &k, lim, "==============================\n");
     if (k > lim) k = lim;
     b[k] = 0;
@@ -2262,7 +2281,8 @@ static void init_write_report(const char *text, uint32_t len) {
 
 void init_report_findings(void) {
         /* Sized with room over the worst case (measured line by line at 769
-     * bytes when every conditional line prints its widest value), and the
+     * bytes, 872 once the program line was added, when every conditional line
+     * prints its widest value), and the
      * writers refuse to pass it either way -- the size is comfort, the bound
      * is the guarantee. */
     static char body[1024];
@@ -2288,4 +2308,206 @@ void init_report_findings(void) {
     init_log(body);
 
     init_write_report(body, len);
+}
+
+/* ── proc spawn (the first thing init starts in order to start something else) */
+
+/*
+ * `proc`, and the first program.
+ *
+ * Everything init has spawned until now is a SERVICE: an image in the kernel
+ * initrd, started by index, holding a manifest written here.  `proc` is the
+ * first that exists to start something that is not one of those — an ELF on a
+ * filesystem, found by path.
+ *
+ * So what this function proves is not that `proc` came up.  It is that a FILE
+ * was read through the VFS, laid out as a process, given a System V initial
+ * stack, and RAN — and the way it proves it is by reading back the exit status
+ * of a program whose whole job is to inspect the stack it was handed and
+ * report, in that status, which part of it was wrong.  `hello` returns 42 only
+ * if `argc`, `argv`, `envp` and the auxiliary vector are all where the contract
+ * says.  Anything else is a number that says which one was not.
+ *
+ * Returns 1 when the program ran and returned that number.
+ */
+int init_spawn_proc(iris_cptr_t vfs_ep_h) {
+    iris_cptr_t proc_h = IRIS_CPTR_NULL, boot_h = IRIS_CPTR_NULL;
+    struct iris_msg m;
+    long r;
+    int ok = 0;
+
+    if (vfs_ep_h == IRIS_CPTR_NULL) return 0;
+
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
+                         INIT_SLOT_PROC_EP, 0) < 0) { init_log("[USER] proc: ep\n"); return 0; }
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_REPLY,
+                         INIT_SLOT_PROC_REPLY, 0) < 0) { init_log("[USER] proc: reply\n"); return 0; }
+    /*
+     * Sixteen megabytes, and the arithmetic is worth writing down: the loader
+     * cuts a 4 MiB ELF scratch pool out of this, `proc` cuts a 2 MiB image
+     * pool, and every program it spawns costs another budget (4 MiB by
+     * default) until that program dies.  A service that spawns gets a bigger
+     * region than one that does not, for the same reason a spawner chooses its
+     * children's budgets: it is the one that knows.
+     */
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
+                         INIT_SLOT_PROC_UT, 16 << 20) < 0) { init_log("[USER] proc: ut\n"); return 0; }
+
+    {
+        struct svc_mint pm[6] = { 0 };
+        uint32_t n = 0;
+        pm[n].slot = PROC_SLOT_CTRL_EP;     pm[n].src_cptr = INIT_SLOT_PROC_EP;
+        pm[n].rights = RIGHT_READ;          n++;
+        pm[n].slot = PROC_SLOT_REPLY;       pm[n].src_cptr = INIT_SLOT_PROC_REPLY;
+        pm[n].rights = RIGHT_READ | RIGHT_WRITE; n++;
+        /* The filesystem, WRITE-only: `proc` sends requests on it and receives
+         * nothing except the replies its own calls stage. */
+        pm[n].slot = PROC_SLOT_VFS_EP;      pm[n].src_cptr = (uint64_t)vfs_ep_h;
+        pm[n].rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER; n++;
+        /* The console, which `proc` never writes: it holds it only to hand on
+         * to what it spawns, so it needs TRANSFER, and a program that gets it
+         * needs nothing more than WRITE. */
+        pm[n].slot = PROC_SLOT_CONSOLE_EP;  pm[n].src_cptr = INIT_SLOT_CONSOLE_EP;
+        pm[n].rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER; n++;
+        pm[n].slot = IRIS_CPTR_OWN_UNTYPED; pm[n].src_cptr = INIT_SLOT_PROC_UT;
+        pm[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER; n++;
+        /*
+         * The ASID pool, because `proc` is a SPAWNER.
+         *
+         * A retyped address space has no identifier and no thread can be bound
+         * to one, so naming it is not an optimisation — it is the step that
+         * makes the space usable, and the authority is a capability rather
+         * than a counter the kernel hands anybody who asks.  svcmgr and
+         * iris_test hold it for exactly this reason; `proc` is the third.
+         * The POOL travels, the CONTROL does not.
+         */
+        pm[n].slot = IRIS_CPTR_ASID_POOL;   pm[n].src_cptr = IRIS_CPTR_ASID_POOL;
+        pm[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE; n++;
+
+        r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
+                               "proc", &proc_h, &boot_h, pm, n,
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
+                               2u << 20,
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED,
+                               /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
+        init_report_mints("proc", pm, n);
+    }
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_REPLY);
+    init_close(&proc_h);
+    init_close(&boot_h);
+    if (r < 0) { init_log("[USER] proc spawn FAILED\n"); return 0; }
+
+    /* ── the program ── */
+    {
+        static const char hello_path[] = "hello";
+        uint32_t i;
+        iris_msg_zero(&m);
+        m.label      = PROC_OP_SPAWN;
+        m.words[0]   = 0u;              /* the default budget is fine for this */
+        m.word_count = 1u;
+        for (i = 0; i < (uint32_t)sizeof(hello_path); i++)
+            g_init_buf[i] = (uint8_t)hello_path[i];
+        m.buf_len   = (uint32_t)sizeof(hello_path);
+        /* Where the child's THREAD lands.  There is no process object to ask
+         * for; the thread is what a supervisor names. */
+        (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_CHILD);
+        m.recv_slot = (long)INIT_SLOT_PROC_CHILD;
+
+        if (iris_msg_call((long)INIT_SLOT_PROC_EP, &m) != 0) {
+            init_log("[USER][INIT] proc: spawn call FAILED\n");
+            return 0;
+        }
+        if (m.label != PROC_REP_OK) {
+            /* The step number IS the diagnosis — see PROC_STEP_* — so it is
+             * printed rather than folded into one word. */
+            char e[80] = "[USER][INIT] proc: hello did not start, step ";
+            uint32_t j = 0; while (e[j]) j++;
+            uint64_t st = m.words[0], wy = m.words[1];
+            if (st >= 10u) e[j++] = (char)('0' + (st / 10u) % 10u);
+            e[j++] = (char)('0' + (uint32_t)(st % 10u));
+            e[j++] = ' '; e[j++] = 'w'; e[j++] = 'h'; e[j++] = 'y'; e[j++] = ' ';
+            e[j++] = (char)('0' + (uint32_t)(wy % 10u));
+            {
+                /* The kernel error, printed as the negative it is. */
+                long d = (long)m.words[2];
+                uint64_t a = (d < 0) ? (uint64_t)(-d) : (uint64_t)d;
+                e[j++] = ' '; e[j++] = 'e'; e[j++] = 'r'; e[j++] = 'r'; e[j++] = ' ';
+                if (d < 0) e[j++] = '-';
+                if (a >= 100u) e[j++] = (char)('0' + (uint32_t)((a / 100u) % 10u));
+                if (a >= 10u)  e[j++] = (char)('0' + (uint32_t)((a / 10u) % 10u));
+                e[j++] = (char)('0' + (uint32_t)(a % 10u));
+            }
+            e[j++] = '\n'; e[j] = 0;
+            init_log(e);
+            g_init_found.prog_step = (uint32_t)st;
+            return 0;
+        }
+        g_init_found.prog_step = PROC_STEP_RUNNING;
+    }
+
+    /*
+     * Wait for it, bounded.
+     *
+     * Same construction as the iris_test wait: the death arrives as a
+     * notification the watch raises, the bound arrives as a reserved bit from
+     * the timer service, and the two are told apart by which bit came up.  A
+     * program that hangs must not hang the boot.
+     */
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
+                         INIT_SLOT_PROC_NOTIF, 0) < 0) {
+        init_log("[USER][INIT] proc: watch notif FAILED\n");
+        goto out;
+    }
+    if (iris_invoke2((long)INIT_SLOT_PROC_CHILD, INV_TCB_WATCH,
+                     (long)INIT_SLOT_PROC_NOTIF, 1) < 0) {
+        init_log("[USER][INIT] proc: hello watch FAILED\n");
+        goto out;
+    }
+    {
+        uint64_t bits = 0, tok = 0;
+        long give = iris_invoke2((long)INIT_SLOT_PROC_NOTIF, INV_CSPACE_MINT,
+                                 (long)(((uint64_t)INIT_SLOT_PROC_GIVE << 32) | 0u),
+                                 (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+        if (give == 0)
+            (void)iris_timer_arm((long)INIT_SLOT_TIMER_EP,
+                                 (long)INIT_SLOT_PROC_GIVE, IRIS_TIMER_BIT,
+                                 INIT_PROC_WATCHDOG_NS, &tok);
+        for (;;) {
+            r = iris_invoke1((long)INIT_SLOT_PROC_NOTIF, INV_NOTIFY_WAIT, (long)&bits);
+            if (r != 0) break;
+            if (bits & ~IRIS_TIMER_BIT) { r = 0; break; }
+            if (bits & IRIS_TIMER_BIT)  { r = (long)IRIS_ERR_TIMED_OUT; break; }
+        }
+        if (r == 0 && tok) (void)iris_timer_cancel((long)INIT_SLOT_TIMER_EP, tok);
+        (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_GIVE);
+    }
+    if (r < 0) {
+        init_log("[USER][INIT] proc: hello wait TIMEOUT\n");
+        goto out;
+    }
+
+    {
+        long ec = iris_invoke0((long)INIT_SLOT_PROC_CHILD, INV_TCB_EXIT_CODE);
+        char e[64] = "[USER][INIT] proc: hello exit ";
+        uint32_t j = 0; while (e[j]) j++;
+        uint64_t v = (ec < 0) ? 0u : (uint64_t)ec;
+        if (v >= 10u) e[j++] = (char)('0' + (uint32_t)((v / 10u) % 10u));
+        e[j++] = (char)('0' + (uint32_t)(v % 10u));
+        /* 42 is `hello`'s "everything the contract promised was there".  Any
+         * other number names the piece that was not. */
+        ok = (ec == 42);
+        g_init_found.prog_exit = (uint32_t)v;
+        g_init_found.prog_ran  = 1u;
+        e[j++] = ' ';
+        e[j++] = ok ? 'O' : 'B';
+        e[j++] = ok ? 'K' : 'A';
+        if (!ok) e[j++] = 'D';
+        e[j++] = '\n'; e[j] = 0;
+        init_log(e);
+    }
+
+out:
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_NOTIF);
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_CHILD);
+    return ok;
 }

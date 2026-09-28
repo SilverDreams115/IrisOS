@@ -480,6 +480,27 @@ if ! grep -Eq "^\[USER\]\[INIT\] ip: udp round trip ok, tftp data [0-9]+ bytes$"
   exit 1
 fi
 
+# ...and a PROGRAM ran (Stage 10-run step 2).
+#
+# Not "proc came up".  This line means an ELF was found on the filesystem BY
+# PATH, read through the VFS into a frame, laid out as a process, given a
+# System V initial stack with argv/envp/auxv on it, started, and exited — and
+# that the number it exited with was read back.
+#
+# 42 is the whole assertion.  `hello` walks the stack it was handed and returns
+# a DIFFERENT number for each piece that is missing or wrong: a bad argc, an
+# argv whose NULL terminator is misplaced, an envp that does not terminate, a
+# missing or wrong AT_PAGESZ, a missing AT_IRIS_* pair, a budget slot that is
+# not the one the contract fixes.  A spawn that "worked" with a subtly wrong
+# stack would exit with one of those instead, so the exact status is required
+# rather than merely a clean exit.
+if ! grep -Eq "^\[USER\]\[INIT\] proc: hello exit 42 OK$" "$LOG_FILE"; then
+  echo "[headless] no program ran from the filesystem:"
+  grep -E "PROC|proc:" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+
 # The kernel survived a fault of its own (ledger A-37).
 #
 # `idt.c` halts on any exception that did not come from ring 3, which is the

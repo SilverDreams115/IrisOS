@@ -84,6 +84,10 @@ extern const uint8_t _binary_services_fs_fs_elf_end[];
 
 extern const uint8_t _binary_services_ip_ip_elf_start[];
 extern const uint8_t _binary_services_ip_ip_elf_end[];
+extern const uint8_t _binary_services_hello_hello_elf_start[];
+extern const uint8_t _binary_services_hello_hello_elf_end[];
+extern const uint8_t _binary_services_proc_proc_elf_start[];
+extern const uint8_t _binary_services_proc_proc_elf_end[];
 extern const uint8_t _binary_services_pager_pager_elf_start[];
 extern const uint8_t _binary_services_pager_pager_elf_end[];
 
@@ -184,6 +188,19 @@ static const struct initrd_entry g_initrd[] = {
      * parses nothing: everything here is policy about what bytes mean. */
     { _binary_services_ip_ip_elf_start,
       _binary_services_ip_ip_elf_end  },
+    /* [22] hello — NOT a service.  The first program: nothing starts it at
+     * boot, nothing holds an index for it, and the only reason it is in the
+     * initrd at all is that the initrd is where a file comes from before there
+     * is a disk image to put one on.  `vfs` exports it under a NAME, and
+     * `proc` finds it by that name.  If this entry is ever reached through
+     * `initrd_get(22, ...)` by something that starts services, that is a bug
+     * in the caller, not a service that failed to start. */
+    { _binary_services_hello_hello_elf_start,
+      _binary_services_hello_hello_elf_end  },
+    /* [23] proc — the service that spawns a PROGRAM.  It is a service, so it
+     * is here and `init` starts it; what it spawns is not, and never will be. */
+    { _binary_services_proc_proc_elf_start,
+      _binary_services_proc_proc_elf_end  },
 };
 
 #define INITRD_ENTRY_COUNT \

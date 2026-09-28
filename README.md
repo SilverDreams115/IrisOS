@@ -45,6 +45,13 @@ UEFI → BOOTX64.EFI → KERNEL.ELF
                          RTL8111/8168/8411)
             → ip        (ARP, IPv4, UDP — holds one endpoint to net, and
                          no ports, no device Untyped, no DMA authority)
+        → proc          (spawns a PROGRAM: an ELF read from the filesystem BY
+                         PATH, given a System V initial stack and a budget.
+                         Holds no initrd capability — a program is a file)
+          → hello       (not a service.  The first program: nothing starts it
+                         at boot and no index names it.  It walks the stack it
+                         was handed and exits 42 only if every part of it is
+                         what docs/contracts/program.md says)
 ```
 
 The indentation under `pci` is the authority, not the call graph: `blk` and

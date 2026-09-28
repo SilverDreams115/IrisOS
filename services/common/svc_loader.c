@@ -21,13 +21,9 @@
 #include <iris/nc/error.h>
 #include <iris/paging.h>
 
-/* The stack this loader maps, and where it starts.
- *
- * One guard page below it is deliberately left out of both, so a stack
- * overflow faults instead of walking into whatever the service mapped next.
- * See step 14. */
-#define SVC_STACK_MAPPED   (USER_STACK_SIZE - 4096ULL * USER_STACK_GUARD_PAGES)
-#define SVC_STACK_MAP_BASE (USER_STACK_BASE + 4096ULL * USER_STACK_GUARD_PAGES)
+/* SVC_STACK_MAPPED / SVC_STACK_MAP_BASE now live in svc_loader.h: `proc`
+ * writes a program's initial stack into that same frame and has to agree with
+ * this loader about where the child sees it. */
 
 
 /* ── Freestanding syscall helpers ─────────────────────────────────── */
@@ -39,66 +35,8 @@ static inline void sl_close_cap(iris_cptr_t h) {
     (void)iris_invoke1((long)((uint32_t)h & 0xFFu), INV_CNODE_DELETE, (long)((uint32_t)h >> 8));
 }
 
-/* ── Minimal ELF64 types ─────────────────────────────────────────── */
-
-typedef uint16_t Elf64_Half;
-typedef uint32_t Elf64_Word;
-typedef uint64_t Elf64_Addr;
-typedef uint64_t Elf64_Off;
-typedef uint64_t Elf64_Xword;
-typedef int64_t  Elf64_Sxword;
-
-typedef struct {
-    uint8_t    e_ident[16];
-    Elf64_Half e_type;
-    Elf64_Half e_machine;
-    Elf64_Word e_version;
-    Elf64_Addr e_entry;
-    Elf64_Off  e_phoff;
-    Elf64_Off  e_shoff;
-    Elf64_Word e_flags;
-    Elf64_Half e_ehsize;
-    Elf64_Half e_phentsize;
-    Elf64_Half e_phnum;
-    Elf64_Half e_shentsize;
-    Elf64_Half e_shnum;
-    Elf64_Half e_shstrndx;
-} Elf64_Ehdr;
-
-typedef struct {
-    Elf64_Word  p_type;
-    Elf64_Word  p_flags;
-    Elf64_Off   p_offset;
-    Elf64_Addr  p_vaddr;
-    Elf64_Addr  p_paddr;
-    Elf64_Xword p_filesz;
-    Elf64_Xword p_memsz;
-    Elf64_Xword p_align;
-} Elf64_Phdr;
-
-typedef struct {
-    Elf64_Xword d_tag;
-    Elf64_Xword d_val;
-} Elf64_Dyn;
-
-typedef struct {
-    Elf64_Addr   r_offset;
-    Elf64_Xword  r_info;
-    Elf64_Sxword r_addend;
-} Elf64_Rela;
-
-#define ET_DYN              3u
-#define EM_X86_64           62u
-#define PT_LOAD             1u
-#define PT_DYNAMIC          2u
-#define DT_NULL             0
-#define DT_RELA             7
-#define DT_RELASZ           8
-#define DT_RELAENT          9
-#define PF_X                1u
-#define PF_W                2u
-#define ELF64_R_TYPE(i)     ((uint32_t)((i) & 0xffffffffULL))
-#define R_X86_64_RELATIVE   8u
+/* ELF64, shared with `proc` — see services/common/elf64.h. */
+#include "elf64.h"
 
 /* ── Temp VMO window layout in loader's address space ─────────────── */
 
@@ -206,6 +144,10 @@ static long sl_name_to_index(const char *name) {
     if (sl_streq(name, "net"))      return 19;
     if (sl_streq(name, "fs"))       return 20;
     if (sl_streq(name, "ip"))       return 21;
+    /* 22 is `hello`, and it is deliberately NOT here: it is a PROGRAM, found
+     * by path through the VFS, and a name in this table is what makes a thing
+     * startable by index without a filesystem. */
+    if (sl_streq(name, "proc"))     return 23;
     return -1;
 }
 
@@ -215,6 +157,8 @@ static long sl_name_to_index(const char *name) {
  * because a caller that supplies its own image has to put it somewhere the
  * loader will look, and the loader's workspace layout is otherwise private. */
 uint32_t svc_image_slot(uint64_t ws);
+uint64_t svc_image_dest(uint64_t ws);
+int svc_ws_ensure(uint64_t ws);
 
 long svc_initrd_count(uint64_t initrd_c) {
     return iris_invoke1((long)initrd_c, INV_BOOT_INITRD_COUNT, 0);
@@ -360,7 +304,7 @@ static int sl_ws_ensure(uint64_t ws) {
  * that would drift from this one.
  */
 static long sl_load_core(uint64_t initrd_c, long idx,
-                        uint64_t pre_bytes,
+                        uint64_t pre_bytes, uint64_t keep_stack_dest,
                         iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h,
                         struct svc_mint *mints, uint32_t mint_count,
                         uint64_t ws, uint64_t child_budget,
@@ -860,6 +804,24 @@ static long sl_load_core(uint64_t initrd_c, long idx,
                             SVC_STACK_MAP_BASE);
         if (r < 0) goto out;
 
+        /*
+         * The caller may want the stack itself, and the only reason to want it
+         * is to WRITE it before the thread runs — a program's `argv`, `envp`
+         * and auxiliary vector have to be there at the entry point, and the
+         * loader does not know what they are.
+         *
+         * Minted HERE, where the capability still exists: the loader drops it
+         * a few lines below, and a caller asking for it afterwards would be
+         * asking for something already gone.  Asking for it also means the
+         * loader must NOT resume the thread — see the start sequence.
+         */
+        if (keep_stack_dest) {
+            r = iris_invoke2((long)stack_vmo_h, INV_CSPACE_MINT,
+                             (long)keep_stack_dest,
+                             (long)(RIGHT_READ | RIGHT_WRITE));
+            if (r < 0) goto out;
+        }
+
         /* 15. Map each segment sparse VMO into child with correct W^X flags. */
         for (uint32_t i = 0; i < seg_count; i++) {
             long flags = 0;
@@ -1057,8 +1019,18 @@ static long sl_load_core(uint64_t initrd_c, long idx,
             if (r < 0) goto out;
             r = iris_invoke(tcb, INV_TCB_WRITE_REGS, (long)(bias + elf_entry), (long)(USER_STACK_TOP - 8ULL), 0);
             if (r < 0) goto out;
-            r = iris_invoke0(tcb, INV_TCB_RESUME);
-            if (r < 0) goto out;
+            /*
+             * A caller that took the stack is going to write it, and a thread
+             * started before that reaches its first instruction with an
+             * `argc` nobody has put there yet.  So it starts SUSPENDED, and
+             * the caller resumes it once the stack is what the program
+             * expects — reading the entry back with `TCB_ReadRegs` rather than
+             * being told it, so this seam stays one parameter wide.
+             */
+            if (!keep_stack_dest) {
+                r = iris_invoke0(tcb, INV_TCB_RESUME);
+                if (r < 0) goto out;
+            }
         }
     }
 
@@ -1076,9 +1048,20 @@ static long sl_load_core(uint64_t initrd_c, long idx,
      * that delegates part of that role hands out a REDUCED copy — read-only to
      * a monitor, say — and minting one is how rights get given away without
      * giving away the rest.  A spawner that wants none of it passes 0 and
-     * keeps nothing. */
+     * keeps nothing.
+     *
+     * TRANSFER, because a spawner may not be the supervisor.
+     *
+     * `proc` spawns on behalf of whoever ASKED it to, and the thing that
+     * caller wants back is the thread — it is what `TCB_Watch` and
+     * `TCB_ExitCode` name, and since Stage 7 there is no process object to
+     * hand over instead.  Sending a capability in a reply needs
+     * RIGHT_TRANSFER on it, so without this the loader could hand a spawner a
+     * thread it was unable to pass on: a supervisor that must also be the
+     * launcher.  DUPLICATE without TRANSFER says "you may reduce this, but
+     * only for yourself", which is not a rule anything here wanted. */
     if (keep_tcb_dest)
-        (void)iris_invoke2((long)proc_h, INV_CSPACE_MINT, (long)keep_tcb_dest, (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+        (void)iris_invoke2((long)proc_h, INV_CSPACE_MINT, (long)keep_tcb_dest, (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER));
     /*
      * And the child's ADDRESS SPACE, for a spawner that means
      * to map into it later.
@@ -1141,6 +1124,12 @@ out:
 uint32_t svc_image_slot(uint64_t ws) {
     return sl_ws_cptr(ws, SL_WS_ELF);
 }
+int svc_ws_ensure(uint64_t ws) {
+    return sl_ws_ensure(ws);
+}
+uint64_t svc_image_dest(uint64_t ws) {
+    return (uint64_t)((uint64_t)SL_WS_SLOT(ws) | ((uint64_t)SL_WS_ELF << 32));
+}
 
 long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h,
@@ -1155,7 +1144,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         *out_chan_h = IRIS_CPTR_NULL;
         return (long)IRIS_ERR_NOT_FOUND;
     }
-    return sl_load_core(initrd_c, idx, 0u, out_proc_h, out_chan_h,
+    return sl_load_core(initrd_c, idx, 0u, 0u, out_proc_h, out_chan_h,
                         mints, mint_count, ws, child_budget, own_budget_slot,
                         keep_cnode_dest, keep_tcb_dest, keep_vspace_dest);
 }
@@ -1169,7 +1158,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * refused rather than treated as "go and find it", because a caller that
  * computed zero is a caller whose read failed.
  */
-long svc_load_image_ws(uint64_t elf_bytes,
+long svc_load_image_ws(uint64_t elf_bytes, uint64_t keep_stack_dest,
                        iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h,
                        struct svc_mint *mints, uint32_t mint_count,
                        uint64_t ws, uint64_t child_budget,
@@ -1180,7 +1169,7 @@ long svc_load_image_ws(uint64_t elf_bytes,
         *out_chan_h = IRIS_CPTR_NULL;
         return (long)IRIS_ERR_INVALID_ARG;
     }
-    return sl_load_core(0u, -1, elf_bytes, out_proc_h, out_chan_h,
+    return sl_load_core(0u, -1, elf_bytes, keep_stack_dest, out_proc_h, out_chan_h,
                         mints, mint_count, ws, child_budget, own_budget_slot,
                         keep_cnode_dest, keep_tcb_dest, keep_vspace_dest);
 }
