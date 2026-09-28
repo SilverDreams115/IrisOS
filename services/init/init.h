@@ -207,6 +207,8 @@ struct init_findings {
     uint64_t blk_window;
     uint32_t fs_mounted, fs_generation, fs_formatted, fs_files, fs_foreign;
     uint32_t net_link, net_seen, net_vd;
+    /* service step in the low byte, the backend's in the next */
+    uint32_t net_step;
     uint64_t net_mac;
     uint32_t ip_ok, ip_bytes;
 };

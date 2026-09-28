@@ -99,7 +99,7 @@ scrolled away and the ring-3 boot report has arrived:
 
 | what the last frame must carry | why |
 |---|---|
-| `==== IRIS on this machine ====` and the five lines under it | the kernel log only proves the machine STARTED.  Whether the disk driver found a disk, whether the filesystem mounted, whether a frame left the network card — those answers come from ring 3, and on a machine with no serial port they went nowhere at all |
+| `==== IRIS on this machine ====` and the five lines under it | the kernel log only proves the machine STARTED.  Whether the disk driver found a disk, whether the filesystem mounted, whether a frame left the network card, and how far the network driver got before it stopped — those answers come from ring 3, and on a machine with no serial port they went nowhere at all |
 
 The ring-3 half works because the `console` service paints too.  It is the
 service every `[USER]` line already passes through, and its only output used to

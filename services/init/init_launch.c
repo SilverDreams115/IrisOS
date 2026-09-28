@@ -672,6 +672,7 @@ int init_spawn_net(void) {
             g_init_found.net_mac  = m.words[1];
             g_init_found.net_seen = (uint32_t)((m.words[3] >> 8) & 0xFFu);
             g_init_found.net_vd   = (uint32_t)(m.words[3] >> 32);
+            g_init_found.net_step = (uint32_t)((m.words[3] >> 16) & 0xFFFFu);
             char b[72] = "[USER][INIT] net: link ";
             uint32_t k = 0; while (b[k]) k++;
             b[k++] = (char)('0' + (uint32_t)(m.words[0] & 1u));
@@ -2019,7 +2020,7 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
          * the second one tells you what to write next. */
         rep_str(b, &k, lim, "found ");
         rep_num(b, &k, lim, g_init_found.net_seen);
-        rep_str(b, &k, lim, " ethernet, none an e1000  first ");
+        rep_str(b, &k, lim, " ethernet, none with a backend here  first ");
         { static const char hx[] = "0123456789abcdef";
           uint32_t vd = g_init_found.net_vd;
           for (int sh = 12; sh >= 0; sh -= 4) rep_ch(b, &k, lim, hx[(vd >> sh) & 0xFu]);
@@ -2038,6 +2039,22 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
     } else {
         rep_str(b, &k, lim, "no card");
     }
+    /*
+     * And how far bring-up got, in the report as well as in the log.
+     *
+     * The log is the serial port, and a real machine usually has none -- this
+     * file is how that machine answers at all.  A card nobody here has a
+     * backend for, and a card that came up behind an unplugged cable, are
+     * both things only these two numbers distinguish.  Service step, then the
+     * backend's own; see docs/testing.md.
+     */
+    rep_str(b, &k, lim, "  bring-up ");
+    { static const char hx[] = "0123456789abcdef";
+      uint32_t sv = (g_init_found.net_step >> 0) & 0xFFu;
+      uint32_t bk = (g_init_found.net_step >> 8) & 0xFFu;
+      rep_ch(b, &k, lim, hx[(sv >> 4) & 0xFu]); rep_ch(b, &k, lim, hx[sv & 0xFu]);
+      rep_ch(b, &k, lim, '/');
+      rep_ch(b, &k, lim, hx[(bk >> 4) & 0xFu]); rep_ch(b, &k, lim, hx[bk & 0xFu]); }
     rep_ch(b, &k, lim, '\n');
 
     rep_str(b, &k, lim, " ip    ");
