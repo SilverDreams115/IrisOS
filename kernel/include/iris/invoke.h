@@ -206,9 +206,30 @@
 #define INV_IOPORT_IN32                    75u
 #define INV_IOPORT_OUT32                   76u
 
+/*
+ * ── KOBJ_TCB, the thread pointer ──────────────
+ *
+ * seL4's `seL4_TCB_SetTLSBase`, and here for the same reason it exists there:
+ * a C runtime needs a per-thread register it can reach its own state through,
+ * and on x86-64 that is `%fs`.  Ring 3 had none — IA32_FS_BASE was never
+ * written, saved or restored, and `%gs` belongs to the kernel — so this is
+ * the one kernel change Stage 10-run needs (ledger A-49).
+ *
+ * The authority is the TCB capability with RIGHT_WRITE, which is the right
+ * answer twice over: a thread pointer is thread state, and whoever may
+ * configure a thread may set it.  A thread sets its OWN by naming its own
+ * TCB, exactly as it sets its own IPC buffer.
+ *
+ * `arg1` is the base.  It must be below USER_SPACE_TOP: canonical, so the
+ * `wrmsr` that installs it cannot fault in ring 0, and in the user half,
+ * because a thread pointer into the kernel half is a number no honest runtime
+ * asks for.
+ */
+#define INV_TCB_SET_TLS_BASE               77u
+
 /* First unassigned.  A label is never reused, for the same reason a syscall
  * number never was: a stale caller must get a refusal, not somebody else's
  * method. */
-#define INV_LABEL_COUNT                    77u
+#define INV_LABEL_COUNT                    78u
 
 #endif /* IRIS_INVOKE_H */

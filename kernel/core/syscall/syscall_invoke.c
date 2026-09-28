@@ -65,6 +65,7 @@ uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
     case INV_TCB_SUSPEND:              return sys_tcb_suspend(cptr, a1, a2);
     case INV_TCB_RESUME:               return sys_tcb_resume(cptr, a1, a2);
     case INV_TCB_SET_PRIORITY:         return sys_tcb_set_priority(cptr, a1, a2);
+    case INV_TCB_SET_TLS_BASE:         return sys_tcb_set_tls_base(cptr, a1, a2);
     case INV_TCB_SET_MCPRIORITY:       return sys_tcb_set_mcpriority(cptr, a1, a2);
     case INV_TCB_EXIT:                 return sys_tcb_exit(cptr, a1, a2);
     case INV_TCB_GET_INFO:             return sys_tcb_get_info(cptr, a1, a2);

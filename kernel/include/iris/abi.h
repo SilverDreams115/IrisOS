@@ -28,7 +28,10 @@
  * it, and up to four arguments.  A label is not authority: it says which
  * method, and the capability says whether you may.
  *
- * SEVENTY-SEVEN labels, 0 through IRIS_ABI_LABEL_MAX, with no holes.  Label 0
+ * SEVENTY-EIGHT labels, 0 through IRIS_ABI_LABEL_MAX, with no holes.
+ * (Seventy-seven until `TCB_SetTLSBase` was added for Stage 10-run: the
+ * surface is FROZEN against drift and reuse, not against growth, and a
+ * label added is a label this file and `test_abi.c` both have to carry.)  Label 0
  * (`INV_INVALID`) names nothing and is refused exactly as an unassigned number
  * is.  The rest are in `iris/invoke.h`, grouped by the object type they act
  * on, and the grouping is documentation only: a label sent to the wrong kind
@@ -116,7 +119,7 @@
  * expect a method — and answers NOT_SUPPORTED, which is the same answer a
  * number past the end gives.  The two must not be confusable in a frozen ABI.
  */
-#define IRIS_ABI_LABEL_MAX 76u
+#define IRIS_ABI_LABEL_MAX 77u
 
 /*
  * How many numbers have been retired since IRIS started exporting any.

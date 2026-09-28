@@ -3113,6 +3113,7 @@ void test_t354(void);
 void test_t355(void);
 void test_t356(void);
 void test_t357(void);
+void test_t358(void);
 void test_t324(void);
 void test_t319(void);
 void test_t296(void);

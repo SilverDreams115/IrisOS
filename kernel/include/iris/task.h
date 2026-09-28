@@ -338,6 +338,21 @@ struct task {
      * would be a worse trade than the branch.
      */
     uint64_t          sc_user_rip;
+    /*
+     * The thread pointer, as seL4's `seL4_TCB_SetTLSBase` sets it.
+     *
+     * Ring 3 had none at all: IA32_FS_BASE was never written, never saved and
+     * never restored, `struct iris_user_ctx` carries no segment base, and
+     * `%gs` is the kernel's under the SWAPGS ABI.  Every C runtime needs one
+     * — musl's `__pthread_self()` is `mov %fs:0` and `errno` is a field of
+     * what it returns — so its absence was not a corner case but the reason a
+     * libc could not exist here at all (ledger A-49).
+     *
+     * Restored by `sched_resume`, which is the one place a thread is about to
+     * run.  Zero until somebody sets it, which is what a thread that has no
+     * runtime wants.
+     */
+    uint64_t          tls_base;
     uint64_t          sc_user_rflags;
     uint64_t          sc_user_rsp;
     /*

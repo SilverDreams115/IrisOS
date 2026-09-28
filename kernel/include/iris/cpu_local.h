@@ -100,6 +100,19 @@ struct iris_cpu_local {
      * DO NOT change this offset without updating syscall_entry.S (%gs:72).
      */
     uint64_t               syscall_user_rsp; /* offset 72 */
+    /*
+     * What this core's IA32_FS_BASE currently holds (offset 80).
+     *
+     * A cache, not a source of truth: the thread owns its base and this is
+     * only how `sched_resume` avoids writing an MSR that already says the
+     * right thing.  A write is about a hundred cycles and a switch is the
+     * hottest path the system has, so the common case — resuming the thread
+     * that was already here — must cost a comparison.
+     *
+     * Not read by assembly, so it needs no fixed offset; it is documented
+     * with one because every other field here is.
+     */
+    uint64_t               tls_base_cached;  /* offset 80 */
 };
 
 extern struct iris_cpu_local cpu_local[MAX_CPUS];

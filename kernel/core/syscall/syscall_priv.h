@@ -486,6 +486,7 @@ uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_set_mcpriority(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_tcb_set_tls_base(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_get_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 

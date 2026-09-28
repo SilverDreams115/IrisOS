@@ -96,7 +96,7 @@ against seL4 turned up, including one A9 defect it fixed.
 | 9 — SMP | ✅ **All 5 steps done.**  §9.1 hierarchy and §9.2 catalog written and enforced (`make check-locks`); step 1 (the one-core kernel made SMP-correct), step 2 (TLB shootdown), step 3 (APs discovered and started), step 4 (they schedule — `online=4 dispatching=4`), step 5 (the adversarial phase — four tests aiming four cores at one object, which found four real defects: a rollback that freed another core's memory, a release-then-use, a teardown gate that was not atomic, and a dispatch that overwrote a Suspend).  Full suite green on `-smp 1` and `-smp 4`.  What remains is NOT mechanism: the model-based fuzzer is not yet aimed at N cores, and §9.4's limit stands — TCG interleaves, it does not reorder |
 | 10-dma — device authority must be containable | ✅ **All 6 steps done**, a device is watched being refused.  The DMAR is parsed and the units probed; translation is ENABLED with every device blocked; `KIOSpace` and `KIOPageTable` are retyped objects and `IOSpaceControl` a BootInfo authority; a frame mapped into an IOSpace is what a device may reach, and unmapping or destroying the space takes it back — from the unit's translation cache as well as the table.  **T351** pins containment, **T352** the whole arc, and **T353** is a ring-3 driver for a real bus master that is refused without a mapping, reaches exactly the frame it is granted, and is refused again when it is revoked — on a machine with no unit the same driver reaches memory nobody granted it.  The driver cost three pre-existing defects: an NX bit riding in every physical address `paging_virt_to_phys` returned, a port ABI with no width above a byte, and no way to map a BAR uncached |
 | 10-abi — freeze the ABI | ✅ **CLOSED.**  The surface is four syscall numbers and 77 contiguous invocation labels, declared in `iris/abi.h` and ASSERTED by `tests/kernel/test_abi.c` over every number the dispatcher can see — a description nothing checks is a description that goes stale, which is the lesson the stage was taught by its own opening paragraph.  BootInfo names the ABI and the root task refuses a major it was not built for.  The naming residue of the retired handle namespace is gone, and removing it found a capability argument being truncated to 32 bits |
-| 10-run — the dynamic C runtime | ◐ **OPEN** — the POSIX personality row of Stage 10, taken up by ledger A-49.  Dynamic from the first commit; a static runtime as a stepping stone was offered, considered and declined |
+| 10-run — the dynamic C runtime | ◐ **OPEN — step 1 of 8 closed.**  The POSIX personality row of Stage 10, taken up by ledger A-49.  Dynamic from the first commit; a static runtime as a stepping stone was offered, considered and declined.  Ring 3 has a thread pointer (T358) |
 | 10 — General-purpose platform | ◐ **8 of 9 settled.**  Delivered and gated: `pci` (the bus is a service and the only task that reaches configuration space), ACPI reachable from ring 3, `blk` (an AHCI driver whose controller's DMA is contained, with a write path and FLUSH CACHE), `fs` (a filesystem on a disk IRIS owns, proven by booting twice and reading the image from the host), `net` + `ip` (an e1000 driver and, above it, ARP/IPv4/UDP — gated by a TFTP read against a server that is not this machine), and **T356**, which measures the system and fails on order-of-magnitude regressions.  POSIX is DECLINED on the record (charter §6).  **Real hardware is no longer untried**: IRIS booted a real desktop on 2026-09-25, found its disks and wrote to its own partition — but that is one machine observed once, not support, and every automated gate still runs under QEMU |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
@@ -2938,14 +2938,47 @@ a refusal, because the caller believes it.
 
 A step is closed by evidence, not by being written.
 
-**Step 1 — the thread pointer.**  `TCB_SetTLSBase` as an invocation on the TCB
-capability, requiring `RIGHT_WRITE`; `fs_base` in `struct task`; the MSR
-written on switch **only when it differs** from what the core already holds.
-*Closes when:* two threads of one CSpace with different bases read different
-values through `%fs:0`, survive being switched away from and back on both
-cores, `test_abi` covers the new label, and T356's numbers do not move outside
-noise.  The last is not optional — an MSR write is about a hundred cycles and
-a switch is the hottest path the system has.
+**Step 1 — the thread pointer.**  ✅ **CLOSED.**  `TCB_SetTLSBase` is label 77,
+an invocation on the TCB capability requiring `RIGHT_WRITE`; `tls_base` lives
+in `struct task` and is restored by `sched_resume`, which is the one place a
+thread is about to run.  The write happens only when the incoming base differs
+from what that core already holds, and is skipped entirely for the idle thread
+— which never reads through `%fs`, so a core that drops to idle and comes back
+to the same thread writes nothing at all.
+
+The bound is the load-bearing part and is checked at the door: a base at or
+above `USER_SPACE_TOP` is `INVALID_ARG`.  `wrmsr` on IA32_FS_BASE with a
+non-canonical value raises #GP **in ring 0, on the resume path, for a number
+ring 3 chose** — so a base that was stored and only rejected later would be a
+thread that brings the machine down the next time it is scheduled.  Refusing
+before storing is what lets the hot path write without checking.
+
+*Closed by:* **T358**.  Two threads, each handed its own TCB capability in its
+entry register, set their own bases and read through `%fs:0` across ~2000
+switches each at one processor and ~2000/7400 at four, with zero
+disagreements; three out-of-range bases are refused on a REAL thread's
+capability, and the thread keeps running afterwards with the base it had, which
+is what says the refusal happens before anything is written.  `test_abi` covers
+the new label; the surface is 78 and says so.
+
+*And the number.*  T356 was measured INTERLEAVED against the commit before this
+one, three pairs alternating under the same load, because the host's own noise
+is larger than the effect being looked for: a single before/after comparison
+showed `ipc` up 27%, and the same binary measured three times spread
+130632–153449 ns on its own.  Interleaved: before 131307 / 128703 / 143619,
+after 132752 / 124584 / 141172 — crossing in both directions, after slightly
+lower on average.  No measurable cost, which the code predicts: until something
+sets a base every thread's is zero, so the comparison never fires a write.
+
+*What it found on the way.*  **A thread has no capability naming itself.** The
+first version of the test had each worker derive `IRIS_CPTR_OWN_TCB`; that slot
+is in the CSpace the threads SHARE, so both workers set the main thread's base,
+their own stayed zero, and they page-faulted reading `%fs:0` at address zero.
+That is the model being right — seL4 hands the initial thread
+`seL4_CapInitThreadTCB` and a created thread nothing — and the tree already had
+the answer in `IT_THREAD_ARG_SELF_TCB`, which hands a new thread its own TCB in
+its entry register.  **This is the mechanism `proc` will use to give a program
+its initial capabilities**, and step 2 should not invent another.
 
 **Step 2 — `proc`, and the address-space plan.**  Spawn from a VFS path.  A
 WRITTEN contract for a child's initial CSpace, in the same form

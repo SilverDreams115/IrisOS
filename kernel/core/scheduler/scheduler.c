@@ -225,10 +225,46 @@ __attribute__((noreturn)) void task_park_restart(void) {
  * reaches this function another processor may already be running it, and a
  * write here would be a write to somebody else's thread.
  */
+/*
+ * IA32_FS_BASE.  Written here rather than enabling CR4.FSGSBASE and letting
+ * ring 3 do it: the base has to be SAVED AND RESTORED per thread either way,
+ * so the CR4 bit removes no work, and it would let a thread change its own
+ * base without naming a capability — which is the one thing this system asks
+ * of every other authority.
+ */
+#define IRIS_MSR_FS_BASE 0xC0000100u
+static inline void sched_write_fs_base(uint64_t v) {
+    __asm__ volatile ("wrmsr"
+                      :: "c"(IRIS_MSR_FS_BASE),
+                         "a"((uint32_t)v), "d"((uint32_t)(v >> 32)));
+}
+
 __attribute__((noreturn))
 void sched_resume(struct task *next, struct task *outgoing) {
     (void)outgoing;   /* its FPU was saved by the pick, before it was released */
     fpu_restore_from(next->fpu_state);
+
+    /*
+     * The incoming thread's thread pointer, and only when it differs.
+     *
+     * Skipped for the idle thread: it is kernel code, it never reads through
+     * `%fs`, and leaving the MSR alone for it means a core that drops to idle
+     * and comes back to the same thread writes nothing at all.  The cache
+     * stays truthful because not writing the MSR does not change it.
+     *
+     * `tls_base` is validated at the door to be below USER_SPACE_TOP, so it
+     * is canonical and `wrmsr` cannot fault here.  That check is not a
+     * convenience: a non-canonical FS_BASE makes this instruction #GP in ring
+     * 0, which would make a thread able to bring the kernel down by naming a
+     * number.
+     */
+    if (next != sched_idle_thread) {
+        struct iris_cpu_local *cl = cpu_self();
+        if (cl->tls_base_cached != next->tls_base) {
+            sched_write_fs_base(next->tls_base);
+            cl->tls_base_cached = next->tls_base;
+        }
+    }
 
     switch (next->resume_user) {
     case TASK_RESUME_USER:

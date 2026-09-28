@@ -18,6 +18,7 @@
  * SYS_TCB_WRITE_REGS:    set where a configured, not-yet-started thread starts.
  */
 #include "syscall_priv.h"
+#include <iris/cpu_local.h>
 
 /* Resolve a KOBJ_TCB cap → struct task (lifecycle ref held on success). */
 static iris_error_t tcb_resolve(struct KCNode *root, iris_cptr_t cptr,
@@ -743,6 +744,65 @@ uint64_t sys_tcb_set_mcpriority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (target->priority > mcp) sched_set_priority(target, (uint8_t)mcp);
     kobject_release(&target->base);
     return 0;
+}
+
+/*
+ * sys_tcb_set_tls_base(tcb_cptr, base) — seL4's `seL4_TCB_SetTLSBase`.
+ *
+ * Installs the thread pointer a C runtime reaches its own state through.  On
+ * x86-64 that is IA32_FS_BASE, restored by `sched_resume` when the thread is
+ * about to run; `%gs` is not available because the kernel keeps its per-core
+ * block there under the SWAPGS ABI.
+ *
+ * The authority is the TCB capability with RIGHT_WRITE.  Not a new authority
+ * and not an ambient one: a thread pointer is thread state, and whoever may
+ * configure a thread may set it — which also means a thread sets its OWN by
+ * naming its own TCB, exactly as `TCB_SetIPCBuffer` works.
+ *
+ * The bound is the load-bearing part.  `wrmsr` on IA32_FS_BASE with a
+ * NON-CANONICAL value raises #GP — in ring 0, on the resume path, for a value
+ * ring 3 chose.  Refusing anything at or above USER_SPACE_TOP makes it
+ * canonical by construction and keeps the pointer in the half a user thread
+ * can address, so the write on the hot path needs no check of its own.
+ *
+ * A terminal thread is refused for the same reason every other TCB operation
+ * refuses one: it will not run again, and writing state onto it is writing
+ * onto something being torn down.
+ */
+uint64_t sys_tcb_set_tls_base(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *caller = task_current();
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    if (arg1 >= USER_SPACE_TOP) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct task *target; iris_rights_t rights;
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
+                                   RIGHT_WRITE, &target, &rights);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    if (target->terminal) {
+        kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_NOT_FOUND);
+    }
+
+    target->tls_base = arg1;
+    /*
+     * If the target is THIS thread, the resume that would install it is not
+     * coming: this syscall returns to ring 3 without going through
+     * `sched_resume`.  Installed here, and the core's cache updated with it,
+     * so the two never disagree.
+     */
+    if (target == caller) {
+        struct iris_cpu_local *cl = cpu_self();
+        __asm__ volatile ("wrmsr"
+                          :: "c"(0xC0000100u),
+                             "a"((uint32_t)arg1), "d"((uint32_t)(arg1 >> 32)));
+        cl->tls_base_cached = arg1;
+    }
+
+    kobject_release(&target->base);
+    return syscall_ok_u64(0);
 }
 
 /*
