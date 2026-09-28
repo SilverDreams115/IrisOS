@@ -2980,14 +2980,46 @@ the answer in `IT_THREAD_ARG_SELF_TCB`, which hands a new thread its own TCB in
 its entry register.  **This is the mechanism `proc` will use to give a program
 its initial capabilities**, and step 2 should not invent another.
 
-**Step 2 — `proc`, and the address-space plan.**  Spawn from a VFS path.  A
-WRITTEN contract for a child's initial CSpace, in the same form
-`docs/contracts/bootstrap.md` uses for services.  `argv`, `envp`, `auxv`.
-Exit status and `wait`.  And the virtual-address allocator, which lives here
-because deciding where things go is policy.
-*Closes when:* a binary written to the IRIS partition by `fs` is spawned by
-path, runs, and its exit status reaches the parent; and the CSpace contract is
-a document, not a comment.
+**Step 2 — `proc`, and the address-space plan.**  ◐ **IN PROGRESS — three of
+six pieces landed.**  Spawn from a VFS path.  A WRITTEN contract for a child's
+initial CSpace.  `argv`, `envp`, `auxv`.  Exit status and `wait`.  And the
+virtual-address allocator, which lives here because deciding where things go is
+policy.
+
+*The close condition is AMENDED, and this is the reason.*  It said "a binary
+written to the IRIS partition by `fs`".  `fs` is one sector per file — 512
+bytes — so an ELF cannot be written to it, and the VFS caps a COPIED export at
+512 too.  Neither is a defect; they are what those services are.  What the VFS
+does have is MAPPED exports of arbitrary size, backed by initrd image frames,
+which is how it already serves content larger than a message.  So the binary is
+read BY PATH through the VFS — which is also the capability the program
+contract gives a program — and the property this step is for, spawned by path
+at runtime rather than by initrd index at boot, is what that demonstrates.
+Growing `fs` to multi-sector files changes an on-disk format and belongs to
+`fs`, not to this stage.
+
+*Closes when:* an ELF read by path through the VFS is spawned, runs, and its
+exit status reaches the parent; and the CSpace contract is a document, not a
+comment.
+
+Landed:
+  - **the contract** — `docs/contracts/program.md` and `iris/program_abi.h`,
+    pinned by `test_program_abi`.  It also records two conventions that existed
+    and were held by nothing: the address-space layout implicit in
+    `USER_TEXT_BASE`/`USER_VMO_BASE`, and the forty-seven addresses services
+    pick by hand — four of which already have more than one owner.
+  - **the loader seam** — the image source was one call, so it is a parameter
+    now.  `svc_load_image_ws` loads an ELF the caller supplies; one loader
+    rather than the two that would have drifted.
+  - **the initial stack** — `services/common/prog_stack.c`, System V AMD64
+    process initialisation, with a host test that reads the layout back byte
+    for byte.  Its assertion of record is that every pointer is a CHILD
+    address: a builder that wrote its own mapping's would pass every structural
+    check and hand the program five pointers into the spawner.
+
+Remaining: the `proc` service itself; a program to spawn and its place in the
+initrd and the VFS's export table; `init` wiring; and the runtime test that
+closes the step.
 
 **Step 3 — memory a program can ask for.**  `brk` and `mmap` over
 `UNTYPED_RETYPE` plus frame mapping, bounded by the process's own Untyped.
