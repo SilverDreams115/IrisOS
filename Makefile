@@ -276,6 +276,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_syscall_ipc.c \
     tests/kernel/test_syscall_dispatch.c \
     tests/kernel/test_abi.c \
+    tests/kernel/test_program_abi.c \
     tests/kernel/test_klog.c \
     kernel/core/klog/klog.c \
     kernel/drivers/fbcon/fbcon.c \
