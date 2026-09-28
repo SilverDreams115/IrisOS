@@ -311,13 +311,23 @@ void test_t353(void) {
     uint32_t dev_index = 0;
     uint16_t source_id = 0;
     if (!t353_find_device(&dev_index, &source_id)) {
-        /* Not a failure of the kernel — a failure of the machine to have the
-         * device the gate asks for, or of `pci` to have started.  Said out
-         * loud so a run that quietly stopped proving anything cannot look like
-         * a run that passed. */
+        /*
+         * NOT APPLICABLE, which is neither of the other two answers.
+         *
+         * This is not a failure of the kernel; it is a machine without the
+         * device.  Failing blamed the system for the absence, and passing
+         * would claim a property nothing demonstrated — a run that quietly
+         * stopped proving anything would read exactly like a green one.
+         *
+         * What keeps the GATE's machine from taking this branch is the
+         * runner: it refuses to start unless `-device edu` is attachable, and
+         * then requires this test's own markers.  So the device is asserted
+         * where a device can be, and the suite says what it could actually
+         * run everywhere else.
+         */
         it_serial_write("[IRIS][TEST] T353 no DMA device on the bus\n");
         t353_cleanup();
-        it_fail("T353", "no DMA-capable device present");
+        it_skip("T353", "no DMA-capable device on this machine");
         return;
     }
 

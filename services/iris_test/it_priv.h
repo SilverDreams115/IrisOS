@@ -2553,6 +2553,7 @@ void it_log_num(uint32_t n);
 void it_log_hex(uint64_t v);
 extern uint32_t g_pass;
 extern uint32_t g_total;
+extern uint32_t g_skip;
 void it_child_keep_vspace(void);
 void it_child_bind(iris_cptr_t proc_h);
 long it_child_tcb_dest(void);
@@ -2638,6 +2639,8 @@ long it_xfer_dup(long src_h, uint32_t rights);
 void it_xfer_release(long cptr);
 void it_pass(const char *id);
 void it_fail(const char *id, const char *reason);
+/* Neither: this machine cannot run the test.  See it_base.c. */
+void it_skip(const char *id, const char *reason);
 void it_close(iris_cptr_t *h);
 void test_t001(void);
 void test_t002(void);

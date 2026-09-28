@@ -66,6 +66,7 @@ void it_log_hex(uint64_t v) {
 
 uint32_t g_pass  = 0;
 uint32_t g_total = 0;
+uint32_t g_skip  = 0;
 static struct it_child g_it_children[IT_CHILD_MAX];
 static uint32_t g_it_child_next;
 
@@ -767,6 +768,31 @@ void it_pass(const char *id) {
     it_serial_write("[IRIS][TEST] ");
     it_serial_write(id);
     it_serial_write(" ok\n");
+}
+
+/*
+ * NOT APPLICABLE on this machine — neither a pass nor a failure.
+ *
+ * A test whose subject is a piece of hardware cannot say anything on a
+ * machine without it, and both of the other two answers are lies: passing
+ * claims a property nothing demonstrated, and failing blames the system for
+ * the absence of a device.  T353 drives QEMU's `edu` DMA engine and is the
+ * only evidence in the suite that containment stops a REAL bus master; on a
+ * hypervisor that has no such device it now says so.
+ *
+ * Counted separately, so the total is "of what this machine can run" and a
+ * test quietly becoming inapplicable everywhere is visible as a rising skip
+ * count rather than as a shrinking denominator.  What stops the gate's own
+ * machine from skipping it is the runner, which requires the device on the
+ * command line before it starts.
+ */
+void it_skip(const char *id, const char *reason) {
+    g_skip++;
+    it_serial_write("[IRIS][TEST] ");
+    it_serial_write(id);
+    it_serial_write(" SKIP: ");
+    it_serial_write(reason);
+    it_serial_write("\n");
 }
 
 void it_fail(const char *id, const char *reason) {

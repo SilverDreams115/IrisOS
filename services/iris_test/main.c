@@ -423,20 +423,27 @@ void iris_test_main(iris_cptr_t rbx_unused) {
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
 
-    /* Final summary marker */
-    if (g_pass == g_total) {
-        it_serial_write("[IRIS][TEST] SUITE PASS ");
-        it_log_num(g_pass);
-        it_serial_write("/");
-        it_log_num(g_total);
-        it_serial_write("\n");
-    } else {
-        it_serial_write("[IRIS][TEST] SUITE FAIL ");
-        it_log_num(g_pass);
-        it_serial_write("/");
-        it_log_num(g_total);
-        it_serial_write("\n");
+    /*
+     * Final summary marker.
+     *
+     * The total is what this machine could RUN, and anything it could not is
+     * counted beside it rather than folded into either side -- a test whose
+     * subject is a device says nothing on a machine without one, and both
+     * "passed" and "failed" would be untrue.  The count is printed so a suite
+     * quietly becoming inapplicable is visible here instead of as a
+     * denominator nobody was watching.
+     */
+    it_serial_write((g_pass == g_total) ? "[IRIS][TEST] SUITE PASS "
+                                        : "[IRIS][TEST] SUITE FAIL ");
+    it_log_num(g_pass);
+    it_serial_write("/");
+    it_log_num(g_total);
+    if (g_skip) {
+        it_serial_write(" (");
+        it_log_num(g_skip);
+        it_serial_write(" not applicable here)");
     }
+    it_serial_write("\n");
 
     /* g_serial_h is IT_SERIAL_SLOT, a CSpace slot holding the device cap
      * SYS_CAP_CREATE_IOPORT published there — never a handle.  Closing it as
