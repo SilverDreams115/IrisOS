@@ -211,6 +211,11 @@ static long sl_name_to_index(const char *name) {
 
 /* ── svc_load ────────────────────────────────────────────────────── */
 
+/* The workspace slot the image must be in for `svc_load_image_ws`.  Exposed
+ * because a caller that supplies its own image has to put it somewhere the
+ * loader will look, and the loader's workspace layout is otherwise private. */
+uint32_t svc_image_slot(uint64_t ws);
+
 long svc_initrd_count(uint64_t initrd_c) {
     return iris_invoke1((long)initrd_c, INV_BOOT_INITRD_COUNT, 0);
 }
@@ -339,22 +344,34 @@ static int sl_ws_ensure(uint64_t ws) {
  * the boot capability still exists (T296 pins the six).  Retiring it belongs
  * with retiring SYS_PROCESS_CREATE's number.
  */
-long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
+/*
+ * The loader, with the IMAGE SOURCE taken out of it.
+ *
+ * Everything below reads the image through a FRAME capability and its size,
+ * and nothing else about where it came from reaches any of it — the initrd
+ * index appeared at exactly one call.  So the source is a parameter now:
+ * `pre_bytes != 0` means the caller has already put the image in this
+ * workspace's ELF slot and is telling us how big it is, and the loader owns
+ * that slot from here exactly as it owns the one it fetches itself.
+ *
+ * This is what lets a program be loaded from a FILE.  `proc` reads an ELF
+ * through the VFS into a frame it retyped, hands it over, and gets back the
+ * same retype-configure-resume a service gets — rather than a second loader
+ * that would drift from this one.
+ */
+static long sl_load_core(uint64_t initrd_c, long idx,
+                        uint64_t pre_bytes,
                         iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h,
                         struct svc_mint *mints, uint32_t mint_count,
                         uint64_t ws, uint64_t child_budget,
                         uint32_t own_budget_slot, uint64_t keep_cnode_dest,
                         uint64_t keep_tcb_dest, uint64_t keep_vspace_dest) {
-    (void)proc_c;
     *out_proc_h = IRIS_CPTR_NULL;
     *out_chan_h = IRIS_CPTR_NULL;
     long self_vs  = 0;   /* the loader's own address space, for parse windows */
     long child_vs = 0;   /* the child's address space, once it exists */
     long child_cn = 0;   /* ...its root CSpace, and the thread runs in both */
     long pool_c   = 0;   /* the budget its paging levels come from */
-
-    long idx = sl_name_to_index(name);
-    if (idx < 0) return (long)IRIS_ERR_NOT_FOUND;
 
     /* State tracking for cleanup */
     int         elf_mapped     = 0;
@@ -445,7 +462,13 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * is.  It used to be a KVMO — one of the object types seL4 has no
          * equivalent for — which meant the loader had to speak a second memory
          * ABI to read a file the kernel already had. */
-        r = iris_invoke((long)initrd_c, INV_BOOT_INITRD_FRAME, idx, sl_ws_dest(ws, SL_WS_ELF), pool);
+        if (pre_bytes != 0u) {
+            /* The caller put it there.  Nothing below can tell the difference,
+             * which is the point: one loader, two sources. */
+            r = (long)pre_bytes;
+        } else {
+            r = iris_invoke((long)initrd_c, INV_BOOT_INITRD_FRAME, idx, sl_ws_dest(ws, SL_WS_ELF), pool);
+        }
         if (r <= 0) { if (r == 0) r = (long)IRIS_ERR_NOT_FOUND; goto out; }
         /* Keep it.  Everything below reads the image through offsets the IMAGE
          * declares, and the only thing that can say whether an offset is
@@ -1113,4 +1136,51 @@ out:
     sl_close_cap(ch_h);
     for (uint32_t i = 0; i < SL_MAX_SEGS; i++) sl_close_cap(seg_vmo[i]);
     return r;
+}
+
+uint32_t svc_image_slot(uint64_t ws) {
+    return sl_ws_cptr(ws, SL_WS_ELF);
+}
+
+long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
+                        iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h,
+                        struct svc_mint *mints, uint32_t mint_count,
+                        uint64_t ws, uint64_t child_budget,
+                        uint32_t own_budget_slot, uint64_t keep_cnode_dest,
+                        uint64_t keep_tcb_dest, uint64_t keep_vspace_dest) {
+    (void)proc_c;
+    long idx = sl_name_to_index(name);
+    if (idx < 0) {
+        *out_proc_h = IRIS_CPTR_NULL;
+        *out_chan_h = IRIS_CPTR_NULL;
+        return (long)IRIS_ERR_NOT_FOUND;
+    }
+    return sl_load_core(initrd_c, idx, 0u, out_proc_h, out_chan_h,
+                        mints, mint_count, ws, child_budget, own_budget_slot,
+                        keep_cnode_dest, keep_tcb_dest, keep_vspace_dest);
+}
+
+/*
+ * The same loader, over an image the caller supplies.
+ *
+ * `elf_bytes` must be the image's real size and the frame must already be in
+ * `svc_image_slot(ws)`; the loader takes ownership of that slot and closes it,
+ * exactly as it does the one it fetches from the initrd.  A size of zero is
+ * refused rather than treated as "go and find it", because a caller that
+ * computed zero is a caller whose read failed.
+ */
+long svc_load_image_ws(uint64_t elf_bytes,
+                       iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h,
+                       struct svc_mint *mints, uint32_t mint_count,
+                       uint64_t ws, uint64_t child_budget,
+                       uint32_t own_budget_slot, uint64_t keep_cnode_dest,
+                       uint64_t keep_tcb_dest, uint64_t keep_vspace_dest) {
+    if (elf_bytes == 0u) {
+        *out_proc_h = IRIS_CPTR_NULL;
+        *out_chan_h = IRIS_CPTR_NULL;
+        return (long)IRIS_ERR_INVALID_ARG;
+    }
+    return sl_load_core(0u, -1, elf_bytes, out_proc_h, out_chan_h,
+                        mints, mint_count, ws, child_budget, own_budget_slot,
+                        keep_cnode_dest, keep_tcb_dest, keep_vspace_dest);
 }

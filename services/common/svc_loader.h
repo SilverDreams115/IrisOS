@@ -164,3 +164,22 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
 long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
                      iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h,
                      struct svc_mint *mints, uint32_t mint_count);
+
+/*
+ * The image slot, and the loader over a caller-supplied image.
+ *
+ * `svc_load_minted_ws` finds its ELF in the kernel initrd by name, which is
+ * how a SERVICE is spawned.  A PROGRAM is a file: `proc` reads one through the
+ * VFS into a frame, puts that frame in `svc_image_slot(ws)`, and calls this —
+ * so both go through one retype-configure-resume rather than through two
+ * loaders that would drift apart.
+ *
+ * The loader takes ownership of the image slot either way.
+ */
+uint32_t svc_image_slot(uint64_t ws);
+long svc_load_image_ws(uint64_t elf_bytes,
+                       iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h,
+                       struct svc_mint *mints, uint32_t mint_count,
+                       uint64_t ws, uint64_t child_budget,
+                       uint32_t own_budget_slot, uint64_t keep_cnode_dest,
+                       uint64_t keep_tcb_dest, uint64_t keep_vspace_dest);
