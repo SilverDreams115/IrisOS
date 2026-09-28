@@ -558,6 +558,96 @@ static volatile long     g_fz_res[2];
 static volatile uint32_t g_fz_att[2];      /* where a delivered cap landed */
 static volatile uint32_t g_fz_attcap[2];   /* the reply object it was owed */
 static volatile int      g_fz_done[2];
+/* How long a worker may take to come back for its next command before it
+ * is called stuck.  Generous: the cost of being wrong the other way is a
+ * healthy worker reported dead. */
+#define FZ_CMD_MS 4000u
+static long              g_fz_tcb[2] = { -1, -1 };
+static volatile uint32_t g_fz_ep_used[2];
+
+/*
+ * What a stuck worker IS, when one stops coming back.
+ *
+ * "worker hang" is the shape of every wait that timed out and names none of
+ * them apart.  A thread still BLOCKED is one the endpoint's close did not
+ * reach; a thread READY and queued is one its processor is not dispatching;
+ * and a thread that is neither is a third thing entirely.  One line, only on
+ * the failure path.
+ */
+/*
+ * Wait until a worker has ACTUALLY blocked on the data endpoint.
+ *
+ * The rounds below used to wait `it_settle(5)` and then close, which is a
+ * count standing in for a condition: a worker that had not got there yet
+ * queued on whatever the variable held NEXT, and the close it was supposed to
+ * meet walked a queue it was not in.  The test then reported "worker hang" for
+ * a system that had done nothing wrong -- and at two processors, where the
+ * tester and the workers really do run at the same time, it did so about once
+ * in every two hundred rounds.
+ *
+ * The condition is readable: the thread's own state.  Bounded by time, and
+ * returning 0 rather than spinning, so a worker that genuinely never blocks is
+ * still a failure rather than a hang.
+ */
+static int fz_wait_blocked(int idx) {
+    if (g_fz_tcb[idx] < 0) return 0;
+    long t0 = it_sys0(SYS_CLOCK_GET);
+    for (;;) {
+        struct iris_tcb_info wi;
+        /*
+         * Blocked AND on THIS round's endpoint.
+         *
+         * "Is it blocked" alone is satisfied instantly by a worker still
+         * blocked from the round before, which is exactly the state this wait
+         * is supposed to rule out -- the tester would then close an endpoint
+         * the worker had never reached and report it stuck.
+         */
+        if (g_fz_ep_used[idx] == (uint32_t)g_fz_data_ep &&
+            it_invoke1(g_fz_tcb[idx], INV_TCB_GET_INFO,
+                       (long)(uintptr_t)&wi) == 0) {
+            if (wi.state == 2u || wi.state == 6u ||
+                wi.state == 7u || wi.state == 9u) return 1;
+        }
+        it_settle(1);
+        long now = it_sys0(SYS_CLOCK_GET);
+        if (t0 <= 0 || now <= 0) {
+            for (int k = 0; k < 400; k++) {
+                if (g_fz_ep_used[idx] == (uint32_t)g_fz_data_ep &&
+                    it_invoke1(g_fz_tcb[idx], INV_TCB_GET_INFO,
+                               (long)(uintptr_t)&wi) == 0 &&
+                    (wi.state == 2u || wi.state == 6u ||
+                     wi.state == 7u || wi.state == 9u)) return 1;
+                it_settle(1);
+            }
+            return 0;
+        }
+        if ((uint64_t)(now - t0) > (uint64_t)FZ_CMD_MS * 1000000ull) return 0;
+    }
+}
+
+static void fz_report_stuck(const char *id, int idx, uint32_t pick) {
+    struct iris_tcb_info wi;
+    uint32_t st = 0xFFu, q = 0xFFu, cpu = 0xFFu, tid = 0xFFFFu;
+    if (g_fz_tcb[idx] >= 0 &&
+        it_invoke1(g_fz_tcb[idx], INV_TCB_GET_INFO, (long)(uintptr_t)&wi) == 0) {
+        st  = wi.state;
+        q   = (wi.flags & IRIS_TCB_FLAG_QUEUED) ? 1u : 0u;
+        cpu = wi.home_cpu;
+        tid = wi.task_id;
+    }
+    it_serial_write("[IRIS][TEST] ");
+    it_serial_write(id);
+    it_serial_write(" stuck worker="); it_log_num((uint32_t)idx);
+    it_serial_write(" id="); it_log_num(tid);
+    it_serial_write(" pick="); it_log_num(pick);
+    it_serial_write(" state="); it_log_num(st);
+    it_serial_write(" queued="); it_log_num(q);
+    it_serial_write(" cpu="); it_log_num(cpu);
+    it_serial_write(" res="); it_log_num((uint32_t)(-g_fz_res[idx]));
+    it_serial_write(" ep_used="); it_log_num(g_fz_ep_used[idx]);
+    it_serial_write(" ep_now="); it_log_num((uint32_t)g_fz_data_ep);
+    it_serial_write("\n");
+}
 static uint8_t           g_fz_stk[2][8192];
 
 static void fz_worker(int idx) {
@@ -571,6 +661,18 @@ static void fz_worker(int idx) {
         struct iris_msg m;
         iris_msg_zero(&m);
         long r = -1;
+        /*
+         * WHICH endpoint this worker actually used.
+         *
+         * `g_fz_data_ep` is written by the tester between rounds and read here
+         * asynchronously, so "the worker did not wake" has two completely
+         * different causes: the close did not reach a thread queued on the
+         * endpoint it closed, or the worker queued on a DIFFERENT one because
+         * it read the variable a round late.  Only the first is a kernel bug,
+         * and nothing in the report told them apart.
+         */
+        g_fz_ep_used[idx] = (uint32_t)g_fz_data_ep;
+        __asm__ volatile ("" ::: "memory");
         if (op == FZ_OP_RECV) {
             m.recv_slot = (uint32_t)c.words[1];   /* slot hint (0 = the old form) */
             r = iris_msg_recv((long)g_fz_data_ep, &m);
@@ -623,12 +725,35 @@ static int fz_workers_start(int n) {
         g_fz_ctl[i] = (iris_cptr_t)ctl;
         uint64_t entry = (uint64_t)(uintptr_t)entries[i];
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_fz_stk[i] + sizeof(g_fz_stk[i]))) & ~0xFULL;
-        if (it_thread_create(entry, rsp, 0) < 0) return 0;
+        /* The TCB is KEPT, not discarded: a worker that does not come back is
+         * the failure these tests exist to catch, and "it did not come back"
+         * names no cause.  With the capability, the report can say what the
+         * thread IS -- which is how the domain defect was finally read. */
+        long tc = it_thread_create(entry, rsp, 0);
+        if (tc < 0) return 0;
+        g_fz_tcb[i] = tc;
     }
     return 1;
 }
 
 /* Send a command to worker `idx`; blocks until the worker picks it up. */
+/*
+ * A command to a worker, NON-BLOCKING and bounded.
+ *
+ * It used to be a blocking send, which made the whole suite hostage to one
+ * worker: a thread stuck anywhere -- in a rendezvous that never completed, on
+ * an endpoint whose close did not reach it -- leaves nobody to receive, and
+ * the sender waits for ever.  The suite then stops emitting and the run looks
+ * like a kernel that wedged, with no test named and no reason given.  That is
+ * how an intermittent hang at two processors was read for a long time as "it
+ * stops after T107".
+ *
+ * A test harness must never be the thing that hangs.  The worker is waiting
+ * to receive by construction, so a non-blocking send succeeds immediately in
+ * every healthy round; the retry is there so that a worker which is merely
+ * LATE still gets its command, and the deadline is there so that one which is
+ * stuck is reported as stuck.
+ */
 static int fz_cmd(int idx, uint32_t op, uint64_t a, uint64_t b, uint64_t c) {
     struct iris_msg m;
     iris_msg_zero(&m);
@@ -639,7 +764,22 @@ static int fz_cmd(int idx, uint32_t op, uint64_t a, uint64_t b, uint64_t c) {
     m.words[3]   = c;
     m.word_count = 4u;
     g_fz_done[idx] = 0;
-    return iris_msg_send((long)g_fz_ctl[idx], &m) == 0;
+
+    long t0 = it_sys0(SYS_CLOCK_GET);
+    for (;;) {
+        if (iris_msg_nb_send((long)g_fz_ctl[idx], &m) == 0) return 1;
+        it_settle(1);
+        long now = it_sys0(SYS_CLOCK_GET);
+        if (t0 <= 0 || now <= 0) {
+            /* No clock: a bounded count rather than an unbounded wait. */
+            for (int k = 0; k < 400; k++) {
+                if (iris_msg_nb_send((long)g_fz_ctl[idx], &m) == 0) return 1;
+                it_settle(1);
+            }
+            return 0;
+        }
+        if ((uint64_t)(now - t0) > (uint64_t)FZ_CMD_MS * 1000000ull) return 0;
+    }
 }
 
 /* Bounded wait for worker `idx` to publish a result. */
@@ -941,9 +1081,11 @@ void test_t108(void) {
                 ? fz_cmd(0, FZ_OP_SEND_CAP, (uint64_t)d, RIGHT_WRITE, 0x108)
                 : fz_cmd(0, FZ_OP_CALL,     (uint64_t)d, RIGHT_WRITE, 0);
             if (!sent) { ok = 0; why = "cmd"; break; }
-            it_settle(5);            /* waiter queues its staged cap */
+            if (!fz_wait_blocked(0)) { ok = 0; why = "waiter never blocked"; break; }
             it_close(&g_fz_data_ep);
-            if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
+            if (!fz_wait(0)) {
+                ok = 0; why = "worker hang"; fz_report_stuck("T108", 0, pick);
+            }
             if (ok && g_fz_res[0] != (long)IRIS_ERR_CLOSED) {
                 ok = 0; why = "not CLOSED";
             }
@@ -961,9 +1103,15 @@ void test_t108(void) {
                 !fz_cmd(1, FZ_OP_CALL,     (uint64_t)db, RIGHT_WRITE, 0)) {
                 ok = 0; why = "cmd2"; break;
             }
-            it_settle(5);            /* both queue staged caps */
+            if (!fz_wait_blocked(0) || !fz_wait_blocked(1)) {
+                ok = 0; why = "a waiter never blocked"; break;
+            }
             it_close(&g_fz_data_ep);
-            if (!fz_wait(0) || !fz_wait(1)) { ok = 0; why = "worker hang"; }
+            if (!fz_wait(0) || !fz_wait(1)) {
+                ok = 0; why = "worker hang";
+                if (!g_fz_done[0]) fz_report_stuck("T108", 0, pick);
+                if (!g_fz_done[1]) fz_report_stuck("T108", 1, pick);
+            }
             if (ok && (g_fz_res[0] != (long)IRIS_ERR_CLOSED ||
                        g_fz_res[1] != (long)IRIS_ERR_CLOSED)) {
                 ok = 0; why = "not CLOSED x2";
@@ -982,9 +1130,11 @@ void test_t108(void) {
              * gains nothing (I6), and the slot stays empty — the next pick-3
              * round re-declares the very same slot. */
             if (!fz_cmd(0, FZ_OP_RECV, rslot, 0, 0)) { ok = 0; why = "cmd"; break; }
-            it_settle(5);            /* receiver blocks, slot declared */
+            if (!fz_wait_blocked(0)) { ok = 0; why = "receiver never blocked"; break; }
             it_close(&g_fz_data_ep);
-            if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
+            if (!fz_wait(0)) {
+                ok = 0; why = "worker hang"; fz_report_stuck("T108", 0, pick);
+            }
             if (ok && g_fz_res[0] != (long)IRIS_ERR_CLOSED) {
                 ok = 0; why = "recv not CLOSED";
             }
@@ -998,9 +1148,11 @@ void test_t108(void) {
         } else {
             /* Retired (slot 0) receiver canceled by close. */
             if (!fz_cmd(0, FZ_OP_RECV, 0, 0, 0)) { ok = 0; why = "cmd"; break; }
-            it_settle(5);
+            if (!fz_wait_blocked(0)) { ok = 0; why = "receiver never blocked"; break; }
             it_close(&g_fz_data_ep);
-            if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
+            if (!fz_wait(0)) {
+                ok = 0; why = "worker hang"; fz_report_stuck("T108", 0, pick);
+            }
             if (ok && g_fz_res[0] != (long)IRIS_ERR_CLOSED) {
                 ok = 0; why = "old not CLOSED";
             }

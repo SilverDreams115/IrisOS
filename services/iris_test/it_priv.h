@@ -819,6 +819,15 @@ struct it_child { uint32_t proc; uint32_t leaf; };
  * cancellation is T101/T111 territory — this test owns endpoint close.
  * Invariants: I5-I8, I14, I16, I17 (+ I4 via the reused empty slot). */
 #define T108_SEED   0xA1110108u
+/*
+ * Sixteen for the gate.  Raise it to 200 and run at two processors --
+ *   IRIS_QEMU_SMP=2 IRIS_QEMU_TIMEOUT_SECS=300 scripts/run_qemu_headless.sh
+ * -- to reproduce the OPEN failure this test found: two workers verified
+ * blocked on the same endpoint, and the close that follows walks the queue
+ * and finds only one of them.  It reproduces in every run at 200 rounds and
+ * about one run in six at 16, which is why it was only ever seen as "the
+ * suite stops after T107".
+ */
 #define T108_ROUNDS 16u
 
 /* ── T109: randomized reply one-shot + attached cap stress ──────────────────
@@ -3103,6 +3112,7 @@ void test_t353(void);
 void test_t354(void);
 void test_t355(void);
 void test_t356(void);
+void test_t357(void);
 void test_t324(void);
 void test_t319(void);
 void test_t296(void);
