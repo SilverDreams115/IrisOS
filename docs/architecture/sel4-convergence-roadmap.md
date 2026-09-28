@@ -96,6 +96,7 @@ against seL4 turned up, including one A9 defect it fixed.
 | 9 — SMP | ✅ **All 5 steps done.**  §9.1 hierarchy and §9.2 catalog written and enforced (`make check-locks`); step 1 (the one-core kernel made SMP-correct), step 2 (TLB shootdown), step 3 (APs discovered and started), step 4 (they schedule — `online=4 dispatching=4`), step 5 (the adversarial phase — four tests aiming four cores at one object, which found four real defects: a rollback that freed another core's memory, a release-then-use, a teardown gate that was not atomic, and a dispatch that overwrote a Suspend).  Full suite green on `-smp 1` and `-smp 4`.  What remains is NOT mechanism: the model-based fuzzer is not yet aimed at N cores, and §9.4's limit stands — TCG interleaves, it does not reorder |
 | 10-dma — device authority must be containable | ✅ **All 6 steps done**, a device is watched being refused.  The DMAR is parsed and the units probed; translation is ENABLED with every device blocked; `KIOSpace` and `KIOPageTable` are retyped objects and `IOSpaceControl` a BootInfo authority; a frame mapped into an IOSpace is what a device may reach, and unmapping or destroying the space takes it back — from the unit's translation cache as well as the table.  **T351** pins containment, **T352** the whole arc, and **T353** is a ring-3 driver for a real bus master that is refused without a mapping, reaches exactly the frame it is granted, and is refused again when it is revoked — on a machine with no unit the same driver reaches memory nobody granted it.  The driver cost three pre-existing defects: an NX bit riding in every physical address `paging_virt_to_phys` returned, a port ABI with no width above a byte, and no way to map a BAR uncached |
 | 10-abi — freeze the ABI | ✅ **CLOSED.**  The surface is four syscall numbers and 77 contiguous invocation labels, declared in `iris/abi.h` and ASSERTED by `tests/kernel/test_abi.c` over every number the dispatcher can see — a description nothing checks is a description that goes stale, which is the lesson the stage was taught by its own opening paragraph.  BootInfo names the ABI and the root task refuses a major it was not built for.  The naming residue of the retired handle namespace is gone, and removing it found a capability argument being truncated to 32 bits |
+| 10-run — the dynamic C runtime | ◐ **OPEN** — the POSIX personality row of Stage 10, taken up by ledger A-49.  Dynamic from the first commit; a static runtime as a stepping stone was offered, considered and declined |
 | 10 — General-purpose platform | ◐ **8 of 9 settled.**  Delivered and gated: `pci` (the bus is a service and the only task that reaches configuration space), ACPI reachable from ring 3, `blk` (an AHCI driver whose controller's DMA is contained, with a write path and FLUSH CACHE), `fs` (a filesystem on a disk IRIS owns, proven by booting twice and reading the image from the host), `net` + `ip` (an e1000 driver and, above it, ARP/IPv4/UDP — gated by a TFTP read against a server that is not this machine), and **T356**, which measures the system and fails on order-of-magnitude regressions.  POSIX is DECLINED on the record (charter §6).  **Real hardware is no longer untried**: IRIS booted a real desktop on 2026-09-25, found its disks and wrote to its own partition — but that is one machine observed once, not support, and every automated gate still runs under QEMU |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
@@ -2878,6 +2879,164 @@ inside the valid range — the one thing that boundary exists to prevent.
 stage that had closed without anyone returning to them, which is the exact
 failure §5.1 was written to stop.  All six are answered in ledger A-35.
 
+## Stage 10-run — the dynamic C runtime  ← OPEN
+
+Precondition: 10-abi (the surface a runtime binds to is frozen), 10-mem (a
+grant is a run of frame capabilities), 11-life, 13-form.  All met.
+
+Opened by ledger **A-49**, which retired charter §6's `No POSIX personality`.
+Read that entry first: this stage is the work, and A-49 is why the work is
+allowed.  **Dynamic from the first commit.**  A static runtime as a stepping
+stone was offered, considered and declined by the project's owner; the cost of
+that decision is in "What declining static costs" below, stated rather than
+rounded.
+
+### What was MEASURED before any of this was planned
+
+A stage that opens on assumptions is a stage that discovers them at step five.
+Each of these was checked against the tree, and two of them changed the plan.
+
+| question | answer | consequence |
+|---|---|---|
+| Does ring 3 have a thread pointer? | **No, in every way at once.**  `FS_BASE` (MSR `0xC0000100`) appears nowhere in the kernel; `struct iris_user_ctx` is 22 words and carries no segment base; `%gs` is the kernel's under the SWAPGS ABI; `CR4.FSGSBASE` is not enabled, so ring 3 cannot set its own | One kernel change, and it is the ONLY one this stage expects: `TCB_SetTLSBase`, which is seL4's `seL4_TCB_SetTLSBase` |
+| Had anyone hit that already? | **Yes, and it never reached a document.**  Services build `-mstack-protector-guard=global` and carry `services/common/stack_guard.c`, because the default x86-64 canary is read from `%fs:0x28` | The absence was known in the build system and unknown in the design.  Recorded now |
+| Can one frame be mapped into two address spaces? | **Yes, and the kernel says so.**  Mapping records are per-VSpace (`vs->mappings`) and `mapped_count` is documented as counting PTEs "across all VSpaces" | Shared library text is expressible.  Without this the whole stage would be pointless: every process would map a private copy and dynamic linking would cost relocation for nothing |
+| Can it be shared safely? | **Yes.**  Mapping requires `RIGHT_READ`; `RIGHT_WRITE` is required only for a writable map.  So a registry can hold a master capability and mint READ-ONLY children | A process cannot write a page it was given to read, and the grantor can revoke every mapping of a library at once |
+| Is W^X available? | **Enforced by the kernel.**  `map_flags` bit 0 is writable, bit 1 is executable, and both together are `IRIS_ERR_INVALID_ARG` | A DSO's text is `R+X` and its data is `R+W`, by construction rather than by convention |
+| What does the loader already do? | **More than expected.**  `services/common/svc_loader.c` is a real static-PIE loader: `ET_DYN`, `PT_LOAD`, `PT_DYNAMIC`, `DT_RELA`, `R_X86_64_RELATIVE`, and an RDTSC-seeded ASLR bias per spawn | The delta to dynamic is `PT_INTERP`, a second object and an `auxv` — not a loader from nothing |
+| What does it NOT do? | `PT_INTERP`, `PT_TLS`, `PT_GNU_RELRO`, `R_X86_64_GLOB_DAT`, `R_X86_64_JUMP_SLOT`, `DT_NEEDED`/`DT_SYMTAB`/`DT_STRTAB` | Steps 5 and 6 |
+| Is there a virtual-address allocator? | **None, anywhere.**  Every service picks constants by hand | `mmap` has no floor to build on.  Step 2 owns it, and it is POLICY, so it lives in `proc` and not in the kernel |
+| Is there a heap? | **No `malloc` in the tree.**  Static arrays and retyped frames, everywhere | Step 3 is from zero |
+| Is there demand paging? | **Deliberately eliminated** | No copy-on-write.  A DSO's data segment is COPIED per process, eagerly, at load |
+
+### The three decisions that make this a capability system rather than a port
+
+**A descriptor is a CPtr.**  Not an index into a table the library keeps — a
+slot in the process's own CSpace.  `close(fd)` is a slot delete.  `dup(fd)` is
+a mint, and the result is a derivation child of the original.  Handing one to a
+child is a capability transfer.  **Revoking in the grantor kills the holder's
+descriptor**, which is the property POSIX has never had, and it comes for free
+because the MDB already does it.  There is no fd table to get out of step with
+reality, because the CSpace IS the table.
+
+**The linker is handed its objects; it does not go looking.**  A stock
+`ld-musl` resolves `DT_NEEDED` against `DT_RPATH`, `LD_LIBRARY_PATH` and
+`/lib`.  That is "open any path it can name" arriving through the loader
+instead of through the program, and it is exactly what charter §6 objected to.
+Here the SPAWNER resolves the transitive object set before the child exists and
+mints one capability per object into a written CSpace layout; the linker reads
+a table it was given and can reach nothing else.  A program's library set is
+fixed by whoever launched it, visibly, at launch — and is revocable afterwards.
+
+**What cannot be expressed is refused, loudly.**  `ENOSYS`, for ever, with the
+same discipline retired syscall numbers already follow.  No `fork`, no `/proc`,
+no signals as job control, no `mmap` of a path, no `dlopen` by name.  A
+plausible answer to a question the system cannot honestly answer is worse than
+a refusal, because the caller believes it.
+
+### Steps, and what each must DEMONSTRATE to close
+
+A step is closed by evidence, not by being written.
+
+**Step 1 — the thread pointer.**  `TCB_SetTLSBase` as an invocation on the TCB
+capability, requiring `RIGHT_WRITE`; `fs_base` in `struct task`; the MSR
+written on switch **only when it differs** from what the core already holds.
+*Closes when:* two threads of one CSpace with different bases read different
+values through `%fs:0`, survive being switched away from and back on both
+cores, `test_abi` covers the new label, and T356's numbers do not move outside
+noise.  The last is not optional — an MSR write is about a hundred cycles and
+a switch is the hottest path the system has.
+
+**Step 2 — `proc`, and the address-space plan.**  Spawn from a VFS path.  A
+WRITTEN contract for a child's initial CSpace, in the same form
+`docs/contracts/bootstrap.md` uses for services.  `argv`, `envp`, `auxv`.
+Exit status and `wait`.  And the virtual-address allocator, which lives here
+because deciding where things go is policy.
+*Closes when:* a binary written to the IRIS partition by `fs` is spawned by
+path, runs, and its exit status reaches the parent; and the CSpace contract is
+a document, not a comment.
+
+**Step 3 — memory a program can ask for.**  `brk` and `mmap` over
+`UNTYPED_RETYPE` plus frame mapping, bounded by the process's own Untyped.
+`mprotect` as unmap-and-remap, which is what RELRO needs.
+*Closes when:* a program exhausts its budget and gets a clean failure rather
+than taking anything down with it, and an `Untyped_Reset` after it dies returns
+exactly what it was given.
+
+**Step 4 — the object registry.**  The service that makes dynamic pay: it loads
+a DSO once, holds its frames, and mints READ-ONLY capabilities for the text to
+every process that needs it.  Data segments are copied per process, because
+there is no copy-on-write and pretending otherwise would be the kind of silent
+sharing this system exists to prevent.
+*Closes when:* two processes running the same library map the SAME physical
+frames for its text — measured, not asserted — each has its own data, and a
+revoke in the registry removes it from both at once.
+
+**Step 5 — the loader learns a second object.**  `PT_INTERP`, two biases, the
+`auxv` the interpreter needs (`AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_BASE`,
+`AT_ENTRY`, `AT_PAGESZ`, `AT_RANDOM`).  The existing `R_X86_64_RELATIVE` pass
+becomes conditional on there being no interpreter — **when there is one, the
+loader must not relocate, because the interpreter will**, and applying
+`RELATIVE` twice is not idempotent: the second pass reads an already-relocated
+value as the addend.
+*Closes when:* a two-object program starts, and a deliberate double-relocation
+is caught by a test rather than by a debugger.
+
+**Step 6 — musl, resolving by capability.**  `libc.so` is the interpreter.  Its
+`__syscall` backend is IRIS invocations.  `dynlink.c`'s object resolution is
+replaced with "read the table you were given".  Dynamic TLS on top of step 1.
+*Closes when:* a C program nobody modified, compiled against this libc, loaded
+from the filesystem at runtime, prints to the console and exits with a status
+the shell reads — in the gate, on every commit.
+
+**Step 7 — descriptors.**  `open`/`read`/`write`/`close`/`dup`/`lseek` over VFS
+grants and `fs`.  Requires the VFS to gain WRITE, which is a protocol decision
+to be taken deliberately and not in passing.
+*Closes when:* `dup` produces a visible derivation child, and **revoking in the
+parent kills the child's descriptor** — the property that makes this not a
+translation layer.
+
+**Step 8 — the gate.**  The vertical slice runs on every commit, at one and at
+four processors.
+*Closes when:* it is a lane, not a demonstration.
+
+### What declining static costs, stated because it was a real choice
+
+Static and dynamic share the syscall backend and come from one musl build, so
+static-first would have let that backend be debugged against one object, no
+foreign relocations and one ASLR bias — and only then add the registry,
+`PT_INTERP` and the resolution patch onto a base known to be correct.
+
+Going straight to dynamic gives that up.  Concretely: **`mmap`, `mprotect` and
+`open` must all work before `main()` runs at all**, because musl's dynamic
+linker calls them — so steps 3 and 7 stop being steps and become prerequisites
+of step 6's first success.  The vertical slice that would have proved the path
+early is not available; the first program to print anything needs most of the
+stage to be right at once.  When it does not work, the causes are
+undifferentiated, which is precisely the position T343 cost three days from.
+
+The mitigation is the close conditions above: each step has evidence that does
+not depend on a program running, so the pieces are provable before they are
+composed.
+
+### Risks, in the order they will actually bite
+
+1. **The interpreter's dependency set.**  Resolving it before the child starts
+   is the design's whole claim to honesty, and it means the spawner must parse
+   `DT_NEEDED` transitively — in `proc`, before there is a process.
+2. **Double relocation.**  Named in step 5 because it is invisible: everything
+   loads, and a pointer is wrong.
+3. **The MSR on the switch path.**  Mitigated by writing only on difference,
+   but that must be measured with T356 rather than assumed.
+4. **Dynamic TLS.**  A DTV, per-module offsets and `__tls_get_addr`, on a
+   system that has had no thread pointer at all until step 1.
+
+### What this stage does NOT claim
+
+Not binary compatibility with Linux.  Not a shell anyone would live in.  Not
+`fork` — charter §6 registers its absence as permanent.  Not `dlopen` by name;
+a plugin is a capability somebody passed, or it is nothing.
+
 ## Stage 10 — General-purpose platform  ← PARTLY DELIVERED
 
 Precondition: consolidated microkernel (0–9 as applicable), 10-dma, 10-abi —
@@ -2902,7 +3061,7 @@ that survives because nobody re-adds it.)
 | | |
 | persistent FS | ✅ `services/fs` on a disk IRIS owns.  `make smoke-persist` boots twice over one image: the first formats and reports generation 1, the second finds it and reports 2, and then the HOST reads the bytes off the image |
 | networking | ✅ **a driver and a stack, as two services.**  `services/net` is an e1000 driver in ring 3 that moves Ethernet frames and parses nothing; `services/ip` is ARP, IPv4 and UDP ABOVE it, holding an endpoint to the driver and no hardware authority of its own.  The gate is a TFTP read completed against QEMU's gateway — a peer that is not this machine accepted the ARP, the IPv4 checksum and the UDP pseudo-header checksum, and answered.  There is no TCP, no fragment reassembly and no sockets, which is stated below rather than rounded |
-| POSIX personality | ⊘ **declined, and recorded as a deliberate divergence** in charter §6.  It needs no kernel change — that is the point of the capability model — and all of it is policy.  The sharper objection: POSIX's ambient authority is the thing thirteen stages removed |
+| POSIX personality | ◐ **taken up — Stage 10-run, ledger A-49.**  This row read *declined, and recorded as a deliberate divergence*, and the divergence is retired.  Its objection stands and the design answers it: a descriptor IS a capability in the process's own CSpace, there is no `fork`, and the dynamic linker consumes an object set the spawner resolved rather than searching a path.  Its factual claim — *it needs no kernel change* — was measured and is false: ring 3 has no thread pointer at all, so `TCB_SetTLSBase` is required |
 | performance | ✅ **T356** measures an invocation, an IPC round trip and a disk read, prints the numbers, and fails on order-of-magnitude regressions.  They are TCG figures and are not presented as hardware ones |
 | real hardware | ◐ **it has run on one, and what it wrote survived the power going off.**  On 2026-09-25 IRIS booted a real x86-64 desktop from a partition on its own disk: the kernel came up, the screen carried the log (there is no serial port on that machine), `pci` enumerated 41 functions across PCI bridges, `blk` found both SATA drives, `fs` recognised the IRIS partition, formatted it, and wrote a report into it — which was then read back from the other operating system, off the medium, with nobody transcribing anything.  Four boots in, it reports `window 2097152  home 0` -- the partition's exact sector count, found by type rather than by index -- and `generation 4 (already there)`, which is the claim `make smoke-persist` makes under QEMU, made on metal and repeated.  Its network controller is a Realtek `10ec:8168`, which `net` NAMES and refuses to drive rather than writing e1000 registers into; networking on that machine is an r8169-family driver, and that is now a known piece of work rather than a silence.  What that is NOT is real-hardware SUPPORT: it is one machine, and there is no gate on it.  Every automated check in this repository still runs under QEMU.  Its network card is not an e1000, so `net` found nothing and `ip` had nothing to say.  The honest claim is that the item moved from *cannot be attempted* to *attempted, and here is exactly what happened* |
 

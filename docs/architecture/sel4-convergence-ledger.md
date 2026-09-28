@@ -171,6 +171,98 @@ UT-TOP-1..5 and T298.
 
 ## Structural divergences from seL4
 
+### A-49 — "no POSIX personality" was decided on an objection that was right and a fact that was wrong  ← OPEN (the work it opens is Stage 10-run)
+
+**Decided by the project's owner, reversing a row this charter carried as
+`Permanent, deliberate`.**  Three rows in §6 have been retired before — A-29,
+A-32, A-33 — and each was retired the same way: the row said something, and
+the part of it that was a PRICE turned out to be right while the part that was
+a JUDGEMENT turned out to be wrong.  This is the fourth, and it is the first
+where a row also carried a factual claim that measurement contradicts.
+
+**What the row said.**  That a POSIX personality is a server plus a library;
+that *none of it needs a kernel change — that is the point of the capability
+model*; that all of it is policy; that POSIX's ambient authority is the thing
+thirteen stages removed; and that a faithful personality would have to
+reintroduce that authority inside the server **or be POSIX in name only** —
+"either is a legitimate project; neither is this one".
+
+**What it got right, and it is the important half.**  The objection.  A process
+that can open any path it can name, signal any pid it can guess, and inherit
+every descriptor across `fork` is a process whose authority IS its identity.
+Reproducing that inside a server would undo the work, and the row was correct
+to refuse it.  Nothing below weakens that; the design exists to answer it.
+
+**What it got wrong, first: the fact.**  *None of it needs a kernel change* is
+false, and measurably so.  IRIS has no thread-local storage at all:
+
+- `FS_BASE` (MSR `0xC0000100`) appears nowhere in the kernel — never written
+  at thread creation, never saved, never restored;
+- `struct iris_user_ctx` is 22 words and carries no segment base, so two ring-3
+  threads share whatever `FS_BASE` the processor happens to hold;
+- `%gs` is the kernel's under the SWAPGS ABI (ring 3 runs with `GS_BASE = 0`,
+  `KGS_BASE = &cpu_local`), so it is not an alternative;
+- `CR4.FSGSBASE` is not set — the kernel enables SMEP and SMAP and not bit 16 —
+  so ring 3 cannot even set its own base: `wrfsbase` would fault.
+
+The tree had already worked around this once without recording it.  Services
+build with `-mstack-protector-guard=global` and carry
+`services/common/stack_guard.c`, because the default x86-64 canary is read from
+`%fs:0x28`.  Somebody hit the absence, moved the canary to a global symbol, and
+the fact that ring 3 has no thread pointer never reached a document.
+
+Every C runtime worth the name needs one.  musl's `__pthread_self()` is
+`mov %fs:0,%rax` and `errno` is a field of what it returns, so the absence is
+not a corner case — it is `printf` not linking.  **One kernel change is
+required**, and it is seL4's own: `seL4_TCB_SetTLSBase`, authorised by the
+capability that already names the thread.
+
+**What it got wrong, second: it offered two options where there is a third.**
+Reintroduce ambient authority inside the server, or be POSIX in name only.
+The third is POSIX's SHAPE over capabilities, with the parts that have no
+honest expression REFUSED rather than faked:
+
+- **A descriptor is a CPtr in the process's own CSpace.**  `close(fd)` is a slot
+  delete, `dup(fd)` is a mint whose result is a derivation child of the
+  original, passing one to a child is a capability transfer, and revoking in
+  the grantor kills the holder's descriptor.  POSIX's weakest property — a
+  descriptor is ambient, inherited by accident and unrevocable — becomes the
+  one this model is strongest at.  This is not a translation layer over an fd
+  table; there is no fd table.
+- **`fork` does not exist and is not emulated.**  `posix_spawn` only.
+  Registered in §6 as its own permanent divergence, because a program that
+  needs `fork` needs a copied CSpace and VSpace, and copying authority is the
+  operation the whole tree refuses.
+- **The dynamic linker does not search a path.**  This is the sharp one.  A
+  stock `ld-musl` resolves `DT_NEEDED` names against `DT_RPATH`,
+  `LD_LIBRARY_PATH` and `/lib`, which is "open any path it can name" arriving
+  through the loader rather than through the program.  Here the SPAWNER
+  resolves the whole object set before the child starts and hands one
+  capability per object into a written CSpace layout; the linker consumes a
+  table it was given and can reach nothing else.  A program's library set is
+  fixed by whoever launched it, visibly, at launch.
+- **Everything else answers `ENOSYS`, loudly and for ever** — the discipline
+  the retired syscall numbers already follow, for the same reason: a
+  plausible-looking answer to a question the system cannot honestly answer is
+  worse than a refusal.
+
+**What is NOT claimed, and these are refusals rather than gaps.**  No binary
+compatibility with Linux.  No `/proc`.  No signals as job control.  No `mmap`
+of a file by path.  No `dlopen` by name.  No `fork`.
+
+**Why the row's own text permitted this.**  It said the personality "could be
+added later by somebody who wants it".  That sentence is the reason this is an
+amendment rather than a contradiction: the decision was recorded as a scope
+choice, not as an invariant, and the owner has made a different scope choice.
+What would have been wrong is doing the work while the charter said otherwise.
+
+**The work this opens** is Stage 10-run in the roadmap, and it is dynamic from
+the first commit: a static runtime as a stepping stone was offered, considered
+and declined, on the grounds that the two share a syscall backend and the
+bring-up order is the only thing that differs.  The cost of that decision is
+recorded there rather than here.
+
+
 ### A-48 — the lock-order gate ranked names the code does not use, and skipped sixteen it does  ✅ CLOSED
 
 **Found by the roadmap review, checking a GATE rather than the code it guards.**
