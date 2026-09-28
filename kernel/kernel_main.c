@@ -963,6 +963,14 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
      */
     (void)iommu_enable_blocking();
 
+    /*
+     * Boot is over: whatever capabilities have no ancestor now are the ones
+     * the kernel made before there was anything to derive them from, and that
+     * is the number A9 is about.  Anything that becomes a root from here is
+     * something in ring 3 producing authority out of nothing.
+     */
+    kcnode_mdb_freeze_boot_roots();
+
     /* ── 9. Scheduler start ─────────────────────────────────────── */
     klog_write("[IRIS][SCHED] running\n");
     klog_write("[IRIS][BOOT] waiting for first userland wave\n");

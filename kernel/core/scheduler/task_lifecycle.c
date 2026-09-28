@@ -359,16 +359,28 @@ static inline uint32_t rq_dom_of(const struct task *t) {
     return (d < IRIS_NUM_DOMAINS) ? d : 0u;
 }
 
-void rq_enqueue(struct task *t) {
-    struct CpuRunQueue *rq = cpu_local[t->home_cpu].rq;
-    if (!rq) return;
+/*
+ * The link and unlink, with the queue's lock ALREADY HELD.
+ *
+ * They exist as separate functions because which queue a thread belongs in is
+ * (its domain, its priority), and both of those are fields on the thread that
+ * somebody else can be writing.  Reading them outside the lock and then
+ * inserting under it files the thread under a bucket it may no longer be in —
+ * and the unlink then searches the bucket it IS in, does not find it, and
+ * leaves the node linked where nobody will ever look for it again.
+ *
+ * That is not hypothetical: it is what `sched_set_domain` did, and it cost a
+ * thread that was moved out of the scheduled domain and back while another
+ * core was switching away from it.  The thread stayed READY and never ran
+ * again, on that core, for ever.  Under one hypervisor the window never
+ * opened and the test passed; under another it opened every run.
+ */
+static void rq_link_locked(struct CpuRunQueue *rq, struct task *t) {
     int prio = (int)(uint8_t)t->priority;
     uint32_t dom = rq_dom_of(t);
-    uint64_t flags = irq_spinlock_lock(&rq->lock);
     if (t->rq_queued) {
         /* S4 guard engaged: task already queued — reject the duplicate. */
         atomic_fetch_add_explicit(&sched_dup_enq, 1u, memory_order_relaxed);
-        irq_spinlock_unlock(&rq->lock, flags);
         return;
     }
     t->rq_queued = 1;
@@ -382,19 +394,15 @@ void rq_enqueue(struct task *t) {
         rq->tail[dom][prio]          = t;
     }
     rq_live_inc();
-    irq_spinlock_unlock(&rq->lock, flags);
 }
 
-void rq_remove(struct task *t) {
-    struct CpuRunQueue *rq = cpu_local[t->home_cpu].rq;
-    if (!rq) return;
-    uint64_t flags = irq_spinlock_lock(&rq->lock);
-    if (!t->rq_queued) { irq_spinlock_unlock(&rq->lock, flags); return; }
+static void rq_unlink_locked(struct CpuRunQueue *rq, struct task *t) {
+    if (!t->rq_queued) return;
     int prio = (int)(uint8_t)t->priority;
     uint32_t dom = rq_dom_of(t);
     struct task *prev = 0, *cur = rq->head[dom][prio];
     while (cur && cur != t) { prev = cur; cur = cur->rq_next; }
-    if (!cur) { t->rq_queued = 0; rq_live_dec(); irq_spinlock_unlock(&rq->lock, flags); return; }
+    if (!cur) { t->rq_queued = 0; rq_live_dec(); return; }
     struct task *nxt = t->rq_next;
     if (!prev)                        rq->head[dom][prio] = nxt;
     else                              prev->rq_next       = nxt;
@@ -404,6 +412,21 @@ void rq_remove(struct task *t) {
     t->rq_queued = 0;
     t->rq_next   = 0;
     rq_live_dec();
+}
+
+void rq_enqueue(struct task *t) {
+    struct CpuRunQueue *rq = cpu_local[t->home_cpu].rq;
+    if (!rq) return;
+    uint64_t flags = irq_spinlock_lock(&rq->lock);
+    rq_link_locked(rq, t);
+    irq_spinlock_unlock(&rq->lock, flags);
+}
+
+void rq_remove(struct task *t) {
+    struct CpuRunQueue *rq = cpu_local[t->home_cpu].rq;
+    if (!rq) return;
+    uint64_t flags = irq_spinlock_lock(&rq->lock);
+    rq_unlink_locked(rq, t);
     irq_spinlock_unlock(&rq->lock, flags);
 }
 
@@ -477,12 +500,65 @@ int rq_top_priority(void) {
  * had to reach into them would be a syscall that knows how dispatch is
  * implemented.
  */
+/*
+ * The same operation for PRIORITY, and for the same reason.
+ *
+ * A thread's queue is (domain, priority).  `SYS_TCB_SET_PRIORITY` used to
+ * write the field and stop there, which leaves a queued thread linked in the
+ * bucket of the priority it no longer has: the dispatcher can still reach it
+ * through the old bucket's mask bit, and the next unlink searches the NEW
+ * bucket, does not find it, clears the queued flag and leaves the node linked
+ * where it was.  The relink after that then threads the old bucket's list
+ * through a node that is also in the new one.
+ *
+ * The domain half of this was found first and fixed on its own, which is
+ * exactly why this one is here: the two fields are the same key, and a fix to
+ * one of them is a description of the bug in the other.
+ */
+void sched_set_priority(struct task *t, uint8_t priority) {
+    if (!t || t->priority == priority) return;
+    struct CpuRunQueue *rq = cpu_local[t->home_cpu].rq;
+    if (!rq) { t->priority = priority; return; }
+    uint64_t flags = irq_spinlock_lock(&rq->lock);
+    int was_queued = t->rq_queued;
+    if (was_queued) rq_unlink_locked(rq, t);
+    t->priority = priority;
+    if (was_queued) rq_link_locked(rq, t);
+    irq_spinlock_unlock(&rq->lock, flags);
+}
+
 void sched_set_domain(struct task *t, uint8_t domain) {
     if (!t || t->domain == domain) return;
+    struct CpuRunQueue *rq = cpu_local[t->home_cpu].rq;
+    if (!rq) { t->domain = domain; return; }
+
+    /*
+     * ONE hold, across the read, the move and the write.
+     *
+     * It used to be three: read `rq_queued`, call `rq_remove`, write the
+     * domain, call `rq_enqueue` — each of the last two taking and dropping
+     * the lock on its own.  Every gap was a window, and the one that mattered
+     * is the one another core opens while switching away from this thread:
+     * the switch sets TASK_READY and only THEN enqueues, so for those few
+     * instructions a runnable thread is not queued.
+     *
+     * A mover reading `rq_queued` in that window sees 0 and does nothing but
+     * write the field, and the switch then files the thread under the domain
+     * it read before the write.  The thread is queued, runnable, and in the
+     * bucket of a domain it is not in: the dispatcher for its real domain
+     * never looks there, and the next unlink searches the real bucket, does
+     * not find it, and leaves the node linked where it was.
+     *
+     * Holding the lock across all of it makes the three steps one, so the
+     * switch's enqueue either happens entirely before (and is then unlinked
+     * and relinked here) or entirely after (and reads the new domain).
+     */
+    uint64_t flags = irq_spinlock_lock(&rq->lock);
     int was_queued = t->rq_queued;
-    if (was_queued) rq_remove(t);
+    if (was_queued) rq_unlink_locked(rq, t);
     t->domain = domain;
-    if (was_queued) rq_enqueue(t);
+    if (was_queued) rq_link_locked(rq, t);
+    irq_spinlock_unlock(&rq->lock, flags);
 }
 
 /*

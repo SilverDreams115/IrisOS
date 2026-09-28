@@ -671,7 +671,8 @@ uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (err != IRIS_OK) return syscall_err(err);
 
     if (target->terminal) { kobject_release(&target->base); return syscall_err(IRIS_ERR_NOT_FOUND); }
-    target->priority = prio;
+    /* A REQUEUE, not a field write: see sched_set_priority. */
+    sched_set_priority(target, (uint8_t)prio);
     kobject_release(&target->base);
     return 0;
 }
@@ -739,7 +740,7 @@ uint64_t sys_tcb_set_mcpriority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * taken away — which is the difference between lowering a ceiling and
      * asking politely.
      */
-    if (target->priority > mcp) target->priority = mcp;
+    if (target->priority > mcp) sched_set_priority(target, (uint8_t)mcp);
     kobject_release(&target->base);
     return 0;
 }
@@ -865,7 +866,8 @@ uint64_t sys_tcb_get_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     info.priority = target->priority;
     info.state    = (uint8_t)target->state;
     info.home_cpu = target->home_cpu;
-    info._pad[0]  = 0;
+    info.flags    = (uint8_t)((target->rq_queued ? IRIS_TCB_FLAG_QUEUED : 0u) |
+                    (((uint32_t)target->domain & 0xFu) << IRIS_TCB_FLAG_DOMAIN_SHIFT));
     irq_spinlock_unlock(&target->obj_lock, flags);
     kobject_release(&target->base);
 

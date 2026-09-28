@@ -291,6 +291,12 @@ uint32_t kcnode_mdb_validate(struct KCNode **set, uint32_t n,
                              struct mdb_validate_report *rep);
 
 /* MDB gauges/counters (diagnostics; QUERY kind 4). */
+/* Freeze the boot path's own unparented-root count; called once, when boot is
+ * over and before anything in ring 3 has run.  See kcnode.c for why the count
+ * comes from the kernel rather than from a constant in a test. */
+void kcnode_mdb_freeze_boot_roots(void);
+uint32_t kcnode_mdb_boot_roots(void);
+
 void kcnode_mdb_stats(uint32_t *nodes_live, uint32_t *nodes_hwm,
                       uint32_t *unparented_roots, uint32_t *orphan_promotions,
                       uint32_t *reparents, uint32_t *revoked_nodes,

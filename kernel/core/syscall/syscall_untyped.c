@@ -878,6 +878,7 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                              &q.mdb_unparented_roots, &q.mdb_orphan_promotions,
                              &q.mdb_reparents, &q.mdb_revoked_nodes,
                              &q.mdb_moves, &q.mdb_max_depth);
+            q.mdb_boot_roots = kcnode_mdb_boot_roots();
             return syscall_err(copy_versioned_to_user(buf_uptr, user_size, user_version,
                                &q, (uint32_t)sizeof(q), IRIS_UNTYPED_QUERY_VERSION));
         }

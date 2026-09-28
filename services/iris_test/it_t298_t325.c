@@ -656,28 +656,31 @@ void test_t305(void) {
     if (!it_utq_mdb(&q0)) { it_fail("T305", "query"); return; }
 
     /*
-     * A CEILING, not just a no-growth check.
+     * AN INVENTORY, not just a no-growth check.
      *
      * The no-growth check below catches a NEW producer of unparented
      * capabilities appearing during the cycle it runs.  It cannot catch one
-     * that was there at boot, and that is exactly what one of them was: an open-coded
-     * `< 1024` in RETYPE2 published every object retyped from a second-level
-     * Untyped as a root, for the whole life of the system, and this test
-     * printed the number and passed.
+     * that was there at boot, and that is exactly what one of them was: an
+     * open-coded `< 1024` in RETYPE2 published every object retyped from a
+     * second-level Untyped as a root, for the whole life of the system, and
+     * this test printed the number and passed.
      *
      * What is left is the BOOT PATH, which is legitimate and permanent —
-     * seL4's BootInfo capabilities are roots too — plus a fault delivery whose
-     * registration slot no longer holds the thread, which is the documented
-     * honest failure.  The number may go DOWN.  If it goes up, something
-     * started publishing without an ancestor and the change that did it is the
-     * one to look at.
+     * seL4's BootInfo capabilities are roots too.  The kernel counts its own,
+     * frozen before ring 3 ran; see it_priv.h for why that replaced a number
+     * written down here, and what plugging in a network card did to it.
+     *
+     * The count may go DOWN — a root can be destroyed.  Higher than the boot
+     * path's own means something started publishing without an ancestor, and
+     * the change that did it is the one to look at.
      */
-    if (q0.mdb_unparented_roots > IT_MDB_UNPARENTED_ROOT_CEILING) {
-        ok = 0; why = "unparented roots above the boot-path ceiling";
+    if (q0.mdb_unparented_roots > q0.mdb_boot_roots) {
+        ok = 0; why = "unparented roots above what the boot path left";
     }
 
     it_serial_write("[IRIS][TEST] T305 mdb_unparented_roots=");
     it_log_num(q0.mdb_unparented_roots);
+    it_serial_write("/"); it_log_num(q0.mdb_boot_roots);
     it_serial_write(" nodes_live="); it_log_num(q0.mdb_nodes_live);
     it_serial_write(" max_depth="); it_log_num(q0.mdb_max_depth);
     it_serial_write(" orphans="); it_log_num(q0.mdb_orphan_promotions);
@@ -1729,6 +1732,26 @@ void test_t314(void) {
     const char *why = "irq user context";
 
     struct it_utq_global g0, g1;
+
+    /*
+     * Spin until a timer interrupt really lands, and check the registers on
+     * EVERY attempt.
+     *
+     * The two halves of this test want different things.  Register integrity
+     * wants the spin: whatever preemption happens must not disturb r12-r15 or
+     * rbx.  The gauge wants a preemption to have happened at all — and a
+     * fixed number of iterations does not guarantee one, because how long
+     * twenty million instructions take is a fact about the processor and the
+     * hypervisor.  So the gauge is read around EACH spin and the loop ends
+     * when it grows, or when the deadline says no interrupt is coming.
+     *
+     * The registers are checked every pass rather than only the winning one,
+     * so a corruption is caught on whichever pass it happened.
+     */
+    uint64_t o12 = 0, o13 = 0, o14 = 0, o15 = 0, obx = 0;
+    int ticked = 0;
+    long t0 = it_sys0(SYS_CLOCK_GET);
+    for (;;) {
     if (!it_utq_g(&g0)) { it_fail("T314", "query"); return; }
 
     /* ── 2. register integrity across real preemption ───────────────────
@@ -1737,7 +1760,6 @@ void test_t314(void) {
      * answer.  rbp is left alone deliberately: the compiler may be using it
      * as this frame's pointer, and a test that breaks the frame it reports
      * from reports nothing. */
-    uint64_t o12 = 0, o13 = 0, o14 = 0, o15 = 0, obx = 0;
     uint64_t n = T314_SPINS;
     __asm__ __volatile__(
         "movq $0x3333333300000003, %%r12\n\t"
@@ -1763,10 +1785,23 @@ void test_t314(void) {
     if (ok && o13 != 0x4444444400000004ULL) { ok = 0; why = "r13 corrupted"; }
     if (ok && o14 != 0x5555555500000005ULL) { ok = 0; why = "r14 corrupted"; }
     if (ok && o15 != 0x6666666600000006ULL) { ok = 0; why = "r15 corrupted"; }
+    if (!ok) break;
 
     /* ── 1. the path ran while all that was happening ───────────────────*/
-    if (ok && !it_utq_g(&g1)) { ok = 0; why = "query"; }
-    if (ok && g1.irq_ctx_saves <= g0.irq_ctx_saves) {
+    if (!it_utq_g(&g1)) { ok = 0; why = "query"; break; }
+    if (g1.irq_ctx_saves > g0.irq_ctx_saves) { ticked = 1; break; }
+
+    {
+        long now = it_sys0(SYS_CLOCK_GET);
+        if (t0 > 0 && now > 0 &&
+            (uint64_t)(now - t0) > (uint64_t)T314_MS * 1000000ull) break;
+        /* A clock that will not answer leaves this spinning rather than
+         * failing instantly: the thing being waited for is a timer
+         * interrupt, and a missing clock is not evidence that none came. */
+    }
+    }
+
+    if (ok && !ticked) {
         ok = 0; why = "no ring-3 entry saved a user context";
         it_fz_note("T314", g0.irq_ctx_saves, g1.irq_ctx_saves, 0u);
     }

@@ -2413,9 +2413,30 @@ void test_t343(void) {
         ok = 0; why = "domain set";
     }
     if (ok) {
+        /*
+         * Both windows below are TIME, not a count of settles.
+         *
+         * A settle is a yield loop that returns as soon as the clock has
+         * advanced one tick, so two hundred of them is two hundred ticks on
+         * the machine it was written against and something else everywhere
+         * else.  Under one hypervisor the whole wait finished before the
+         * domain schedule came round, and the test reported that a thread
+         * never came back to a scheduled domain -- which is a claim about the
+         * kernel that the evidence did not support.
+         *
+         * The property is "it does not run while its domain is unscheduled"
+         * and "it runs again when the domain is", and both are statements
+         * about a duration.
+         */
         for (int i = 0; i < 40; i++) it_settle(1);   /* let it drain out */
         uint64_t a = g_t343_ticks;
-        for (int i = 0; i < 200; i++) it_settle(1);
+        long t0 = it_sys0(SYS_CLOCK_GET);
+        for (;;) {
+            it_settle(1);
+            long now = it_sys0(SYS_CLOCK_GET);
+            if (t0 <= 0 || now <= 0) break;          /* no clock: settles only */
+            if ((uint64_t)(now - t0) > (uint64_t)T343_QUIET_MS * 1000000ull) break;
+        }
         uint64_t b = g_t343_ticks;
         if (b != a) {
             it_fz_note("T343", (uint32_t)(b - a), 1u, 0u);
@@ -2431,11 +2452,78 @@ void test_t343(void) {
     if (ok) {
         uint64_t a = g_t343_ticks;
         int moved = 0;
-        for (int i = 0; i < 200 && !moved; i++) {
+        long t0 = it_sys0(SYS_CLOCK_GET);
+        for (;;) {
             it_settle(1);
-            if (g_t343_ticks != a) moved = 1;
+            if (g_t343_ticks != a) { moved = 1; break; }
+            long now = it_sys0(SYS_CLOCK_GET);
+            /* A clock that will not answer falls back to a bounded count
+             * rather than spinning for ever: what is being waited for is a
+             * scheduling decision, and no clock is not evidence against one. */
+            if (t0 <= 0 || now <= 0) {
+                for (int i = 0; i < 200 && !moved; i++) {
+                    it_settle(1);
+                    if (g_t343_ticks != a) moved = 1;
+                }
+                break;
+            }
+            if ((uint64_t)(now - t0) > (uint64_t)T343_BACK_MS * 1000000ull) break;
         }
-        if (!moved) { ok = 0; why = "the thread did not come back with its domain"; }
+        if (!moved) {
+            ok = 0; why = "the thread did not come back with its domain";
+            /* Say WHAT it is instead of only that it is not running.  A
+             * thread that is READY is one the dispatcher should have picked;
+             * anything else is a different bug entirely, and under one
+             * hypervisor this is the only evidence there is. */
+            struct iris_tcb_info wi, si;
+            long self_tcb = it_own_tcb_derived();
+            uint32_t ws = 0xFFu, wc = 0xFFu, ss = 0xFFu, sc = 0xFFu;
+            uint32_t wq = 0xFFu, wd = 0xFFu;
+            if (it_invoke1(tcb, INV_TCB_GET_INFO, (long)(uintptr_t)&wi) == 0) {
+                ws = wi.state; wc = wi.home_cpu;
+                wq = (wi.flags & IRIS_TCB_FLAG_QUEUED) ? 1u : 0u;
+                wd = (wi.flags >> IRIS_TCB_FLAG_DOMAIN_SHIFT) & 0xFu;
+            }
+            if (self_tcb >= 0) {
+                if (it_invoke1(self_tcb, INV_TCB_GET_INFO,
+                               (long)(uintptr_t)&si) == 0) {
+                    ss = si.state; sc = si.home_cpu;
+                }
+                it_slot_delete((uint32_t)self_tcb);
+            }
+            uint32_t w2[4] = { 0, 0, 0, 0 };
+            (void)it_sched_ext2(w2);
+            it_serial_write("[IRIS][TEST] T343 worker state="); it_log_num(ws);
+            it_serial_write(" queued="); it_log_num(wq);
+            it_serial_write(" dom="); it_log_num(wd);
+            it_serial_write(" cpu="); it_log_num(wc);
+            it_serial_write("  tester state="); it_log_num(ss);
+            it_serial_write(" cpu="); it_log_num(sc);
+            it_serial_write("  rq_hwm="); it_log_num(w2[0]);
+            it_serial_write(" dup_enq="); it_log_num(w2[1]);
+            it_serial_write("\n");
+
+            /*
+             * And the discriminator: move it out and back ONCE MORE.
+             *
+             * If a second round trip brings it back, the thread was runnable
+             * all along and one enqueue went missing — a lost wakeup, in the
+             * move itself.  If it stays dead, the enqueue is not what failed
+             * and the dispatcher on its core is.  The two want different
+             * fixes and nothing else here distinguishes them.
+             */
+            (void)it_invoke2((long)IT_CPTR_DOMAIN_CONTROL, INV_DOMAIN_SET, tcb, 1);
+            for (int i = 0; i < 20; i++) it_settle(1);
+            (void)it_invoke2((long)IT_CPTR_DOMAIN_CONTROL, INV_DOMAIN_SET, tcb, 0);
+            uint64_t c = g_t343_ticks;
+            int again = 0;
+            for (int i = 0; i < 200 && !again; i++) {
+                it_settle(1);
+                if (g_t343_ticks != c) again = 1;
+            }
+            it_serial_write("[IRIS][TEST] T343 second round trip recovered=");
+            it_log_num((uint32_t)again); it_serial_write("\n");
+        }
     }
 
     g_t343_stop = 1;

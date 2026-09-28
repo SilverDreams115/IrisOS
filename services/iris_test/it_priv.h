@@ -1770,6 +1770,7 @@ struct it_utq_mdb {
     uint32_t mdb_nodes_live, mdb_nodes_hwm, mdb_unparented_roots,
              mdb_orphan_promotions, mdb_reparents, mdb_revoked_nodes,
              mdb_moves, mdb_max_depth;
+    uint32_t mdb_boot_roots;
 };
 
 /* C.1: arg0 = kind | version<<16 | size<<32 (declared buffer size). */
@@ -2042,59 +2043,29 @@ struct it_utq_taskobj {
 #define T304_MAX       80u          /* > 64, and 127 leaves are addressable */
 #define T304_TARGET    65u          /* the first count the old ceiling refused */
 
-/* The boot path's own roots, measured.  One change took it from 43 to 32 by giving
- * every object retyped from a second-level Untyped its MDB parent; retiring the SELF syscalls took
- * it to 23 by retiring the three SELF syscalls, each of which published an
- * unparented capability every time it was called.  the authority audit adds ONE back: the
- * SchedControl capability boot mints for the root task, which is a boot-path
- * root like every other authority in BootInfo — seL4's are roots too.  Every
- * delegation of it downward is a child, so it costs exactly one.  the ASID pool adds
- * ONE more for the same reason: ASIDControl, the authority to carve
- * address-space identifier pools.  The POOL userboot carves from it is NOT a
- * root — it is retyped from an Untyped and parented there, which is the whole
- * point of the split.
+/*
+ * The boot path's own roots are COUNTED BY THE KERNEL, not written down here.
  *
- * The DOMAIN SCHEDULER adds the third: DomainControl, seL4's seL4_CapDomain,
- * the authority to place a thread in a time partition.  Same shape as the two
- * above — one capability, minted once at boot, in BootInfo, a root because
- * there is nothing above it to be a child of, and every delegation downward is
- * a child.
+ * There used to be a constant, and its comment ran twenty lines explaining
+ * which capability each unit of it was: the three control authorities minted
+ * into BootInfo, the device Untypeds over the firmware's own ACPI regions, and
+ * so on.  Every one of those explanations was correct and the number was still
+ * wrong twice.  It was written at 32 and attaching a NETWORK CARD to the
+ * gate's machine made it 33 — one more device, one more firmware table, one
+ * more region, one more Untyped, one more root — and nothing about the kernel
+ * had changed.  Raised to 33, it then failed at 35 under a second hypervisor
+ * whose firmware describes three regions more than the first one's.
  *
- * DMA CONTAINMENT adds the fourth: IOSpaceControl, the
- * authority to say which MEMORY a DEVICE may reach.  It is a boot authority
- * for the same reason the other three are, and it is worth noting what makes
- * it a DIFFERENT authority rather than part of IOPORT_CONTROL: those say which
- * registers a driver may touch and which line it may hear, and this says what
- * the hardware behind them may write to.  A system that hands out the first
- * two without the third has handed out all of memory.
+ * A number that moves when you plug in a network card is measuring the
+ * machine.  What A9 is actually about is whether anything becomes a root
+ * AFTER boot, which is a question the kernel can answer about itself: it
+ * freezes its own unparented count the moment boot ends, before anything in
+ * ring 3 has run, and reports it as `mdb_boot_roots`.
  *
- * The platform work adds five more, and they are a different shape worth naming: the
- * kernel now publishes the firmware's own memory — the regions ACPI's tables
- * live in — as device Untypeds, so that ring 3 can read the description of the
- * machine it is running on.  This one has five such regions.  They are roots
- * for exactly the reason a boot Untyped is: they exist before there is
- * anything for them to be a child of.
- *
- * So the ceiling is 33, and the six it went up by are the six regions the boot
- * log names.  A machine with a different firmware will have a different number
- * of them, which is worth saying plainly: this ceiling is a fact about the
- * MACHINE the gate runs on as well as about the kernel, and a run on other
- * hardware would have to re-derive it rather than assume it.
- *
- * That was not a hypothetical caveat for long.  It was written at 32, for five
- * regions, and attaching a NETWORK CARD to the gate's machine made it six —
- * the firmware describes one more device, so it publishes one more table
- * region, so the kernel publishes one more Untyped, so there is one more
- * unparented capability.  Nothing about the kernel changed.  The test caught
- * it, which is the whole reason it is a refusal and not a report.
- *
- * This number going UP is not automatically fine, which is why the test
- * refuses rather than reporting.  What makes all of these fine is that each is
- * a BOOT-PATH capability: it exists before any Untyped it could be parented
- * to, so "unparented" is a fact about when it was made and not about an
- * ancestry that was lost.  A root appearing anywhere else is a defect, and the
- * ceiling is what makes the difference visible. */
-#define IT_MDB_UNPARENTED_ROOT_CEILING 33u
+ * The live count may be LOWER — a root can be destroyed.  Higher means
+ * something in ring 3 produced authority with no ancestor, on any machine,
+ * under any firmware, and that is the defect the test exists to refuse.
+ */
 
 /* ── T309: a passive server serves a LOOP on donated time ───
  *
@@ -2216,7 +2187,31 @@ struct it_utq_taskobj {
 /* Long enough that the timer fires inside it many times over, short enough
  * that the suite does not notice.  What matters is only that the loop is
  * preempted while those registers are live. */
+/*
+ * ONE ATTEMPT's worth of spinning, not the whole test.
+ *
+ * It used to be the whole test: spin this many times, then assert a timer
+ * interrupt had landed somewhere inside.  Twenty million `decq/jnz` is about
+ * six milliseconds on the machine it was chosen against and rather less on a
+ * hypervisor with hardware virtualisation on a faster processor -- so under
+ * VirtualBox the loop finished between two ticks and the test reported that
+ * no interrupt ever reaches ring 3, which is not a fact about this system.
+ *
+ * The spin is now retried until a tick actually lands, bounded by TIME.  What
+ * the count controls is how long each attempt is, and the only thing that
+ * depends on it is how many syscalls the test makes while it waits.
+ */
 #define T314_SPINS 20000000ULL
+/* How long to wait for a timer interrupt before calling the machine broken.
+ * Generous: a tick is milliseconds and the cost of being wrong the other way
+ * is a working scheduler reported dead. */
+#define T314_MS    2000u
+
+/* T343's two windows, in milliseconds rather than in settles, for the reason
+ * written where they are used: how long a settle takes is a fact about the
+ * machine, and a domain schedule comes round on its own clock. */
+#define T343_QUIET_MS 1000u   /* it must NOT run for this long   */
+#define T343_BACK_MS  5000u   /* and must run again within this  */
 
 /* ── T317: a frame maps as a WHOLE, not just its first page ───────
  *

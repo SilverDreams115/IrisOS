@@ -70,6 +70,13 @@ void         task_wakeup(struct task *t) { (void)t; }
 void         sched_set_domain(struct task *t, uint8_t domain) {
     if (t) t->domain = domain;
 }
+/* Same for priority, and for the same reason: the host has no run queues, so
+ * what it checks about `TCB_SetPriority` is the authority and the ceiling,
+ * both of which happen before this is reached.  That the change REQUEUES is a
+ * runtime claim. */
+void         sched_set_priority(struct task *t, uint8_t priority) {
+    if (t) t->priority = priority;
+}
 uint32_t     sched_domain_current(void)  { return 0u; }
 uint64_t     sched_domain_switches(void) { return 0u; }
 void         task_yield(void)            { }

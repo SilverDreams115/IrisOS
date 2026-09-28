@@ -2265,6 +2265,11 @@ struct iris_untyped_query_taskobj {
     uint32_t mdb_revoked_nodes;      /* caps destroyed by revoke */
     uint32_t mdb_moves;
     uint32_t mdb_max_depth;
+    /* What the BOOT PATH left unparented, frozen before ring 3 ran.  The
+     * live count above may be lower (a root can be destroyed) but must never
+     * be higher: that is charter A9, stated without reference to which
+     * machine or which firmware this is. */
+    uint32_t mdb_boot_roots;
 };
 #endif /* !__ASSEMBLER__ */
 
@@ -2329,8 +2334,24 @@ struct iris_tcb_info {
      * the older struct reads the same size and the same fields.
      */
     uint8_t  home_cpu;
-    uint8_t  _pad[1];
+    /*
+     * Flags, in the last padding byte.  Bit 0: the thread is IN A RUN QUEUE.
+     *
+     * `state` says whether a thread is entitled to run; this says whether the
+     * dispatcher can actually find it.  A thread that is READY and NOT queued
+     * is the shape of a lost wakeup, and nothing outside the kernel could see
+     * the difference — a domain test could only report that a thread it had
+     * made runnable never ran, which names no cause and is exactly how long
+     * such a bug survives.
+     */
+    uint8_t  flags;
 };
+#define IRIS_TCB_FLAG_QUEUED (1u << 0)
+/* Bits 4..7: the scheduling DOMAIN the thread is in.  Reported beside the
+ * queued bit because the run queue is keyed on (domain, priority): a thread
+ * that is queued but invisible is either in the wrong bucket or in the right
+ * one behind a clear bit, and only the domain tells the two apart. */
+#define IRIS_TCB_FLAG_DOMAIN_SHIFT 4u
 #endif
 
 #define IRIS_HANDLE_TYPE_PROCESS        0u

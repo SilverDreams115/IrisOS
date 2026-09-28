@@ -12,6 +12,15 @@
 #
 #   scripts/run_vbox.sh            reuse the data disk (generation keeps rising)
 #   scripts/run_vbox.sh --fresh    start from a pristine data disk
+#   IRIS_VBOX_NIC=virtio ...       present a different card to the driver
+#
+# WHICH card, because the network service has a backend per family and this is
+# a SECOND hypervisor: VirtualBox's own EFI lays the PCI windows out
+# differently from OVMF, so a backend that works under QEMU has not yet been
+# shown to work anywhere else.  `82540EM` (the default here) is the e1000 and
+# `virtio` is virtio-net.  There is no Realtek option -- VirtualBox offers
+# PCnet, Intel and virtio and nothing else -- which is why the r8169 backend
+# is still unverified and only the real machine can answer for it.
 set -u
 VBM="/mnt/c/Program Files/Oracle/VirtualBox/VBoxManage.exe"
 WIN='C:\Users\aethe\IRIS-VM'
@@ -47,22 +56,38 @@ if [ "$FRESH" = 1 ]; then
     swap "$WIN\\iris-disk.img" iris-data 1 || { echo "[vbox] data disk swap failed"; exit 1; }
 fi
 
+NIC="${IRIS_VBOX_NIC:-82540EM}"
+echo "[vbox] network card: $NIC"
+"$VBM" modifyvm "$VM" --nictype1 "$NIC" >/dev/null 2>&1 || {
+    echo "[vbox] VirtualBox will not present a '$NIC'"; exit 1; }
+
 rm -f "$DIR/iris-serial.log"
 echo "[vbox] starting $VM headless"
 "$VBM" startvm "$VM" --type headless >/dev/null || exit 1
 
+# The suite takes about fifty seconds under QEMU on one processor and several
+# times that here: VirtualBox runs it on two, and the SMP stress tests scale
+# with the core count rather than against it.  A wait that ends early powers
+# the machine off MID-SUITE, which then looks exactly like a hang and leaves
+# the report on disk one boot stale -- so the budget is generous and a
+# caller's own is honoured.
+WAIT="${IRIS_VBOX_WAIT:-320}"
 echo -n "[vbox] waiting for the suite"
-for i in $(seq 1 150); do
+for i in $(seq 1 "$WAIT"); do
     grep -aq "SUITE \(PASS\|FAIL\)" "$DIR/iris-serial.log" 2>/dev/null && break
     echo -n .; sleep 2
 done
 echo
+if ! grep -aq "SUITE \(PASS\|FAIL\)" "$DIR/iris-serial.log" 2>/dev/null; then
+    echo "[vbox] the suite did not finish inside ${WAIT} x 2s -- what follows is"
+    echo "[vbox] a machine cut off mid-run, not a machine that failed."
+fi
 "$VBM" controlvm "$VM" poweroff >/dev/null 2>&1
 sleep 2
 
 echo
 echo "── what the kernel said (serial) ──────────────────────────────"
-tr -d '\r' < "$DIR/iris-serial.log" | grep -aE "SUITE|FAIL:|IRIS KERNEL|pci:|blk:|net:|fs:|processors online" | head -20
+tr -d '\r' < "$DIR/iris-serial.log" | grep -aE "SUITE|FAIL:|IRIS KERNEL|MMIO64|pci:|blk:|net:|ip:|fs:|processors online" | head -24
 
 echo
 echo "── what IRIS wrote to its own partition ───────────────────────"

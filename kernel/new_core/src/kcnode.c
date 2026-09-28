@@ -47,6 +47,22 @@ static _Atomic uint32_t cdt_ipc_transfer_count; /* receive-slot deliveries */
 static _Atomic uint32_t mdb_nodes_live;
 static _Atomic uint32_t mdb_nodes_hwm;
 static _Atomic uint32_t mdb_unparented_roots;   /* caps with no MDB parent */
+/*
+ * How many of those the BOOT PATH left behind, frozen the moment boot is over.
+ *
+ * A root is a capability with no ancestor, so revoking nothing reaches it, and
+ * the charter's A9 says there must be none that were not made before there was
+ * anything to derive from.  The test for that used to compare the live count
+ * against a number somebody wrote down -- which made it a fact about the
+ * machine the gate ran on as well as about the kernel, and it drifted twice:
+ * once when a network card was attached (one more firmware table, one more
+ * region, one more root), and again under a second hypervisor whose firmware
+ * describes three more.  Neither had anything to do with the kernel.
+ *
+ * So the kernel says how many it made, and the property becomes machine
+ * independent: nothing became a root AFTER boot.
+ */
+static _Atomic uint32_t mdb_boot_roots;
 static _Atomic uint32_t mdb_orphan_promotions;  /* children promoted to root */
 static _Atomic uint32_t mdb_reparents;          /* children adopted by grandparent */
 static _Atomic uint32_t mdb_revoked_nodes;      /* caps destroyed by revoke */
@@ -65,6 +81,17 @@ void kcnode_cdt_stats(uint32_t *deriv, uint32_t *deriv_hwm, uint32_t *revoke,
     if (del)       *del       = atomic_load_explicit(&cdt_delete_count,     memory_order_relaxed);
     if (cross)     *cross     = atomic_load_explicit(&cdt_cross_cnode_desc, memory_order_relaxed);
     if (ipc)       *ipc       = atomic_load_explicit(&cdt_ipc_transfer_count, memory_order_relaxed);
+}
+
+void kcnode_mdb_freeze_boot_roots(void) {
+    atomic_store_explicit(&mdb_boot_roots,
+                          atomic_load_explicit(&mdb_unparented_roots,
+                                               memory_order_relaxed),
+                          memory_order_relaxed);
+}
+
+uint32_t kcnode_mdb_boot_roots(void) {
+    return atomic_load_explicit(&mdb_boot_roots, memory_order_relaxed);
 }
 
 void kcnode_mdb_stats(uint32_t *nodes_live, uint32_t *nodes_hwm,

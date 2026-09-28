@@ -34,6 +34,9 @@ uint32_t sched_reap_queue_drops(void);
  * (domain, priority) and a bare field write would strand it. */
 struct task;
 void     sched_set_domain(struct task *t, uint8_t domain);
+/* Same shape, same reason: the queue is keyed on (domain, priority), so
+ * changing EITHER of them is a requeue and not a field write. */
+void     sched_set_priority(struct task *t, uint8_t priority);
 uint32_t sched_domain_current(void);
 uint64_t sched_domain_switches(void);
 /* High-water depth of the deferred-reap queue.  Monotonic; a value
