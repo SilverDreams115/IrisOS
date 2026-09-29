@@ -20,6 +20,8 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -42,6 +44,20 @@ int main(void) {
     long off;
 
     /* ── a file, by name, once ── */
+    /*
+     * A refusal now says WHICH refusal it is.
+     *
+     * Before `errno` existed every failure here was -1, so a path that does
+     * not exist and a path this program was not given the authority for were
+     * the same answer.  Checking the distinction is the only way it stays
+     * true.
+     */
+    errno = 0;
+    if (open("this-file-does-not-exist", O_RDONLY) >= 0) return BAD_OPEN;
+    if (errno != ENOENT) return BAD_OPEN;
+    errno = 0;
+    if (read(999, buf, 4) >= 0 || errno != EBADF) return BAD_OPEN;
+
     fd = open("iris.txt", O_RDONLY);
     if (fd < 0) return BAD_OPEN;
 
@@ -54,6 +70,22 @@ int main(void) {
         printf("[FDPROG] fd %d is a capability badged 0x%lx\n", fd,
                (unsigned long)badge);
     }
+    /* `fstat` answers what the service says the file is, in one call that
+     * also carries where this descriptor is — see <sys/stat.h>. */
+    {
+        struct stat st;
+        if (fstat(fd, &st) != 0) return BAD_OPEN;
+        if (!S_ISREG(st.st_mode) || st.st_size == 0) return BAD_OPEN;
+        if (st.st_offset != 0) return BAD_OPEN;
+        printf("[FDPROG] fstat says %ld bytes, offset %ld\n",
+               (long)st.st_size, (long)st.st_offset);
+    }
+
+    /* There is no write path to a file, and the refusal names that rather
+     * than being a generic -1. */
+    errno = 0;
+    if (write(fd, "x", 1) >= 0 || errno != EROFS) return BAD_OPEN;
+
     n = (int)read(fd, buf, 16);
     if (n <= 0) { return BAD_READ; }
     buf[n] = '\0';
@@ -105,6 +137,32 @@ int main(void) {
     /* Closing a descriptor whose capability was already destroyed is not an
      * error to this program — it has nothing left to release. */
     (void)close(fd2);
+
+    /*
+     * ── And the same file through <stdio.h> ────────────────────────────────
+     *
+     * `fopen` over the same VFS grant, read by line through a buffer, and
+     * `fprintf` to stderr — which on this system is the same console as
+     * stdout, because that is how many capabilities a program is given.  The
+     * point of doing it last is that the descriptor slots freed above are the
+     * ones this reuses, so it also proves `close` gave them back.
+     */
+    {
+        FILE *f = fopen("iris.txt", "r");
+        char line[64];
+        if (!f) return BAD_OPEN;
+        if (!fgets(line, sizeof line, f)) return BAD_CONTENT;
+        if (strncmp(line, "Hello", 5) != 0) return BAD_CONTENT;
+        if (ferror(f)) return BAD_CONTENT;
+        fprintf(stderr, "[FDPROG] fopen read %d bytes through a FILE\n",
+                (int)strlen(line));
+        if (fclose(f) != 0) return BAD_CLOSE;
+        /* A mode that asks to write is refused where it is asked, not later. */
+        errno = 0;
+        if (fopen("iris.txt", "w") || errno != EROFS) return BAD_OPEN;
+        /* stdin is end of file, not an error: a read loop terminates. */
+        if (fgetc(stdin) != EOF) return BAD_CONTENT;
+    }
 
     printf("[FDPROG] every claim held\n");
     return OK;

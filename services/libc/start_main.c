@@ -30,6 +30,14 @@ _Noreturn void __libc_start_main(const uint64_t *sp, main_fn fn) {
     char **envp = argv + argc + 1;
 
     /*
+     * `environ` is the same pointer `main` is handed, published as the global
+     * every C program expects `getenv` to read.  On IRIS the table is empty —
+     * `proc` passes an argument vector and no environment — and <stdlib.h>
+     * says why that is a design statement rather than a gap.
+     */
+    environ = envp;
+
+    /*
      * `main`'s return value IS the exit status — that is the whole of a C
      * program's contract with whoever started it, and here "whoever" holds a
      * capability to this thread and reads the status off it.

@@ -70,6 +70,30 @@
 #define IRIS_PROG_SLOT_FREE2_LO   128u
 
 /*
+ * ...and the split WITHIN that range, because a program does not arrive alone.
+ *
+ * A C runtime loaded as this program's interpreter needs slots of its own — an
+ * IPC buffer, a page table, and one per open descriptor — and it takes them
+ * out of the range above because that is the range a program owns.  Which
+ * means "the program's own" is not the whole of it, and saying otherwise is
+ * how a program that allocates a slot for itself silently overwrites its own
+ * file descriptor.
+ *
+ * So the range is divided here, where both sides can see it: the low four are
+ * the program's to use directly, and the rest belong to whatever runtime the
+ * program was linked against.  `services/libc/libc_slots.h` is that runtime's
+ * half, and `test_program_abi` asserts it lands inside.
+ *
+ * A program with no runtime — one that makes syscalls itself, like every
+ * service in this tree — owns all of 32..63 as before, because there is
+ * nobody else in its address space to collide with.
+ */
+#define IRIS_PROG_SLOT_USER_LO    32u
+#define IRIS_PROG_SLOT_USER_HI    35u
+#define IRIS_PROG_SLOT_RT_LO      36u
+#define IRIS_PROG_SLOT_RT_HI      63u
+
+/*
  * ── The address space ─────────────────────────────────────
  *
  * Offsets from USER_PRIVATE_BASE.  The image region is what the existing

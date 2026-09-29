@@ -10,6 +10,7 @@
  */
 #include <stdlib.h>
 #include <unistd.h>
+#include <stdio.h>
 #include "libc_internal.h"
 
 _Noreturn void _exit(int status) {
@@ -39,3 +40,16 @@ _Noreturn void abort(void) { _exit(134); }   /* 128 + SIGABRT, by convention */
  * can tell this apart from a program that chose to exit.
  */
 _Noreturn void __stack_chk_fail(void) { _exit(127); }
+
+/*
+ * Where `assert` lands.
+ *
+ * It prints through `printf` rather than the console directly, because an
+ * assertion is the one failure a program reports to a HUMAN, and the line
+ * buffer is what gets it out in one message instead of five.
+ */
+void __assert_fail(const char *expr, const char *file, int line) {
+    printf("assertion failed: %s, at %s:%d\n",
+           expr ? expr : "?", file ? file : "?", line);
+    abort();
+}

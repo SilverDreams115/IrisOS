@@ -3381,11 +3381,58 @@ Landed:
     kept.  `--hash-style=sysv` specifically: `DT_HASH`'s second word IS the
     symbol count, and a linker that has to infer the table's size is one that
     can read past a malformed image.
-  - printf (`%d %i %u %x %X %o %c %s %p %%`, `l`/`ll`/`z`, width, `-0+ `), a
-    first-fit malloc over step 3's `prog_mem`, and the string functions a
-    program cannot start without.  **No floating point**, deliberately: there
-    is no soft-float here and a `%f` would print an answer this code cannot
-    justify.
+  - printf, a first-fit malloc over step 3's `prog_mem`, and the string
+    functions a program cannot start without.  **No floating point**,
+    deliberately: there is no soft-float here and a `%f` would print an answer
+    this code cannot justify — and it now RETURNS NEGATIVE rather than
+    guessing, because a conversion that cannot be rendered also cannot be
+    skipped without putting the argument list out of step.
+
+*Hardened afterwards,* in the pass that followed the step closing.  The
+library as first written had six places where the code did one thing and the
+comment beside it described another, and in every case the comment was the
+design: `read(0)` answered an error where the file said EOF; an unparsed
+precision desynchronised printf's arguments; the thread-local relocations were
+skipped in silence under a claim that they were refused; an undefined weak
+reference was a hard refusal; `DT_NEEDED` was read by nothing; and the object
+table was parsed into a struct nobody consulted.  All are closed, and the
+structural debt behind them with it:
+
+  - **The pure half is host-tested.**  `fmt.c` (the conversion) and
+    `heap_alloc.c` (the allocator over an injected `grow`) carry no system
+    call, so `tests/kernel/test_libc_fmt.c` checks the first against glibc as
+    an oracle and `test_libc_malloc.c` drives the second to exhaustion on a
+    budget it can control.  `string.c` is deliberately NOT split the same way:
+    giving `memcpy` an internal name and a public wrapper removes the
+    self-recursion guard a compiler applies to a function called `memcpy`, and
+    turns a loop into a call to itself the first time anybody raises `-O`.
+  - **One place where a refusal becomes a number.**  `errno`, through
+    `__errno_location()` so per-thread storage can arrive without anything
+    that reads it changing, and `__libc_fail`/`__libc_fail_iris` as the only
+    two ways to return a failure.  A library that sets `errno` at each call
+    site sets it at most of them, and the ones it misses report whatever failed
+    last — which looks like an answer.
+  - **`FILE`, and the three a program does not open.**  `stdout` and `stderr`
+    are the same console, because that is how many capabilities a program is
+    given; `stdin` is end of file.  `fopen` is read-only and REFUSES a writing
+    mode where it is asked rather than failing later.
+  - **Locks on what is shared, and a list of what is not.**  A program here can
+    make a second thread — it holds its own Untyped, CSpace and VSpace — so the
+    heap, the line buffer and the descriptor-slot scan are locked.
+    `libc_lock.h` states plainly that `errno`, the registered IPC buffer and
+    the thread pointer are still one-thread-only, and what each would cost.
+  - **The stack protector, on the half that can have one.**  Everything
+    reached after `__libc_tls_init` is built `-fstack-protector-strong`; only
+    `start.c` and `dynlink.c`, which run before the canary exists, are not.
+  - **The slot split is a contract.**  A C runtime takes CSpace slots out of
+    the range the contract gives the PROGRAM, so `IRIS_PROG_SLOT_RT_LO..HI`
+    divides it and `test_program_abi` asserts `libc_slots.h` lands inside.  It
+    was a convention between a library and a program that could not see it.
+  - **A program reaches library data through the GOT.**  `-fPIC`, not `-fPIE`:
+    under the latter the linker answers an `extern` datum with an
+    `R_X86_64_COPY` — a private copy in the executable's .bss that stops being
+    shared — which `dynlink.c` refuses, and which made the first exported
+    variable break every program that touched one.
 
 *And the shell reads the status,* which is the close condition's other half:
 

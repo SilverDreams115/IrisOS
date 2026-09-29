@@ -9,6 +9,7 @@
  * with no console is SHORT rather than fatal.
  */
 #include "libc_internal.h"
+#include "libc_slots.h"
 #include "../common/iris_msg.h"
 #include "../common/iris_ipc_buffer.h"
 #include "../common/console_client.h"
@@ -16,12 +17,6 @@
 #include <iris/invoke.h>
 #include <iris/endpoint_proto.h>
 
-/* This libc's own slots, out of the range docs/contracts/program.md §2 gives
- * the program (32..63).  A C program never names a slot, so these are the
- * library's to choose; they are grouped here so a future one is added in an
- * obvious place rather than found by collision. */
-#define LIBC_SLOT_IPCBUF     36u
-#define LIBC_SLOT_IPCBUF_PT  37u
 
 static uint8_t *g_buf;
 

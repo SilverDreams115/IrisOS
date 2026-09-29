@@ -48,4 +48,19 @@ long __libc_link_program(uint64_t prog_base, const void *phdrs,
 /* The heap, for malloc.  It is the program's own budget and nothing else. */
 void *__libc_sbrk(long delta);
 
+/*
+ * ── The one place a refusal becomes a number ───────────────────────────────
+ *
+ * Every function in this library that can fail returns through one of these.
+ * A library that sets `errno` at each call site sets it at MOST of them, and
+ * the ones it misses report whatever failed last — which is worse than
+ * reporting nothing, because it looks like an answer.
+ *
+ * Both return -1 as a `long`, so a caller writes `return (int)__libc_fail(E);`
+ * and the cast is where the reader sees what the function's type is.
+ */
+long __libc_fail(int err);            /* set errno to this, return -1     */
+long __libc_fail_iris(long iris_err); /* ...translating an IRIS_ERR_* first */
+int  __libc_errno_from(long iris_err);
+
 #endif /* IRIS_LIBC_INTERNAL_H */

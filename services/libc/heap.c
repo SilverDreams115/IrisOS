@@ -9,15 +9,12 @@
  * it was given, and nothing else on the machine is affected by it.
  */
 #include "libc_internal.h"
+#include "libc_slots.h"
 #include "../common/prog_mem.h"
 #include <iris/program_abi.h>
 #include <iris/paging.h>
 #include <iris/endpoint_proto.h>
 
-/* Slot 38 is this library's page-table scratch; the frames it maps take slots
- * from 128 upward, which docs/contracts/program.md §2 gives the program and
- * which no C program will ever name. */
-#define LIBC_SLOT_PT 38u
 
 static struct prog_mem g_mem;
 static int g_ready;

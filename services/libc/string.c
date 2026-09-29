@@ -72,3 +72,116 @@ char *strchr(const char *s, int c) {
         if (!*s) return 0;
     }
 }
+
+/*
+ * ── The rest of what a C program assumes is there ──────────────────────────
+ *
+ * Added because "an ordinary C program, unmodified" was the close condition of
+ * Stage 10-run step 6, and a program that cannot call `strstr` is a program
+ * somebody had to modify.  Same discipline as above: plain, byte-at-a-time,
+ * and correct — including at the edges, which is where these are usually
+ * wrong.  `strncat` writing n+1 bytes and `strcspn` walking off a string with
+ * no match are the two classic ones, and both are avoided by construction
+ * rather than by testing for them.
+ */
+
+size_t strnlen(const char *s, size_t n) {
+    size_t i = 0;
+    while (i < n && s[i]) i++;
+    return i;
+}
+
+char *strcat(char *d, const char *s) {
+    char *at = d + strlen(d);
+    strcpy(at, s);
+    return d;
+}
+
+/*
+ * `strncat` bounds the SOURCE, not the result, and always terminates — so it
+ * writes at most n+1 bytes past the existing end.  That asymmetry with
+ * `strncpy` is a fact about C rather than a choice here, and stating it is the
+ * only defence against the buffer being sized as if it were n.
+ */
+char *strncat(char *d, const char *s, size_t n) {
+    char *at = d + strlen(d);
+    size_t i = 0;
+    for (; i < n && s[i]; i++) at[i] = s[i];
+    at[i] = '\0';
+    return d;
+}
+
+char *strrchr(const char *s, int c) {
+    const char *last = 0;
+    for (;; s++) {
+        if (*s == (char)c) last = s;
+        if (!*s) return (char *)last;
+    }
+}
+
+void *memchr(const void *p, int c, size_t n) {
+    const unsigned char *b = p;
+    for (size_t i = 0; i < n; i++)
+        if (b[i] == (unsigned char)c) return (void *)(b + i);
+    return 0;
+}
+
+/* The empty needle matches at the start, which is what C says and what a naive
+ * loop gets wrong by returning NULL. */
+char *strstr(const char *hay, const char *needle) {
+    if (!*needle) return (char *)hay;
+    for (; *hay; hay++) {
+        size_t i = 0;
+        while (needle[i] && hay[i] == needle[i]) i++;
+        if (!needle[i]) return (char *)hay;
+    }
+    return 0;
+}
+
+static int str_in(const char *set, char c) {
+    for (; *set; set++) if (*set == c) return 1;
+    return 0;
+}
+
+size_t strspn(const char *s, const char *set) {
+    size_t n = 0;
+    while (s[n] && str_in(set, s[n])) n++;
+    return n;
+}
+
+size_t strcspn(const char *s, const char *set) {
+    size_t n = 0;
+    while (s[n] && !str_in(set, s[n])) n++;
+    return n;
+}
+
+char *strpbrk(const char *s, const char *set) {
+    for (; *s; s++) if (str_in(set, *s)) return (char *)s;
+    return 0;
+}
+
+/*
+ * `strtok_r` is the real one and `strtok` is a wrapper over a static.
+ *
+ * That order matters: the static is the only thread-unsafe thing in this file,
+ * and keeping it out of the implementation means a program that cares can use
+ * the reentrant form and pay nothing.  See `libc_lock.h` for what else still
+ * assumes one thread.
+ */
+char *strtok_r(char *s, const char *sep, char **save) {
+    char *start;
+    if (!s) s = *save;
+    if (!s) return 0;
+    s += strspn(s, sep);
+    if (!*s) { *save = 0; return 0; }
+    start = s;
+    s += strcspn(s, sep);
+    if (*s) { *s = '\0'; *save = s + 1; }
+    else    { *save = 0; }
+    return start;
+}
+
+char *strtok(char *s, const char *sep) {
+    static char *save;
+    return strtok_r(s, sep, &save);
+}

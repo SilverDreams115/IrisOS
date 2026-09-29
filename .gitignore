@@ -6,6 +6,10 @@
 *.obj
 *.bin
 *.elf
+# ...and the shared objects, which the same rule missed: `services/libc/libc.so`
+# was committed by accident when step 6 landed, and a build output under version
+# control is a binary that drifts from the source beside it.
+*.so
 *.img
 *.iso
 *.map

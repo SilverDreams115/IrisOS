@@ -14,6 +14,7 @@
  * own heap, on a machine somebody else is holding.
  */
 #include "framework.h"
+#include "../../services/libc/libc_slots.h"
 #include <iris/program_abi.h>
 #include <iris/paging.h>
 #include <iris/endpoint_proto.h>
@@ -125,4 +126,35 @@ void test_program_abi(void) {
     /* a spawn that is running reports the same 12 the net backends do */
     /* One number, one meaning, across the tree: 12 is up. */
     ASSERT_EQ((long)PROC_STEP_RUNNING, 12L);
+
+    /*
+     * ── The runtime's slots land inside the runtime's half ─────────────────
+     *
+     * A C runtime loaded as the program's interpreter takes slots out of the
+     * range the contract gives the program, so the contract divides it.  These
+     * assertions are what make that a rule instead of a convention: a slot
+     * added to `libc_slots.h` outside the runtime's half fails here, at the
+     * build, rather than as a descriptor that turned into something else.
+     */
+    ASSERT_EQ(IRIS_PROG_SLOT_USER_LO, IRIS_PROG_SLOT_FREE_LO);
+    ASSERT_EQ(IRIS_PROG_SLOT_RT_HI,   IRIS_PROG_SLOT_FREE_HI);
+    ASSERT_EQ(IRIS_PROG_SLOT_RT_LO,   IRIS_PROG_SLOT_USER_HI + 1u);
+    ASSERT_TRUE(IRIS_PROG_SLOT_USER_LO <= IRIS_PROG_SLOT_USER_HI);
+
+    ASSERT_TRUE(LIBC_SLOT_IPCBUF    >= IRIS_PROG_SLOT_RT_LO);
+    ASSERT_TRUE(LIBC_SLOT_IPCBUF_PT >= IRIS_PROG_SLOT_RT_LO);
+    ASSERT_TRUE(LIBC_SLOT_PT        >= IRIS_PROG_SLOT_RT_LO);
+    ASSERT_TRUE(LIBC_SLOT_FD_LO     >= IRIS_PROG_SLOT_RT_LO);
+    ASSERT_TRUE(LIBC_SLOT_FD_HI     <= IRIS_PROG_SLOT_RT_HI);
+    ASSERT_TRUE(LIBC_SLOT_FD_LO     <= LIBC_SLOT_FD_HI);
+    /* ...and they do not overlap each other. */
+    ASSERT_TRUE(LIBC_SLOT_IPCBUF    <  LIBC_SLOT_FD_LO);
+    ASSERT_TRUE(LIBC_SLOT_IPCBUF_PT <  LIBC_SLOT_FD_LO);
+    ASSERT_TRUE(LIBC_SLOT_PT        <  LIBC_SLOT_FD_LO);
+    ASSERT_NE(LIBC_SLOT_IPCBUF, LIBC_SLOT_IPCBUF_PT);
+    ASSERT_NE(LIBC_SLOT_IPCBUF, LIBC_SLOT_PT);
+    ASSERT_NE(LIBC_SLOT_IPCBUF_PT, LIBC_SLOT_PT);
+
+    /* The heap's FRAMES take the high range, clear of every slot above. */
+    ASSERT_TRUE(IRIS_PROG_SLOT_FREE2_LO > IRIS_PROG_SLOT_RT_HI);
 }

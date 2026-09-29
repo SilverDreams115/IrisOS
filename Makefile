@@ -254,10 +254,34 @@ LIBC_INCLUDES := -nostdinc -isystem $(GCC_FREESTANDING_INC) \
 # calls from going through a PLT it would then have to resolve for itself.
 LIBC_CFLAGS := -ffreestanding -fno-stack-protector -fPIC -mno-red-zone \
                $(COMMON_WARNINGS) $(LIBC_INCLUDES) -MMD -MP
+#
+# ...and the half that runs AFTER the thread pointer exists, which is most of
+# it.  `__libc_tls_init` writes the canary to %fs:0x28 before the heap, the
+# console or a single line of the program runs, so every function reached from
+# there can carry the ordinary check — and this library, which is the one piece
+# of the system that handles a program's own strings and a program's own
+# allocations, was the piece running without it.
+#
+# The exceptions are explicit rules below: `start.c` contains the code that
+# installs the canary, and `dynlink.c` runs before it does.  A protected
+# function entered before %fs is set reads a guard from an unmapped address.
+LIBC_CFLAGS_GUARDED := -ffreestanding -fstack-protector-strong -fPIC \
+               -mno-red-zone $(COMMON_WARNINGS) $(LIBC_INCLUDES) -MMD -MP
 # A C program is built ORDINARILY: the default stack protector, whose canary is
 # read from %fs:0x28 -- which is the whole point of TCB_SetTLSBase and the one
 # thing in this tree that gets to be normal about it.
-CPROG_CFLAGS := -ffreestanding -fstack-protector-strong -fPIE -mno-red-zone \
+#
+# `-fPIC` and not `-fPIE`, and the difference is not cosmetic here.  Under
+# -fPIE the compiler reaches a shared library's DATA directly, because on a
+# normal system the linker is free to answer that with an `R_X86_64_COPY` —
+# a private copy of the variable, placed in the executable's .bss, which every
+# other holder of that library then stops sharing.  `dynlink.c` refuses COPY
+# for exactly that reason, so the first `extern` datum this library exported
+# (`stdout` and friends) made every program that touched one fail to link.
+#
+# -fPIC reaches it through the GOT instead, which is one relocation this
+# system already handles and is what "one copy of the library" means.
+CPROG_CFLAGS := -ffreestanding -fstack-protector-strong -fPIC -mno-red-zone \
                 $(COMMON_WARNINGS) $(LIBC_INCLUDES) -MMD -MP
 # sysv hash, because DT_HASH's second word IS the symbol count and this
 # system's linker reads it rather than inferring the table's size.
@@ -355,6 +379,10 @@ TEST_UNIT_SRCS  := \
     services/common/prog_mem_plan.c \
     tests/kernel/test_elf_reloc.c \
     services/common/elf_reloc.c \
+    tests/kernel/test_libc_fmt.c \
+    services/libc/fmt.c \
+    tests/kernel/test_libc_malloc.c \
+    services/libc/heap_alloc.c \
     tests/kernel/test_klog.c \
     kernel/core/klog/klog.c \
     kernel/drivers/fbcon/fbcon.c \
@@ -1025,12 +1053,19 @@ $(KERNEL_DYNPROG_BIN_OBJ): $(SERVICE_DYNPROG_ELF) | dirs
 
 # ── libc.so (Stage 10-run step 6: the C library, and the interpreter) ────────
 LIBC_SRCS := start.c start_main.c dynlink.c console.c heap.c malloc.c \
-             stdio.c string.c exit.c fd.c
+             heap_alloc.c stdio.c fmt.c string.c exit.c fd.c errno.c libc_lock.c stdlib.c stdio_file.c
 LIBC_OBJS := $(patsubst %.c,$(BUILD_DIR)/libc_%.o,$(LIBC_SRCS)) \
              $(BUILD_DIR)/libc_dlstart.o $(BUILD_DIR)/libc_elf_reloc.o \
              $(BUILD_DIR)/libc_prog_mem.o $(BUILD_DIR)/libc_prog_mem_plan.o
 
 $(BUILD_DIR)/libc_%.o: services/libc/%.c | dirs
+	gcc $(LIBC_CFLAGS_GUARDED) -c $< -o $@
+
+# Before the thread pointer exists: no canary can be read, so none is emitted.
+# These are explicit rules, which make prefers over the pattern above.
+$(BUILD_DIR)/libc_start.o: services/libc/start.c | dirs
+	gcc $(LIBC_CFLAGS) -c $< -o $@
+$(BUILD_DIR)/libc_dynlink.o: services/libc/dynlink.c | dirs
 	gcc $(LIBC_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/libc_dlstart.o: services/libc/dlstart.S | dirs

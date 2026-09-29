@@ -65,6 +65,9 @@ static void host_back_fake_physmem(void) {
     }
 }
 
+void test_libc_fmt(void);
+void test_libc_malloc(void);
+
 int main(void) {
     host_back_fake_physmem();
     test_rights();
@@ -101,6 +104,8 @@ int main(void) {
     test_prog_stack();
     test_prog_mem();
     test_elf_reloc();
+    test_libc_fmt();
+    test_libc_malloc();
 
     printf("\nresult: %d passed, %d failed\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;
