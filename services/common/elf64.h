@@ -88,6 +88,10 @@ typedef struct {
  * two spellings of the same constant appear. */
 #define PT_INTERP           3u
 #define PT_PHDR             6u
+/* Read so that a thread-local can be REFUSED by name.  This runtime reserves
+ * no static TLS block, so a program carrying one must not be started — see
+ * `services/libc/dynlink.c`. */
+#define PT_TLS              7u
 #define DT_NULL             0
 #define DT_NEEDED           1
 #define DT_PLTRELSZ         2
@@ -101,6 +105,10 @@ typedef struct {
 #define DT_SYMENT           11
 #define DT_PLTREL           20
 #define DT_JMPREL           23
+/* An object's OWN name, which is what a `DT_NEEDED` entry names.  Without it a
+ * dependency list can be read but not CHECKED, which is the difference between
+ * a loader that resolves an object set and one that assumes it. */
+#define DT_SONAME           14
 #define PF_X                1u
 #define PF_W                2u
 #define ELF64_R_TYPE(i)     ((uint32_t)((i) & 0xffffffffULL))
@@ -110,6 +118,30 @@ typedef struct {
 #define R_X86_64_GLOB_DAT   6u
 #define R_X86_64_JUMP_SLOT  7u
 #define R_X86_64_RELATIVE   8u
+/*
+ * The thread-local family, spelled out so it can be REFUSED individually.
+ *
+ * A relocation nobody recognises is skipped, and skipping one of these leaves
+ * the site holding its addend — usually zero — which a program then uses as a
+ * thread-local's offset.  That is a silent wrong answer rather than a fault,
+ * so the names are here in order that `dynlink.c` can name what it will not do.
+ */
+#define R_X86_64_DTPMOD64   16u
+#define R_X86_64_DTPOFF64   17u
+#define R_X86_64_TPOFF64    18u
+#define R_X86_64_TLSGD      19u
+#define R_X86_64_TLSLD      20u
+#define R_X86_64_DTPOFF32   21u
+#define R_X86_64_GOTTPOFF   22u
+#define R_X86_64_TPOFF32    23u
 #define SHN_UNDEF           0u
+
+/* A symbol's binding.  `STB_WEAK` is the one that changes behaviour: an
+ * undefined weak reference resolves to ZERO by the ABI, and refusing it would
+ * refuse programs the toolchain emits by default. */
+#define ELF64_ST_BIND(i)    ((uint8_t)((i) >> 4))
+#define STB_LOCAL           0u
+#define STB_GLOBAL          1u
+#define STB_WEAK            2u
 
 #endif /* IRIS_COMMON_ELF64_H */

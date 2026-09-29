@@ -55,9 +55,19 @@
 #define FD_LO  40
 #define FD_HI  63
 
-/* The three POSIX numbers, and nothing more.  -1 means "nothing there". */
+/*
+ * The three POSIX numbers, and nothing more.
+ *
+ * Each names something that is NOT a CSpace slot, so each gets its own
+ * sentinel rather than sharing "-1 = nothing there".  That distinction is
+ * load-bearing: `stdin` and an unopened descriptor both used to resolve to -1,
+ * and `read` cannot tell "there is nothing to read" from "that is not a
+ * descriptor" once they are the same number.  It answered the first as an
+ * ERROR, contradicting this file's own account of it.
+ */
 #define FD_CONSOLE (-2)          /* an endpoint, not a file                 */
-static int g_std[3] = { -1, FD_CONSOLE, FD_CONSOLE };
+#define FD_EOF     (-3)          /* nothing at all, and says so as EOF      */
+static int g_std[3] = { FD_EOF, FD_CONSOLE, FD_CONSOLE };
 
 static int fd_is_slot(int fd) { return fd >= FD_LO && fd <= FD_HI; }
 
@@ -125,12 +135,18 @@ ssize_t read(int fd, void *buf, size_t n) {
     struct iris_msg m;
     int slot = fd_resolve(fd);
 
-    if (slot == FD_CONSOLE) return 0;   /* the console does not read back */
-    if (slot < 0 || !buf) return -1;
-    /* stdin is nothing, and says so as EOF rather than as an error: a program
-     * that reads until zero terminates, and one that treats -1 as fatal
-     * would not. */
-    if (fd == STDIN_FILENO) return 0;
+    if (!buf) return -1;
+    /*
+     * Neither of the two non-file descriptors reads back, and both say so as
+     * END OF FILE rather than as an error: a program that reads until zero
+     * terminates, and one that treats -1 as fatal would not.
+     *
+     * `stdin` is nothing because this system has no path from a keyboard to a
+     * program that did not ask the keyboard service itself; the console is
+     * write-only because it is an endpoint into a service, not a stream.
+     */
+    if (slot == FD_EOF || slot == FD_CONSOLE) return 0;
+    if (!fd_is_slot(slot)) return -1;
     if (n == 0u) return 0;
     if (n > VFS_EP_DATA_MAX) n = VFS_EP_DATA_MAX;
 
@@ -161,7 +177,9 @@ int close(int fd) {
     int slot = fd_resolve(fd);
     struct iris_msg m;
 
-    if (slot == FD_CONSOLE) return 0;   /* not ours to close */
+    /* Closing one of the three POSIX numbers succeeds and does nothing: they
+     * name no capability of ours, so there is none to delete. */
+    if (slot == FD_CONSOLE || slot == FD_EOF) return 0;
     if (!fd_is_slot(slot)) return -1;
 
     /*

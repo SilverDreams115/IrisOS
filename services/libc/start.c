@@ -35,9 +35,13 @@ uint64_t __libc_start(const uint64_t *sp);
  * Variant II, which is what x86-64 uses: `%fs` points AT the block, `%fs:0`
  * holds its own address (so a program can take the address of a thread-local),
  * and `%fs:0x28` is the stack guard.  Static `__thread` storage would live
- * BELOW the pointer and needs `PT_TLS` from the program, which this libc does
- * not read yet — a program that declares a thread-local will not link, which
- * is a refusal rather than a silent zero.
+ * BELOW the pointer, and nothing reserves it.
+ *
+ * So a program that declares a thread-local does not link: `dynlink.c` refuses
+ * a `PT_TLS` segment and every relocation in the thread-local family, by name.
+ * That refusal is the whole of this claim — before it existed, those
+ * relocations fell through an unrecognised-type branch that SKIPPED them, and
+ * the program started with a zero where its offset should have been.
  */
 static uint64_t g_tcb[16] __attribute__((aligned(16)));
 

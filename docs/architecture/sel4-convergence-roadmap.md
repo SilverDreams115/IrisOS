@@ -3514,34 +3514,53 @@ a spawn is where this system's memory accounting and its scheduler meet.
 
 ### What declining static costs, stated because it was a real choice
 
-Static and dynamic share the syscall backend and come from one musl build, so
-static-first would have let that backend be debugged against one object, no
-foreign relocations and one ASLR bias — and only then add the registry,
-`PT_INTERP` and the resolution patch onto a base known to be correct.
+*This section was written while the library was still expected to be musl, and
+said so.  The decision recorded above — `services/libc` is IRIS's own — does
+not change the argument, which was never about whose code it is, but it does
+change the names, so they are corrected here rather than left to be read as a
+plan nobody followed.*
 
-Going straight to dynamic gives that up.  Concretely: **`mmap`, `mprotect` and
-`open` must all work before `main()` runs at all**, because musl's dynamic
-linker calls them — so steps 3 and 7 stop being steps and become prerequisites
-of step 6's first success.  The vertical slice that would have proved the path
-early is not available; the first program to print anything needs most of the
-stage to be right at once.  When it does not work, the causes are
-undifferentiated, which is precisely the position T343 cost three days from.
+Static and dynamic share one backend and come from one build of the library, so
+static-first would have let that backend be debugged against one object, no
+foreign relocations and one ASLR bias — and only then add the object table,
+`PT_INTERP` and symbol resolution onto a base known to be correct.
+
+Going straight to dynamic gives that up.  Concretely: **the heap, the address
+space and the console must all work before `main()` runs at all**, because the
+interpreter IS the library and it sets them up on the way in — so steps 3 and 7
+stop being steps and become prerequisites of step 6's first success.  The
+vertical slice that would have proved the path early is not available; the
+first program to print anything needs most of the stage to be right at once.
+When it does not work, the causes are undifferentiated, which is precisely the
+position T343 cost three days from.
 
 The mitigation is the close conditions above: each step has evidence that does
 not depend on a program running, so the pieces are provable before they are
-composed.
+composed.  In the event that is what happened, and the prediction held: every
+defect found in step 6 was found through one of them rather than by watching a
+program fail to print.
 
 ### Risks, in the order they will actually bite
 
 1. **The interpreter's dependency set.**  Resolving it before the child starts
    is the design's whole claim to honesty, and it means the spawner must parse
-   `DT_NEEDED` transitively — in `proc`, before there is a process.
+   `DT_NEEDED` transitively — in `proc`, before there is a process.  *Partly
+   answered: `services/libc/dynlink.c` now CHECKS every `DT_NEEDED` against the
+   objects the spawner minted, and refuses a spawn that named too few.  The
+   transitive walk in `proc` is still owed; today the set is one object deep,
+   so the check is the whole of the guarantee.*
 2. **Double relocation.**  Named in step 5 because it is invisible: everything
    loads, and a pointer is wrong.
 3. **The MSR on the switch path.**  Mitigated by writing only on difference,
    but that must be measured with T356 rather than assumed.
 4. **Dynamic TLS.**  A DTV, per-module offsets and `__tls_get_addr`, on a
-   system that has had no thread pointer at all until step 1.
+   system that has had no thread pointer at all until step 1.  *Not started,
+   and now REFUSED rather than half-done: `dynlink.c` rejects a `PT_TLS`
+   segment and every relocation in the thread-local family by name.  They used
+   to fall through an unrecognised-type branch that skipped them, which left a
+   program holding zero where its offset belonged.  Static TLS — a block below
+   the thread pointer, `PT_TLS` from the program and `R_X86_64_TPOFF64` — is
+   the next thing here, and it is a feature rather than a fix.*
 
 ### What this stage does NOT claim
 
