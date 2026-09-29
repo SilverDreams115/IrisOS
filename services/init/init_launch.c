@@ -2243,6 +2243,16 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
     }
     rep_ch(b, &k, lim, '\n');
 
+    rep_str(b, &k, lim, " libc  ");
+    if (g_init_found.c_exit) {
+        rep_str(b, &k, lim, "a C program ran, exit ");
+        rep_num(b, &k, lim, g_init_found.c_exit);
+        if (g_init_found.c_exit != 7u) rep_str(b, &k, lim, " (want 7)");
+    } else {
+        rep_str(b, &k, lim, "none ran");
+    }
+    rep_ch(b, &k, lim, '\n');
+
     rep_str(b, &k, lim, " obj   ");
     if (g_init_found.obj_text_kib || g_init_found.obj_exit) {
         rep_num(b, &k, lim, g_init_found.obj_text_kib);
@@ -2888,7 +2898,7 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
     struct iris_msg m;
     long r;
     int ok = 0, hello_ok = 0, alloc_ok = 0, reclaim_ok = 0, share_ok = 0,
-        dyn_ok = 0;
+        dyn_ok = 0, c_ok = 0;
 
     if (vfs_ep_h == IRIS_CPTR_NULL) return 0;
 
@@ -3086,6 +3096,25 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
     }
     (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_CHILD);
 
+    /* ── the fourth program: ordinary C, against this system's libc ── */
+    {
+        struct init_line L;
+        uint32_t step = PROC_STEP_NONE;
+        long ec = init_run_program("cprog", &step);
+
+        if (step != PROC_STEP_RUNNING) goto out;
+        c_ok = (ec == 7);
+        g_init_found.c_exit = (uint32_t)((ec < 0) ? 0 : ec);
+        il_reset(&L);
+        il_str(&L, "[USER][INIT] proc: cprog exit ");
+        il_num(&L, (ec < 0) ? 0u : (uint64_t)ec);
+        /* Seven, because zero is what a program that did nothing returns too. */
+        il_str(&L, c_ok ? " OK" : " BAD");
+        init_log(il_done(&L));
+        if (!c_ok) goto out;
+    }
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_CHILD);
+
     /*
      * ── and the third thing a runtime needs: one copy of a library ──
      *
@@ -3095,7 +3124,7 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
      */
     share_ok = init_prove_shared_objects();
 
-    ok = hello_ok && alloc_ok && reclaim_ok && dyn_ok && share_ok;
+    ok = hello_ok && alloc_ok && reclaim_ok && dyn_ok && c_ok && share_ok;
 
 out:
     (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_NOTIF);

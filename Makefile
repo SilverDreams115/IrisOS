@@ -133,6 +133,8 @@ SERVICE_OBJREG_ELF    := services/objreg/objreg.elf
 SERVICE_LIBUSER_ELF   := services/libuser/libuser.elf
 SERVICE_LDSO_ELF      := services/ldso/ldso.elf
 SERVICE_DYNPROG_ELF   := services/dynprog/dynprog.elf
+SERVICE_LIBC_SO       := services/libc/libc.so
+SERVICE_CPROG_ELF     := services/cprog/cprog.elf
 # userboot: linked as raw flat binary (OUTPUT_FORMAT(binary)) for direct kernel mapping
 SERVICE_USERBOOT_BIN  := services/userboot/userboot.bin
 # objcopy-embedded initrd object files (binary blobs → linkable .o)
@@ -159,6 +161,8 @@ KERNEL_OBJREG_BIN_OBJ     := $(BUILD_DIR)/objreg_bin.o
 KERNEL_LIBUSER_BIN_OBJ    := $(BUILD_DIR)/libuser_bin.o
 KERNEL_LDSO_BIN_OBJ       := $(BUILD_DIR)/ldso_bin.o
 KERNEL_DYNPROG_BIN_OBJ    := $(BUILD_DIR)/dynprog_bin.o
+KERNEL_LIBC_BIN_OBJ       := $(BUILD_DIR)/libc_bin.o
+KERNEL_CPROG_BIN_OBJ      := $(BUILD_DIR)/cprog_bin.o
 KERNEL_BOOTFIX_BADELF_OBJ := $(BUILD_DIR)/bootfix_badelf_bin.o
 KERNEL_FILEBK_FBK_OBJ     := $(BUILD_DIR)/filebk_fbk_bin.o
 KERNEL_FILEBK_FBK2_OBJ    := $(BUILD_DIR)/filebk_fbk2_bin.o
@@ -170,7 +174,7 @@ KERNEL_DEMO_DEFINES :=
 ifeq ($(ENABLE_RUNTIME_SELFTESTS),1)
 KERNEL_DEMO_DEFINES      += -DIRIS_ENABLE_RUNTIME_SELFTESTS
 endif
-KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_KSLAB_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_FPU_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_COREDISP_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_DISPATCH_OBJ) $(KERNEL_SYSCALL_IPC_OBJ) $(KERNEL_SYSCALL_VM_OBJ) $(KERNEL_SYSCALL_PROC_OBJ) $(KERNEL_SYSCALL_CAP_OBJ) $(KERNEL_SYSCALL_IRQ_OBJ) $(KERNEL_SYSCALL_DIAG_OBJ) $(KERNEL_SYSCALL_EP_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_UCOPYASM_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_FBCON_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KFAULT_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KENDPOINT_OBJ) $(KERNEL_ACPI_OBJ) $(KERNEL_IOMMU_OBJ) $(KERNEL_SMP_OBJ) $(KERNEL_APTRAMP_OBJ) $(KERNEL_TLB_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_BOOT_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_KLOG_OBJ) $(KERNEL_PANIC_OBJ) $(KERNEL_LAPIC_OBJ) $(KERNEL_NC_KREPLY_OBJ) $(KERNEL_NC_KCNODE_OBJ) $(KERNEL_NC_KSCHEDCTX_OBJ) $(KERNEL_NC_KASIDPOOL_OBJ) $(KERNEL_NC_KUNTYPED_OBJ) $(KERNEL_SYSCALL_CSPACE_OBJ) $(KERNEL_SYSCALL_SCHED_OBJ) $(KERNEL_SYSCALL_UNTYPED_OBJ) $(KERNEL_SYSCALL_REPLY_OBJ) $(KERNEL_SYSCALL_CNODE_OPS_OBJ) $(KERNEL_SYSCALL_INVOKE_OBJ) $(KERNEL_NC_KTCB_OBJ) $(KERNEL_SYSCALL_TCB_OBJ) $(KERNEL_NC_CSPACE_OBJ) $(KERNEL_NC_KVSPACE_OBJ) $(KERNEL_NC_KFRAME_OBJ) $(KERNEL_NC_ROOT_BOOTINFO_OBJ) $(KERNEL_NC_KPAGETABLE_OBJ) $(KERNEL_NC_KIOSPACE_OBJ) $(KERNEL_NC_KIOPT_OBJ) $(KERNEL_SYSCALL_FRAME_OBJ) $(KERNEL_SYSCALL_IOSPACE_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_IRIS_TEST_BIN_OBJ) $(KERNEL_LIFECYCLE_PROBE_BIN_OBJ) $(KERNEL_PAGER_BIN_OBJ) $(KERNEL_TIMER_BIN_OBJ) $(KERNEL_PCI_BIN_OBJ) $(KERNEL_BLK_BIN_OBJ) $(KERNEL_NET_BIN_OBJ) $(KERNEL_FS_BIN_OBJ) $(KERNEL_IP_BIN_OBJ) $(KERNEL_HELLO_BIN_OBJ) $(KERNEL_PROC_BIN_OBJ) $(KERNEL_ALLOC_BIN_OBJ) $(KERNEL_OBJREG_BIN_OBJ) $(KERNEL_LIBUSER_BIN_OBJ) $(KERNEL_LDSO_BIN_OBJ) $(KERNEL_DYNPROG_BIN_OBJ) $(KERNEL_BOOTFIX_BADELF_OBJ) $(KERNEL_FILEBK_FBK_OBJ) $(KERNEL_FILEBK_FBK2_OBJ) $(KERNEL_FILEBK_ELFSEG_OBJ) $(KERNEL_FILEBK_SMALL_OBJ) $(KERNEL_DEMO_OBJS)
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_KSLAB_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_FPU_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_COREDISP_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_DISPATCH_OBJ) $(KERNEL_SYSCALL_IPC_OBJ) $(KERNEL_SYSCALL_VM_OBJ) $(KERNEL_SYSCALL_PROC_OBJ) $(KERNEL_SYSCALL_CAP_OBJ) $(KERNEL_SYSCALL_IRQ_OBJ) $(KERNEL_SYSCALL_DIAG_OBJ) $(KERNEL_SYSCALL_EP_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_UCOPYASM_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_FBCON_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KFAULT_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KENDPOINT_OBJ) $(KERNEL_ACPI_OBJ) $(KERNEL_IOMMU_OBJ) $(KERNEL_SMP_OBJ) $(KERNEL_APTRAMP_OBJ) $(KERNEL_TLB_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_BOOT_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_KLOG_OBJ) $(KERNEL_PANIC_OBJ) $(KERNEL_LAPIC_OBJ) $(KERNEL_NC_KREPLY_OBJ) $(KERNEL_NC_KCNODE_OBJ) $(KERNEL_NC_KSCHEDCTX_OBJ) $(KERNEL_NC_KASIDPOOL_OBJ) $(KERNEL_NC_KUNTYPED_OBJ) $(KERNEL_SYSCALL_CSPACE_OBJ) $(KERNEL_SYSCALL_SCHED_OBJ) $(KERNEL_SYSCALL_UNTYPED_OBJ) $(KERNEL_SYSCALL_REPLY_OBJ) $(KERNEL_SYSCALL_CNODE_OPS_OBJ) $(KERNEL_SYSCALL_INVOKE_OBJ) $(KERNEL_NC_KTCB_OBJ) $(KERNEL_SYSCALL_TCB_OBJ) $(KERNEL_NC_CSPACE_OBJ) $(KERNEL_NC_KVSPACE_OBJ) $(KERNEL_NC_KFRAME_OBJ) $(KERNEL_NC_ROOT_BOOTINFO_OBJ) $(KERNEL_NC_KPAGETABLE_OBJ) $(KERNEL_NC_KIOSPACE_OBJ) $(KERNEL_NC_KIOPT_OBJ) $(KERNEL_SYSCALL_FRAME_OBJ) $(KERNEL_SYSCALL_IOSPACE_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_IRIS_TEST_BIN_OBJ) $(KERNEL_LIFECYCLE_PROBE_BIN_OBJ) $(KERNEL_PAGER_BIN_OBJ) $(KERNEL_TIMER_BIN_OBJ) $(KERNEL_PCI_BIN_OBJ) $(KERNEL_BLK_BIN_OBJ) $(KERNEL_NET_BIN_OBJ) $(KERNEL_FS_BIN_OBJ) $(KERNEL_IP_BIN_OBJ) $(KERNEL_HELLO_BIN_OBJ) $(KERNEL_PROC_BIN_OBJ) $(KERNEL_ALLOC_BIN_OBJ) $(KERNEL_OBJREG_BIN_OBJ) $(KERNEL_LIBUSER_BIN_OBJ) $(KERNEL_LDSO_BIN_OBJ) $(KERNEL_DYNPROG_BIN_OBJ) $(KERNEL_LIBC_BIN_OBJ) $(KERNEL_CPROG_BIN_OBJ) $(KERNEL_BOOTFIX_BADELF_OBJ) $(KERNEL_FILEBK_FBK_OBJ) $(KERNEL_FILEBK_FBK2_OBJ) $(KERNEL_FILEBK_ELFSEG_OBJ) $(KERNEL_FILEBK_SMALL_OBJ) $(KERNEL_DEMO_OBJS)
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 KERNEL_DST  := $(EFI_IRIS_DIR)/KERNEL.ELF
 
@@ -230,6 +234,39 @@ DYNPROG_LDFLAGS := -nostdlib -static -pie --no-dynamic-linker \
 # without.
 LDSO_CFLAGS := -ffreestanding -fno-stack-protector -fPIE -mno-red-zone \
                $(COMMON_WARNINGS) $(SERVICE_INCLUDES) -MMD -MP
+
+# ── the C library, and a C program built against it ──────────────────────────
+#
+# `-nostdinc` plus gcc's OWN include directory: a program compiled here must
+# see this system's <stdio.h> and nothing of the host's, and gcc still has to
+# supply the headers that are the compiler's rather than the library's
+# (stddef.h, stdarg.h, stdint.h).  Leaving the host's path on would let a glibc
+# header in and the program would compile against declarations no object here
+# defines.
+GCC_FREESTANDING_INC := $(shell gcc -print-file-name=include)
+LIBC_INCLUDES := -nostdinc -isystem $(GCC_FREESTANDING_INC) \
+                 -I services/libc/include -I./kernel/include -I./kernel/new_core/include
+# -fPIC, and every global EXPORTED: a program's undefined symbols are resolved
+# against this object's .dynsym, so anything hidden is something a program
+# cannot call.  `-Bsymbolic` at link time is what keeps libc's own internal
+# calls from going through a PLT it would then have to resolve for itself.
+LIBC_CFLAGS := -ffreestanding -fno-stack-protector -fPIC -mno-red-zone \
+               $(COMMON_WARNINGS) $(LIBC_INCLUDES) -MMD -MP
+# A C program is built ORDINARILY: the default stack protector, whose canary is
+# read from %fs:0x28 -- which is the whole point of TCB_SetTLSBase and the one
+# thing in this tree that gets to be normal about it.
+CPROG_CFLAGS := -ffreestanding -fstack-protector-strong -fPIE -mno-red-zone \
+                $(COMMON_WARNINGS) $(LIBC_INCLUDES) -MMD -MP
+# sysv hash, because DT_HASH's second word IS the symbol count and this
+# system's linker reads it rather than inferring the table's size.
+LIBC_LDFLAGS  := -nostdlib -shared --hash-style=sysv -Bsymbolic -soname libc \
+                 -T services/link_libc.ld
+# `-dynamic-linker libc` writes the interpreter's NAME into `.interp`.  Without
+# it ld writes its own "/lib/ld64.so.1", which is a path into a directory this
+# system does not have -- and a name here is resolved by asking `objreg`, never
+# by looking anywhere.
+CPROG_LDFLAGS := -nostdlib -pie --hash-style=sysv -dynamic-linker libc \
+                 -T services/link_cprog.ld
 
 EFI_LIBDIR_FLAGS := -L/usr/lib -L/usr/lib/x86_64-linux-gnu -L/usr/lib/x86_64-linux-gnu/gnuefi
 LDFLAGS_EFI      := -nostdlib -znocombreloc -T $(EFI_LDS) -shared -Bsymbolic $(EFI_LIBDIR_FLAGS)
@@ -984,6 +1021,53 @@ $(KERNEL_DYNPROG_BIN_OBJ): $(SERVICE_DYNPROG_ELF) | dirs
 	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
 	    $(SERVICE_DYNPROG_ELF) $@
 
+# ── libc.so (Stage 10-run step 6: the C library, and the interpreter) ────────
+LIBC_SRCS := start.c start_main.c dynlink.c console.c heap.c malloc.c \
+             stdio.c string.c exit.c
+LIBC_OBJS := $(patsubst %.c,$(BUILD_DIR)/libc_%.o,$(LIBC_SRCS)) \
+             $(BUILD_DIR)/libc_dlstart.o $(BUILD_DIR)/libc_elf_reloc.o \
+             $(BUILD_DIR)/libc_prog_mem.o $(BUILD_DIR)/libc_prog_mem_plan.o
+
+$(BUILD_DIR)/libc_%.o: services/libc/%.c | dirs
+	gcc $(LIBC_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/libc_dlstart.o: services/libc/dlstart.S | dirs
+	gcc $(SERVICE_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/libc_elf_reloc.o: services/common/elf_reloc.c | dirs
+	gcc $(LIBC_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/libc_prog_mem.o: services/common/prog_mem.c | dirs
+	gcc $(LIBC_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/libc_prog_mem_plan.o: services/common/prog_mem_plan.c | dirs
+	gcc $(LIBC_CFLAGS) -c $< -o $@
+
+$(SERVICE_LIBC_SO): $(LIBC_OBJS) services/link_libc.ld
+	ld $(LIBC_LDFLAGS) $(filter %.o,$^) -o $@
+
+$(KERNEL_LIBC_BIN_OBJ): $(SERVICE_LIBC_SO) | dirs
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	    $(SERVICE_LIBC_SO) $@
+
+# ── cprog: a C program with no IRIS in it ───────────────────────────────────
+$(BUILD_DIR)/cprog_crt1.o: services/libc/crt1.S | dirs
+	gcc $(SERVICE_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/cprog_main.o: services/cprog/main.c | dirs
+	gcc $(CPROG_CFLAGS) -c $< -o $@
+
+$(SERVICE_CPROG_ELF): $(BUILD_DIR)/cprog_crt1.o $(BUILD_DIR)/cprog_main.o \
+                      $(SERVICE_LIBC_SO) services/link_cprog.ld
+	ld $(CPROG_LDFLAGS) $(BUILD_DIR)/cprog_crt1.o $(BUILD_DIR)/cprog_main.o \
+	    $(SERVICE_LIBC_SO) -o $@
+
+$(KERNEL_CPROG_BIN_OBJ): $(SERVICE_CPROG_ELF) | dirs
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	    $(SERVICE_CPROG_ELF) $@
+
 # ── boot-growth test fixtures (Phase 28): non-service initrd blobs ────────────
 # badelf.bin is a 256-byte invalid-ELF blob (a known header + zero pad) used by
 # the loader failure-path test (T216).  It is *.bin-gitignored, so it is
@@ -1161,7 +1245,7 @@ clean:
 # The Stage 10 services were left out of the line above as each was added,
 # so `clean` did not clean them: a stale `services/*/[name].elf` is relinked
 # into the kernel by a build that looks clean.
-	rm -f $(SERVICE_PCI_ELF) $(SERVICE_BLK_ELF) $(SERVICE_NET_ELF) $(SERVICE_FS_ELF) $(SERVICE_IP_ELF) $(SERVICE_HELLO_ELF) $(SERVICE_PROC_ELF) $(SERVICE_ALLOC_ELF) $(SERVICE_OBJREG_ELF) $(SERVICE_LIBUSER_ELF) $(SERVICE_LDSO_ELF) $(SERVICE_DYNPROG_ELF)
+	rm -f $(SERVICE_PCI_ELF) $(SERVICE_BLK_ELF) $(SERVICE_NET_ELF) $(SERVICE_FS_ELF) $(SERVICE_IP_ELF) $(SERVICE_HELLO_ELF) $(SERVICE_PROC_ELF) $(SERVICE_ALLOC_ELF) $(SERVICE_OBJREG_ELF) $(SERVICE_LIBUSER_ELF) $(SERVICE_LDSO_ELF) $(SERVICE_DYNPROG_ELF) $(SERVICE_LIBC_SO) $(SERVICE_CPROG_ELF)
 
 # Makefile is a real prerequisite: the source list and the flags live in it, so
 # editing either must relink.  Without this, adding a translation unit to

@@ -555,6 +555,29 @@ if ! grep -Eq "\[USER\]\[INIT\] proc: dynprog exit 42 OK$" "$LOG_FILE"; then
   exit 1
 fi
 
+# ...and an ORDINARY C PROGRAM ran (Stage 10-run step 6, in part).
+#
+# `services/cprog/main.c` has no IRIS in it: it includes <stdio.h>, calls
+# printf/malloc/strcmp, and returns 7.  Getting there costs a PT_INTERP naming
+# the C library, an interpreter that relocates itself and then resolves this
+# program's eight JUMP_SLOT relocations against the object table its spawner
+# filled, a thread pointer (so the ORDINARY stack protector works -- the canary
+# at %fs:0x28 is what TCB_SetTLSBase was added for), a heap out of the
+# program's own budget, and a console endpoint it was handed.
+#
+# 7 rather than 0, because 0 is what a program that did nothing also returns.
+if ! grep -Eq "\[USER\]\[INIT\] proc: cprog exit 7 OK$" "$LOG_FILE"; then
+  echo "[headless] no C program ran against this system's libc:"
+  grep -E "CPROG|cprog" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+if ! grep -q "\[CPROG\] hello from a C program: libc/6, argc=1, argv\[0\]=cprog" "$LOG_FILE"; then
+  echo "[headless] the C program ran but printf did not say what it should:"
+  grep -E "CPROG" "$LOG_FILE" | sed 's/^/           /'
+  exit 1
+fi
+
 # ...and one copy of a library serves two live programs (Stage 10-run step 4).
 #
 # Three lines, and the first is the only MEASUREMENT in this gate that two

@@ -332,6 +332,8 @@ static void vfs_seed_fixture_exports(struct vfs_state *state) {
     vfs_seed_named(state, 26u, "libuser");
     vfs_seed_named(state, 27u, "ldso");
     vfs_seed_named(state, 28u, "dynprog");
+    vfs_seed_named(state, 29u, "libc");
+    vfs_seed_named(state, 30u, "cprog");
 }
 
 /* Single-threaded server: static IPC buffers, no stack pressure. */

@@ -2879,7 +2879,7 @@ inside the valid range — the one thing that boundary exists to prevent.
 stage that had closed without anyone returning to them, which is the exact
 failure §5.1 was written to stop.  All six are answered in ledger A-35.
 
-## Stage 10-run — the dynamic C runtime  ← OPEN (steps 1-5 of 8 closed)
+## Stage 10-run — the dynamic C runtime  ← OPEN (steps 1-5 closed, 6 in progress)
 
 Precondition: 10-abi (the surface a runtime binds to is frozen), 10-mem (a
 grant is a run of frame capabilities), 11-life, 13-form.  All met.
@@ -3335,12 +3335,68 @@ unmap-and-remap of a whole frame and a frame does not split, so a dynamic
 program's relocated pages stay writable.  `link_dynprog.ld` says so where a
 reader will find it rather than leaving it to be discovered.
 
-**Step 6 — musl, resolving by capability.**  `libc.so` is the interpreter.  Its
-`__syscall` backend is IRIS invocations.  `dynlink.c`'s object resolution is
-replaced with "read the table you were given".  Dynamic TLS on top of step 1.
-*Closes when:* a C program nobody modified, compiled against this libc, loaded
-from the filesystem at runtime, prints to the console and exits with a status
-the shell reads — in the gate, on every commit.
+**Step 6 — a C library, resolving by capability.**  ◐ **IN PROGRESS — the
+library and the C program landed; the shell's half has not.**
+
+*The library is IRIS's own, not musl, and that was the project owner's choice
+when the cost of each was put in front of them.*  musl emits **Linux** syscalls
+— numbers and semantics IRIS does not have — so porting it means writing a
+Linux-personality shim over capabilities, and vendoring ~150k lines into this
+repository.  `services/libc` is ~1.5k lines that invoke capabilities directly.
+The CONTRACT is the same either way (`PT_INTERP`, an object table, `AT_IRIS_*`,
+`TCB_SetTLSBase`), so musl can replace it behind that contract later; what
+would change is the shim, not the system.
+
+*What runs today,* on every runtime lane:
+
+```
+[CPROG] hello from a C program: libc/6, argc=1, argv[0]=cprog
+[CPROG] -42 42 beef left  | right| +7 00099 %
+[USER][INIT] proc: cprog exit 7 OK
+```
+
+`services/cprog/main.c` has **no IRIS in it**: `#include <stdio.h>`, `printf`,
+`malloc`, `strcmp`, `return 7`.  Running it costs a `PT_INTERP` naming the C
+library, an interpreter that relocates itself and then resolves the program's
+**eight `JUMP_SLOT` relocations** against the object table its spawner filled, a
+thread pointer, a heap out of the program's own budget, and a console endpoint
+it was handed.  None of that is visible from the source, which is the point.
+
+Landed:
+  - **`services/libc/dynlink.c`** — symbol resolution.  A stock linker reads
+    `DT_NEEDED`, then searches `DT_RPATH`, `LD_LIBRARY_PATH` and `/lib`, which
+    is "open any path it can name" arriving through the loader; charter §6
+    refused that personality.  Here the spawner resolved the set before the
+    process existed and the linker resolves names IN IT.  An unresolved symbol
+    is a **refusal**, not a zero: filling it produces a program that runs until
+    it calls the thing it could not find.  PLT relocations are bound EAGERLY,
+    so a missing name is found at launch rather than at the first call.
+  - **`__libc_tls_init`** — Stage 10-run step 1's payoff.  A C program here is
+    built ORDINARILY, `-fstack-protector-strong` with the canary at `%fs:0x28`;
+    every other image in this tree carries
+    `-mstack-protector-guard=global` and a comment explaining why not.
+  - **`crt1.S` passes `main` as an ARGUMENT.**  A C library that referenced
+    `main` would be a shared object with an undefined symbol only one consumer
+    could satisfy.
+  - **`link_libc.ld` / `link_cprog.ld`** — `.dynsym`, `.dynstr` and `.hash`
+    kept.  `--hash-style=sysv` specifically: `DT_HASH`'s second word IS the
+    symbol count, and a linker that has to infer the table's size is one that
+    can read past a malformed image.
+  - printf (`%d %i %u %x %X %o %c %s %p %%`, `l`/`ll`/`z`, width, `-0+ `), a
+    first-fit malloc over step 3's `prog_mem`, and the string functions a
+    program cannot start without.  **No floating point**, deliberately: there
+    is no soft-float here and a `%f` would print an answer this code cannot
+    justify.
+
+*Remaining, and it is the close condition's other half:* **"a status the SHELL
+reads"**.  `sh` needs `proc`'s endpoint — which means `init` publishing it in
+svcmgr's registry, a slot in svcmgr's manifest for `sh`, and a `run` command.
+Today the status is read by `init`, which proves the mechanism but not the
+sentence.
+
+*Also not here:* `PT_TLS`.  A program that declares a `__thread` variable will
+not link, which is a refusal rather than a silent zero; static TLS belongs with
+whatever needs it first.
 
 **Step 7 — descriptors.**  `open`/`read`/`write`/`close`/`dup`/`lseek` over VFS
 grants and `fs`.  Requires the VFS to gain WRITE, which is a protocol decision

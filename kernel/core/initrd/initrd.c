@@ -98,6 +98,10 @@ extern const uint8_t _binary_services_ldso_ldso_elf_start[];
 extern const uint8_t _binary_services_ldso_ldso_elf_end[];
 extern const uint8_t _binary_services_dynprog_dynprog_elf_start[];
 extern const uint8_t _binary_services_dynprog_dynprog_elf_end[];
+extern const uint8_t _binary_services_libc_libc_so_start[];
+extern const uint8_t _binary_services_libc_libc_so_end[];
+extern const uint8_t _binary_services_cprog_cprog_elf_start[];
+extern const uint8_t _binary_services_cprog_cprog_elf_end[];
 extern const uint8_t _binary_services_pager_pager_elf_start[];
 extern const uint8_t _binary_services_pager_pager_elf_end[];
 
@@ -235,6 +239,14 @@ static const struct initrd_entry g_initrd[] = {
      * dereferencing them. */
     { _binary_services_dynprog_dynprog_elf_start,
       _binary_services_dynprog_dynprog_elf_end  },
+    /* [29] libc.so — the C LIBRARY, which is also the interpreter.  `objreg`
+     * holds one copy of its text for every C program on the machine. */
+    { _binary_services_libc_libc_so_start,
+      _binary_services_libc_libc_so_end  },
+    /* [30] cprog — an ordinary C program.  Nothing in its source knows what
+     * system it is on; it includes <stdio.h>, calls printf, and returns 7. */
+    { _binary_services_cprog_cprog_elf_start,
+      _binary_services_cprog_cprog_elf_end  },
 };
 
 #define INITRD_ENTRY_COUNT \

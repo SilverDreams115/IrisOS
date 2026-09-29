@@ -60,6 +60,10 @@ UEFI → BOOTX64.EFI → KERNEL.ELF
                          Untyped until the retype refuses, survives that, and
                          gives the bytes back — exits 42 only if all of it
                          held.  Its budget is then reclaimed WHOLE)
+          → cprog       (an ORDINARY C program: #include <stdio.h>, printf,
+                         malloc, return 7.  Nothing in its source knows what
+                         system it is on.  services/libc is the C library AND
+                         the interpreter that resolves its symbols)
           → dynprog     (a TWO-OBJECT program: it names `ldso` in its
                          PT_INTERP, so the loader relocates nothing and the
                          interpreter — loaded at its own bias, having first

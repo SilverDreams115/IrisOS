@@ -65,6 +65,18 @@ typedef struct {
     Elf64_Sxword r_addend;
 } Elf64_Rela;
 
+/* A dynamic symbol.  Read only when there is symbol RESOLUTION to do, which
+ * is Stage 10-run step 6: before that, every relocation in this system was
+ * `RELATIVE` and named nothing. */
+typedef struct {
+    Elf64_Word    st_name;
+    uint8_t       st_info;
+    uint8_t       st_other;
+    Elf64_Half    st_shndx;
+    Elf64_Addr    st_value;
+    Elf64_Xword   st_size;
+} Elf64_Sym;
+
 #define ET_DYN              3u
 #define EM_X86_64           62u
 #define PT_LOAD             1u
@@ -77,12 +89,27 @@ typedef struct {
 #define PT_INTERP           3u
 #define PT_PHDR             6u
 #define DT_NULL             0
+#define DT_NEEDED           1
+#define DT_PLTRELSZ         2
+#define DT_HASH             4
+#define DT_STRTAB           5
+#define DT_SYMTAB           6
 #define DT_RELA             7
 #define DT_RELASZ           8
 #define DT_RELAENT          9
+#define DT_STRSZ            10
+#define DT_SYMENT           11
+#define DT_PLTREL           20
+#define DT_JMPREL           23
 #define PF_X                1u
 #define PF_W                2u
 #define ELF64_R_TYPE(i)     ((uint32_t)((i) & 0xffffffffULL))
+#define ELF64_R_SYM(i)      ((uint32_t)((i) >> 32))
+#define R_X86_64_64         1u
+#define R_X86_64_COPY       5u
+#define R_X86_64_GLOB_DAT   6u
+#define R_X86_64_JUMP_SLOT  7u
 #define R_X86_64_RELATIVE   8u
+#define SHN_UNDEF           0u
 
 #endif /* IRIS_COMMON_ELF64_H */

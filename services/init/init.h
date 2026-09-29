@@ -261,6 +261,11 @@ struct init_findings {
      * means an interpreter was loaded at its own bias and relocated the
      * program exactly once — any other number names which of those failed. */
     uint32_t dyn_exit;
+    /* ...and the C program: the status it exited with.  7 means an ordinary C
+     * program, compiled against this system's libc with no IRIS in its source,
+     * resolved its symbols against the object table, got a thread pointer, a
+     * heap and a console, printed, and returned a number somebody read. */
+    uint32_t c_exit;
 };
 extern struct init_findings g_init_found;
 void init_report_findings(void);
