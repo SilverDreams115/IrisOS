@@ -212,6 +212,26 @@ uint64_t svc_image_dest(uint64_t ws);
  * success, which is what makes it safe to call every spawn.
  */
 int svc_ws_ensure(uint64_t ws);
+
+/*
+ * The child's BUDGET, named from the child's thread.
+ *
+ * A spawner that means to reclaim has to be able to reach the Untyped its
+ * child was carved from, and it already holds one: the workspace keeps each
+ * child's budget across spawns, because the leaf scan RESETs it when the leaf
+ * is reused.  So this is arithmetic on the capability the spawn already
+ * returned, not a new thing to keep — pass `out_proc_h` back in and get the
+ * region it was carved from.
+ *
+ * `Untyped_Reset` on it answers BUSY while anything is still charged to it,
+ * which is the honest "the child is not gone yet".  Once the child's last
+ * capability is dropped it succeeds, and `Untyped_Info` then reports the whole
+ * region available again — which is the only way to state reclamation as a
+ * number rather than as a hope.
+ *
+ * Returns 0 for a CPtr that is not one of this workspace's process leaves.
+ */
+uint32_t svc_child_budget_slot(uint64_t ws, uint64_t child_tcb_cptr);
 long svc_load_image_ws(uint64_t elf_bytes, uint64_t keep_stack_dest,
                        iris_cptr_t *out_proc_h, iris_cptr_t *out_chan_h,
                        struct svc_mint *mints, uint32_t mint_count,

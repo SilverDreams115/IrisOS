@@ -65,6 +65,14 @@ void test_program_abi(void) {
 
     /* mmap has room below the stack, and the stack is where it was */
     ASSERT_TRUE(USER_PRIVATE_BASE + IRIS_PROG_MMAP_OFF < USER_STACK_BASE);
+    /* ...and the contract's own name for where the stack starts is the same
+     * address paging.h computes.  Two files state it; this is what keeps them
+     * from stating two different things. */
+    ASSERT_EQ((long)(USER_PRIVATE_BASE + IRIS_PROG_STACK_OFF), (long)USER_STACK_BASE);
+    /* The mmap region ends one page BELOW it: the guard page is not part of
+     * any region, so no allocator can hand it out. */
+    ASSERT_EQ((long)(IRIS_PROG_STACK_OFF - IRIS_PROG_MMAP_END_OFF), 4096L);
+    ASSERT_TRUE(IRIS_PROG_MMAP_OFF < IRIS_PROG_MMAP_END_OFF);
     ASSERT_TRUE(USER_STACK_BASE < USER_STACK_TOP);
     ASSERT_TRUE(USER_STACK_TOP < USER_PRIVATE_BASE + USER_PRIVATE_SIZE);
 

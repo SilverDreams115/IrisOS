@@ -88,6 +88,8 @@ extern const uint8_t _binary_services_hello_hello_elf_start[];
 extern const uint8_t _binary_services_hello_hello_elf_end[];
 extern const uint8_t _binary_services_proc_proc_elf_start[];
 extern const uint8_t _binary_services_proc_proc_elf_end[];
+extern const uint8_t _binary_services_alloc_alloc_elf_start[];
+extern const uint8_t _binary_services_alloc_alloc_elf_end[];
 extern const uint8_t _binary_services_pager_pager_elf_start[];
 extern const uint8_t _binary_services_pager_pager_elf_end[];
 
@@ -201,6 +203,11 @@ static const struct initrd_entry g_initrd[] = {
      * is here and `init` starts it; what it spawns is not, and never will be. */
     { _binary_services_proc_proc_elf_start,
       _binary_services_proc_proc_elf_end  },
+    /* [24] alloc — the second PROGRAM, and not a service either.  It spends
+     * the budget it was given until the retype refuses, and then keeps
+     * running; step 3's whole claim is that those two are compatible. */
+    { _binary_services_alloc_alloc_elf_start,
+      _binary_services_alloc_alloc_elf_end  },
 };
 
 #define INITRD_ENTRY_COUNT \

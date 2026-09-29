@@ -52,6 +52,10 @@ UEFI → BOOTX64.EFI → KERNEL.ELF
                          at boot and no index names it.  It walks the stack it
                          was handed and exits 42 only if every part of it is
                          what docs/contracts/program.md says)
+          → alloc       (the second program.  Grows a heap out of its own
+                         Untyped until the retype refuses, survives that, and
+                         gives the bytes back — exits 42 only if all of it
+                         held.  Its budget is then reclaimed WHOLE)
 ```
 
 The indentation under `pci` is the authority, not the call graph: `blk` and

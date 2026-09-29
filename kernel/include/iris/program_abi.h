@@ -66,6 +66,18 @@
 #define IRIS_PROG_HEAP_OFF        0x60000000ULL
 #define IRIS_PROG_HEAP_END_OFF    0x70000000ULL
 #define IRIS_PROG_MMAP_OFF        0x70000000ULL   /* .. USER_STACK_BASE */
+/*
+ * Where the `mmap` region STOPS, spelled here so a program's allocator does
+ * not have to include a kernel header to know.  It is `USER_STACK_BASE` minus
+ * its guard page, and `test_program_abi` asserts it against `paging.h` — one
+ * of those two files will move some day and the assertion is what will say so.
+ *
+ * The guard page is OUTSIDE the region, not merely respected by whoever walks
+ * it: a cursor that could hand it out would turn the one thing that page
+ * exists to catch, a stack overflow, into a write into somebody's mapping.
+ */
+#define IRIS_PROG_STACK_OFF       0x7FFFFF7000ULL  /* = USER_STACK_BASE     */
+#define IRIS_PROG_MMAP_END_OFF    (IRIS_PROG_STACK_OFF - 0x1000ULL)
 
 /*
  * ── The auxiliary vector ──────────────────────────────────
@@ -120,6 +132,20 @@
 /* What the service found and refused, in numbers, for a machine with no
  * serial port: a spawn that failed names the step it failed at. */
 #define PROC_OP_INFO              0x7402u
+/*
+ * PROC_OP_REAP — RESET the budget the last child was carved from, and say how
+ * much came back.
+ *
+ * Reply OK: words[0] = the bytes the child was given
+ *           words[1] = the bytes available in that region now
+ * Reply ERR: words[0] = the kernel's error.  `IRIS_ERR_BUSY` is the one worth
+ *           knowing: something is still charged to the region, which means
+ *           somebody still holds a capability to something inside it.  That is
+ *           not a failure to reclaim — it is reclamation refusing to happen
+ *           early, and the caller's own copy of the child's thread is the
+ *           usual reason.  Drop it and ask again.
+ */
+#define PROC_OP_REAP              0x7403u
 
 #define PROC_REP_OK               0x7480u
 #define PROC_REP_ERR              0x7481u

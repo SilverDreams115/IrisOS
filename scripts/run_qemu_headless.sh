@@ -482,6 +482,11 @@ fi
 
 # ...and a PROGRAM ran (Stage 10-run step 2).
 #
+# Anchored at the END and not at the start: `sh` shares this serial line and
+# prints its prompt on it, so any one line of the boot can come out with "> " in
+# front of it.  A gate failing on a cosmetic race is worse than one character of
+# looseness here.
+#
 # Not "proc came up".  This line means an ELF was found on the filesystem BY
 # PATH, read through the VFS into a frame, laid out as a process, given a
 # System V initial stack with argv/envp/auxv on it, started, and exited — and
@@ -494,9 +499,39 @@ fi
 # not the one the contract fixes.  A spawn that "worked" with a subtly wrong
 # stack would exit with one of those instead, so the exact status is required
 # rather than merely a clean exit.
-if ! grep -Eq "^\[USER\]\[INIT\] proc: hello exit 42 OK$" "$LOG_FILE"; then
+if ! grep -Eq "\[USER\]\[INIT\] proc: hello exit 42 OK$" "$LOG_FILE"; then
   echo "[headless] no program ran from the filesystem:"
   grep -E "PROC|proc:" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+# ...and that program could ASK FOR MEMORY, run out, and survive it, and the
+# region it was given came back whole (Stage 10-run step 3).
+#
+# Two lines, because the claim has two halves and each is worthless alone.
+#
+# `alloc exit 42` means: it grew its heap out of its own Untyped until the
+# retype refused, wrote and read back every page it took, was still able to
+# work AND to speak on the console afterwards, gave half back and took most of
+# that half again, and mmap/mprotect/munmap all did what they say.  Any other
+# number names which of those failed.
+#
+# `reclaimed N of N KiB, all of it` is the other half, and it is only
+# meaningful because init first asked WHILE STILL HOLDING the dead program's
+# thread and was refused with BUSY.  A reset that always succeeded would print
+# the same line.  The refusal is what makes the success evidence, so a run
+# where init got an answer it should not have fails loudly above rather than
+# passing quietly here.
+if ! grep -Eq "\[USER\]\[INIT\] proc: alloc exit 42 OK$" "$LOG_FILE"; then
+  echo "[headless] a program could not spend the budget it was given:"
+  grep -E "ALLOC|proc:" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+if ! grep -Eq "\[USER\]\[INIT\] proc: reclaimed [0-9]+ of [0-9]+ KiB, all of it$" "$LOG_FILE"; then
+  echo "[headless] a dead program's budget did not come back whole:"
+  grep -E "ALLOC|proc:" "$LOG_FILE" | sed 's/^/           /'
   cat "$LOG_FILE"
   exit 1
 fi

@@ -2879,7 +2879,7 @@ inside the valid range — the one thing that boundary exists to prevent.
 stage that had closed without anyone returning to them, which is the exact
 failure §5.1 was written to stop.  All six are answered in ledger A-35.
 
-## Stage 10-run — the dynamic C runtime  ← OPEN
+## Stage 10-run — the dynamic C runtime  ← OPEN (steps 1-3 of 8 closed)
 
 Precondition: 10-abi (the surface a runtime binds to is frozen), 10-mem (a
 grant is a run of frame capabilities), 11-life, 13-form.  All met.
@@ -3066,15 +3066,90 @@ stack — in `program_abi.h`, and `test_program_abi` pins that they are ordered
 and disjoint.  What hands out an address inside the `mmap` region is a cursor
 that only exists once there is an `mmap`, so it lands with it.
 
-**Step 3 — memory a program can ask for.**  `brk` and `mmap` over
-`UNTYPED_RETYPE` plus frame mapping, bounded by the process's own Untyped.
-`mprotect` as unmap-and-remap, which is what RELRO needs.  It also inherits the
-virtual-address CURSOR from step 2: the regions are fixed and pinned already,
-and what hands out an address inside the `mmap` region only has meaning once
-there is an `mmap` to hand one to.
-*Closes when:* a program exhausts its budget and gets a clean failure rather
-than taking anything down with it, and an `Untyped_Reset` after it dies returns
-exactly what it was given.
+**Step 3 — memory a program can ask for.**  ✅ **CLOSED.**  `brk` and `mmap`
+over `UNTYPED_RETYPE` plus frame mapping, bounded by the process's own Untyped.
+`mprotect` as unmap-and-remap, which is what RELRO needs.
+
+*Closed by:* the boot, on every runtime lane and at smp1/2/4.  `init` asks
+`proc` for the program `alloc`, which grows its heap out of its own budget
+until the retype refuses, and then:
+
+```
+[ALLOC] the budget ran out after 2048 KiB, and here I am
+[ALLOC] gave back half and took 1024 KiB of it again
+[ALLOC] every claim held
+[USER][INIT] proc: alloc exit 42 OK
+[USER][INIT] proc: reclaimed 4096 of 4096 KiB, all of it
+```
+
+Every page it takes is written and read back with a pattern derived from its
+ADDRESS, so two mappings that landed on one physical page fail even though each
+reads back what it wrote.  After the refusal it re-reads a page taken long
+before it, is refused again, and speaks on the console — which is the whole
+difference between a refusal and a failure, and the reason it acquires its
+console before it spends a byte.  Then it shrinks and grows again past where it
+had been, which is only possible if releasing the frames really returned the
+bytes.
+
+**None of this is a syscall and none of it is a service.**  A program holds its
+own budget and its own address space, so growing a heap is two invocations on
+objects nobody else has to be asked about.  That is what makes the failure mode
+the good one: there is no shared pool to exhaust, so running out is a RETURN
+VALUE on the calling thread, with nothing else on the machine even noticing —
+no signal, no arbitration, no killer choosing a victim.
+
+*And the reclamation is checked in BOTH directions,* because the success alone
+would be worthless.  `init` asks for the reset while it still holds the dead
+program's THREAD and is refused with `IRIS_ERR_BUSY`; it then drops that one
+capability and asks again, and the region comes back whole.  Nothing else
+changes between the two answers.  That is reclamation in this system stated as
+an experiment: not a collector, not a heuristic, not a kernel deciding when — a
+region becomes reusable at the moment the last capability into it does.
+
+Landed:
+  - **`services/common/prog_mem.h` + `prog_mem_plan.c` + `prog_mem.c`** — the
+    program-side allocator, split so the ARITHMETIC is unit-tested on the host.
+    That half is the half that is wrong quietly: a mis-ordered cursor hands out
+    an address inside the stack guard, an off-by-one in the slot pool hands out
+    a slot another mapping is using, and a `find` that accepts a partial
+    overlap lets `mprotect` change the protection of a page its caller did not
+    name.  None of those fault where the mistake is; all three are one
+    comparison each, and `test_prog_mem` asserts all three.
+  - **the heap grows geometrically**, and the reason is bookkeeping rather than
+    speed: every frame costs one record and one CSpace slot, both fixed, so a
+    heap that grew by the requested amount would run out of THIS FILE long
+    before it ran out of budget — and then the refusal a program got would be
+    about the allocator instead of about what it was given.
+  - **`IRIS_PROG_STACK_OFF` / `IRIS_PROG_MMAP_END_OFF`** — the `mmap` region's
+    ceiling, named in the contract so a program's allocator needs no kernel
+    header, and asserted against `paging.h` by `test_program_abi`.  The stack's
+    guard page is OUTSIDE the region rather than merely respected: a cursor
+    that could hand it out would turn the one thing that page exists to catch
+    into a write into somebody's mapping.
+  - **`PROC_OP_REAP`** and `svc_child_budget_slot` — reclamation made
+    askable.  Nothing new is kept for it: the workspace already holds each
+    child's budget across spawns, so the budget is arithmetic on the thread
+    capability the spawn already returned.
+
+One real defect this step found, and it would have been permanent:
+**`proc` leaked the loader's own copy of every child's thread.**  The loader
+returns the TCB in a workspace leaf and does not close it, which is right for a
+caller with nowhere else to put it — but `proc` mints its own and hands THAT
+on, so the leaf was a third reference nobody needed.  While it existed the TCB
+existed, the TCB was charged to the child's budget, and `Untyped_Reset` on that
+budget answered BUSY for ever: every program ever spawned would have
+permanently spent a slice of the spawner's region.  Nothing before step 3 could
+have noticed, because nothing before step 3 asked for the memory back.
+
+*What is deliberately not here:* address REUSE.  `prog_munmap` returns the
+memory and not the address — the `mmap` cursor never goes backwards — so a
+program that maps and unmaps in a loop runs out of region long before it runs
+out of budget.  That is written down in `prog_mem.h` rather than pretended
+about, and it is a thing to fix when something needs it.  `mprotect` likewise
+refuses a sub-range instead of widening silently: a frame is mapped by one
+invocation covering all of it, and a frame does not split.  `PT_GNU_RELRO` will
+therefore need its own frame, which is a decision for whoever lays the segments
+out in step 5, not something this call can fix afterwards.
 
 **Step 4 — the object registry.**  The service that makes dynamic pay: it loads
 a DSO once, holds its frames, and mints READ-ONLY capabilities for the text to

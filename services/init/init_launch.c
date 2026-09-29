@@ -2205,6 +2205,26 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
     }
     rep_ch(b, &k, lim, '\n');
 
+    rep_str(b, &k, lim, " mem   ");
+    if (g_init_found.prog_given) {
+        rep_str(b, &k, lim, "alloc spent its budget, exit ");
+        rep_num(b, &k, lim, g_init_found.prog_mem_exit);
+        rep_str(b, &k, lim, ", reclaimed ");
+        rep_num(b, &k, lim, g_init_found.prog_reclaimed);
+        rep_str(b, &k, lim, " of ");
+        rep_num(b, &k, lim, g_init_found.prog_given);
+        rep_str(b, &k, lim, " KiB");
+        if (g_init_found.prog_reclaimed != g_init_found.prog_given)
+            rep_str(b, &k, lim, " (NOT all of it)");
+    } else if (g_init_found.prog_mem_exit) {
+        rep_str(b, &k, lim, "alloc exited ");
+        rep_num(b, &k, lim, g_init_found.prog_mem_exit);
+        rep_str(b, &k, lim, ", nothing reclaimed");
+    } else {
+        rep_str(b, &k, lim, "not measured");
+    }
+    rep_ch(b, &k, lim, '\n');
+
     rep_str(b, &k, lim, "==============================\n");
     if (k > lim) k = lim;
     b[k] = 0;
@@ -2312,29 +2332,155 @@ void init_report_findings(void) {
 
 /* ── proc spawn (the first thing init starts in order to start something else) */
 
+/* A small decimal, appended.  There is no printf here and the numbers ARE the
+ * evidence, so they are spelled out rather than summarised. */
+static void init_app_num(char *b, uint32_t *k, uint64_t v) {
+    char d[24];
+    uint32_t n = 0;
+    if (v == 0u) d[n++] = '0';
+    while (v && n < 20u) { d[n++] = (char)('0' + (uint32_t)(v % 10u)); v /= 10u; }
+    while (n) b[(*k)++] = d[--n];
+}
+
 /*
- * `proc`, and the first program.
+ * Run ONE program by path and answer the status it exited with.
+ *
+ * On return the child's THREAD is still in `INIT_SLOT_PROC_CHILD`, deliberately:
+ * dropping it is what lets its budget be reclaimed, so who drops it and when is
+ * the caller's decision and part of what step 3 demonstrates.
+ *
+ * Returns the exit status, or a negative `iris_error_t`.  `*out_step` carries
+ * the spawn step for a program that never started.
+ */
+static long init_run_program(const char *path, uint32_t *out_step) {
+    struct iris_msg m;
+    long r;
+    uint32_t plen = 0;
+
+    *out_step = PROC_STEP_NONE;
+    while (path[plen]) plen++;
+
+    iris_msg_zero(&m);
+    m.label      = PROC_OP_SPAWN;
+    m.words[0]   = 0u;                  /* the default budget is fine for these */
+    m.word_count = 1u;
+    for (uint32_t i = 0; i < plen; i++) g_init_buf[i] = (uint8_t)path[i];
+    g_init_buf[plen] = 0u;
+    m.buf_len   = plen + 1u;
+    /* Where the child's THREAD lands.  There is no process object to ask for;
+     * the thread is what a supervisor names. */
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_CHILD);
+    m.recv_slot = (long)INIT_SLOT_PROC_CHILD;
+
+    if (iris_msg_call((long)INIT_SLOT_PROC_EP, &m) != 0)
+        return (long)IRIS_ERR_NOT_SUPPORTED;
+    if (m.label != PROC_REP_OK) {
+        /* The step number IS the diagnosis — see PROC_STEP_* — so it is
+         * printed rather than folded into one word. */
+        char e[96];
+        uint32_t j = 0;
+        const char *pre = "[USER][INIT] proc: ";
+        while (pre[j]) { e[j] = pre[j]; j++; }
+        for (uint32_t i = 0; i < plen && j < 60u; i++) e[j++] = path[i];
+        {
+            const char *mid = " did not start, step ";
+            for (uint32_t i = 0; mid[i]; i++) e[j++] = mid[i];
+        }
+        init_app_num(e, &j, m.words[0]);
+        e[j++] = ' '; e[j++] = 'w'; e[j++] = 'h'; e[j++] = 'y'; e[j++] = ' ';
+        init_app_num(e, &j, m.words[1]);
+        {
+            /* The kernel error, printed as the negative it is. */
+            long d = (long)m.words[2];
+            const char *er = " err ";
+            for (uint32_t i = 0; er[i]; i++) e[j++] = er[i];
+            if (d < 0) { e[j++] = '-'; init_app_num(e, &j, (uint64_t)(-d)); }
+            else       { init_app_num(e, &j, (uint64_t)d); }
+        }
+        e[j++] = '\n'; e[j] = 0;
+        init_log(e);
+        *out_step = (uint32_t)m.words[0];
+        return (long)IRIS_ERR_NOT_SUPPORTED;
+    }
+    *out_step = PROC_STEP_RUNNING;
+
+    /*
+     * Wait for it, bounded.
+     *
+     * Same construction as the iris_test wait: the death arrives as a
+     * notification the watch raises, the bound arrives as a reserved bit from
+     * the timer service, and the two are told apart by which bit came up.  A
+     * program that hangs must not hang the boot.
+     */
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_NOTIF);
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
+                         INIT_SLOT_PROC_NOTIF, 0) < 0) {
+        init_log("[USER][INIT] proc: watch notif FAILED\n");
+        return (long)IRIS_ERR_NO_MEMORY;
+    }
+    if (iris_invoke2((long)INIT_SLOT_PROC_CHILD, INV_TCB_WATCH,
+                     (long)INIT_SLOT_PROC_NOTIF, 1) < 0) {
+        init_log("[USER][INIT] proc: watch FAILED\n");
+        return (long)IRIS_ERR_ACCESS_DENIED;
+    }
+    {
+        uint64_t bits = 0, tok = 0;
+        long give;
+        (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_GIVE);
+        give = iris_invoke2((long)INIT_SLOT_PROC_NOTIF, INV_CSPACE_MINT,
+                            (long)(((uint64_t)INIT_SLOT_PROC_GIVE << 32) | 0u),
+                            (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+        if (give == 0)
+            (void)iris_timer_arm((long)INIT_SLOT_TIMER_EP,
+                                 (long)INIT_SLOT_PROC_GIVE, IRIS_TIMER_BIT,
+                                 INIT_PROC_WATCHDOG_NS, &tok);
+        for (;;) {
+            r = iris_invoke1((long)INIT_SLOT_PROC_NOTIF, INV_NOTIFY_WAIT, (long)&bits);
+            if (r != 0) break;
+            if (bits & ~IRIS_TIMER_BIT) { r = 0; break; }
+            if (bits & IRIS_TIMER_BIT)  { r = (long)IRIS_ERR_TIMED_OUT; break; }
+        }
+        if (r == 0 && tok) (void)iris_timer_cancel((long)INIT_SLOT_TIMER_EP, tok);
+        (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_GIVE);
+    }
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_NOTIF);
+    if (r < 0) {
+        init_log("[USER][INIT] proc: wait TIMEOUT\n");
+        return (long)IRIS_ERR_TIMED_OUT;
+    }
+    return iris_invoke0((long)INIT_SLOT_PROC_CHILD, INV_TCB_EXIT_CODE);
+}
+
+/*
+ * `proc`, the first program, and the memory the second one spends.
  *
  * Everything init has spawned until now is a SERVICE: an image in the kernel
  * initrd, started by index, holding a manifest written here.  `proc` is the
  * first that exists to start something that is not one of those — an ELF on a
  * filesystem, found by path.
  *
- * So what this function proves is not that `proc` came up.  It is that a FILE
- * was read through the VFS, laid out as a process, given a System V initial
- * stack, and RAN — and the way it proves it is by reading back the exit status
- * of a program whose whole job is to inspect the stack it was handed and
- * report, in that status, which part of it was wrong.  `hello` returns 42 only
- * if `argc`, `argv`, `envp` and the auxiliary vector are all where the contract
- * says.  Anything else is a number that says which one was not.
+ * So what this function proves is not that `proc` came up.  Three things:
  *
- * Returns 1 when the program ran and returned that number.
+ *   - a FILE was read through the VFS, laid out as a process, given a System V
+ *     initial stack, and RAN.  `hello` returns 42 only if `argc`, `argv`,
+ *     `envp` and the auxiliary vector are all where the contract says; anything
+ *     else is a number naming which one was not.
+ *   - a program can ASK FOR MEMORY out of its own budget, run out, and keep
+ *     running.  `alloc` returns 42 only if the refusal was clean and the bytes
+ *     it gave back really came back.
+ *   - and the region a dead child was carved from is RECLAIMED — refused while
+ *     anybody still holds a capability inside it, and returned in full once
+ *     nobody does.  That last pair is the whole of step 3's close condition,
+ *     and it is checked in both directions because only the refusal proves the
+ *     success was not vacuous.
+ *
+ * Returns 1 when all of that held.
  */
 int init_spawn_proc(iris_cptr_t vfs_ep_h) {
     iris_cptr_t proc_h = IRIS_CPTR_NULL, boot_h = IRIS_CPTR_NULL;
     struct iris_msg m;
     long r;
-    int ok = 0;
+    int ok = 0, hello_ok = 0, alloc_ok = 0, reclaim_ok = 0;
 
     if (vfs_ep_h == IRIS_CPTR_NULL) return 0;
 
@@ -2397,114 +2543,140 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
     init_close(&boot_h);
     if (r < 0) { init_log("[USER] proc spawn FAILED\n"); return 0; }
 
-    /* ── the program ── */
+    /* ── the first program: does it START correctly? ── */
     {
-        static const char hello_path[] = "hello";
-        uint32_t i;
-        iris_msg_zero(&m);
-        m.label      = PROC_OP_SPAWN;
-        m.words[0]   = 0u;              /* the default budget is fine for this */
-        m.word_count = 1u;
-        for (i = 0; i < (uint32_t)sizeof(hello_path); i++)
-            g_init_buf[i] = (uint8_t)hello_path[i];
-        m.buf_len   = (uint32_t)sizeof(hello_path);
-        /* Where the child's THREAD lands.  There is no process object to ask
-         * for; the thread is what a supervisor names. */
-        (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_CHILD);
-        m.recv_slot = (long)INIT_SLOT_PROC_CHILD;
+        char e[80];
+        uint32_t j = 0, step = PROC_STEP_NONE;
+        long ec;
+        const char *pre = "[USER][INIT] proc: hello exit ";
 
-        if (iris_msg_call((long)INIT_SLOT_PROC_EP, &m) != 0) {
-            init_log("[USER][INIT] proc: spawn call FAILED\n");
-            return 0;
-        }
-        if (m.label != PROC_REP_OK) {
-            /* The step number IS the diagnosis — see PROC_STEP_* — so it is
-             * printed rather than folded into one word. */
-            char e[80] = "[USER][INIT] proc: hello did not start, step ";
-            uint32_t j = 0; while (e[j]) j++;
-            uint64_t st = m.words[0], wy = m.words[1];
-            if (st >= 10u) e[j++] = (char)('0' + (st / 10u) % 10u);
-            e[j++] = (char)('0' + (uint32_t)(st % 10u));
-            e[j++] = ' '; e[j++] = 'w'; e[j++] = 'h'; e[j++] = 'y'; e[j++] = ' ';
-            e[j++] = (char)('0' + (uint32_t)(wy % 10u));
-            {
-                /* The kernel error, printed as the negative it is. */
-                long d = (long)m.words[2];
-                uint64_t a = (d < 0) ? (uint64_t)(-d) : (uint64_t)d;
-                e[j++] = ' '; e[j++] = 'e'; e[j++] = 'r'; e[j++] = 'r'; e[j++] = ' ';
-                if (d < 0) e[j++] = '-';
-                if (a >= 100u) e[j++] = (char)('0' + (uint32_t)((a / 100u) % 10u));
-                if (a >= 10u)  e[j++] = (char)('0' + (uint32_t)((a / 10u) % 10u));
-                e[j++] = (char)('0' + (uint32_t)(a % 10u));
-            }
-            e[j++] = '\n'; e[j] = 0;
-            init_log(e);
-            g_init_found.prog_step = (uint32_t)st;
-            return 0;
-        }
-        g_init_found.prog_step = PROC_STEP_RUNNING;
+        ec = init_run_program("hello", &step);
+        g_init_found.prog_step = step;
+        if (step != PROC_STEP_RUNNING) goto out;
+
+        while (pre[j]) { e[j] = pre[j]; j++; }
+        init_app_num(e, &j, (ec < 0) ? 0u : (uint64_t)ec);
+        /* 42 is `hello`'s "everything the contract promised was there".  Any
+         * other number names the piece that was not. */
+        hello_ok = (ec == 42);
+        g_init_found.prog_exit = (uint32_t)((ec < 0) ? 0 : ec);
+        g_init_found.prog_ran  = 1u;
+        e[j++] = ' ';
+        if (hello_ok) { e[j++] = 'O'; e[j++] = 'K'; }
+        else          { e[j++] = 'B'; e[j++] = 'A'; e[j++] = 'D'; }
+        e[j++] = '\n'; e[j] = 0;
+        init_log(e);
+        if (!hello_ok) goto out;
+    }
+    /* Its thread goes now.  Nothing else here needs it, and while it exists the
+     * TCB exists and the region it was carved from cannot be rewound. */
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_CHILD);
+
+    /* ── the second: does MEMORY work, and does running out stay survivable? ── */
+    {
+        char e[80];
+        uint32_t j = 0, step = PROC_STEP_NONE;
+        long ec;
+        const char *pre = "[USER][INIT] proc: alloc exit ";
+
+        ec = init_run_program("alloc", &step);
+        if (step != PROC_STEP_RUNNING) goto out;
+
+        while (pre[j]) { e[j] = pre[j]; j++; }
+        init_app_num(e, &j, (ec < 0) ? 0u : (uint64_t)ec);
+        alloc_ok = (ec == 42);
+        g_init_found.prog_mem_exit = (uint32_t)((ec < 0) ? 0 : ec);
+        e[j++] = ' ';
+        if (alloc_ok) { e[j++] = 'O'; e[j++] = 'K'; }
+        else          { e[j++] = 'B'; e[j++] = 'A'; e[j++] = 'D'; }
+        e[j++] = '\n'; e[j] = 0;
+        init_log(e);
+        if (!alloc_ok) goto out;
     }
 
     /*
-     * Wait for it, bounded.
+     * ── reclamation, checked in BOTH directions ──
      *
-     * Same construction as the iris_test wait: the death arrives as a
-     * notification the watch raises, the bound arrives as a reserved bit from
-     * the timer service, and the two are told apart by which bit came up.  A
-     * program that hangs must not hang the boot.
+     * The success on its own would be worthless: an `Untyped_Reset` that always
+     * succeeded would report a reclaimed region whether or not anything was
+     * still using it.  So the refusal is checked first, and it is checked by
+     * asking while init still holds the dead program's THREAD — a capability to
+     * an object inside the region.  BUSY is the right answer, and it is the
+     * evidence that the second answer means something.
+     *
+     * Then the thread is dropped and the same question is asked again.  Nothing
+     * else changes; the only difference is that one capability is gone.  That is
+     * what reclamation IS in this system: not a collector, not a heuristic, not
+     * a kernel deciding when — a region becomes reusable at the moment the last
+     * capability into it does.
      */
-    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
-                         INIT_SLOT_PROC_NOTIF, 0) < 0) {
-        init_log("[USER][INIT] proc: watch notif FAILED\n");
-        goto out;
-    }
-    if (iris_invoke2((long)INIT_SLOT_PROC_CHILD, INV_TCB_WATCH,
-                     (long)INIT_SLOT_PROC_NOTIF, 1) < 0) {
-        init_log("[USER][INIT] proc: hello watch FAILED\n");
-        goto out;
-    }
     {
-        uint64_t bits = 0, tok = 0;
-        long give = iris_invoke2((long)INIT_SLOT_PROC_NOTIF, INV_CSPACE_MINT,
-                                 (long)(((uint64_t)INIT_SLOT_PROC_GIVE << 32) | 0u),
-                                 (long)(RIGHT_WRITE | RIGHT_TRANSFER));
-        if (give == 0)
-            (void)iris_timer_arm((long)INIT_SLOT_TIMER_EP,
-                                 (long)INIT_SLOT_PROC_GIVE, IRIS_TIMER_BIT,
-                                 INIT_PROC_WATCHDOG_NS, &tok);
-        for (;;) {
-            r = iris_invoke1((long)INIT_SLOT_PROC_NOTIF, INV_NOTIFY_WAIT, (long)&bits);
-            if (r != 0) break;
-            if (bits & ~IRIS_TIMER_BIT) { r = 0; break; }
-            if (bits & IRIS_TIMER_BIT)  { r = (long)IRIS_ERR_TIMED_OUT; break; }
+        iris_msg_zero(&m);
+        m.label = PROC_OP_REAP;
+        if (iris_msg_call((long)INIT_SLOT_PROC_EP, &m) != 0) {
+            init_log("[USER][INIT] proc: reap call FAILED\n");
+            goto out;
         }
-        if (r == 0 && tok) (void)iris_timer_cancel((long)INIT_SLOT_TIMER_EP, tok);
-        (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_GIVE);
-    }
-    if (r < 0) {
-        init_log("[USER][INIT] proc: hello wait TIMEOUT\n");
-        goto out;
+        if (m.label == PROC_REP_OK) {
+            /* It rewound a region init still had a capability into.  That is a
+             * far more serious thing to find than a failure to reclaim. */
+            init_log("[USER][INIT] proc: reclaim did NOT refuse while held\n");
+            goto out;
+        }
+        if ((long)m.words[0] != (long)IRIS_ERR_BUSY) {
+            char e[80];
+            uint32_t j = 0;
+            const char *pre = "[USER][INIT] proc: reclaim refused for the wrong reason, err -";
+            long d = (long)m.words[0];
+            while (pre[j]) { e[j] = pre[j]; j++; }
+            init_app_num(e, &j, (d < 0) ? (uint64_t)(-d) : (uint64_t)d);
+            e[j++] = '\n'; e[j] = 0;
+            init_log(e);
+            goto out;
+        }
+
+        (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_CHILD);
+
+        iris_msg_zero(&m);
+        m.label = PROC_OP_REAP;
+        if (iris_msg_call((long)INIT_SLOT_PROC_EP, &m) != 0 ||
+            m.label != PROC_REP_OK) {
+            char e[96];
+            uint32_t j = 0;
+            const char *pre = "[USER][INIT] proc: reclaim FAILED after the last cap went, err -";
+            long d = (long)m.words[0];
+            while (pre[j]) { e[j] = pre[j]; j++; }
+            init_app_num(e, &j, (d < 0) ? (uint64_t)(-d) : (uint64_t)d);
+            e[j++] = '\n'; e[j] = 0;
+            init_log(e);
+            goto out;
+        }
+        {
+            char e[96];
+            uint32_t j = 0;
+            const char *pre = "[USER][INIT] proc: reclaimed ";
+            uint64_t given = m.words[0], back = m.words[1];
+            /* Exactly what it was given, and the number is printed either way:
+             * "most of it" is the answer a leak gives, so it must be visible
+             * rather than folded into a yes. */
+            reclaim_ok = (back == given && given != 0u);
+            g_init_found.prog_given     = (uint32_t)(given >> 10);
+            g_init_found.prog_reclaimed = (uint32_t)(back >> 10);
+            while (pre[j]) { e[j] = pre[j]; j++; }
+            init_app_num(e, &j, back >> 10);
+            e[j++] = ' '; e[j++] = 'o'; e[j++] = 'f'; e[j++] = ' ';
+            init_app_num(e, &j, given >> 10);
+            {
+                const char *tail = reclaim_ok ? " KiB, all of it\n"
+                                              : " KiB, NOT all of it\n";
+                for (uint32_t i = 0; tail[i]; i++) e[j++] = tail[i];
+            }
+            e[j] = 0;
+            init_log(e);
+        }
     }
 
-    {
-        long ec = iris_invoke0((long)INIT_SLOT_PROC_CHILD, INV_TCB_EXIT_CODE);
-        char e[64] = "[USER][INIT] proc: hello exit ";
-        uint32_t j = 0; while (e[j]) j++;
-        uint64_t v = (ec < 0) ? 0u : (uint64_t)ec;
-        if (v >= 10u) e[j++] = (char)('0' + (uint32_t)((v / 10u) % 10u));
-        e[j++] = (char)('0' + (uint32_t)(v % 10u));
-        /* 42 is `hello`'s "everything the contract promised was there".  Any
-         * other number names the piece that was not. */
-        ok = (ec == 42);
-        g_init_found.prog_exit = (uint32_t)v;
-        g_init_found.prog_ran  = 1u;
-        e[j++] = ' ';
-        e[j++] = ok ? 'O' : 'B';
-        e[j++] = ok ? 'K' : 'A';
-        if (!ok) e[j++] = 'D';
-        e[j++] = '\n'; e[j] = 0;
-        init_log(e);
-    }
+    ok = hello_ok && alloc_ok && reclaim_ok;
 
 out:
     (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_NOTIF);

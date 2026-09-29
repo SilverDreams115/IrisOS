@@ -159,6 +159,7 @@ static long sl_name_to_index(const char *name) {
 uint32_t svc_image_slot(uint64_t ws);
 uint64_t svc_image_dest(uint64_t ws);
 int svc_ws_ensure(uint64_t ws);
+uint32_t svc_child_budget_slot(uint64_t ws, uint64_t child_tcb_cptr);
 
 long svc_initrd_count(uint64_t initrd_c) {
     return iris_invoke1((long)initrd_c, INV_BOOT_INITRD_COUNT, 0);
@@ -1126,6 +1127,17 @@ uint32_t svc_image_slot(uint64_t ws) {
 }
 int svc_ws_ensure(uint64_t ws) {
     return sl_ws_ensure(ws);
+}
+uint32_t svc_child_budget_slot(uint64_t ws, uint64_t child_tcb_cptr) {
+    /* The TCB the spawner got back IS a workspace leaf — it is what claimed
+     * the leaf — so the budget beside it is one subtraction away.  Nothing new
+     * is kept for this: the region was already held across spawns, because the
+     * scan RESETs it when the leaf is reused. */
+    uint32_t leaf = (uint32_t)(child_tcb_cptr >> 8);
+    if (SL_WS_SLOT(ws) == 0u) return 0;
+    if ((uint32_t)(child_tcb_cptr & 0xFFu) != SL_WS_SLOT(ws)) return 0;
+    if (leaf < SL_WS_PROC_BASE || leaf >= SL_WS_PROC_LIMIT) return 0;
+    return sl_ws_cptr(ws, SL_WS_CHILDPOOL(leaf));
 }
 uint64_t svc_image_dest(uint64_t ws) {
     return (uint64_t)((uint64_t)SL_WS_SLOT(ws) | ((uint64_t)SL_WS_ELF << 32));

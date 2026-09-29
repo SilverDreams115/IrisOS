@@ -300,6 +300,7 @@ static void vfs_seed_fixture_exports(struct vfs_state *state) {
      * service that spawns it has no business knowing it came from the initrd.
      */
     (void)vfs_seed_one_fixture(state, 22u, "hello");
+    (void)vfs_seed_one_fixture(state, 24u, "alloc");
 }
 
 /* Single-threaded server: static IPC buffers, no stack pressure. */

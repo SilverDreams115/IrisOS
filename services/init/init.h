@@ -234,6 +234,12 @@ struct init_findings {
      * initial stack, and READ ITS OWN STACK BACK correctly.  Any other exit is
      * `hello` naming the piece that was wrong. */
     uint32_t prog_step, prog_exit, prog_ran;
+    /* ...and the second program, which is about MEMORY rather than about
+     * starting: the status `alloc` exited with, and the region that came back
+     * when its last capability went, in KiB.  `prog_reclaimed == prog_given` is
+     * the claim; the two numbers are carried separately because "most of it" is
+     * the answer a leak gives and it has to be readable as a number. */
+    uint32_t prog_mem_exit, prog_given, prog_reclaimed;
 };
 extern struct init_findings g_init_found;
 void init_report_findings(void);

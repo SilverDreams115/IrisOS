@@ -42,6 +42,7 @@ void test_syscall_dispatch(void);
 void test_abi(void);
 void test_program_abi(void);
 void test_prog_stack(void);
+void test_prog_mem(void);
 
 /*
  * A-45 — back the "physical memory" the tests pretend to own.
@@ -97,6 +98,7 @@ int main(void) {
     test_abi();
     test_program_abi();
     test_prog_stack();
+    test_prog_mem();
 
     printf("\nresult: %d passed, %d failed\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

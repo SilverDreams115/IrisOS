@@ -109,6 +109,17 @@
 static uint8_t *g_buf;               /* this thread's registered IPC buffer */
 static uint64_t g_spawns, g_started;
 static uint32_t g_last_step;
+/*
+ * The last child's BUDGET, and what it was given.
+ *
+ * Kept because reclamation has to be nameable.  `Untyped_Reset` on this region
+ * is the whole of "the child is gone and its memory is back", and it refuses
+ * with BUSY while anything is still charged to it — which is the model working,
+ * not a failure: a capability to anything inside the region is exactly what
+ * should keep it from being rewound.
+ */
+static uint32_t g_child_budget_c;
+static uint64_t g_child_budget_bytes;
 
 /*
  * What this service says out loud, which is almost nothing.
@@ -369,6 +380,23 @@ static uint32_t proc_spawn(const char *path, uint64_t budget, uint32_t *why,
                               /*keep_vspace_dest=*/0u);
     }
     if (r < 0) { *detail = r; return PROC_STEP_LOAD; }
+    /* Arithmetic on the capability the spawn already returned — see
+     * `svc_child_budget_slot`.  Nothing extra is kept for it. */
+    g_child_budget_c     = svc_child_budget_slot(ws, (uint64_t)child_h);
+    g_child_budget_bytes = budget ? budget : (uint64_t)PROC_BUDGET_DEFAULT;
+    /*
+     * And the loader's OWN copy of the child's thread goes, now.
+     *
+     * The loader returns it in a workspace leaf and does not close it, which is
+     * right for a caller that has nowhere else to put it — but this service
+     * mints its own at `PROC_SLOT_CHILD_TCB` and hands THAT on, so the leaf is
+     * a third reference nobody needs.  It is not harmless: while it exists the
+     * TCB exists, the TCB is charged to the child's budget, and `Untyped_Reset`
+     * on that budget answers BUSY for ever.  A spawner whose children can
+     * never be reclaimed is the whole failure this step exists to rule out.
+     */
+    (void)iris_invoke1((long)((uint32_t)child_h & 0xFFu), INV_CNODE_DELETE,
+                       (long)((uint32_t)child_h >> 8));
 
     /*
      * Where the loader put it.  Asked rather than assumed: the image is loaded
@@ -472,6 +500,36 @@ void proc_main(iris_cptr_t bootstrap_ch_h) {
             rep.words[1]   = g_started;
             rep.words[2]   = g_last_step;
             rep.word_count = 3u;
+        } else if (m.label == PROC_OP_REAP) {
+            if (g_child_budget_c == 0u) {
+                rep.words[0]   = (uint64_t)(int64_t)IRIS_ERR_NOT_FOUND;
+                rep.word_count = 1u;
+            } else {
+                /*
+                 * Our OWN copy of the child's thread goes first.
+                 *
+                 * It was handed on in the spawn reply, so this service has no
+                 * further use for it — and while it exists the TCB exists, the
+                 * TCB is charged to the region, and the reset is right to
+                 * refuse.  A spawner that forgot this would report BUSY for
+                 * ever and blame the caller.
+                 */
+                proc_slot_delete(PROC_SLOT_CHILD_TCB);
+                long rr = iris_invoke0((long)g_child_budget_c, INV_UNTYPED_RESET);
+                if (rr != 0) {
+                    rep.words[0]   = (uint64_t)rr;
+                    rep.word_count = 1u;
+                } else {
+                    uint64_t phys = 0, avail = 0;
+                    (void)iris_invoke2((long)g_child_budget_c, INV_UNTYPED_INFO,
+                                       (long)(uintptr_t)&phys,
+                                       (long)(uintptr_t)&avail);
+                    rep.label      = PROC_REP_OK;
+                    rep.words[0]   = g_child_budget_bytes;
+                    rep.words[1]   = avail;
+                    rep.word_count = 2u;
+                }
+            }
         } else if (m.label == PROC_OP_SPAWN) {
             char path[VFS_EP_PATH_MAX];
             uint32_t n = m.buf_len, i;
