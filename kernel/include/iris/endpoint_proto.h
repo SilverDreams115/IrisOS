@@ -258,6 +258,50 @@
  * (fresh badges require an unbadged source), i.e. by a supervisor under the
  * Grant-tightening rule.  Neither range overlaps service (0x100+),
  * dynamic (0x200+) or test badges. */
+/*
+ * ── A FILE CAPABILITY's badge (Stage 10-run step 7) ─────────────────────────
+ *
+ * A descriptor in this system IS a capability: a copy of the VFS's own
+ * endpoint, minted BY the VFS, badged with the id of the open file it names.
+ * The badge is the server-side object identity and the capability is the
+ * authority, which is seL4's arrangement for every service that hands out
+ * references to things it owns.
+ *
+ * Three consequences fall out of that and none of them is code anybody wrote:
+ *
+ *   - `dup` is `CSpace_Mint` in the holder's own CSpace.  The copy is an MDB
+ *     child of the original and carries the same badge, so it names the same
+ *     open file — the same offset, the same rights — which is exactly what
+ *     POSIX's `dup` means and, here, is what it IS.
+ *   - `close` is `CNode_Delete`.  There is no descriptor table to get out of
+ *     step with reality, because the CSpace is the table.
+ *   - **Revoking the original destroys every duplicate**, wherever it was
+ *     passed, because the MDB reaches the whole subtree.  That is the property
+ *     this design exists for and the one a descriptor NUMBER cannot have.
+ *
+ * Only the VFS can create these, and that is the kernel's rule rather than a
+ * convention: minting with a badge requires an UNBADGED source, so a client
+ * holding a badged file capability can copy it but can never re-badge it into
+ * a capability for some other file.  It is why the VFS is given its own
+ * endpoint with DUPLICATE (see `own_ep_mintable` in the service catalog) and
+ * why nothing else is.
+ *
+ * The range is large and low-numbered because it is an ID space, not a class:
+ * the previous badge conventions here name a ROLE (an admin, a session), and
+ * this one names an OBJECT.
+ */
+#define IRIS_BADGE_VFS_FILE_BASE    ((uint64_t)0x2000)
+#define IRIS_VFS_FILES              32u
+#define IRIS_BADGE_VFS_FILE(i)      (IRIS_BADGE_VFS_FILE_BASE + (uint64_t)(i))
+
+/* The open file a badge names, or -1 when the badge is not one of these. */
+static inline int iris_badge_vfs_file(uint64_t badge) {
+    if (badge < IRIS_BADGE_VFS_FILE_BASE ||
+        badge >= IRIS_BADGE_VFS_FILE_BASE + (uint64_t)IRIS_VFS_FILES)
+        return -1;
+    return (int)(badge - IRIS_BADGE_VFS_FILE_BASE);
+}
+
 #define IRIS_BADGE_FILEGRANT_ADMIN  ((uint64_t)0x0F00)
 #define IRIS_BADGE_FILEGRANT_BASE   ((uint64_t)0x0F10)
 #define IRIS_FILEGRANT_SESSIONS     8u

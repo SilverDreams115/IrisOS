@@ -221,6 +221,81 @@
  */
 #define VFS_EP_OP_GRANT_SESSION_RESET UINT64_C(0x0116)
 
+/*
+ * ── FILE CAPABILITIES (Stage 10-run step 7) ─────────────────────────────────
+ *
+ * A descriptor IS a capability.  `FILE_OPEN` is the one operation that takes a
+ * pathname; everything after it is invoked ON the capability that came back,
+ * and the VFS learns which file from the kernel-stamped BADGE.  A holder
+ * cannot name a file it was not given, cannot forge a badge (minting one
+ * requires an unbadged source, which only the VFS has), and cannot reach
+ * anything by spelling a path — because after `open` there is no path anywhere
+ * in the protocol.
+ *
+ * What that buys, and none of it is code:
+ *   - `dup(fd)` is `CSpace_Mint` in the holder's own CSpace.  The copy carries
+ *     the same badge, so it names the same OPEN FILE — same offset, same
+ *     rights.  That is what POSIX's `dup` means; here it is what it is.
+ *   - `close(fd)` is `CNode_Delete`.
+ *   - **Revoking the original destroys every duplicate**, wherever it went.
+ *
+ * The offset lives in the VFS's file object rather than in the client, which
+ * is why two duplicates share it — the same reason Linux's `dup` shares a
+ * `struct file` and not just a number.
+ */
+
+/*
+ * VFS_EP_OP_FILE_OPEN — the only operation that takes a path.
+ *   Invoked on: an ordinary vfs.ep capability.
+ *   Request:  payload  = NUL-terminated export name
+ *             words[0] = requested rights (VFS_FILE_RIGHT_*), 0 = READ|STAT
+ *   Reply OK: transfers a FILE CAPABILITY; words[1] = size in bytes
+ *   Reply ERR: NOT_FOUND, or NO_MEMORY when the open-file table is full.
+ */
+#define VFS_EP_OP_FILE_OPEN    UINT64_C(0x0120)
+
+/*
+ * VFS_EP_OP_FILE_READ — read at the file's own offset, and advance it.
+ *   Invoked on: a FILE CAPABILITY.  There is no path and no index: the badge
+ *               says which file, and the kernel stamped it.
+ *   Request:  words[0] = length (clamped to VFS_EP_DATA_MAX)
+ *   Reply OK: words[1] = bytes read (0 = EOF), words[2] = size,
+ *             words[3] = the offset AFTER the read, payload = data
+ */
+#define VFS_EP_OP_FILE_READ    UINT64_C(0x0121)
+
+/*
+ * VFS_EP_OP_FILE_SEEK — move the offset.  Shared by every duplicate, because
+ * they name one object.
+ *   Request:  words[0] = offset, words[1] = whence (0 SET, 1 CUR, 2 END)
+ *   Reply OK: words[1] = the new offset
+ */
+#define VFS_EP_OP_FILE_SEEK    UINT64_C(0x0122)
+#define VFS_SEEK_SET 0u
+#define VFS_SEEK_CUR 1u
+#define VFS_SEEK_END 2u
+
+/*
+ * VFS_EP_OP_FILE_STAT — size and offset.
+ *   Reply OK: words[1] = size, words[2] = offset, words[3] = rights
+ */
+#define VFS_EP_OP_FILE_STAT    UINT64_C(0x0123)
+
+/*
+ * VFS_EP_OP_FILE_CLOSE — release the VFS's object.
+ *
+ * Deleting the capability is what closes the DESCRIPTOR; this is what frees
+ * the server's side of it.  They are separate because a server cannot see how
+ * many capabilities to it exist — seL4 has the same gap and the same answer:
+ * the holder says when it is finished.  A client that only deletes its slot
+ * leaves one table entry until the table is reused, which is a leak of a
+ * bounded, visible resource rather than of memory.
+ */
+#define VFS_EP_OP_FILE_CLOSE   UINT64_C(0x0124)
+
+/* How many files may be open at once across the whole system.  A limit rather
+ * than a growth policy, and it is the badge space: see IRIS_VFS_FILES. */
+
 /* Maximum path length including NUL. */
 #define VFS_EP_PATH_MAX    64u
 

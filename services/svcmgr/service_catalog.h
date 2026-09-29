@@ -75,6 +75,19 @@ struct iris_service_catalog_entry {
                                      * instead of the retired service KChannel;
                                      *     the WAIT side reaches the child at bootstrap as
                                      *     SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY. */
+    /*
+     * 1 = this service may MINT badged copies of its own endpoint.
+     *
+     * A server that hands out references to objects it owns has to be able to
+     * make them, and the kernel's rule is that a badged capability can only be
+     * minted from an UNBADGED one — so the server needs its own raw endpoint
+     * with DUPLICATE, and nothing else in the system does.  That is seL4's
+     * arrangement exactly, and it is a manifest bit rather than a default
+     * because the authority it confers is real: the holder can create
+     * capabilities that speak to it AS a client, with an identity of its
+     * choosing.  Only a service whose protocol is built on that should have it.
+     */
+    uint8_t        own_ep_mintable;
     uint8_t        own_service_ep;  /* 1 = svcmgr creates a KEndpoint for this service,
                                      *     sends the recv side at bootstrap (kind 0x21)
                                      *     and publishes it as "<image_name>.ep" */
@@ -153,6 +166,12 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .give_console = 0u,  /* Vfs logs via IRIS_CPTR_CONSOLE_EP */
         .give_initrd_cap = 1u,
         .own_budget_slot = 12u,  /* maps each initrd image to serve it */
+        /* The VFS mints badged copies of its own endpoint: a FILE
+         * CAPABILITY is one of them, badged with the open file it names.  It
+         * is the only service in this system with that authority, and it has
+         * it because its protocol is built on handing out references to
+         * objects it owns — which is what a descriptor is. */
+        .own_ep_mintable = 1u,
         .own_service_ep = 1u,
         /* Vfs is endpoint-only — no retired service/reply channels. */
         .endpoint_only = 1u,

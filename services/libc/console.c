@@ -25,6 +25,8 @@
 
 static uint8_t *g_buf;
 
+uint8_t *__libc_ipc_buf(void) { return g_buf; }
+
 void __libc_console_init(void) {
     if (!__libc.untyped) return;
     g_buf = (uint8_t *)iris_ipc_buffer_init_from(__libc.untyped,

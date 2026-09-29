@@ -2879,7 +2879,7 @@ inside the valid range — the one thing that boundary exists to prevent.
 stage that had closed without anyone returning to them, which is the exact
 failure §5.1 was written to stop.  All six are answered in ledger A-35.
 
-## Stage 10-run — the dynamic C runtime  ← OPEN (7 of 8 closed; step 7 is the one left)
+## Stage 10-run — the dynamic C runtime  ✅ CLOSED (8 of 8)
 
 Precondition: 10-abi (the surface a runtime binds to is frozen), 10-mem (a
 grant is a run of frame capabilities), 11-life, 13-form.  All met.
@@ -3416,52 +3416,73 @@ Two things the wiring taught:
 not link, which is a refusal rather than a silent zero; static TLS belongs with
 whatever needs it first.
 
-**Step 7 — descriptors.**  ⬜ **NOT DONE, and deliberately not done in
-passing.**  `open`/`read`/`write`/`close`/`dup`/`lseek` over VFS grants
-and `fs`.
-*Closes when:* `dup` produces a visible derivation child, and **revoking in the
-parent kills the child's descriptor** — the property that makes this not a
-translation layer.
+**Step 7 — descriptors.**  ✅ **CLOSED.**  `open`/`read`/`close`/`dup`/`lseek`
+over VFS file capabilities.
+*Closed when:* `dup` produced a visible derivation child, and **revoking the
+original killed it**.
 
-*What the work found, written down so the next attempt starts here.*
+```
+[FDPROG] fd 40 is a capability badged 0x2000
+[FDPROG] fd=40 dup=41 name one open file, offset shared
+[FDPROG] revoke destroyed 1 duplicate, the original still reads
+[USER][INIT] proc: fdprog exit 42 OK
+```
 
-The close condition is the whole of the design: a descriptor must BE a
-capability, so that `dup` is an MDB derivation and revocation propagates for
-free.  Anything where libc keeps a table and stamps a capability on the side
-satisfies the sentence and not the claim.
+**A descriptor IS a capability**: a copy of the VFS's own endpoint, minted BY
+the VFS, badged with the open file it names.  The slot it lands in is the
+descriptor — the number a C program passes around is a CSpace index, and there
+is no table beside it that could get out of step, because the CSpace is the
+table.  Everything else falls out rather than being written:
 
-The VFS already has most of the semantics — `VFS_EP_OP_GRANT_OPEN`,
-`GRANT_DERIVE` (a reduced-rights copy; rights are monotonic and can never be
-recovered) and `GRANT_REVOKE` (bumps the export generation, so every grant on
-that backing fails closed).  What it does not have is the shape: **a grant is
-an INDEX inside a session**, and the caller is identified by an
-`IRIS_BADGE_FILEGRANT_S(s)` badge on the endpoint.  A descriptor that is a
-CPtr needs the other arrangement — one capability per grant, badged with the
-grant, so that holding it IS the authority and copying it IS `dup`.
+  - `dup` is `CSpace_Mint`.  The copy is an MDB child carrying the same badge,
+    so it names the same OPEN FILE — the same offset, the same rights.  That is
+    what `dup` has always meant; here it is what it IS.  `fdprog` checks it by
+    asking the kernel (`Cap_SameObject`) rather than by comparing numbers, and
+    by watching a read through one move the other.
+  - `close` is `CNode_Delete`, plus telling the service so it can free its own
+    object — a server cannot see how many capabilities to it exist, seL4 has
+    the same gap, and the same answer: the holder says when it is finished.
+  - **`__iris_revoke` destroys every duplicate**, wherever it was passed, and
+    leaves the original alone.  That is the property this design exists for and
+    the one a descriptor NUMBER cannot have: a number handed to somebody is a
+    number they keep.  It is spelled with this system's name on it so nobody
+    mistakes it for something portable.
 
-That is a protocol change to a subsystem roughly thirty tests pin (T210–T238),
-and it needs three decisions that are the project's rather than an
-implementation's:
+*The three decisions, taken, and why each is the seL4 answer:*
 
-  - **A third badge class.**  The file-grant badge space is `0x0F00` for the
-    admin and `0x0F10 + s` for sessions — small and closed.  A per-grant class
-    has to be carved without colliding with the session range or the badge
-    conventions in `endpoint_proto.h`.
-  - **Who mints it.**  The VFS would have to mint a badged copy of its own
-    master endpoint, and today the session caps are minted by the pager
-    supervisor, not by the VFS.  The kernel's no-re-badge rule means the VFS
-    needs an UNBADGED master to mint from, which is a change to how the VFS is
-    given its own endpoint.
-  - **WRITE**, which this step's own text already flags: the VFS has no write
-    path at all, and adding one decides whether a file's bytes are a service's
-    private state or a frame a holder can map.  That is the decision the
-    roadmap says to take deliberately, and it is upstream of `write(2)`.
+  1. **The badge is an OBJECT ID, not a role.**  `IRIS_BADGE_VFS_FILE(i)` at
+     `0x2000`, one per open file.  The previous badge conventions here name a
+     role — an admin, a session — and a descriptor is not a role.  It also
+     retires the need for SESSIONS entirely: sessions exist because a grant
+     INDEX is not authority and the server has to know who is asking; a badged
+     capability is both, so there is nothing left for a session to scope.
+  2. **The VFS mints them, and it is the only service that may.**  Minting a
+     badged capability requires an UNBADGED source, which is the kernel's rule
+     and not a convention — so a client holding a file capability can COPY it
+     and can never re-badge it into a capability for a different file.  That is
+     why the VFS is given its own endpoint with `WRITE|DUPLICATE|TRANSFER`
+     (`own_ep_mintable` in the service catalog) and why nothing else is: the
+     authority it confers is real, and it belongs to a service whose protocol
+     is built on handing out references to objects it owns.
+  3. **WRITE is refused, deliberately, and `write(2)` says so.**  What a file's
+     bytes ARE is a memory question — a service's private state, or a frame a
+     holder maps — and this system already answers it in two other places
+     (`objreg` hands out frames, `fs` owns sectors).  Deciding it for the VFS
+     is a filesystem's design and not a descriptor's, so `write` to a file
+     returns −1 rather than pretending, and `<fcntl.h>` has no flag that would
+     lie about it.  `write(1, …)` and `write(2, …)` work, because those are the
+     CONSOLE — an endpoint, not a file.
 
-The half that needs none of it — `dup` as `CSpace_Mint`, `close` as
-`CNode_Delete`, and revocation reaching a duplicate — is already proved by
-step 4: `libuser` mints, and one `CSpace_Revoke` in `objreg` destroys four
-derived capabilities across two address spaces.  What step 7 adds is making a
-FILE one of those objects.
+`open` is the ONLY operation in the protocol that takes a path.  Everything
+after it is invoked on the capability, and the VFS learns which file from the
+kernel-stamped badge — so a holder cannot name a file it was not given, and
+there is no path anywhere in the protocol to spell.
+
+*What the work found:* `CSpace_Mint` takes **three** arguments and the badge
+rides in the high half of the rights word.  Passing it as a fourth is silently
+accepted and produces an UNBADGED capability — a descriptor that works, answers
+a PING, and names nothing.  It cost one boot and would have cost far more in a
+system where the badge mattered less visibly.
 
 **Step 8 — the gate.**  ✅ **CLOSED.**  The vertical slice runs on every
 commit, at one and at four processors.

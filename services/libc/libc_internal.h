@@ -28,6 +28,11 @@ extern struct libc_state __libc;
  * no console cannot print, and faulting over it would be worse. */
 void __libc_console_write(const char *s, size_t n);
 
+/* This thread's registered IPC buffer, or NULL.  A bulk payload must be
+ * marshalled into it and nowhere else — the kernel refuses a send that names
+ * any other address — so every caller that stages one asks here. */
+uint8_t *__libc_ipc_buf(void);
+
 /* Set up before the program's first instruction. */
 void __libc_console_init(void);
 void __libc_heap_init(void);

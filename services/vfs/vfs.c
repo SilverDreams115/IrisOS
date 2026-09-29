@@ -49,7 +49,27 @@ struct vfs_state {
     struct vfs_export      exports[VFS_SERVICE_EXPORTS];
     struct vfs_grant_table grants;   /* VFS-enforced file grants */
     struct vfs_ep_state    ep_state;
+    /*
+     * The OPEN FILES, which are what a descriptor names.
+     *
+     * One entry per `FILE_OPEN`, and its index is the badge on the capability
+     * the client holds.  The offset lives HERE and not in the client, which is
+     * why two duplicates of a descriptor share it — they are two capabilities
+     * to one object, which is what `dup` has always meant and what, here, it
+     * actually is.
+     */
+    struct {
+        uint32_t used;
+        uint32_t export_idx;
+        uint32_t rights;
+        uint64_t offset;
+    } files[IRIS_VFS_FILES];
 };
+
+/* Where a file capability is minted before it is handed over.  One slot,
+ * because a reply carries one capability and the slot is free again the
+ * moment it has gone. */
+#define VFS_SLOT_FILECAP  24u
 
 static const char vfs_str_started[]   = "VFS start\n";
 static const char vfs_str_ready[]     = "VFS ready\n";
@@ -334,6 +354,223 @@ static void vfs_seed_fixture_exports(struct vfs_state *state) {
     vfs_seed_named(state, 28u, "dynprog");
     vfs_seed_named(state, 29u, "libc");
     vfs_seed_named(state, 30u, "cprog");
+    vfs_seed_named(state, 31u, "fdprog");
+}
+
+/* ── file capabilities: a descriptor IS a capability ─────────────────────── */
+
+/*
+ * Read `n` bytes of an export at `off` into the IPC buffer.  Answers how many
+ * it could, which is 0 at or past the end — EOF is not an error.
+ */
+static uint32_t vfs_file_bytes(struct vfs_state *st, uint32_t idx,
+                               uint64_t off, uint32_t n, uint8_t *dst) {
+    const struct vfs_export *e = &st->exports[idx];
+    const uint8_t *src;
+    if (off >= e->size) return 0u;
+    if (n > e->size - off) n = (uint32_t)(e->size - off);
+    if (n > VFS_EP_DATA_MAX) n = VFS_EP_DATA_MAX;
+    src = e->is_mapped ? (const uint8_t *)(uintptr_t)(e->virt_base + off)
+                       : (e->data + off);
+    for (uint32_t i = 0; i < n; i++) dst[i] = src[i];
+    return n;
+}
+
+/*
+ * The file-capability half of the protocol.  Returns 1 when it answered.
+ *
+ * Everything except `FILE_OPEN` is invoked ON a file capability, and which
+ * file that is comes from `sender_badge` — which the KERNEL stamps from the
+ * capability being invoked and which a client cannot write.  So there is no
+ * path, no index and no session in any of these requests: holding the
+ * capability is the whole of the authority, and that is the point.
+ */
+static void vfs_msg_zero(struct iris_msg *m) {
+    uint8_t *b = (uint8_t *)m;
+    for (uint32_t i = 0; i < (uint32_t)sizeof(*m); i++) b[i] = 0;
+}
+
+static int vfs_name_eq(const char *a, const char *b) {
+    uint32_t i = 0;
+    while (a[i] && a[i] == b[i]) i++;
+    return a[i] == b[i];
+}
+
+static int vfs_file_serve(struct vfs_state *st, struct iris_msg *req) {
+    struct iris_msg rep;
+    int fid = iris_badge_vfs_file(req->sender_badge);
+
+    if (!g_vfs_reply) return 0;
+
+    if (req->label == VFS_EP_OP_FILE_OPEN) {
+        uint32_t nl = req->buf_len;
+        uint32_t idx, slot;
+        uint32_t want = (uint32_t)req->words[0];
+
+        vfs_msg_zero(&rep);
+        rep.label = IRIS_EP_REPLY_ERR;
+        rep.words[0] = (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND;
+        rep.word_count = 1u;
+
+        if (want == 0u) want = VFS_FILE_RIGHT_STAT | VFS_FILE_RIGHT_READ;
+        if (nl == 0u || nl > VFS_EP_PATH_MAX) goto answer;
+        g_vfs_reply[nl - 1u] = '\0';
+
+        for (idx = 0; idx < VFS_SERVICE_EXPORTS; idx++)
+            if (st->exports[idx].ready &&
+                vfs_name_eq(st->exports[idx].name, (const char *)g_vfs_reply))
+                break;
+        if (idx == VFS_SERVICE_EXPORTS) goto answer;
+
+        for (slot = 0; slot < IRIS_VFS_FILES; slot++)
+            if (!st->files[slot].used) break;
+        if (slot == IRIS_VFS_FILES) {
+            /* The table is the badge space, and it is bounded on purpose: an
+             * open file is a server-side object and a client that could make
+             * unboundedly many of them would be a client that could exhaust
+             * this service by asking politely. */
+            rep.words[0] = (uint64_t)(uint32_t)IRIS_ERR_NO_MEMORY;
+            goto answer;
+        }
+
+        /*
+         * Mint the capability the client will hold.
+         *
+         * From this service's OWN endpoint, which svcmgr gave it unbadged and
+         * with DUPLICATE precisely so this line can exist (`own_ep_mintable`).
+         * The badge is the file's id, and the kernel's no-re-badge rule is
+         * what makes it unforgeable: a client holding this can COPY it, and
+         * can never turn it into a capability for a different file.
+         *
+         * WRITE so the holder can send on it; DUPLICATE so it can `dup`;
+         * TRANSFER so it can hand one to a child.  Never READ — a client
+         * receiving on this service's endpoint would be answering its callers.
+         */
+        (void)iris_invoke1(0, INV_CNODE_DELETE, (long)VFS_SLOT_FILECAP);
+        /* The BADGE rides in the high half of the rights argument — see
+         * `sys_cspace_mint`, which reads `arg2 & 0xFFFFFFFF` as the rights and
+         * `arg2 >> 32` as the badge.  A mint has three arguments, not four,
+         * and passing the badge as a fourth is a mint that silently produces
+         * an UNBADGED capability: the client gets something that works and
+         * names nothing. */
+        if (iris_invoke2((long)IRIS_CPTR_OWN_EP, INV_CSPACE_MINT,
+                         (long)((uint64_t)VFS_SLOT_FILECAP << 32),
+                         (long)((uint64_t)(RIGHT_WRITE | RIGHT_DUPLICATE |
+                                           RIGHT_TRANSFER) |
+                                (IRIS_BADGE_VFS_FILE(slot) << 32))) != 0) {
+            rep.words[0] = (uint64_t)(uint32_t)IRIS_ERR_NO_MEMORY;
+            goto answer;
+        }
+
+        st->files[slot].used       = 1u;
+        st->files[slot].export_idx = idx;
+        st->files[slot].rights     = want & VFS_FILE_RIGHT_ALL;
+        st->files[slot].offset     = 0u;
+
+        rep.label      = IRIS_EP_REPLY_OK;
+        rep.words[0]   = 0u;
+        rep.words[1]   = st->exports[idx].size;
+        rep.word_count = 2u;
+        rep.cap        = (long)VFS_SLOT_FILECAP;
+        rep.cap_rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        goto answer;
+    }
+
+    if (fid < 0) return 0;     /* not a file capability: somebody else's op */
+    if (req->label != VFS_EP_OP_FILE_READ && req->label != VFS_EP_OP_FILE_SEEK &&
+        req->label != VFS_EP_OP_FILE_STAT && req->label != VFS_EP_OP_FILE_CLOSE &&
+        req->label != IRIS_EP_OP_PING)
+        return 0;
+
+    vfs_msg_zero(&rep);
+    rep.label      = IRIS_EP_REPLY_ERR;
+    rep.words[0]   = (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND;
+    rep.word_count = 1u;
+
+    /*
+     * A badge for a file that is not open any more.
+     *
+     * This is what a REVOKED or closed descriptor looks like from the service
+     * side, and it is answered rather than faulted on: the client is holding a
+     * capability the kernel still considers valid, to an object this service
+     * has released.  Saying NOT_FOUND is the honest answer and is what lets a
+     * `read` after a `close` be an error instead of a crash.
+     */
+    if (!st->files[fid].used) goto answer;
+
+    {
+        uint32_t idx   = st->files[fid].export_idx;
+        uint32_t rts   = st->files[fid].rights;
+        uint64_t size  = st->exports[idx].size;
+
+        if (req->label == IRIS_EP_OP_PING) {
+            rep.label = IRIS_EP_REPLY_OK;
+            rep.words[0] = 0u; rep.words[1] = req->sender_badge;
+            rep.word_count = 2u;
+            goto answer;
+        }
+        if (req->label == VFS_EP_OP_FILE_STAT) {
+            if (!(rts & VFS_FILE_RIGHT_STAT)) {
+                rep.words[0] = (uint64_t)(uint32_t)IRIS_ERR_ACCESS_DENIED;
+                goto answer;
+            }
+            rep.label = IRIS_EP_REPLY_OK;
+            rep.words[0] = 0u;
+            rep.words[1] = size;
+            rep.words[2] = st->files[fid].offset;
+            rep.words[3] = rts;
+            rep.word_count = 4u;
+            goto answer;
+        }
+        if (req->label == VFS_EP_OP_FILE_SEEK) {
+            uint64_t base = (req->words[1] == VFS_SEEK_CUR) ? st->files[fid].offset
+                          : (req->words[1] == VFS_SEEK_END) ? size : 0u;
+            uint64_t want = base + req->words[0];
+            if (req->words[1] > VFS_SEEK_END || want < base) {
+                rep.words[0] = (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG;
+                goto answer;
+            }
+            /* Past the end is allowed and reads back EOF, which is what a
+             * seek past the end has always meant. */
+            st->files[fid].offset = want;
+            rep.label = IRIS_EP_REPLY_OK;
+            rep.words[0] = 0u; rep.words[1] = want;
+            rep.word_count = 2u;
+            goto answer;
+        }
+        if (req->label == VFS_EP_OP_FILE_CLOSE) {
+            st->files[fid].used = 0u;
+            rep.label = IRIS_EP_REPLY_OK;
+            rep.words[0] = 0u;
+            rep.word_count = 1u;
+            goto answer;
+        }
+        /* FILE_READ */
+        if (!(rts & VFS_FILE_RIGHT_READ)) {
+            rep.words[0] = (uint64_t)(uint32_t)IRIS_ERR_ACCESS_DENIED;
+            goto answer;
+        }
+        {
+            uint32_t want = (uint32_t)req->words[0];
+            uint32_t got;
+            if (want == 0u || want > VFS_EP_DATA_MAX) want = VFS_EP_DATA_MAX;
+            got = vfs_file_bytes(st, idx, st->files[fid].offset, want,
+                                 g_vfs_reply);
+            st->files[fid].offset += got;
+            rep.label      = IRIS_EP_REPLY_OK;
+            rep.words[0]   = 0u;
+            rep.words[1]   = got;
+            rep.words[2]   = size;
+            rep.words[3]   = st->files[fid].offset;
+            rep.word_count = 4u;
+            rep.buf_len    = got;
+            goto answer;
+        }
+    }
+
+answer:
+    (void)iris_msg_reply((long)IRIS_CPTR_OWN_REPLY, &rep);
+    return 1;
 }
 
 /* Single-threaded server: static IPC buffers, no stack pressure. */
@@ -502,7 +739,14 @@ void vfs_server_main_c(iris_cptr_t rbx_unused) {
             vfs_log(vfs_str_ep_lost);
             goto fail;
         }
-        vfs_ep_serve(&state, &req);
+        /*
+         * FILE CAPABILITIES are answered here rather than in `vfs_ep.c`,
+         * for one structural reason: minting one is a SYSCALL, and `vfs_ep.c`
+         * is compiled into the host unit suite where there is no kernel.  The
+         * protocol half that can be pure stayed pure.
+         */
+        if (!vfs_file_serve(&state, &req))
+            vfs_ep_serve(&state, &req);
     }
 
 fail:

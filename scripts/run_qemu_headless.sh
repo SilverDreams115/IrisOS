@@ -594,6 +594,31 @@ if ! grep -Eq "^run: cprog exited 7" "$LOG_FILE"; then
   exit 1
 fi
 
+# ...and a DESCRIPTOR IS A CAPABILITY (Stage 10-run step 7).
+#
+# `fdprog` opens a file, checks that what it holds is badged with the open file
+# it names, duplicates the descriptor, confirms the two name ONE open file by
+# asking the kernel (not by comparing numbers) and by watching the offset move
+# for both -- and then REVOKES the original, which destroys the duplicate.
+#
+# That last line is the one no system with descriptor NUMBERS can print.  A
+# number handed to somebody is a number they keep; closing yours changes
+# nothing about theirs.  Here `dup` is an MDB derivation and revocation reaches
+# the whole subtree, so the holder's next read fails because it HAS no
+# capability -- and the original is untouched, because revoke removes the
+# subtree and not the root.
+if ! grep -Eq "^\[USER\]\[INIT\] proc: fdprog exit 42 OK$" "$LOG_FILE"; then
+  echo "[headless] descriptors are not capabilities:"
+  grep -E "FDPROG|fdprog" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+if ! grep -Eq "^\[FDPROG\] revoke destroyed [1-9][0-9]* duplicate, the original still reads$" "$LOG_FILE"; then
+  echo "[headless] revoking a descriptor did not reach its duplicate:"
+  grep -E "FDPROG" "$LOG_FILE" | sed 's/^/           /'
+  exit 1
+fi
+
 # ...and one copy of a library serves two live programs (Stage 10-run step 4).
 #
 # Three lines, and the first is the only MEASUREMENT in this gate that two

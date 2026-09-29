@@ -102,6 +102,8 @@ extern const uint8_t _binary_services_libc_libc_so_start[];
 extern const uint8_t _binary_services_libc_libc_so_end[];
 extern const uint8_t _binary_services_cprog_cprog_elf_start[];
 extern const uint8_t _binary_services_cprog_cprog_elf_end[];
+extern const uint8_t _binary_services_fdprog_fdprog_elf_start[];
+extern const uint8_t _binary_services_fdprog_fdprog_elf_end[];
 extern const uint8_t _binary_services_pager_pager_elf_start[];
 extern const uint8_t _binary_services_pager_pager_elf_end[];
 
@@ -247,6 +249,11 @@ static const struct initrd_entry g_initrd[] = {
      * system it is on; it includes <stdio.h>, calls printf, and returns 7. */
     { _binary_services_cprog_cprog_elf_start,
       _binary_services_cprog_cprog_elf_end  },
+    /* [31] fdprog — descriptors.  It opens a file, dups the descriptor, and
+     * revokes the original: the duplicate is destroyed, which is the property
+     * a descriptor NUMBER cannot have. */
+    { _binary_services_fdprog_fdprog_elf_start,
+      _binary_services_fdprog_fdprog_elf_end  },
 };
 
 #define INITRD_ENTRY_COUNT \

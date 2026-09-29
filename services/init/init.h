@@ -266,6 +266,9 @@ struct init_findings {
      * resolved its symbols against the object table, got a thread pointer, a
      * heap and a console, printed, and returned a number somebody read. */
     uint32_t c_exit;
+    /* ...and descriptors: 42 means `dup` produced a real derivation naming the
+     * same open file, and revoking the original destroyed it. */
+    uint32_t fd_exit;
 };
 extern struct init_findings g_init_found;
 void init_report_findings(void);

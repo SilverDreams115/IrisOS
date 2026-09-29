@@ -1080,7 +1080,21 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
     if (manifest->own_service_ep && svc) {
         mints[n].slot = IRIS_CPTR_OWN_EP;
         mints[n].src_cptr = svc->ep_c;
-        mints[n].rights = RIGHT_READ;
+        /*
+         * READ is what a server needs to RECEIVE, and for almost every server
+         * that is the whole of it.
+         *
+         * A server whose protocol hands out references to objects it owns
+         * needs more: minting a badged capability requires WRITE and DUPLICATE
+         * on the source, and the client needs TRANSFER to be given the result.
+         * That is real authority — the holder can create capabilities that
+         * speak to it as a client, with an identity of its choosing — so it is
+         * a manifest bit and not a default.  `own_ep_mintable` is set on the
+         * VFS alone, because a FILE CAPABILITY is exactly such a reference.
+         */
+        mints[n].rights = manifest->own_ep_mintable
+                          ? (RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER)
+                          : RIGHT_READ;
         mints[n].badge = 0;
         n++;
     }

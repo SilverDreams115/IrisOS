@@ -60,6 +60,10 @@ UEFI → BOOTX64.EFI → KERNEL.ELF
                          Untyped until the retype refuses, survives that, and
                          gives the bytes back — exits 42 only if all of it
                          held.  Its budget is then reclaimed WHOLE)
+          → fdprog      (a descriptor IS a capability: it opens a file, dups
+                         the descriptor into a real derivation naming the same
+                         open file, then REVOKES the original — which destroys
+                         the duplicate.  A number cannot be taken back)
           → cprog       (an ORDINARY C program: #include <stdio.h>, printf,
                          malloc, return 7.  Nothing in its source knows what
                          system it is on.  services/libc is the C library AND
