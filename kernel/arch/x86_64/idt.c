@@ -379,6 +379,17 @@ void isr_handler(struct full_frame *frame) {
                 panic_write(" cr2="); panic_hex(read_cr2());
             }
             panic_write(" err="); panic_hex(frame->error_code);
+            /*
+             * The STACK POINTER, which this report used to leave out.
+             *
+             * A userland fault has two addresses that matter: where it was
+             * executing and where its stack was.  Without the second, an
+             * instruction fetch from a nonsense address is unattributable —
+             * it could be a corrupted return address, a wild indirect call, or
+             * a thread resumed with the wrong context, and those are three
+             * different bugs.  It cost most of a debugging session to add.
+             */
+            panic_write(" rsp="); panic_hex(frame->rsp);
             panic_write("\n");
             task_exit_current();
             /* unreachable — task_exit_current() calls task_yield() */

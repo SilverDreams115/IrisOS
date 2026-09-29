@@ -558,6 +558,20 @@ static volatile long     g_fz_res[2];
 static volatile uint32_t g_fz_att[2];      /* where a delivered cap landed */
 static volatile uint32_t g_fz_attcap[2];   /* the reply object it was owed */
 static volatile int      g_fz_done[2];
+/*
+ * Why a worker left its loop, written by the worker before it exits.
+ *
+ * A dead worker and a stuck one are the same thing to `fz_wait` — neither
+ * publishes a result — and `TCB_GET_INFO` reports TERMINATED for both a thread
+ * that exited cleanly and one the kernel killed.  Without this the report says
+ * "worker hang" for a worker that left on purpose, several rounds earlier,
+ * for a reason nothing recorded.
+ */
+#define FZ_LEFT_RUNNING 0u
+#define FZ_LEFT_EXITOP  1u    /* it was told to                              */
+#define FZ_LEFT_CTLERR  2u    /* its control receive failed; the code follows */
+static volatile uint32_t g_fz_left[2];
+static volatile long     g_fz_leftcode[2];
 /* How long a worker may take to come back for its next command before it
  * is called stuck.  Generous: the cost of being wrong the other way is a
  * healthy worker reported dead. */
@@ -625,6 +639,16 @@ static int fz_wait_blocked(int idx) {
     }
 }
 
+/*
+ * Faults-with-no-handler at the moment T108 started.
+ *
+ * A thread the kernel KILLED for faulting and a thread the endpoint-close path
+ * terminated both report TERMINATED, and `fz_wait` cannot tell either from a
+ * thread that is merely slow.  This counter separates the first from the other
+ * two: if it moved, the worker faulted; if it did not, something else ended it.
+ */
+static uint32_t g_fz_nohand0;
+
 static void fz_report_stuck(const char *id, int idx, uint32_t pick) {
     struct iris_tcb_info wi;
     uint32_t st = 0xFFu, q = 0xFFu, cpu = 0xFFu, tid = 0xFFFFu;
@@ -646,6 +670,16 @@ static void fz_report_stuck(const char *id, int idx, uint32_t pick) {
     it_serial_write(" res="); it_log_num((uint32_t)(-g_fz_res[idx]));
     it_serial_write(" ep_used="); it_log_num(g_fz_ep_used[idx]);
     it_serial_write(" ep_now="); it_log_num((uint32_t)g_fz_data_ep);
+    /* Why it left, if it left.  A worker reported as hung that actually
+     * EXITED is a completely different bug from one the close did not wake,
+     * and the two were indistinguishable until this was printed. */
+    it_serial_write(" left="); it_log_num(g_fz_left[idx]);
+    it_serial_write(" leftcode="); it_log_num((uint32_t)(-g_fz_leftcode[idx]));
+    {
+        uint32_t w5[5] = { 0, 0, 0, 0, 0 };
+        (void)it_sched_ext5(w5);
+        it_serial_write(" nohand+="); it_log_num(w5[IT_S5_NOHAND] - g_fz_nohand0);
+    }
     it_serial_write("\n");
 }
 static uint8_t           g_fz_stk[2][8192];
@@ -654,9 +688,17 @@ static void fz_worker(int idx) {
     for (;;) {
         struct iris_msg c;
         iris_msg_zero(&c);
-        if (iris_msg_recv((long)g_fz_ctl[idx], &c) != 0) break;
+        {
+            long cr = iris_msg_recv((long)g_fz_ctl[idx], &c);
+            if (cr != 0) {
+                g_fz_leftcode[idx] = cr;
+                g_fz_left[idx]     = FZ_LEFT_CTLERR;
+                __asm__ volatile ("" ::: "memory");
+                break;
+            }
+        }
         uint32_t op = (uint32_t)c.words[0];
-        if (op == FZ_OP_EXIT) break;
+        if (op == FZ_OP_EXIT) { g_fz_left[idx] = FZ_LEFT_EXITOP; break; }
 
         struct iris_msg m;
         iris_msg_zero(&m);
@@ -723,6 +765,9 @@ static int fz_workers_start(int n) {
         if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT,
                           ctl, 1u, 0) != 0) return 0;
         g_fz_ctl[i] = (iris_cptr_t)ctl;
+        /* A fresh worker at this index inherits nothing from the last one. */
+        g_fz_left[i]     = FZ_LEFT_RUNNING;
+        g_fz_leftcode[i] = 0;
         uint64_t entry = (uint64_t)(uintptr_t)entries[i];
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_fz_stk[i] + sizeof(g_fz_stk[i]))) & ~0xFULL;
         /* The TCB is KEPT, not discarded: a worker that does not come back is
@@ -788,11 +833,48 @@ static int fz_wait(int idx) {
     return g_fz_done[idx];
 }
 
+/*
+ * Wait for a worker to actually be GONE, not merely told to go.
+ *
+ * `fz_workers_start` reuses `g_fz_stk[i]` for the next worker at that index,
+ * and a stack is not reusable while a thread is still standing on it.  Sending
+ * FZ_OP_EXIT and closing the control endpoint only makes the worker's receive
+ * return CLOSED; it then has a whole epilogue, a syscall and a jump to run,
+ * and on a machine with two processors the replacement thread starts on that
+ * same stack while it does.
+ *
+ * Two threads on one stack is the most confusing bug this harness can produce:
+ * each overwrites the other's frame, one of them eventually executes a `ret`
+ * that pops a neighbour's stack-protector canary, and the report is a userland
+ * page fault at an address that looks like nothing — the canary's VALUE, the
+ * same in both threads because the guard is process-global.  It cost a full
+ * session, and what finally named it was printing the faulting `rsp` next to
+ * the stack bounds and seeing two tasks at one address.
+ *
+ * TERMINATED is the state to wait for; the TCB capability is what lets this be
+ * asked at all, which is why `fz_workers_start` keeps it.
+ */
+static void fz_worker_await_gone(int i) {
+    if (g_fz_tcb[i] < 0) return;
+    for (uint32_t spin = 0; spin < 200000u; spin++) {
+        struct iris_tcb_info wi;
+        if (it_invoke1(g_fz_tcb[i], INV_TCB_GET_INFO, (long)(uintptr_t)&wi) != 0)
+            return;                       /* nothing left to ask: it is gone */
+        if (wi.state == 11u) return;      /* TASK_TERMINATED */
+        it_settle(1);
+    }
+}
+
 static void fz_workers_stop(int n) {
     for (int i = 0; i < n; i++) {
         if (g_fz_ctl[i] != IRIS_CPTR_NULL) {
             (void)fz_cmd(i, FZ_OP_EXIT, 0, 0, 0);
             it_close(&g_fz_ctl[i]);
+            /* ...and do not come back until it has stopped standing on the
+             * stack the next worker at this index will be given. */
+            fz_worker_await_gone(i);
+            { iris_cptr_t th = (iris_cptr_t)g_fz_tcb[i]; it_close(&th); }
+            g_fz_tcb[i] = -1;
         }
     }
 }
@@ -1053,6 +1135,11 @@ void test_t108(void) {
     uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T108", "sched ext"); return; }
     g_fz_seed = T108_SEED;
+    {
+        uint32_t w5[5] = { 0, 0, 0, 0, 0 };
+        (void)it_sched_ext5(w5);
+        g_fz_nohand0 = w5[IT_S5_NOHAND];
+    }
     int ok = 1;
     const char *why = "close/cancel stress";
     uint32_t it_n = 0;

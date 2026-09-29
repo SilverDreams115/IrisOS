@@ -3546,3 +3546,51 @@ that names the line.
 - Review: any PR that adds `kslab_alloc` for a canonical type, a new
   `SYS_*_CREATE`, or a new handle-first resolver for canonical objects must be
   rejected citing this ledger.
+
+### T108's intermittent — one bug found and fixed, one isolated beneath it
+
+**Two threads on one stack (FIXED).**  `fz_workers_stop` sent `FZ_OP_EXIT`,
+closed the control endpoint and returned.  That only makes the worker's receive
+return CLOSED; it still has an epilogue, a syscall and a jump to run.
+`fz_workers_start` then handed the SAME `g_fz_stk[i]` to a replacement thread,
+and on two processors the two ran on one stack.
+
+The report it produced is worth recording, because it named nothing.  Each
+thread overwrote the other's frame; one eventually executed a `ret` that popped
+a neighbour's stack-protector canary; and the fault was a userland instruction
+fetch at an address that looked like noise — **the canary's VALUE**, identical
+in both threads because the guard is process-global and identical across
+neither boot nor run because it is RDTSC-seeded.  `fz_wait` reported "worker
+hang" for a thread the kernel had killed, and `TCB_GET_INFO` said TERMINATED,
+which is also what a clean exit says.
+
+What finally named it was **printing the faulting `rsp` next to the stack
+bounds** and seeing two tasks at one address.  `idt.c`'s userland-fault report
+had never carried `rsp`; it does now.  A fault report with only `rip` cannot
+distinguish a corrupted return address from a wild indirect call from a thread
+resumed with the wrong context.
+
+Measured: at `T108_ROUNDS=16` the suite went from roughly one failure in five
+runs at smp2 to **6 of 6 green**, and smp1/smp2/smp4 all pass 325/325.
+
+**And underneath it, the original defect, now isolated.**  At
+`T108_ROUNDS=200` — the count the first investigation said reproduced every
+run — T108 still fails, and with the stack race gone the failure is clean:
+
+```
+T108 stuck worker=0 id=68 pick=2 state=6 queued=0 cpu=0 nohand+=0
+T108 stuck worker=1 id=69 pick=2 state=6 queued=1 cpu=1 nohand+=0
+```
+
+`state=6` is `TASK_BLOCKED_SEND` and `nohand+=0` says nothing faulted: **both
+senders are still queued on an endpoint that has been closed.**  `pick=2` is
+the only round with two waiters — one `EP_SEND`, one `EP_CALL`, enqueued by two
+different files onto one queue — and it is the only round that fails.  Ruled
+out so far: both enqueue sites link under `ep->lock` with the state set inside
+the same hold; the close hook does fire; a blocked sender holds no active
+reference.  What has not been instrumented is what `kendpoint_obj_close`
+actually walked, which is the next thing to measure.
+
+It is recorded here rather than left as "T108 is flaky" because the two bugs
+have nothing to do with each other, and the first was masking the second.
+
