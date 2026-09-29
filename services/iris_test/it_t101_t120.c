@@ -1144,14 +1144,36 @@ void test_t108(void) {
     const char *why = "close/cancel stress";
     uint32_t it_n = 0;
 
-    long n = it_notify_create();
-    iris_cptr_t n_h = (iris_cptr_t)n;
-    if (n < 0) { it_fail("T108", "create"); return; }
+    /*
+     * The staged-capability fixture lives in a FIXED slot, not the rotating
+     * object pool.
+     *
+     * The pool is 196 leaves handed out round-robin, and a take DELETES
+     * whatever it lands on — a contract that holds for objects which die with
+     * their test and for nothing else.  This notification is held for every
+     * round, and once the round count carries the pool past a full turn it
+     * came back to this leaf, deleted the notification, and `it_ep_create`
+     * retyped the NEXT round's endpoint into it.  `fz_dup_xfer` then minted
+     * two copies of the very endpoint the workers were about to block on, so
+     * the round's `it_close` left two capabilities alive, the endpoint's last
+     * active reference never went, `kendpoint_obj_close` never ran, and both
+     * senders stayed queued for ever.  The report read "worker hang" for a
+     * kernel that had done exactly the right thing: an endpoint somebody still
+     * holds a capability to does not cancel its waiters.
+     *
+     * `fz_workers_start` already states this rule for the control endpoints.
+     * It applies to every capability a test holds across its own rounds.
+     */
+    uint32_t nslot = fz_slot_alloc();
+    if (nslot == 0u) { it_fail("T108", "slot budget"); return; }
+    if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_NOTIFICATION,
+                      nslot, 1u, 0) != 0) { it_fail("T108", "create"); return; }
+    long n = (long)nslot;
     /* One reusable declared slot: every cancellation must leave it EMPTY,
      * so the same slot serves every pick-3 round (that IS the assert). */
     uint32_t rslot = fz_slot_alloc();
-    if (rslot == 0u) { it_close(&n_h); it_fail("T108", "slot budget"); return; }
-    if (!fz_workers_start(2)) { it_close(&n_h); it_fail("T108", "worker"); return; }
+    if (rslot == 0u) { it_slot_delete(nslot); it_fail("T108", "slot budget"); return; }
+    if (!fz_workers_start(2)) { it_slot_delete(nslot); it_fail("T108", "worker"); return; }
 
     for (it_n = 0; ok && it_n < T108_ROUNDS; it_n++) {
         long ep = it_ep_create();
@@ -1273,7 +1295,7 @@ void test_t108(void) {
     }
 
     fz_workers_stop(2);
-    it_close(&n_h);
+    it_slot_delete(nslot);
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
     /* I16: exact balance; +2 = the two workers' KTcb handles. */

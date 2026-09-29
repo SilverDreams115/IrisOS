@@ -3547,7 +3547,7 @@ that names the line.
   `SYS_*_CREATE`, or a new handle-first resolver for canonical objects must be
   rejected citing this ledger.
 
-### T108's intermittent — one bug found and fixed, one isolated beneath it
+### T108's intermittent — two bugs, one masking the other, both fixed
 
 **Two threads on one stack (FIXED).**  `fz_workers_stop` sent `FZ_OP_EXIT`,
 closed the control endpoint and returned.  That only makes the worker's receive
@@ -3573,24 +3573,61 @@ resumed with the wrong context.
 Measured: at `T108_ROUNDS=16` the suite went from roughly one failure in five
 runs at smp2 to **6 of 6 green**, and smp1/smp2/smp4 all pass 325/325.
 
-**And underneath it, the original defect, now isolated.**  At
-`T108_ROUNDS=200` — the count the first investigation said reproduced every
-run — T108 still fails, and with the stack race gone the failure is clean:
+**And underneath it, the original defect — which was not a kernel defect.**
+At `T108_ROUNDS=200` — the count the first investigation said reproduced every
+run — T108 still failed, and with the stack race gone the failure was clean:
 
 ```
-T108 stuck worker=0 id=68 pick=2 state=6 queued=0 cpu=0 nohand+=0
-T108 stuck worker=1 id=69 pick=2 state=6 queued=1 cpu=1 nohand+=0
+T108 stuck worker=0 id=68 pick=2 state=6 queued=0 ep_used=35408 nohand+=0
+T108 stuck worker=1 id=69 pick=2 state=6 queued=0 ep_used=35408 nohand+=0
 ```
 
-`state=6` is `TASK_BLOCKED_SEND` and `nohand+=0` says nothing faulted: **both
-senders are still queued on an endpoint that has been closed.**  `pick=2` is
-the only round with two waiters — one `EP_SEND`, one `EP_CALL`, enqueued by two
-different files onto one queue — and it is the only round that fails.  Ruled
-out so far: both enqueue sites link under `ep->lock` with the state set inside
-the same hold; the close hook does fire; a blocked sender holds no active
-reference.  What has not been instrumented is what `kendpoint_obj_close`
-actually walked, which is the next thing to measure.
+`state=6` is `TASK_BLOCKED_SEND` and `nohand+=0` says nothing faulted, so the
+reading was "both senders are still queued on an endpoint that has been
+closed".  **The second half of that sentence was the mistake.**  The endpoint
+had never been closed, and it was right not to be.
+
+What settled it was measuring the endpoint's own reference counts from the
+blocked sender.  A healthy two-waiter round shows `active_refs=1`,
+`refcount=3`: one CNode slot, plus one lifecycle reference per blocked sender.
+The failing round showed `active_refs=3`, `refcount=7`, and both numbers
+account for themselves exactly — three slots (the round's endpoint, plus `da`
+and `db`), and three slots + two `sc_held` + two staged `ep_cap_obj`.  The test
+was holding two extra capabilities to the endpoint its workers were blocked on,
+so `it_close` took the count from three to two, `kendpoint_obj_close` never ran,
+and nothing cancelled the waiters.  That is the model behaving: **an endpoint
+somebody still holds a capability to does not cancel its waiters.**
+
+Where the two extra capabilities came from is the actual bug, and it is in the
+suite.  `iris_test`'s object pool is 196 leaves handed out round-robin, and a
+take DELETES whatever it lands on — a contract that holds for objects which die
+with their test and for nothing else.  T108's staged-capability fixture, a
+notification, was fabricated with `it_notify_create()` into a pool leaf and
+held for every round.  Past a full turn of the pool the allocator came back to
+that leaf, deleted the notification, and `it_ep_create` retyped the NEXT round's
+endpoint into it.  `n` and `g_fz_data_ep` were then the same CPtr — the report
+prints both, and they matched — so `fz_dup_xfer(n)` minted two copies of the
+endpoint the workers were about to block on.
+
+The fix is the rule `fz_workers_start` already states for the worker control
+endpoints, applied where it had not been: a capability a test holds across its
+own rounds gets a FIXED slot, never a rotating one.  At `T108_ROUNDS=200` the
+suite is then green, 325/325.
+
+The shipped round count stays at 16, where the pool cannot wrap inside one
+test.  200 is not free: it sweeps the whole pool once, which evicts the debt
+every earlier test left behind and drives `g_it_pool_evictions` to exactly
+`IT_POOL_EVICT_CEILING`.  That ceiling is the measurement T324 exists to make,
+and spending it to reproduce a bug that is fixed would be bumping a number
+instead of explaining it.
+
+**A probe that cannot count what it dropped is not a measurement.**  The first
+instrumentation of `kendpoint_obj_close` reported 47 calls against roughly 200
+capability deletes, which pointed hard at a close hook that was not firing.
+The number was an artefact: raw `serial_write` under load drops output.  The
+same probe with a call counter in it reported 243.  Every later conclusion here
+rests on counters carried in the line, not on lines being counted.
 
 It is recorded here rather than left as "T108 is flaky" because the two bugs
-have nothing to do with each other, and the first was masking the second.
-
+have nothing to do with each other, the first was masking the second, and only
+one of them was ever in the kernel.
