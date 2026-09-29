@@ -211,7 +211,7 @@ int init_spawn_ip(void);
 /* The program spawner, and the first program.  Takes the vfs.ep session cap
  * init resolved through svcmgr, because `proc` reads its images through the
  * filesystem and there is nothing else to give it. */
-int init_spawn_proc(iris_cptr_t vfs_ep_h);
+int init_spawn_proc(iris_cptr_t vfs_ep_h, iris_cptr_t sm_h);
 
 /*
  * What this machine turned out to be.

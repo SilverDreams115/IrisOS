@@ -18,7 +18,7 @@
  * EP_CALL(KBD_EP_OP_READ) — kbd parks the reply until a key arrives, so the
  * call doubles as the blocking wait. No retired KChannel subscribe fallback.
  *
- * Commands: help, ver, uptime, ls, cat <file>, clear
+ * Commands: help, ver, uptime, ls, cat <file>, run <prog>, clear
  */
 
 #include <stdint.h>
@@ -34,6 +34,7 @@
 #include <iris/endpoint_proto.h>
 #include "../timer/timer_proto.h"
 #include <iris/vfs_ep_proto.h>
+#include <iris/program_abi.h>
 #include "../common/console_client.h"
 #include "../common/iris_ipc_buffer.h"
 
@@ -69,6 +70,11 @@ static uint8_t *g_sh_buf = g_sh_ep_buf;
 /* Spare slots from the per-service range (22..29 are unassigned). */
 #define SH_SLOT_IPCBUF_FRAME  22u
 #define SH_SLOT_IPCBUF_PT     23u
+/* ...and what `run` needs: the program spawner, and the THREAD of whatever it
+ * last started.  A supervisor names the thread — there has been no process
+ * object since Stage 7 — and the exit status is read off it. */
+#define SH_SLOT_PROC_EP       24u
+#define SH_SLOT_PROC_TCB      25u
 
 /* Console endpoint path: sh is a pure CPtr-first client — ALL
  * console output goes through the well-known slot IRIS_CPTR_CONSOLE_EP.
@@ -247,6 +253,163 @@ static void sh_cmd_cat_ep(iris_cptr_t con, const char *path) {
     }
 }
 
+/* ── run: start a program, and read what it exited with ──────────────────── */
+
+/*
+ * The program spawner, resolved once and lazily.
+ *
+ * `sh` discovers nothing else at runtime — every core service it uses is a
+ * well-known slot minted before it ran — and `proc.ep` is the exception for a
+ * reason: `proc` is started by `init` AFTER `sh` is already up, so there was
+ * nothing to mint at the time.  It is looked up through the svcmgr discovery
+ * endpoint, which is the mechanism this system already has for exactly that.
+ */
+static iris_cptr_t g_sh_proc_ep = IRIS_CPTR_NULL;
+
+static int sh_proc_ep_try(void) {
+    static const char name[] = "spawn";
+    struct iris_msg m;
+
+    if (g_sh_proc_ep != IRIS_CPTR_NULL) return 1;
+
+    sh_imsg_zero(&m);
+    m.label = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    for (uint32_t i = 0; i < (uint32_t)sizeof(name); i++)
+        g_sh_buf[i] = (uint8_t)name[i];
+    m.buf_len = (uint32_t)sizeof(name);
+    /* The receive slot has to be EMPTY, and a failed lookup transfers nothing
+     * — so it is cleared before every attempt rather than after. */
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)SH_SLOT_PROC_EP);
+    m.recv_slot = (long)SH_SLOT_PROC_EP;
+
+    if (iris_msg_call((long)IRIS_CPTR_SVCMGR_EP, &m) != IRIS_OK ||
+        m.label != IRIS_EP_REPLY_OK)
+        return 0;
+    g_sh_proc_ep = (iris_cptr_t)SH_SLOT_PROC_EP;
+    return 1;
+}
+
+/* What time it is, from the service that holds the clock.  0 when this shell
+ * was granted no timer capability, which is a thing a spawner may choose. */
+static uint64_t sh_uptime_ns(void) {
+    struct iris_msg m;
+    sh_imsg_zero(&m);
+    m.label = TMR_OP_UPTIME;
+    if (iris_msg_call((long)IRIS_CPTR_TIMER_EP, &m) != 0) return 0u;
+    return m.words[0];
+}
+
+/*
+ * ...and the same, waiting for it.
+ *
+ * `proc` is started by `init` LONG after `sh` is already up — the shell comes
+ * from svcmgr early in the boot, the spawner comes after the filesystem is
+ * usable — so the first lookup legitimately finds nothing.
+ *
+ * The bound is REAL TIME rather than a retry count, and the difference matters:
+ * an iteration count is a guess about how fast this machine is, and the machine
+ * this runs on is a virtual one whose speed nobody controls.  Fifteen seconds
+ * is "the spawner is not coming"; anything less is this shell being impatient
+ * about a boot that is still happening.  Each attempt yields, so waiting here
+ * is not spinning against the service being waited for.
+ */
+static int sh_proc_ep(iris_cptr_t con) {
+    uint64_t t0 = sh_uptime_ns();
+
+    for (;;) {
+        uint64_t now, mark;
+        if (sh_proc_ep_try()) return 1;
+        now = sh_uptime_ns();
+        /* No clock: fall back to a count, because a shell with no timer must
+         * still give up rather than wait for ever. */
+        if (now == 0u || t0 == 0u) { if (++t0 > 200000u) break; continue; }
+        if (now - t0 > 15000000000ULL) break;
+        /*
+         * And WAIT between attempts, rather than asking as fast as the CPU
+         * allows.  A failed lookup is a logged warning in svcmgr, so an
+         * impatient shell writes tens of thousands of them into the boot log
+         * of a machine that is working correctly — which is how a real failure
+         * becomes unfindable.  Twenty milliseconds is imperceptible to a
+         * person and is four hundred attempts across the whole bound.
+         */
+        for (mark = now; ; ) {
+            uint64_t t = sh_uptime_ns();
+            if (t == 0u || t - mark > 20000000ULL) break;
+            (void)sh_sys0(SYS_YIELD);
+        }
+    }
+    sh_cout(con, "run: no program spawner\r\n");
+    return 0;
+}
+
+static void sh_cmd_run(iris_cptr_t con, const char *path) {
+    struct iris_msg m;
+    uint32_t n;
+    long ec = -1;
+
+    if (!sh_proc_ep(con)) return;
+
+    n = sh_strlen(path);
+    if (n == 0u || n + 1u > VFS_EP_PATH_MAX) {
+        sh_cout(con, "run: bad path\r\n");
+        return;
+    }
+    for (uint32_t i = 0; i < n; i++) g_sh_buf[i] = (uint8_t)path[i];
+    g_sh_buf[n] = 0u;
+
+    sh_imsg_zero(&m);
+    m.label      = PROC_OP_SPAWN;
+    m.words[0]   = 0u;            /* the default budget                      */
+    m.words[1]   = 0u;            /* no object preloaded: the image says what
+                                   * interpreter it wants, and `proc` resolves
+                                   * that itself                             */
+    m.word_count = 2u;
+    m.buf_len    = n + 1u;        /* the argument vector: just argv[0]       */
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)SH_SLOT_PROC_TCB);
+    m.recv_slot  = (long)SH_SLOT_PROC_TCB;
+
+    if (iris_msg_call((long)g_sh_proc_ep, &m) != IRIS_OK) {
+        sh_cout(con, "run: spawner did not answer\r\n");
+        return;
+    }
+    if (m.label != PROC_REP_OK) {
+        /* The step number IS the diagnosis — see PROC_STEP_* — so it is shown
+         * rather than folded into "failed". */
+        sh_cout(con, "run: did not start, step ");
+        sh_write_u32(con, (uint32_t)m.words[0]);
+        sh_cout(con, "\r\n");
+        return;
+    }
+
+    /*
+     * Wait for it, bounded, by ASKING the thread.
+     *
+     * A terminal thread answers its exit code and a live one answers an error,
+     * so polling says the same thing a notification would with two fewer
+     * objects — and each ask is a syscall, which is a scheduling point, so the
+     * program it is waiting for gets the CPU.  The bound is here because a
+     * shell that hangs on a program that hangs is a shell somebody has to
+     * reboot to get back.
+     */
+    for (uint32_t spin = 0; spin < 2000000u; spin++) {
+        ec = iris_invoke0((long)SH_SLOT_PROC_TCB, INV_TCB_EXIT_CODE);
+        if (ec >= 0) break;
+    }
+    if (ec < 0) {
+        sh_cout(con, "run: still running, gave up waiting\r\n");
+    } else {
+        sh_cout(con, "run: ");
+        sh_cout(con, path);
+        sh_cout(con, " exited ");
+        sh_write_u32(con, (uint32_t)ec);
+        sh_cout(con, "\r\n");
+    }
+    /* Its thread goes with it: while `sh` holds one, the budget the program was
+     * carved from cannot be reset and the spawner's next child costs a fresh
+     * region.  A supervisor holds nothing of a child it has finished with. */
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)SH_SLOT_PROC_TCB);
+}
+
 /* ── Command dispatch ────────────────────────────────────────────── */
 
 static void sh_dispatch(iris_cptr_t con, const char *line) {
@@ -257,6 +420,7 @@ static void sh_dispatch(iris_cptr_t con, const char *line) {
                            "  uptime        seconds since boot\r\n"
                            "  ls            list VFS files\r\n"
                            "  cat <file>    read a file\r\n"
+                           "  run <prog>    start a program, print its status\r\n"
                            "  clear         clear screen\r\n");
         return;
     }
@@ -310,6 +474,15 @@ static void sh_dispatch(iris_cptr_t con, const char *line) {
         }
         sh_cmd_cat_ep(con, path);
         sh_cout(con, "\r\n");
+        return;
+    }
+    if (sh_word_eq(line, "run")) {
+        const char *path = sh_skip_word(line);
+        if (*path == '\0') {
+            sh_cout(con, "usage: run <program>\r\n");
+            return;
+        }
+        sh_cmd_run(con, path);
         return;
     }
     if (sh_word_eq(line, "clear")) {
@@ -386,6 +559,18 @@ void sh_main_c(iris_cptr_t rbx_unused) {
         else
             sh_cout(console_h, "[SH] console cptr FAILED\n");
     }
+
+    /*
+     * ── run one program, before anybody types ──
+     *
+     * Stage 10-run step 6 closes on "a C program ... exits with a status the
+     * SHELL reads — in the gate, on every commit", and a gate has no hands.
+     * So the shell does once, at startup, exactly what `run cprog` does when a
+     * person types it: the same lookup, the same spawn, the same read of the
+     * same thread's exit status.  It is a demonstration that runs itself, not
+     * a special path — delete these four lines and the command still works.
+     */
+    sh_cmd_run(console_h, "cprog");
 
     /* Print banner */
     sh_cout(console_h,

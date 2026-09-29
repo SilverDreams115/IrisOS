@@ -2879,7 +2879,7 @@ inside the valid range — the one thing that boundary exists to prevent.
 stage that had closed without anyone returning to them, which is the exact
 failure §5.1 was written to stop.  All six are answered in ledger A-35.
 
-## Stage 10-run — the dynamic C runtime  ← OPEN (steps 1-5 closed, 6 in progress)
+## Stage 10-run — the dynamic C runtime  ← OPEN (steps 1-6 of 8 closed)
 
 Precondition: 10-abi (the surface a runtime binds to is frozen), 10-mem (a
 grant is a run of frame capabilities), 11-life, 13-form.  All met.
@@ -3335,8 +3335,7 @@ unmap-and-remap of a whole frame and a frame does not split, so a dynamic
 program's relocated pages stay writable.  `link_dynprog.ld` says so where a
 reader will find it rather than leaving it to be discovered.
 
-**Step 6 — a C library, resolving by capability.**  ◐ **IN PROGRESS — the
-library and the C program landed; the shell's half has not.**
+**Step 6 — a C library, resolving by capability.**  ✅ **CLOSED.**
 
 *The library is IRIS's own, not musl, and that was the project owner's choice
 when the cost of each was put in front of them.*  musl emits **Linux** syscalls
@@ -3388,11 +3387,30 @@ Landed:
     is no soft-float here and a `%f` would print an answer this code cannot
     justify.
 
-*Remaining, and it is the close condition's other half:* **"a status the SHELL
-reads"**.  `sh` needs `proc`'s endpoint — which means `init` publishing it in
-svcmgr's registry, a slot in svcmgr's manifest for `sh`, and a `run` command.
-Today the status is read by `init`, which proves the mechanism but not the
-sentence.
+*And the shell reads the status,* which is the close condition's other half:
+
+```
+run: cprog exited 7
+```
+
+`init` publishes `proc`'s endpoint in svcmgr's registry under **"spawn"** —
+not "proc.ep", because svcmgr RESERVES every name ending in `.ep` for the
+endpoints it owns itself and T061 pins that refusal.  `sh` looks it up the
+first time somebody types `run`, sends `PROC_OP_SPAWN`, receives the child's
+THREAD and reads its exit code.  It does that once at startup as well, because
+a gate has no hands — the same function, the same lookup, the same spawn; delete
+those lines and the command still works.
+
+Two things the wiring taught:
+  - **`sh` comes up long before `proc` does**, so the first lookup legitimately
+    finds nothing.  The retry is bounded by REAL TIME, not by a count: an
+    iteration count is a guess about how fast the machine is, and this one is
+    virtual.
+  - **An impatient client is a log denial-of-service.**  The first version
+    asked as fast as the CPU allowed and wrote 31,226 `[SVCMGR] WARN: lookup
+    failed` lines into the boot log of a machine that was working correctly.
+    Waiting 20 ms between attempts brought that to 38, which is a number a
+    person can read past.
 
 *Also not here:* `PT_TLS`.  A program that declares a `__thread` variable will
 not link, which is a refusal rather than a silent zero; static TLS belongs with

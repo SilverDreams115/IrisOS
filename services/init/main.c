@@ -347,7 +347,7 @@ void init_main(iris_cptr_t rbx_unused) {
      * Not fatal: a machine whose program spawner did not come up is still a
      * machine with a shell on it, and the line below says which.
      */
-    if (!init_spawn_proc(vfs_ep_h))
+    if (!init_spawn_proc(vfs_ep_h, sm_h))
         init_log("[USER] proc: no program ran\n");
 
     /* KBD SUBSCRIBE / shared-reply probes retired — kbd is

@@ -2893,7 +2893,7 @@ out:
  *
  * Returns 1 when all of that held.
  */
-int init_spawn_proc(iris_cptr_t vfs_ep_h) {
+int init_spawn_proc(iris_cptr_t vfs_ep_h, iris_cptr_t sm_h) {
     iris_cptr_t proc_h = IRIS_CPTR_NULL, boot_h = IRIS_CPTR_NULL;
     struct iris_msg m;
     long r;
@@ -2970,6 +2970,39 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
     init_close(&proc_h);
     init_close(&boot_h);
     if (r < 0) { init_log("[USER] proc spawn FAILED\n"); return 0; }
+
+    /*
+     * ── publish it, so the SHELL can start programs too ──
+     *
+     * `sh` is up long before `proc` is, so there was nothing to mint into its
+     * CSpace at the time — and minting into a running service's namespace
+     * would mean init keeping standing authority over it.  svcmgr's registry
+     * is the mechanism this system already has for a service that arrives
+     * late: `sh` asks for "proc.ep" by name the first time somebody types
+     * `run`, and gets a capability or gets nothing.
+     *
+     * WRITE only, plus what a delegate needs to pass it on: a shell may send
+     * spawn requests on this endpoint.  It may not receive on it, which is
+     * what would let it impersonate the spawner to everybody else.
+     */
+    if (sm_h != IRIS_CPTR_NULL) {
+        /* "spawn", not "proc.ep": svcmgr RESERVES every name ending in ".ep"
+         * for the endpoints it owns itself (T061 pins the refusal), and a
+         * dynamic registration under one is ACCESS_DENIED.  The name a client
+         * asks for is therefore what this service DOES, which reads better
+         * anyway. */
+        static const char pname[] = "spawn";
+        struct iris_msg reg;
+        iris_msg_zero(&reg);
+        reg.label = IRIS_SVCMGR_EP_REGISTER;
+        for (uint32_t i = 0; i < (uint32_t)sizeof(pname); i++)
+            g_init_buf[i] = (uint8_t)pname[i];
+        reg.buf_len    = (uint32_t)sizeof(pname);
+        reg.cap        = (long)INIT_SLOT_PROC_EP;
+        reg.cap_rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        if (iris_msg_call((long)sm_h, &reg) != 0 || reg.label != IRIS_EP_REPLY_OK)
+            init_log("[USER][INIT] proc: not published; the shell cannot run programs\n");
+    }
 
     /* ── the first program: does it START correctly? ── */
     {

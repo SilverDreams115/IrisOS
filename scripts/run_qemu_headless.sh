@@ -578,6 +578,22 @@ if ! grep -q "\[CPROG\] hello from a C program: libc/6, argc=1, argv\[0\]=cprog"
   exit 1
 fi
 
+# ...and the SHELL ran it and read what it exited with (Stage 10-run step 6).
+#
+# `sh` resolves "spawn" through svcmgr, sends PROC_OP_SPAWN, receives the
+# child's THREAD, and reads INV_TCB_EXIT_CODE off it -- the same path `run
+# cprog` takes when a person types it.  The shell does it once at startup
+# because a gate has no hands, not because it is a special path.
+#
+# This is the half of step 6 that is about the SYSTEM rather than the library:
+# a program's status reaching something a person is talking to.
+if ! grep -Eq "^run: cprog exited 7" "$LOG_FILE"; then
+  echo "[headless] the shell did not run a program and read its status:"
+  grep -E "^run:|CPROG" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+
 # ...and one copy of a library serves two live programs (Stage 10-run step 4).
 #
 # Three lines, and the first is the only MEASUREMENT in this gate that two
