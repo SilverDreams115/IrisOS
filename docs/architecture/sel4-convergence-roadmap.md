@@ -2879,7 +2879,7 @@ inside the valid range — the one thing that boundary exists to prevent.
 stage that had closed without anyone returning to them, which is the exact
 failure §5.1 was written to stop.  All six are answered in ledger A-35.
 
-## Stage 10-run — the dynamic C runtime  ← OPEN (steps 1-3 of 8 closed)
+## Stage 10-run — the dynamic C runtime  ← OPEN (steps 1-4 of 8 closed)
 
 Precondition: 10-abi (the surface a runtime binds to is frozen), 10-mem (a
 grant is a run of frame capabilities), 11-life, 13-form.  All met.
@@ -3151,14 +3151,83 @@ invocation covering all of it, and a frame does not split.  `PT_GNU_RELRO` will
 therefore need its own frame, which is a decision for whoever lays the segments
 out in step 5, not something this call can fix afterwards.
 
-**Step 4 — the object registry.**  The service that makes dynamic pay: it loads
-a DSO once, holds its frames, and mints READ-ONLY capabilities for the text to
+**Step 4 — the object registry.**  ✅ **CLOSED.**  `services/objreg` loads an
+object once, holds its frames, and mints READ-ONLY capabilities for the text to
 every process that needs it.  Data segments are copied per process, because
 there is no copy-on-write and pretending otherwise would be the kind of silent
 sharing this system exists to prevent.
-*Closes when:* two processes running the same library map the SAME physical
-frames for its text — measured, not asserted — each has its own data, and a
-revoke in the registry removes it from both at once.
+
+*Closed by:* the boot, on every runtime lane and at smp1/2/4.  `init` loads an
+object, spawns TWO programs against it through `proc`, and they run at the same
+time:
+
+```
+[USER][INIT] objreg: text at 0x1522e000 and 0x1522e000, data 0x16052000 and 0x16455000
+[USER][INIT] objreg: revoke destroyed 4 derived capabilities
+[USER][INIT] objreg: consumers exited 42 and 42
+```
+
+**The first line is the measurement, and it is the only place in this gate
+where two address spaces are shown to share physical memory.**  Each consumer
+asks `Frame_GetAddress` on the capability it was given — which needs only
+`RIGHT_READ`, so a program can simply ask where its own library is — and
+reports the number.  Equal for the text; DIFFERENT for the data each copied out
+of the master.  Both halves are required: the first alone is satisfied by a
+system that shares everything, the second alone by one that shares nothing, and
+"both read the same bytes" is satisfied by two independent copies of a file,
+which is exactly what a registry exists to not produce.
+
+The revoke is the third property and it is asked in both directions in the same
+sense as step 3's reclamation: both programs are asked what their object
+capability IS, before and after — `Cap_Identify`, not a read, because a read
+would prove it by faulting and would kill the process that was supposed to
+report.  One invocation in the registry destroyed four derived capabilities:
+text and data, in two address spaces, at once.
+
+Landed:
+  - **`services/objreg`** — the registry.  It reads an ELF through the VFS
+    once, retypes one frame per segment, fills them through a writable mapping
+    in its own address space and then UNMAPS it — so the text every consumer
+    maps read+execute was writable in exactly one place, which no longer
+    exists.  Its budget is where the shared libraries live, which makes "how
+    many libraries can this machine hold" a number a person can see.
+  - **the object table is REAL** — `proc` resolves the set before the child
+    exists and mints one pair of capabilities per object into slots 64 upward.
+    Two slots per object (`IRIS_PROG_SLOT_OBJ_TEXT/DATA`), pinned by
+    `test_program_abi`.  There is no search, no path, and no environment
+    variable that changes the answer, which is what ledger A-49 promised when
+    it retired charter §6's `No POSIX personality`.
+  - **a spawn can carry a CHANNEL** — `PROC_OP_SPAWN` takes a capability and
+    mints it at the child's `IRIS_CPTR_OWN_EP`.  That is the general facility
+    the contract's slot 5 was reserved for, and it is what lets a parent
+    rendezvous with what it started.  A spawner that wants none of it passes
+    none, and the slot stays empty.
+  - **the argument vector** — the spawn payload is NUL-separated strings, so a
+    program can be told which of two identical copies it is.  The bytes already
+    say where each string ends; a separate count would be a second account of
+    the same thing.
+
+Two things the work found, and the second is a design answer rather than a bug:
+  - **`CSpace_Revoke` returns the COUNT**, not a status.  Treating a successful
+    revoke of four capabilities as a failure is the kind of mistake that reads
+    correct.
+  - **A mint requires `RIGHT_DUPLICATE` on its source** (`kcnode_slot_derive`),
+    so a registry that handed out plain `READ` would be a registry whose
+    objects no spawner could give to a child.  The rights the registry grants
+    are therefore `READ | DUPLICATE | TRANSFER` — never `WRITE` — and the
+    SPAWNER reduces to plain `READ` when it mints into a program.  What keeps
+    that honest is not withholding rights from the delegate but the derivation
+    tree: every copy anybody makes is a descendant of the registry's master, so
+    one revoke reaches all of them however far they were passed, and a program
+    is a leaf that cannot pass the library on at all.
+
+*The object is `hello`,* which is a deliberate choice rather than a
+placeholder: the registry loads an ELF's segments, and `hello` is an ELF
+already on the filesystem with exactly one R+X and one R+W segment.  Building a
+file that existed only to be shared would prove the same thing about a file
+that exists only to be proved about.  What step 5 changes is that the object
+becomes an INTERPRETER the loader jumps into; what the registry holds and how
+it hands it out does not change at all.
 
 **Step 5 — the loader learns a second object.**  `PT_INTERP`, two biases, the
 `auxv` the interpreter needs (`AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_BASE`,

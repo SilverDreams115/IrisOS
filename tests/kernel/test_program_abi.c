@@ -73,6 +73,19 @@ void test_program_abi(void) {
      * any region, so no allocator can hand it out. */
     ASSERT_EQ((long)(IRIS_PROG_STACK_OFF - IRIS_PROG_MMAP_END_OFF), 4096L);
     ASSERT_TRUE(IRIS_PROG_MMAP_OFF < IRIS_PROG_MMAP_END_OFF);
+
+    /* The object table: two slots per object, text first, and the last object
+     * still inside the reserved range.  An off-by-one here would put a
+     * library's data capability in the first slot a program owns. */
+    ASSERT_EQ((long)IRIS_PROG_SLOT_OBJ_TEXT(0), (long)IRIS_PROG_SLOT_OBJ_BASE);
+    ASSERT_EQ((long)IRIS_PROG_SLOT_OBJ_DATA(0), (long)(IRIS_PROG_SLOT_OBJ_BASE + 1u));
+    ASSERT_EQ((long)IRIS_PROG_OBJ_MAX, 32L);
+    ASSERT_EQ((long)IRIS_PROG_SLOT_OBJ_DATA(IRIS_PROG_OBJ_MAX - 1u),
+              (long)(IRIS_PROG_SLOT_OBJ_BASE + IRIS_PROG_SLOT_OBJ_MAX - 1u));
+    /* ...and the slot after the table is the program's own again, not the
+     * table's. */
+    ASSERT_EQ((long)IRIS_PROG_SLOT_FREE2_LO,
+              (long)(IRIS_PROG_SLOT_OBJ_BASE + IRIS_PROG_SLOT_OBJ_MAX));
     ASSERT_TRUE(USER_STACK_BASE < USER_STACK_TOP);
     ASSERT_TRUE(USER_STACK_TOP < USER_PRIVATE_BASE + USER_PRIVATE_SIZE);
 

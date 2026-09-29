@@ -301,6 +301,7 @@ static void vfs_seed_fixture_exports(struct vfs_state *state) {
      */
     (void)vfs_seed_one_fixture(state, 22u, "hello");
     (void)vfs_seed_one_fixture(state, 24u, "alloc");
+    (void)vfs_seed_one_fixture(state, 26u, "libuser");
 }
 
 /* Single-threaded server: static IPC buffers, no stack pressure. */

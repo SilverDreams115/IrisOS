@@ -148,6 +148,8 @@ static long sl_name_to_index(const char *name) {
      * by path through the VFS, and a name in this table is what makes a thing
      * startable by index without a filesystem. */
     if (sl_streq(name, "proc"))     return 23;
+    /* 24 is `alloc` and 26 is `libuser`: programs, found by path. */
+    if (sl_streq(name, "objreg"))   return 25;
     return -1;
 }
 

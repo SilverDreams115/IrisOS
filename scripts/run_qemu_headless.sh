@@ -536,6 +536,47 @@ if ! grep -Eq "\[USER\]\[INIT\] proc: reclaimed [0-9]+ of [0-9]+ KiB, all of it$
   exit 1
 fi
 
+# ...and one copy of a library serves two live programs (Stage 10-run step 4).
+#
+# Three lines, and the first is the only MEASUREMENT in this gate that two
+# address spaces share physical memory.  Both consumers ask `Frame_GetAddress`
+# on the capability they were given and report the number; the text addresses
+# must be equal and the data addresses must not.  "Both read the same bytes"
+# would be satisfied by two independent copies of a file, which is exactly the
+# thing a registry is supposed to avoid and exactly what a broken one would do.
+#
+# The revoke line is the third property: ONE invocation in the registry
+# destroys the capability in both processes, and both then report it gone
+# without touching the memory — touching it would prove the same thing by
+# faulting, and would kill the process that was meant to say so.
+# The comparison is done in the shell rather than in a regex: "these two
+# addresses are equal and those two are not" is a backreference plus a negated
+# backreference, which POSIX grep does not have and which would be unreadable
+# if it did.
+obj_line=$(grep -E "\[USER\]\[INIT\] objreg: text at " "$LOG_FILE" | tail -1)
+obj_t1=$(printf '%s' "$obj_line" | sed -n 's/.*text at 0x\([0-9a-f]*\) and 0x\([0-9a-f]*\),.*/\1/p')
+obj_t2=$(printf '%s' "$obj_line" | sed -n 's/.*text at 0x\([0-9a-f]*\) and 0x\([0-9a-f]*\),.*/\2/p')
+obj_d1=$(printf '%s' "$obj_line" | sed -n 's/.*data 0x\([0-9a-f]*\) and 0x\([0-9a-f]*\).*/\1/p')
+obj_d2=$(printf '%s' "$obj_line" | sed -n 's/.*data 0x\([0-9a-f]*\) and 0x\([0-9a-f]*\).*/\2/p')
+if [ -z "$obj_t1" ] || [ "$obj_t1" != "$obj_t2" ] || [ -z "$obj_d1" ] || [ "$obj_d1" = "$obj_d2" ]; then
+  echo "[headless] two programs did not share one library (or shared too much):"
+  grep -E "OBJREG|objreg" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+if ! grep -Eq "\[USER\]\[INIT\] objreg: revoke destroyed [1-9][0-9]* derived capabilities$" "$LOG_FILE"; then
+  echo "[headless] the registry revoke reached nothing:"
+  grep -E "OBJREG|objreg" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+if ! grep -Eq "\[USER\]\[INIT\] objreg: one copy of the text, private data, and one revoke reached both$" "$LOG_FILE"; then
+  echo "[headless] the shared-object claims did not all hold:"
+  grep -E "OBJREG|objreg" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+
 # The kernel survived a fault of its own (ledger A-37).
 #
 # `idt.c` halts on any exception that did not come from ring 3, which is the

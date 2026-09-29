@@ -37,6 +37,26 @@
  */
 #define IRIS_PROG_SLOT_OBJ_BASE   64u
 #define IRIS_PROG_SLOT_OBJ_MAX    64u    /* slots 64..127 */
+/*
+ * TWO slots per object, and they are not interchangeable.
+ *
+ * `OBJV + 2*i` is the object's TEXT: read-only, and the same physical frame in
+ * every process that has it.  `OBJV + 2*i + 1` is its DATA MASTER: also
+ * read-only, and deliberately so — a consumer copies it into memory of its own
+ * before writing, because there is no copy-on-write here and a shared writable
+ * data segment would be silent sharing between processes that believe they are
+ * isolated.
+ *
+ * Sixty-four slots is therefore THIRTY-TWO objects, and `AT_IRIS_OBJC` counts
+ * objects rather than slots.  A runtime that wanted the numbers the other way
+ * round would be a runtime that had to know which of two adjacent slots it was
+ * looking at, which is the kind of thing that is right until somebody adds a
+ * third segment kind.
+ */
+#define IRIS_PROG_SLOT_OBJ_STRIDE 2u
+#define IRIS_PROG_OBJ_MAX         (IRIS_PROG_SLOT_OBJ_MAX / IRIS_PROG_SLOT_OBJ_STRIDE)
+#define IRIS_PROG_SLOT_OBJ_TEXT(i) (IRIS_PROG_SLOT_OBJ_BASE + IRIS_PROG_SLOT_OBJ_STRIDE * (i))
+#define IRIS_PROG_SLOT_OBJ_DATA(i) (IRIS_PROG_SLOT_OBJ_TEXT(i) + 1u)
 
 /* Reserved and left EMPTY: `iris_test` puts its fixtures here, and a program
  * that is one day run under the harness must not find its own capabilities
@@ -123,11 +143,26 @@
 #define PROC_SLOT_REPLY           6u    /* the reply object its receive stages */
 #define PROC_SLOT_VFS_EP          7u    /* to read an ELF by path             */
 #define PROC_SLOT_CONSOLE_EP      8u    /* handed on to programs it spawns    */
+#define PROC_SLOT_OBJREG_EP       9u    /* to resolve a program's object set   */
 /* Its own budget arrives at IRIS_CPTR_OWN_UNTYPED (12), like every service's. */
 
 /* Spawn a program.  words[0] = length of the path, which follows in the
  * message's own page.  Replies with the child's first thread as a capability,
  * so the caller can watch it, and its exit status is read with SYS_TCB_*. */
+/*
+ * PROC_OP_SPAWN — start a program.
+ *   Request:  payload  = the ARGUMENT VECTOR, NUL-separated and NUL-terminated.
+ *                        argv[0] is the path the image is read from; whatever
+ *                        follows is the program's to interpret.
+ *             words[0] = the child's budget in bytes (0 = the default)
+ *             words[1] = 1 + an objreg object id to preload, or 0 for none
+ *             m.cap    = an endpoint to mint at the child's IRIS_CPTR_OWN_EP,
+ *                        or none.  A spawner that wants to HEAR from what it
+ *                        starts hands it a channel here; one that does not,
+ *                        does not, and the child's slot 5 stays empty.
+ *   Reply OK: words[0] = PROC_STEP_RUNNING; transfers the child's THREAD
+ *   Reply ERR: words[0] = the PROC_STEP_* it stopped at
+ */
 #define PROC_OP_SPAWN             0x7401u
 /* What the service found and refused, in numbers, for a machine with no
  * serial port: a spawn that failed names the step it failed at. */

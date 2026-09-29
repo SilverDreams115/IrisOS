@@ -34,6 +34,7 @@
 #include <iris/fs_ep_proto.h>
 #include <iris/ip_ep_proto.h>
 #include <iris/program_abi.h>
+#include <iris/objreg_ep_proto.h>
 
 struct init_findings g_init_found;
 #include "../common/iris_map.h"
@@ -2225,6 +2226,20 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
     }
     rep_ch(b, &k, lim, '\n');
 
+    rep_str(b, &k, lim, " obj   ");
+    if (g_init_found.obj_text_kib || g_init_found.obj_exit) {
+        rep_str(b, &k, lim, "one copy of ");
+        rep_num(b, &k, lim, g_init_found.obj_text_kib);
+        rep_str(b, &k, lim, " KiB of library text for 2 programs");
+        if (!g_init_found.obj_shared)  rep_str(b, &k, lim, " (NOT shared)");
+        if (!g_init_found.obj_private) rep_str(b, &k, lim, " (data NOT private)");
+        if (!g_init_found.obj_revoked) rep_str(b, &k, lim, " (revoke missed one)");
+        if (g_init_found.obj_exit != 42u) rep_str(b, &k, lim, " (a consumer failed)");
+    } else {
+        rep_str(b, &k, lim, "no registry");
+    }
+    rep_ch(b, &k, lim, '\n');
+
     rep_str(b, &k, lim, "==============================\n");
     if (k > lim) k = lim;
     b[k] = 0;
@@ -2352,36 +2367,51 @@ static void init_app_num(char *b, uint32_t *k, uint64_t v) {
  * Returns the exit status, or a negative `iris_error_t`.  `*out_step` carries
  * the spawn step for a program that never started.
  */
-static long init_run_program(const char *path, uint32_t *out_step) {
+/*
+ * Start a program and DO NOT wait for it.
+ *
+ * `arg` is an optional second argument; the payload is the argument vector,
+ * NUL-separated, because the bytes already say where each string ends.
+ * `objsel` is `1 + an objreg object id`, or 0.  `ep_cptr` is an endpoint the
+ * child should hold at `IRIS_CPTR_OWN_EP`, or 0 — a spawner that wants to hear
+ * from what it starts hands it a channel, and one that does not leaves the
+ * slot empty.
+ *
+ * The child's THREAD lands in `dest_slot`, which is a parameter because
+ * proving two programs share a library needs two of them alive at once.
+ */
+static uint32_t init_start_program(const char *path, const char *arg,
+                                   uint64_t objsel, uint32_t ep_cptr,
+                                   uint32_t dest_slot) {
     struct iris_msg m;
-    long r;
-    uint32_t plen = 0;
-
-    *out_step = PROC_STEP_NONE;
-    while (path[plen]) plen++;
+    uint32_t k = 0;
 
     iris_msg_zero(&m);
     m.label      = PROC_OP_SPAWN;
     m.words[0]   = 0u;                  /* the default budget is fine for these */
-    m.word_count = 1u;
-    for (uint32_t i = 0; i < plen; i++) g_init_buf[i] = (uint8_t)path[i];
-    g_init_buf[plen] = 0u;
-    m.buf_len   = plen + 1u;
-    /* Where the child's THREAD lands.  There is no process object to ask for;
-     * the thread is what a supervisor names. */
-    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_CHILD);
-    m.recv_slot = (long)INIT_SLOT_PROC_CHILD;
+    m.words[1]   = objsel;
+    m.word_count = 2u;
+    while (path[k]) { g_init_buf[k] = (uint8_t)path[k]; k++; }
+    g_init_buf[k++] = 0u;
+    if (arg) {
+        for (uint32_t i = 0; arg[i]; i++) g_init_buf[k++] = (uint8_t)arg[i];
+        g_init_buf[k++] = 0u;
+    }
+    m.buf_len = k;
+    if (ep_cptr) {
+        m.cap        = (long)ep_cptr;
+        m.cap_rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+    }
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)dest_slot);
+    m.recv_slot = (long)dest_slot;
 
-    if (iris_msg_call((long)INIT_SLOT_PROC_EP, &m) != 0)
-        return (long)IRIS_ERR_NOT_SUPPORTED;
+    if (iris_msg_call((long)INIT_SLOT_PROC_EP, &m) != 0) return PROC_STEP_NONE;
     if (m.label != PROC_REP_OK) {
-        /* The step number IS the diagnosis — see PROC_STEP_* — so it is
-         * printed rather than folded into one word. */
         char e[96];
         uint32_t j = 0;
         const char *pre = "[USER][INIT] proc: ";
         while (pre[j]) { e[j] = pre[j]; j++; }
-        for (uint32_t i = 0; i < plen && j < 60u; i++) e[j++] = path[i];
+        for (uint32_t i = 0; path[i] && j < 60u; i++) e[j++] = path[i];
         {
             const char *mid = " did not start, step ";
             for (uint32_t i = 0; mid[i]; i++) e[j++] = mid[i];
@@ -2390,7 +2420,6 @@ static long init_run_program(const char *path, uint32_t *out_step) {
         e[j++] = ' '; e[j++] = 'w'; e[j++] = 'h'; e[j++] = 'y'; e[j++] = ' ';
         init_app_num(e, &j, m.words[1]);
         {
-            /* The kernel error, printed as the negative it is. */
             long d = (long)m.words[2];
             const char *er = " err ";
             for (uint32_t i = 0; er[i]; i++) e[j++] = er[i];
@@ -2399,10 +2428,16 @@ static long init_run_program(const char *path, uint32_t *out_step) {
         }
         e[j++] = '\n'; e[j] = 0;
         init_log(e);
-        *out_step = (uint32_t)m.words[0];
-        return (long)IRIS_ERR_NOT_SUPPORTED;
+        return (uint32_t)m.words[0];
     }
-    *out_step = PROC_STEP_RUNNING;
+    return PROC_STEP_RUNNING;
+}
+
+static long init_run_program(const char *path, uint32_t *out_step) {
+    long r;
+
+    *out_step = init_start_program(path, 0, 0u, 0u, INIT_SLOT_PROC_CHILD);
+    if (*out_step != PROC_STEP_RUNNING) return (long)IRIS_ERR_NOT_SUPPORTED;
 
     /*
      * Wait for it, bounded.
@@ -2451,6 +2486,333 @@ static long init_run_program(const char *path, uint32_t *out_step) {
     return iris_invoke0((long)INIT_SLOT_PROC_CHILD, INV_TCB_EXIT_CODE);
 }
 
+/* ── the shared-object registry, and the proof that it shares ──────────── */
+
+/* Hex, for a physical address.  It is the one number here a person will want to
+ * compare by eye, and decimal is the wrong base for it. */
+static void init_app_hex(char *b, uint32_t *k, uint64_t v) {
+    static const char hx[] = "0123456789abcdef";
+    int started = 0;
+    for (int sh = 60; sh >= 0; sh -= 4) {
+        uint32_t d = (uint32_t)((v >> sh) & 0xFu);
+        if (d || started || sh == 0) { b[(*k)++] = hx[d]; started = 1; }
+    }
+}
+
+/*
+ * Receive one consumer's report, BOUNDED.
+ *
+ * A blocking receive is the natural shape and the wrong one here: a consumer
+ * that failed before it could report never sends, and init would wait for it
+ * for the rest of the boot.  So this polls, and between polls it asks whether
+ * the programs are still alive — a terminal thread answers its exit code and a
+ * live one answers an error, so "both are gone and neither spoke" is a
+ * condition this can actually detect rather than a silence it must outlast.
+ *
+ * Returns 1 on a message.
+ */
+static int init_share_recv(uint32_t reply_slot, struct iris_msg *m) {
+    for (uint32_t spin = 0; spin < 20000u; spin++) {
+        iris_msg_zero(m);
+        m->reply = (long)reply_slot;
+        if (iris_msg_nb_recv((long)INIT_SLOT_SHARE_EP, m) == 0) return 1;
+        {
+            long ea = iris_invoke0((long)INIT_SLOT_SHARE_TA, INV_TCB_EXIT_CODE);
+            long eb = iris_invoke0((long)INIT_SLOT_SHARE_TB, INV_TCB_EXIT_CODE);
+            if (ea >= 0 && eb >= 0) {
+                /* The status IS the diagnosis: `libuser` returns a different
+                 * number for each thing it could not do. */
+                char e[96];
+                uint32_t j = 0;
+                const char *pre = "[USER][INIT] objreg: consumers exited without reporting, ";
+                while (pre[j]) { e[j] = pre[j]; j++; }
+                init_app_num(e, &j, (uint64_t)ea);
+                e[j++] = ' '; e[j++] = 'a'; e[j++] = 'n'; e[j++] = 'd'; e[j++] = ' ';
+                init_app_num(e, &j, (uint64_t)eb);
+                e[j++] = '\n'; e[j] = 0;
+                init_log(e);
+                return 0;
+            }
+        }
+        init_retry_pause();
+    }
+    init_log("[USER][INIT] objreg: a consumer never reported\n");
+    return 0;
+}
+
+/* Release one blocked consumer into its next round. */
+static void init_share_go(uint32_t reply_slot) {
+    struct iris_msg go;
+    iris_msg_zero(&go);
+    go.label = OBJREG_ROUND_GO;
+    (void)iris_msg_reply((long)reply_slot, &go);
+}
+
+/*
+ * The registry itself, spawned BEFORE `proc`.
+ *
+ * Because `proc` has to hold an endpoint to it from its first instruction: the
+ * object set is resolved before a child exists, so the capability that lets it
+ * be resolved has to be in the manifest, and a manifest is written before the
+ * service starts.  The endpoint is init's own object either way — it is
+ * retyped here and `objreg` merely receives on it — so the ordering costs
+ * nothing and the alternative (keeping `proc`'s root CSpace so init can mint
+ * into it later) would be standing authority over a service's namespace kept
+ * for one delegation.
+ *
+ * Returns 1 when the registry is up.
+ */
+static int init_spawn_objreg(iris_cptr_t vfs_ep_h) {
+    iris_cptr_t obj_h = IRIS_CPTR_NULL, boot_h = IRIS_CPTR_NULL;
+    long r;
+
+    if (vfs_ep_h == IRIS_CPTR_NULL) return 0;
+
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
+                         INIT_SLOT_OBJREG_EP, 0) < 0) return 0;
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_REPLY,
+                         INIT_SLOT_OBJREG_RPLY, 0) < 0) return 0;
+    /* Eight megabytes: this is where the shared libraries live, and it is the
+     * one budget on the machine whose size is a statement about how many a
+     * person can have. */
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
+                         INIT_SLOT_OBJREG_UT, 8 << 20) < 0) return 0;
+    {
+        struct svc_mint om[5] = { 0 };
+        uint32_t n = 0;
+        om[n].slot = OBJREG_SLOT_CTRL_EP; om[n].src_cptr = INIT_SLOT_OBJREG_EP;
+        om[n].rights = RIGHT_READ;        n++;
+        om[n].slot = OBJREG_SLOT_REPLY;   om[n].src_cptr = INIT_SLOT_OBJREG_RPLY;
+        om[n].rights = RIGHT_READ | RIGHT_WRITE; n++;
+        om[n].slot = OBJREG_SLOT_VFS_EP;  om[n].src_cptr = (uint64_t)vfs_ep_h;
+        om[n].rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER; n++;
+        om[n].slot = OBJREG_SLOT_CONSOLE_EP; om[n].src_cptr = INIT_SLOT_CONSOLE_EP;
+        om[n].rights = RIGHT_WRITE | RIGHT_DUPLICATE; n++;
+        om[n].slot = IRIS_CPTR_OWN_UNTYPED; om[n].src_cptr = INIT_SLOT_OBJREG_UT;
+        om[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER; n++;
+
+        r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
+                               "objreg", &obj_h, &boot_h, om, n,
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
+                               2u << 20,
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED,
+                               /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
+        init_report_mints("objreg", om, n);
+    }
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_OBJREG_RPLY);
+    init_close(&obj_h);
+    init_close(&boot_h);
+    if (r < 0) { init_log("[USER] objreg spawn FAILED\n"); return 0; }
+    return 1;
+}
+
+/*
+ * ...and the proof that it shares.  See `init_spawn_objreg` for why the
+ * service is started separately and first.
+ *
+ * Three claims, and each is the kind a system can very easily only APPEAR to
+ * satisfy:
+ *
+ *   1. both consumers map the SAME PHYSICAL MEMORY for the library's text.
+ *      Not "both read the same bytes" — two independent copies of a file read
+ *      the same bytes too.  Each program asks `Frame_GetAddress` (which needs
+ *      only `RIGHT_READ`) and reports the number, and the two are compared
+ *      here.  That is a measurement; the roadmap asked for one.
+ *   2. each has its OWN data.  The registry publishes the data segment
+ *      read-only and each consumer copies it into a frame from its own budget,
+ *      so the two private physical addresses must DIFFER.  A system that
+ *      shared the data would pass claim 1 and fail this one.
+ *   3. one revoke in the registry reaches BOTH at once.  Both programs are
+ *      asked what their object capability is, before and after; a frame
+ *      becomes nothing, in two address spaces, from one invocation in a third.
+ */
+static int init_prove_shared_objects(void) {
+    struct iris_msg m;
+    long objid;
+    uint64_t text_pa[2] = { 0, 0 }, priv_pa[2] = { 0, 0 };
+    int ok = 0, seen_before = 0, seen_after = 0;
+    uint32_t started = 0;
+
+    /*
+     * Load the object.
+     *
+     * `hello` is used as the library, and it is a deliberate choice rather
+     * than a placeholder: the registry loads an ELF's segments, and `hello` is
+     * an ELF already on the filesystem with exactly one R+X and one R+W
+     * segment.  Building a separate file to be shared would prove the same
+     * thing about a file that exists only to be proved about.  What step 5
+     * changes is that the object becomes an INTERPRETER the loader jumps into;
+     * what it holds and how it is handed out does not change at all.
+     */
+    {
+        static const char objname[] = "hello";
+        iris_msg_zero(&m);
+        m.label = OBJREG_OP_OPEN;
+        for (uint32_t i = 0; i < (uint32_t)sizeof(objname); i++)
+            g_init_buf[i] = (uint8_t)objname[i];
+        m.buf_len = (uint32_t)sizeof(objname);
+        if (iris_msg_call((long)INIT_SLOT_OBJREG_EP, &m) != 0 ||
+            m.label != OBJREG_REP_OK) {
+            init_log("[USER][INIT] objreg: the object would not load\n");
+            return 0;
+        }
+        objid = (long)m.words[0];
+        g_init_found.obj_text_kib = (uint32_t)(m.words[1] >> 10);
+    }
+
+    /* ── the channel both consumers report on, and a reply object each ── */
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
+                         INIT_SLOT_SHARE_EP, 0) < 0) return 0;
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_REPLY,
+                         INIT_SLOT_SHARE_RA, 0) < 0) return 0;
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_REPLY,
+                         INIT_SLOT_SHARE_RB, 0) < 0) return 0;
+
+    /* Both, before either is spoken to: the whole claim is about two programs
+     * holding the library AT ONCE. */
+    if (init_start_program("libuser", "0", (uint64_t)objid + 1u,
+                           INIT_SLOT_SHARE_EP, INIT_SLOT_SHARE_TA)
+            != PROC_STEP_RUNNING) goto out;
+    started = 1u;
+    if (init_start_program("libuser", "1", (uint64_t)objid + 1u,
+                           INIT_SLOT_SHARE_EP, INIT_SLOT_SHARE_TB)
+            != PROC_STEP_RUNNING) goto out;
+    started = 2u;
+
+    /* ── round one: where each one physically IS ── */
+    for (uint32_t i = 0; i < 2u; i++) {
+        if (!init_share_recv(i == 0u ? INIT_SLOT_SHARE_RA : INIT_SLOT_SHARE_RB, &m))
+            goto out;
+        if (m.label != OBJREG_ROUND_MAPPED) goto out;
+        {
+            uint64_t who = m.words[2];
+            if (who > 1u) goto out;
+            text_pa[who] = m.words[0];
+            priv_pa[who] = m.words[1];
+        }
+    }
+    /*
+     * The measurement.
+     *
+     * One physical address, reported independently by two processes that share
+     * nothing else — and two DIFFERENT ones for the data each copied out of the
+     * master.  Both halves are required: the first alone would be satisfied by
+     * a system that shared everything, and the second alone by one that shared
+     * nothing.
+     */
+    g_init_found.obj_shared  = (text_pa[0] != 0u && text_pa[0] == text_pa[1]);
+    g_init_found.obj_private = (priv_pa[0] != 0u && priv_pa[1] != 0u &&
+                                priv_pa[0] != priv_pa[1]);
+    {
+        char e[112];
+        uint32_t j = 0;
+        const char *pre = "[USER][INIT] objreg: text at 0x";
+        while (pre[j]) { e[j] = pre[j]; j++; }
+        init_app_hex(e, &j, text_pa[0]);
+        { const char *mid = " and 0x"; for (uint32_t i = 0; mid[i]; i++) e[j++] = mid[i]; }
+        init_app_hex(e, &j, text_pa[1]);
+        { const char *mid = ", data 0x"; for (uint32_t i = 0; mid[i]; i++) e[j++] = mid[i]; }
+        init_app_hex(e, &j, priv_pa[0]);
+        { const char *mid = " and 0x"; for (uint32_t i = 0; mid[i]; i++) e[j++] = mid[i]; }
+        init_app_hex(e, &j, priv_pa[1]);
+        e[j++] = '\n'; e[j] = 0;
+        init_log(e);
+    }
+
+    /* ── round two: both still hold it.  Then, and only then, revoke. ── */
+    init_share_go(INIT_SLOT_SHARE_RA);
+    init_share_go(INIT_SLOT_SHARE_RB);
+    for (uint32_t i = 0; i < 2u; i++) {
+        if (!init_share_recv(i == 0u ? INIT_SLOT_SHARE_RA : INIT_SLOT_SHARE_RB, &m))
+            goto out;
+        if (m.label != OBJREG_ROUND_BEFORE) goto out;
+        seen_before++;
+    }
+
+    iris_msg_zero(&m);
+    m.label      = OBJREG_OP_REVOKE;
+    m.words[0]   = (uint64_t)objid;
+    m.word_count = 1u;
+    if (iris_msg_call((long)INIT_SLOT_OBJREG_EP, &m) != 0 ||
+        m.label != OBJREG_REP_OK) {
+        init_log("[USER][INIT] objreg: revoke FAILED\n");
+        goto out;
+    }
+    {
+        char e[96];
+        uint32_t j = 0;
+        const char *pre = "[USER][INIT] objreg: revoke destroyed ";
+        while (pre[j]) { e[j] = pre[j]; j++; }
+        init_app_num(e, &j, m.words[0] + m.words[1]);
+        { const char *t = " derived capabilities\n";
+          for (uint32_t i = 0; t[i]; i++) e[j++] = t[i]; }
+        e[j] = 0;
+        init_log(e);
+    }
+
+    /* ── round three: neither holds it any more ── */
+    init_share_go(INIT_SLOT_SHARE_RA);
+    init_share_go(INIT_SLOT_SHARE_RB);
+    for (uint32_t i = 0; i < 2u; i++) {
+        if (!init_share_recv(i == 0u ? INIT_SLOT_SHARE_RA : INIT_SLOT_SHARE_RB, &m))
+            goto out;
+        if (m.label != OBJREG_ROUND_AFTER) goto out;
+        seen_after++;
+    }
+    g_init_found.obj_revoked = (seen_before == 2 && seen_after == 2);
+
+    /* Let them go, and read what they made of it all. */
+    init_share_go(INIT_SLOT_SHARE_RA);
+    init_share_go(INIT_SLOT_SHARE_RB);
+    {
+        long ea, eb;
+        uint32_t spin = 0;
+        /* Both exits, without a notification apiece: a terminal thread answers
+         * its exit code, and a live one answers an error, so polling with a
+         * bound says the same thing with two slots fewer.  The bound matters
+         * more than the latency — this is the last thing init does before it
+         * parks. */
+        for (;;) {
+            ea = iris_invoke0((long)INIT_SLOT_SHARE_TA, INV_TCB_EXIT_CODE);
+            eb = iris_invoke0((long)INIT_SLOT_SHARE_TB, INV_TCB_EXIT_CODE);
+            if ((ea >= 0 && eb >= 0) || ++spin > 20000u) break;
+            init_retry_pause();
+        }
+        g_init_found.obj_exit = (uint32_t)((ea == 42 && eb == 42) ? 42 : 0);
+        {
+            char e[96];
+            uint32_t j = 0;
+            const char *pre = "[USER][INIT] objreg: consumers exited ";
+            while (pre[j]) { e[j] = pre[j]; j++; }
+            init_app_num(e, &j, (uint64_t)(ea < 0 ? 0 : ea));
+            e[j++] = ' '; e[j++] = 'a'; e[j++] = 'n'; e[j++] = 'd'; e[j++] = ' ';
+            init_app_num(e, &j, (uint64_t)(eb < 0 ? 0 : eb));
+            e[j++] = '\n'; e[j] = 0;
+            init_log(e);
+        }
+        ok = (g_init_found.obj_shared && g_init_found.obj_private &&
+              g_init_found.obj_revoked && ea == 42 && eb == 42);
+    }
+
+    {
+        char e[112];
+        uint32_t j = 0;
+        const char *pre = "[USER][INIT] objreg: ";
+        const char *tail = ok ? "one copy of the text, private data, and one revoke reached both\n"
+                              : "the sharing claims did NOT all hold\n";
+        while (pre[j]) { e[j] = pre[j]; j++; }
+        for (uint32_t i = 0; tail[i]; i++) e[j++] = tail[i];
+        e[j] = 0;
+        init_log(e);
+    }
+
+out:
+    if (started == 0u) init_log("[USER][INIT] objreg: no consumer started\n");
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_SHARE_TA);
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_SHARE_TB);
+    return ok;
+}
+
 /*
  * `proc`, the first program, and the memory the second one spends.
  *
@@ -2480,9 +2842,14 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
     iris_cptr_t proc_h = IRIS_CPTR_NULL, boot_h = IRIS_CPTR_NULL;
     struct iris_msg m;
     long r;
-    int ok = 0, hello_ok = 0, alloc_ok = 0, reclaim_ok = 0;
+    int ok = 0, hello_ok = 0, alloc_ok = 0, reclaim_ok = 0, share_ok = 0;
 
     if (vfs_ep_h == IRIS_CPTR_NULL) return 0;
+
+    /* The registry first: `proc` holds an endpoint to it from its first
+     * instruction, so it must be in the manifest below. */
+    if (!init_spawn_objreg(vfs_ep_h))
+        init_log("[USER] objreg: not up; programs will get no object table\n");
 
     if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
                          INIT_SLOT_PROC_EP, 0) < 0) { init_log("[USER] proc: ep\n"); return 0; }
@@ -2500,7 +2867,7 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
                          INIT_SLOT_PROC_UT, 16 << 20) < 0) { init_log("[USER] proc: ut\n"); return 0; }
 
     {
-        struct svc_mint pm[6] = { 0 };
+        struct svc_mint pm[7] = { 0 };
         uint32_t n = 0;
         pm[n].slot = PROC_SLOT_CTRL_EP;     pm[n].src_cptr = INIT_SLOT_PROC_EP;
         pm[n].rights = RIGHT_READ;          n++;
@@ -2529,6 +2896,11 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
          */
         pm[n].slot = IRIS_CPTR_ASID_POOL;   pm[n].src_cptr = IRIS_CPTR_ASID_POOL;
         pm[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE; n++;
+        /* The shared-object registry.  WRITE to send requests on it, and
+         * DUPLICATE|TRANSFER because what comes back on it are capabilities
+         * `proc` mints straight into a child it is building. */
+        pm[n].slot = PROC_SLOT_OBJREG_EP;   pm[n].src_cptr = INIT_SLOT_OBJREG_EP;
+        pm[n].rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER; n++;
 
         r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
                                "proc", &proc_h, &boot_h, pm, n,
@@ -2676,7 +3048,16 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
         }
     }
 
-    ok = hello_ok && alloc_ok && reclaim_ok;
+    /*
+     * ── and the third thing a runtime needs: one copy of a library ──
+     *
+     * Last, because it depends on everything above working: it spawns two more
+     * programs through `proc`, and each of them allocates out of its own budget
+     * to hold its private copy of the library's data.
+     */
+    share_ok = init_prove_shared_objects();
+
+    ok = hello_ok && alloc_ok && reclaim_ok && share_ok;
 
 out:
     (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_NOTIF);

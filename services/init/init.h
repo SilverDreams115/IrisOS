@@ -160,6 +160,18 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
 #define INIT_SLOT_PROC_CHILD  114u  /* the program's own thread               */
 #define INIT_SLOT_PROC_NOTIF  115u  /* where its death is signalled           */
 #define INIT_SLOT_PROC_GIVE   116u  /* the copy the timer service holds       */
+/* ...and the shared-object registry's, plus what it takes to prove two live
+ * programs share one library: an endpoint they both report on, a reply object
+ * EACH (two callers blocked at once is two replies owed), and a thread each. */
+#define INIT_SLOT_OBJREG_EP   117u
+#define INIT_SLOT_OBJREG_RPLY 118u
+#define INIT_SLOT_OBJREG_UT   119u
+#define INIT_SLOT_SHARE_EP    120u
+#define INIT_SLOT_SHARE_RA    121u
+#define INIT_SLOT_SHARE_RB    122u
+#define INIT_SLOT_SHARE_TA    123u
+#define INIT_SLOT_SHARE_TB    124u
+#define INIT_SLOT_SHARE_GIVE  125u  /* the copy handed to proc, for the child */
 #define INIT_SLOT_S8_TCB       59u
 /* Where a fault delivers the faulting thread's capability.
  * init arms the handler for ITSELF, so its own root CNode is the mailbox and
@@ -240,6 +252,11 @@ struct init_findings {
      * the claim; the two numbers are carried separately because "most of it" is
      * the answer a leak gives and it has to be readable as a number. */
     uint32_t prog_mem_exit, prog_given, prog_reclaimed;
+    /* ...and the shared object: how many KiB of library text exist ONCE
+     * instead of once per consumer, whether two live programs measured the
+     * same physical frame for it, whether their data was their own, and
+     * whether one revoke reached both. */
+    uint32_t obj_text_kib, obj_shared, obj_private, obj_revoked, obj_exit;
 };
 extern struct init_findings g_init_found;
 void init_report_findings(void);
@@ -336,6 +353,15 @@ INIT_SLOT_CHECK(INIT_SLOT_PROC_UT);
 INIT_SLOT_CHECK(INIT_SLOT_PROC_CHILD);
 INIT_SLOT_CHECK(INIT_SLOT_PROC_NOTIF);
 INIT_SLOT_CHECK(INIT_SLOT_PROC_GIVE);
+INIT_SLOT_CHECK(INIT_SLOT_OBJREG_EP);
+INIT_SLOT_CHECK(INIT_SLOT_OBJREG_RPLY);
+INIT_SLOT_CHECK(INIT_SLOT_OBJREG_UT);
+INIT_SLOT_CHECK(INIT_SLOT_SHARE_EP);
+INIT_SLOT_CHECK(INIT_SLOT_SHARE_RA);
+INIT_SLOT_CHECK(INIT_SLOT_SHARE_RB);
+INIT_SLOT_CHECK(INIT_SLOT_SHARE_TA);
+INIT_SLOT_CHECK(INIT_SLOT_SHARE_TB);
+INIT_SLOT_CHECK(INIT_SLOT_SHARE_GIVE);
 INIT_SLOT_CHECK(INIT_SLOT_TIMER_EP);
 INIT_SLOT_CHECK(INIT_SLOT_TIMER_IRQCAP);
 INIT_SLOT_CHECK(INIT_SLOT_TIMER_NOTIF);

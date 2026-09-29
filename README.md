@@ -45,6 +45,10 @@ UEFI → BOOTX64.EFI → KERNEL.ELF
                          RTL8111/8168/8411)
             → ip        (ARP, IPv4, UDP — holds one endpoint to net, and
                          no ports, no device Untyped, no DMA authority)
+        → objreg        (the shared-object registry: loads a library ONCE and
+                         mints read-only capabilities for its text to every
+                         process that needs it.  Its budget is where the
+                         shared libraries live)
         → proc          (spawns a PROGRAM: an ELF read from the filesystem BY
                          PATH, given a System V initial stack and a budget.
                          Holds no initrd capability — a program is a file)
@@ -56,6 +60,11 @@ UEFI → BOOTX64.EFI → KERNEL.ELF
                          Untyped until the retype refuses, survives that, and
                          gives the bytes back — exits 42 only if all of it
                          held.  Its budget is then reclaimed WHOLE)
+          → libuser     (two copies run at once against one library and each
+                         MEASURES the physical address of the text it mapped.
+                         One number from two processes is what shared means;
+                         their data addresses differ, and one revoke in the
+                         registry takes the library from both)
 ```
 
 The indentation under `pci` is the authority, not the call graph: `blk` and

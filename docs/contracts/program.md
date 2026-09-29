@@ -81,6 +81,15 @@ that makes dynamic linking honest.
 
 ### The object table
 
+Each object occupies **two** slots: `OBJV + 2i` is its TEXT, `OBJV + 2i + 1`
+is its DATA MASTER.  Sixty-four slots is therefore thirty-two objects, and
+`AT_IRIS_OBJC` counts objects rather than slots.  Both are `RIGHT_READ` only:
+the text because every other process running the library maps the same physical
+frame, the data because a program is expected to COPY it into memory of its own
+before writing — there is no copy-on-write here and a shared writable data
+segment would be silent sharing between processes that believe they are
+isolated.
+
 A stock dynamic linker resolves `DT_NEEDED` names against `DT_RPATH`,
 `LD_LIBRARY_PATH` and `/lib`.  That is "open any path it can name" arriving
 through the loader rather than through the program, and charter §6 refused a
@@ -178,8 +187,9 @@ invisible to a program that reads a field and gets a plausible number.
 |---|---|---|
 | slots 2, 3 | filled: the VFS and the console, `RIGHT_WRITE` | — |
 | slots 12, 18, 19 | filled by the loader, once a budget slot is named | — |
-| slots 5, 13 (own endpoint, own reply) | **EMPTY.**  They would have to be retyped per spawn out of memory nothing reclaims when the program dies, and the contract already says an ungranted slot is empty.  A program that means to serve retypes one from its own budget | if a program ever needs one before it can allocate |
-| slots 64..127, `AT_IRIS_OBJC` | **0.**  There is no object registry yet | step 4 |
+| slot 5 (own endpoint) | filled **when the spawner hands one over**: `PROC_OP_SPAWN` takes a capability and mints it here.  A spawner that wants to hear from what it starts gives it a channel; one that does not leaves the slot empty.  `proc` never creates an endpoint per child out of memory nothing reclaims | — |
+| slot 13 (own reply) | **EMPTY.**  A program that CALLS needs no reply object — only a server does — and one that means to serve retypes one from its own budget | if a program ever needs one before it can allocate |
+| slots 64..127, `AT_IRIS_OBJC` | filled, one object per PAIR of slots: text at `OBJV + 2i`, data master at `OBJV + 2i + 1`, both `RIGHT_READ` only.  `proc` resolves the set from `objreg` BEFORE the child exists.  Today a spawn names at most one object; the table's shape is what step 5 fills | — |
 | `AT_BASE` | **0.**  There is no interpreter yet, and an ELF with a `PT_INTERP` is REFUSED with `PROC_STEP_INTERP` rather than started unrelocated | step 5 |
 | `AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_ENTRY` | filled, from the file's own account of where its headers are: `PT_PHDR` when it has one, else the `PT_LOAD` whose file range contains `e_phoff`.  A program whose headers are in NEITHER is refused, because a wrong `AT_PHDR` sends a runtime walking arbitrary memory | — |
 | `AT_RANDOM` | filled, pointing at sixteen bytes at the BOTTOM of the program's own stack — the one place in the region the stack builder provably never reaches | — |

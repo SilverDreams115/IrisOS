@@ -90,6 +90,10 @@ extern const uint8_t _binary_services_proc_proc_elf_start[];
 extern const uint8_t _binary_services_proc_proc_elf_end[];
 extern const uint8_t _binary_services_alloc_alloc_elf_start[];
 extern const uint8_t _binary_services_alloc_alloc_elf_end[];
+extern const uint8_t _binary_services_objreg_objreg_elf_start[];
+extern const uint8_t _binary_services_objreg_objreg_elf_end[];
+extern const uint8_t _binary_services_libuser_libuser_elf_start[];
+extern const uint8_t _binary_services_libuser_libuser_elf_end[];
 extern const uint8_t _binary_services_pager_pager_elf_start[];
 extern const uint8_t _binary_services_pager_pager_elf_end[];
 
@@ -208,6 +212,15 @@ static const struct initrd_entry g_initrd[] = {
      * running; step 3's whole claim is that those two are compatible. */
     { _binary_services_alloc_alloc_elf_start,
       _binary_services_alloc_alloc_elf_end  },
+    /* [25] objreg — the SHARED-OBJECT REGISTRY.  A service: `init` starts it,
+     * and its budget is where every shared library in the system lives. */
+    { _binary_services_objreg_objreg_elf_start,
+      _binary_services_objreg_objreg_elf_end  },
+    /* [26] libuser — the third PROGRAM.  Two copies of it run at once against
+     * one object, and each MEASURES the physical address of the text it mapped:
+     * one number from two processes is what "shared" means. */
+    { _binary_services_libuser_libuser_elf_start,
+      _binary_services_libuser_libuser_elf_end  },
 };
 
 #define INITRD_ENTRY_COUNT \

@@ -56,6 +56,7 @@
 #include <iris/ipc_msg.h>
 #include <iris/endpoint_proto.h>
 #include <iris/vfs_ep_proto.h>
+#include <iris/objreg_ep_proto.h>
 #include <iris/program_abi.h>
 
 /* ── this service's own slots ────────────────────────────────────────────── */
@@ -68,6 +69,13 @@
 #define PROC_SLOT_CHILD_TCB   44u  /* the child's thread, handed to the caller */
 #define PROC_SLOT_IPCBUF      45u
 #define PROC_SLOT_IPCBUF_PT   46u
+/* Where capabilities that are only PASSING THROUGH land.  A spawn may carry an
+ * endpoint for the child and an object set for it to link against; none of
+ * them is this service's, and all of them are minted into the child before it
+ * starts and dropped here afterwards. */
+#define PROC_SLOT_CHILD_EP    47u
+#define PROC_SLOT_OBJ_TEXT    48u
+#define PROC_SLOT_OBJ_DATA    49u
 
 /* ── where we map, in our own address space ──────────────────────────────── */
 #define PROC_VA_IMAGE  0x80E0000000ULL
@@ -85,6 +93,10 @@
  * is launching, so the request may say; this is only the answer for one that
  * does not care. */
 #define PROC_BUDGET_DEFAULT (4u << 20)
+/* How many arguments a program can be started with.  Small, and a limit rather
+ * than a policy: the whole vector arrives in one IPC payload, so the real
+ * bound is that payload and this only says so where it can be checked. */
+#define PROC_ARGV_MAX 8u
 
 /*
  * Why a PATH step failed, reported beside it.
@@ -323,19 +335,62 @@ static uint32_t proc_parse(uint64_t size, struct proc_image *out) {
 }
 
 /*
+ * Ask the registry for one object, and put its two capabilities where the
+ * child's mint table will find them.
+ *
+ * This is the whole of what makes dynamic linking honest here, and it happens
+ * BEFORE the child exists.  A stock linker resolves `DT_NEEDED` against
+ * `DT_RPATH`, `LD_LIBRARY_PATH` and `/lib` — which is "open any path it can
+ * name", arriving through the loader rather than through the program, and
+ * charter §6 refused a personality that did that (ledger A-49).  Here the
+ * SPAWNER resolves the set and mints one pair of capabilities per object; the
+ * interpreter reads a table it was given and can reach nothing else.  There is
+ * no search, no path, and no environment variable that changes the answer.
+ *
+ * Returns 1 on success.
+ */
+static int proc_resolve_object(uint64_t id) {
+    struct iris_msg m;
+
+    proc_slot_delete(PROC_SLOT_OBJ_TEXT);
+    proc_slot_delete(PROC_SLOT_OBJ_DATA);
+
+    proc_msg_zero(&m);
+    m.label      = OBJREG_OP_TEXT;
+    m.words[0]   = id;
+    m.word_count = 1u;
+    m.recv_slot  = (long)PROC_SLOT_OBJ_TEXT;
+    if (iris_msg_call((long)PROC_SLOT_OBJREG_EP, &m) != 0) return 0;
+    if (m.label != OBJREG_REP_OK) return 0;
+
+    proc_msg_zero(&m);
+    m.label      = OBJREG_OP_DATA;
+    m.words[0]   = id;
+    m.word_count = 1u;
+    m.recv_slot  = (long)PROC_SLOT_OBJ_DATA;
+    if (iris_msg_call((long)PROC_SLOT_OBJREG_EP, &m) != 0) return 0;
+    if (m.label != OBJREG_REP_OK) return 0;
+
+    return 1;
+}
+
+/*
  * The spawn.
  *
  * Returns PROC_STEP_RUNNING, or the step it failed at.  A step number rather
  * than an error code because a spawn has ten places to fail and an
  * `IRIS_ERR_NO_MEMORY` from any of them tells the caller nothing about which.
  */
-static uint32_t proc_spawn(const char *path, uint64_t budget, uint32_t *why,
-                           long *detail) {
+static uint32_t proc_spawn(const char *const *argv, uint32_t argc,
+                           uint64_t budget, uint64_t objsel, int has_ep,
+                           uint32_t *why, long *detail) {
+    const char *path = argv[0];
     uint64_t ws = SVC_LOADER_WS(IRIS_CPTR_OWN_UNTYPED, PROC_SLOT_WS);
     struct proc_image img;
     struct iris_user_ctx ctx;
     iris_cptr_t child_h = IRIS_CPTR_NULL, boot_h = IRIS_CPTR_NULL;
     long size, r;
+    int32_t obj_mint_text = 0, obj_mint_data = 0;
     *detail = 0;
     uint64_t bias, rsp;
 
@@ -345,6 +400,14 @@ static uint32_t proc_spawn(const char *path, uint64_t budget, uint32_t *why,
 
     size = proc_read_image(path, ws, why);
     if (size < 0) return PROC_STEP_PATH;
+
+    /* The object set, before anything about the child exists. */
+    proc_slot_delete(PROC_SLOT_OBJ_TEXT);
+    proc_slot_delete(PROC_SLOT_OBJ_DATA);
+    if (objsel != 0u && !proc_resolve_object(objsel - 1u)) {
+        proc_slot_delete(svc_image_slot(ws));
+        return PROC_STEP_OBJECTS;
+    }
 
     {
         uint32_t step = proc_parse((uint64_t)size, &img);
@@ -363,13 +426,37 @@ static uint32_t proc_spawn(const char *path, uint64_t budget, uint32_t *why,
      * program that means to serve asks for one from its own budget.
      */
     {
-        struct svc_mint pm[2] = { 0 };
+        struct svc_mint pm[5] = { 0 };
         uint32_t n = 0;
         pm[n].slot = IRIS_CPTR_VFS_EP;     pm[n].src_cptr = PROC_SLOT_VFS_EP;
         pm[n].rights = RIGHT_WRITE;        n++;
         pm[n].slot = IRIS_CPTR_CONSOLE_EP; pm[n].src_cptr = PROC_SLOT_CONSOLE_EP;
         pm[n].rights = RIGHT_WRITE;        n++;
+        /* The channel its spawner asked us to give it, if there was one.  This
+         * is the only way slot 5 is ever filled: `proc` does not create an
+         * endpoint per child out of memory nothing reclaims. */
+        if (has_ep) {
+            pm[n].slot = IRIS_CPTR_OWN_EP; pm[n].src_cptr = PROC_SLOT_CHILD_EP;
+            pm[n].rights = RIGHT_WRITE;    n++;
+        }
+        /* ...and the object table.  READ only, both of them: the text because
+         * every other process running this library maps the same physical
+         * frame, the data because the program is expected to COPY it into
+         * memory of its own before it writes anything. */
+        if (objsel) {
+            pm[n].slot = IRIS_PROG_SLOT_OBJ_TEXT(0);
+            pm[n].src_cptr = PROC_SLOT_OBJ_TEXT;
+            pm[n].rights = RIGHT_READ;     n++;
+            pm[n].slot = IRIS_PROG_SLOT_OBJ_DATA(0);
+            pm[n].src_cptr = PROC_SLOT_OBJ_DATA;
+            pm[n].rights = RIGHT_READ;     n++;
+        }
 
+        /* The mint results are checked BEFORE anything is said to have
+         * worked.  A failed mint is non-fatal to the loader by design — the
+         * child starts with the slot empty — which for an OBJECT means a
+         * program that reaches for its library and finds nothing, several
+         * steps and one address space away from the cause. */
         r = svc_load_image_ws((uint64_t)size,
                               /*keep_stack_dest=*/((uint64_t)PROC_SLOT_CHILD_STACK << 32),
                               &child_h, &boot_h, pm, n, ws,
@@ -378,8 +465,16 @@ static uint32_t proc_spawn(const char *path, uint64_t budget, uint32_t *why,
                               /*keep_cnode_dest=*/0u,
                               ((uint64_t)PROC_SLOT_CHILD_TCB << 32),
                               /*keep_vspace_dest=*/0u);
+        if (objsel) {
+            obj_mint_text = pm[n - 2u].result;
+            obj_mint_data = pm[n - 1u].result;
+        }
     }
     if (r < 0) { *detail = r; return PROC_STEP_LOAD; }
+    if (objsel && (obj_mint_text != 0 || obj_mint_data != 0)) {
+        *detail = obj_mint_text ? obj_mint_text : obj_mint_data;
+        return PROC_STEP_OBJECTS;
+    }
     /* Arithmetic on the capability the spawn already returned — see
      * `svc_child_budget_slot`.  Nothing extra is kept for it. */
     g_child_budget_c     = svc_child_budget_slot(ws, (uint64_t)child_h);
@@ -445,15 +540,13 @@ static uint32_t proc_spawn(const char *path, uint64_t budget, uint32_t *why,
             { AT_BASE,          0u },          /* no interpreter yet: step 4 */
             { AT_ENTRY,         bias + img.entry },
             { AT_RANDOM,        rnd_child },
-            { AT_IRIS_OBJC,     0u },          /* an empty object table...   */
-            { AT_IRIS_OBJV,     IRIS_PROG_SLOT_OBJ_BASE },  /* ...that is still where
-                                                             * the contract says */
+            { AT_IRIS_OBJC,     objsel ? 1u : 0u },
+            { AT_IRIS_OBJV,     IRIS_PROG_SLOT_OBJ_BASE },
             { AT_IRIS_UNTYPED,  IRIS_CPTR_OWN_UNTYPED },
         };
-        const char *argv[1] = { path };
         rsp = prog_stack_build((void *)(uintptr_t)PROC_VA_STACK,
                                SVC_STACK_MAP_BASE, SVC_STACK_MAPPED,
-                               argv, 1u, 0, 0u,
+                               argv, argc, 0, 0u,
                                aux, (uint32_t)(sizeof(aux) / sizeof(aux[0])));
     }
 
@@ -488,7 +581,17 @@ void proc_main(iris_cptr_t bootstrap_ch_h) {
     for (;;) {
         struct iris_msg m, rep;
         proc_msg_zero(&m);
-        m.reply = (long)PROC_SLOT_REPLY;
+        /* Empty before every receive, not after every use: a request that
+         * carries a capability and one that does not are the same message
+         * shape, so the only moment this service can be sure the slot is free
+         * is before it asks for another message. */
+        proc_slot_delete(PROC_SLOT_CHILD_EP);
+        m.reply     = (long)PROC_SLOT_REPLY;
+        /* Where a capability that came WITH a request lands.  Declared on
+         * every receive because a request that carries one and a request that
+         * does not are the same message shape, and a receive with nowhere to
+         * put it would drop the capability silently. */
+        m.recv_slot = (long)PROC_SLOT_CHILD_EP;
         if (iris_msg_recv((long)PROC_SLOT_CTRL_EP, &m) != 0) continue;
 
         proc_msg_zero(&rep);
@@ -531,19 +634,50 @@ void proc_main(iris_cptr_t bootstrap_ch_h) {
                 }
             }
         } else if (m.label == PROC_OP_SPAWN) {
-            char path[VFS_EP_PATH_MAX];
-            uint32_t n = m.buf_len, i;
-            if (!g_buf || n == 0u || n > VFS_EP_PATH_MAX) {
+            /*
+             * The payload is the ARGUMENT VECTOR, NUL-separated.
+             *
+             * argv[0] is the path; whatever follows is the program's own
+             * business.  Split here rather than by the caller passing a count,
+             * because the bytes already say where each string ends and a
+             * second account of the same thing is a second thing to disagree.
+             */
+            char args[VFS_EP_PATH_MAX];
+            const char *argv[PROC_ARGV_MAX];
+            uint32_t n = m.buf_len, i, argc = 0;
+            if (!g_buf || n < 2u || n > VFS_EP_PATH_MAX) {
                 rep.words[0]   = PROC_STEP_PATH;
                 rep.words[1]   = g_buf ? PROC_WHY_SIZE : PROC_WHY_NOBUF;
                 rep.word_count = 2u;
             } else {
-                for (i = 0; i < n; i++) path[i] = (char)g_buf[i];
-                path[n - 1u] = '\0';
+                for (i = 0; i < n; i++) args[i] = (char)g_buf[i];
+                args[n - 1u] = '\0';
+                /* One entry per string; a trailing empty string is the
+                 * terminator rather than an argument. */
+                for (i = 0; i < n && argc < PROC_ARGV_MAX; ) {
+                    if (args[i] == '\0') break;
+                    argv[argc++] = &args[i];
+                    while (i < n && args[i]) i++;
+                    i++;
+                }
                 uint32_t why = PROC_WHY_NONE;
                 long detail = 0;
+                int has_ep = 0;
+                if (argc == 0u) { argv[0] = args; argc = 1u; }
+                /*
+                 * A capability arriving WITH the request is the channel the
+                 * child should hold.  It landed in a slot of ours; it is
+                 * minted into the child before it starts and dropped here
+                 * afterwards, so this service never accumulates the endpoints
+                 * of programs it launched for other people.
+                 */
+                /* `got_caps` is the RIGHTS of what landed, and zero means
+                 * nothing did — a capability with no rights cannot be
+                 * transferred, so zero is unambiguous. */
+                if (m.got_caps) has_ep = 1;
                 g_spawns++;
-                g_last_step = proc_spawn(path, m.words[0], &why, &detail);
+                g_last_step = proc_spawn(argv, argc, m.words[0], m.words[1],
+                                         has_ep, &why, &detail);
                 rep.words[0]   = g_last_step;
                 rep.words[1]   = why;
                 /* Whatever the kernel said, verbatim.  A step says WHERE and a
@@ -564,6 +698,9 @@ void proc_main(iris_cptr_t bootstrap_ch_h) {
                     rep.cap        = (long)PROC_SLOT_CHILD_TCB;
                     rep.cap_rights = RIGHT_READ | RIGHT_WRITE;
                 }
+                proc_slot_delete(PROC_SLOT_CHILD_EP);
+                proc_slot_delete(PROC_SLOT_OBJ_TEXT);
+                proc_slot_delete(PROC_SLOT_OBJ_DATA);
             }
         }
 
