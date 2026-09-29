@@ -2192,12 +2192,18 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
     }
     rep_ch(b, &k, lim, '\n');
 
+    /*
+     * From here the lines are Stage 10-run's, and they are written SHORT on
+     * purpose: `fs` stores one sector per file, so the whole report has to fit
+     * in 512 bytes or the tail of it is what the machine loses — and the tail
+     * is where the newest claims are.  Every word here costs one that a later
+     * stage will want.
+     */
     rep_str(b, &k, lim, " prog  ");
     if (g_init_found.prog_ran) {
-        rep_str(b, &k, lim, "hello ran from the filesystem, exit ");
+        rep_str(b, &k, lim, "hello by path, exit ");
         rep_num(b, &k, lim, g_init_found.prog_exit);
-        if (g_init_found.prog_exit != 42u)
-            rep_str(b, &k, lim, " (42 is the one that means the stack was right)");
+        if (g_init_found.prog_exit != 42u) rep_str(b, &k, lim, " (want 42)");
     } else if (g_init_found.prog_step) {
         rep_str(b, &k, lim, "hello did not start, step ");
         rep_num(b, &k, lim, g_init_found.prog_step);
@@ -2208,15 +2214,15 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
 
     rep_str(b, &k, lim, " mem   ");
     if (g_init_found.prog_given) {
-        rep_str(b, &k, lim, "alloc spent its budget, exit ");
+        rep_str(b, &k, lim, "alloc exit ");
         rep_num(b, &k, lim, g_init_found.prog_mem_exit);
         rep_str(b, &k, lim, ", reclaimed ");
         rep_num(b, &k, lim, g_init_found.prog_reclaimed);
-        rep_str(b, &k, lim, " of ");
+        rep_ch(b, &k, lim, '/');
         rep_num(b, &k, lim, g_init_found.prog_given);
         rep_str(b, &k, lim, " KiB");
         if (g_init_found.prog_reclaimed != g_init_found.prog_given)
-            rep_str(b, &k, lim, " (NOT all of it)");
+            rep_str(b, &k, lim, " (short)");
     } else if (g_init_found.prog_mem_exit) {
         rep_str(b, &k, lim, "alloc exited ");
         rep_num(b, &k, lim, g_init_found.prog_mem_exit);
@@ -2226,15 +2232,25 @@ static uint32_t init_build_report(char *b, uint32_t cap) {
     }
     rep_ch(b, &k, lim, '\n');
 
+    rep_str(b, &k, lim, " dyn   ");
+    if (g_init_found.dyn_exit) {
+        rep_str(b, &k, lim, "dynprog exit ");
+        rep_num(b, &k, lim, g_init_found.dyn_exit);
+        rep_str(b, &k, lim, ", 2 objects, relocated once");
+        if (g_init_found.dyn_exit != 42u) rep_str(b, &k, lim, " (want 42)");
+    } else {
+        rep_str(b, &k, lim, "no interpreter");
+    }
+    rep_ch(b, &k, lim, '\n');
+
     rep_str(b, &k, lim, " obj   ");
     if (g_init_found.obj_text_kib || g_init_found.obj_exit) {
-        rep_str(b, &k, lim, "one copy of ");
         rep_num(b, &k, lim, g_init_found.obj_text_kib);
-        rep_str(b, &k, lim, " KiB of library text for 2 programs");
-        if (!g_init_found.obj_shared)  rep_str(b, &k, lim, " (NOT shared)");
-        if (!g_init_found.obj_private) rep_str(b, &k, lim, " (data NOT private)");
-        if (!g_init_found.obj_revoked) rep_str(b, &k, lim, " (revoke missed one)");
-        if (g_init_found.obj_exit != 42u) rep_str(b, &k, lim, " (a consumer failed)");
+        rep_str(b, &k, lim, " KiB library text, 1 copy, 2 programs");
+        if (!g_init_found.obj_shared)  rep_str(b, &k, lim, " (unshared)");
+        if (!g_init_found.obj_private) rep_str(b, &k, lim, " (data shared)");
+        if (!g_init_found.obj_revoked) rep_str(b, &k, lim, " (revoke short)");
+        if (g_init_found.obj_exit != 42u) rep_str(b, &k, lim, " (consumer failed)");
     } else {
         rep_str(b, &k, lim, "no registry");
     }
@@ -2645,6 +2661,15 @@ static int init_spawn_objreg(iris_cptr_t vfs_ep_h) {
  *      asked what their object capability is, before and after; a frame
  *      becomes nothing, in two address spaces, from one invocation in a third.
  */
+/* Why this gave up.  Every abandonment below names itself: a silent `goto out`
+ * leaves a report full of "did NOT hold" and nothing at all about which step
+ * stopped, which is a boot nobody can debug without rebuilding. */
+static void init_share_give_up(const char *what) {
+    struct init_line L; il_reset(&L);
+    il_str(&L, "[USER][INIT] objreg: gave up at "); il_str(&L, what);
+    init_log(il_done(&L));
+}
+
 static int init_prove_shared_objects(void) {
     struct iris_msg m;
     long objid;
@@ -2681,31 +2706,32 @@ static int init_prove_shared_objects(void) {
 
     /* ── the channel both consumers report on, and a reply object each ── */
     if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
-                         INIT_SLOT_SHARE_EP, 0) < 0) return 0;
+                         INIT_SLOT_SHARE_EP, 0) < 0) { init_share_give_up("endpoint"); return 0; }
     if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_REPLY,
-                         INIT_SLOT_SHARE_RA, 0) < 0) return 0;
+                         INIT_SLOT_SHARE_RA, 0) < 0) { init_share_give_up("reply A"); return 0; }
     if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_REPLY,
-                         INIT_SLOT_SHARE_RB, 0) < 0) return 0;
+                         INIT_SLOT_SHARE_RB, 0) < 0) { init_share_give_up("reply B"); return 0; }
 
     /* Both, before either is spoken to: the whole claim is about two programs
      * holding the library AT ONCE. */
     if (init_start_program("libuser", "0", (uint64_t)objid + 1u,
                            INIT_SLOT_SHARE_EP, INIT_SLOT_SHARE_TA)
-            != PROC_STEP_RUNNING) goto out;
+            != PROC_STEP_RUNNING) { init_share_give_up("consumer 0"); goto out; }
     started = 1u;
     if (init_start_program("libuser", "1", (uint64_t)objid + 1u,
                            INIT_SLOT_SHARE_EP, INIT_SLOT_SHARE_TB)
-            != PROC_STEP_RUNNING) goto out;
+            != PROC_STEP_RUNNING) { init_share_give_up("consumer 1"); goto out; }
     started = 2u;
 
     /* ── round one: where each one physically IS ── */
     for (uint32_t i = 0; i < 2u; i++) {
         if (!init_share_recv(i == 0u ? INIT_SLOT_SHARE_RA : INIT_SLOT_SHARE_RB, &m))
-            goto out;
-        if (m.label != OBJREG_ROUND_MAPPED) goto out;
+            { init_share_give_up("round one"); goto out; }
+        if (m.label != OBJREG_ROUND_MAPPED)
+            { init_share_give_up("round one: wrong round"); goto out; }
         {
             uint64_t who = m.words[2];
-            if (who > 1u) goto out;
+            if (who > 1u) { init_share_give_up("round one: unknown consumer"); goto out; }
             text_pa[who] = m.words[0];
             priv_pa[who] = m.words[1];
         }
@@ -2736,8 +2762,9 @@ static int init_prove_shared_objects(void) {
     init_share_go(INIT_SLOT_SHARE_RB);
     for (uint32_t i = 0; i < 2u; i++) {
         if (!init_share_recv(i == 0u ? INIT_SLOT_SHARE_RA : INIT_SLOT_SHARE_RB, &m))
-            goto out;
-        if (m.label != OBJREG_ROUND_BEFORE) goto out;
+            { init_share_give_up("round two"); goto out; }
+        if (m.label != OBJREG_ROUND_BEFORE)
+            { init_share_give_up("round two: wrong round"); goto out; }
         seen_before++;
     }
 
@@ -2763,8 +2790,9 @@ static int init_prove_shared_objects(void) {
     init_share_go(INIT_SLOT_SHARE_RB);
     for (uint32_t i = 0; i < 2u; i++) {
         if (!init_share_recv(i == 0u ? INIT_SLOT_SHARE_RA : INIT_SLOT_SHARE_RB, &m))
-            goto out;
-        if (m.label != OBJREG_ROUND_AFTER) goto out;
+            { init_share_give_up("round three"); goto out; }
+        if (m.label != OBJREG_ROUND_AFTER)
+            { init_share_give_up("round three: wrong round"); goto out; }
         /* words[1] says whether the MAPPING survived the revoke.  It does, and
          * that is the contract T137 pins: revoke is capability-scoped and a
          * live mapping holds its own reference.  Recorded rather than assumed,
@@ -2859,7 +2887,8 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
     iris_cptr_t proc_h = IRIS_CPTR_NULL, boot_h = IRIS_CPTR_NULL;
     struct iris_msg m;
     long r;
-    int ok = 0, hello_ok = 0, alloc_ok = 0, reclaim_ok = 0, share_ok = 0;
+    int ok = 0, hello_ok = 0, alloc_ok = 0, reclaim_ok = 0, share_ok = 0,
+        dyn_ok = 0;
 
     if (vfs_ep_h == IRIS_CPTR_NULL) return 0;
 
@@ -3039,6 +3068,24 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
         }
     }
 
+    /* ── the third program: TWO objects, and relocated exactly once ── */
+    {
+        struct init_line L;
+        uint32_t step = PROC_STEP_NONE;
+        long ec = init_run_program("dynprog", &step);
+
+        if (step != PROC_STEP_RUNNING) goto out;
+        dyn_ok = (ec == 42);
+        g_init_found.dyn_exit = (uint32_t)((ec < 0) ? 0 : ec);
+        il_reset(&L);
+        il_str(&L, "[USER][INIT] proc: dynprog exit ");
+        il_num(&L, (ec < 0) ? 0u : (uint64_t)ec);
+        il_str(&L, dyn_ok ? " OK" : " BAD");
+        init_log(il_done(&L));
+        if (!dyn_ok) goto out;
+    }
+    (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_CHILD);
+
     /*
      * ── and the third thing a runtime needs: one copy of a library ──
      *
@@ -3048,7 +3095,7 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
      */
     share_ok = init_prove_shared_objects();
 
-    ok = hello_ok && alloc_ok && reclaim_ok && share_ok;
+    ok = hello_ok && alloc_ok && reclaim_ok && dyn_ok && share_ok;
 
 out:
     (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_NOTIF);

@@ -190,7 +190,7 @@ invisible to a program that reads a field and gets a plausible number.
 | slot 5 (own endpoint) | filled **when the spawner hands one over**: `PROC_OP_SPAWN` takes a capability and mints it here.  A spawner that wants to hear from what it starts gives it a channel; one that does not leaves the slot empty.  `proc` never creates an endpoint per child out of memory nothing reclaims | — |
 | slot 13 (own reply) | **EMPTY.**  A program that CALLS needs no reply object — only a server does — and one that means to serve retypes one from its own budget | if a program ever needs one before it can allocate |
 | slots 64..127, `AT_IRIS_OBJC` | filled, one object per PAIR of slots: text at `OBJV + 2i`, data master at `OBJV + 2i + 1`, both `RIGHT_READ` only.  `proc` resolves the set from `objreg` BEFORE the child exists.  Today a spawn names at most one object; the table's shape is what step 5 fills | — |
-| `AT_BASE` | **0.**  There is no interpreter yet, and an ELF with a `PT_INTERP` is REFUSED with `PROC_STEP_INTERP` rather than started unrelocated | step 5 |
+| `AT_BASE` | filled: where the INTERPRETER was loaded, at a random page-aligned bias in its own region.  An ELF with a `PT_INTERP` names its interpreter, `proc` resolves that name through `objreg`, and the thread starts at the interpreter's entry — the program's own entry travels as `AT_ENTRY`, which is where the interpreter reads it | — |
 | `AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_ENTRY` | filled, from the file's own account of where its headers are: `PT_PHDR` when it has one, else the `PT_LOAD` whose file range contains `e_phoff`.  A program whose headers are in NEITHER is refused, because a wrong `AT_PHDR` sends a runtime walking arbitrary memory | — |
 | `AT_RANDOM` | filled, pointing at sixteen bytes at the BOTTOM of the program's own stack — the one place in the region the stack builder provably never reaches | — |
 
@@ -202,11 +202,41 @@ the loader.
 
 ### A program links with its own script
 
-`services/link_program.ld`, not `link_service.ld`.  One line differs — the
-image starts at `SIZEOF_HEADERS` rather than at 0 — and that line is what puts
-the ELF header and the program header table inside the first `PT_LOAD`, which
-is what makes `AT_PHDR` a mapped address rather than a file offset.  A service
-never needed it because nothing ever asks a service where its own headers are.
+`services/link_program.ld`, not `link_service.ld`.  Two things differ from a
+service's, and both exist so an interpreter can do its job:
+
+- the image starts at `SIZEOF_HEADERS`, which puts the ELF header and the
+  program header table inside the first `PT_LOAD` — that is what makes
+  `AT_PHDR` a mapped address rather than a file offset;
+- it declares **`PT_PHDR`**, which is that table's own unbiased vaddr.  An
+  interpreter computes the program's load base as `AT_PHDR - PT_PHDR.p_vaddr`,
+  and that is the only derivation that assumes nothing about the layout.
+
+A program that has an interpreter links with **`services/link_dynprog.ld`**,
+which adds `.interp` and a `PT_INTERP` pointing at it.  It is a separate file
+rather than a conditional because an empty `PT_INTERP` would make every program
+in the system look dynamic, and every one of them would then be loaded
+unrelocated and jump into nothing.
+
+### Who relocates, and why exactly one of them may
+
+`R_X86_64_RELATIVE` writes `base + addend` and ignores what was there, so a
+program relocated twice is relocated at whichever base went last — no error, no
+fault at the time, and nothing about the result that says which pass it has
+had.  So the rule is about WHO:
+
+- **no `PT_INTERP`** — the loader relocates the image before the child starts,
+  through a window in its own address space.
+- **`PT_INTERP`** — the loader relocates NOTHING.  The interpreter relocates
+  itself, then the program, in the child's own address space.
+
+`test_elf_reloc` applies the pass twice on purpose and asserts the damage, so
+this is a checked rule.  A consequence a program can see: with an interpreter,
+`.data.rel.ro`, `.dynamic`, `.rela.dyn` and `.got` are in the WRITABLE segment,
+because the relocation happens in the process itself.  `PT_GNU_RELRO` would
+make them read-only afterwards and this system cannot express it —
+`mprotect` here is unmap-and-remap of a whole frame and a frame does not
+split.
 
 ---
 

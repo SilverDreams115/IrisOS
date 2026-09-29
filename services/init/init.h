@@ -257,6 +257,10 @@ struct init_findings {
      * same physical frame for it, whether their data was their own, and
      * whether one revoke reached both. */
     uint32_t obj_text_kib, obj_shared, obj_private, obj_revoked, obj_exit;
+    /* ...and the two-object program: the status `dynprog` exited with.  42
+     * means an interpreter was loaded at its own bias and relocated the
+     * program exactly once — any other number names which of those failed. */
+    uint32_t dyn_exit;
 };
 extern struct init_findings g_init_found;
 void init_report_findings(void);

@@ -60,6 +60,10 @@ UEFI → BOOTX64.EFI → KERNEL.ELF
                          Untyped until the retype refuses, survives that, and
                          gives the bytes back — exits 42 only if all of it
                          held.  Its budget is then reclaimed WHOLE)
+          → dynprog     (a TWO-OBJECT program: it names `ldso` in its
+                         PT_INTERP, so the loader relocates nothing and the
+                         interpreter — loaded at its own bias, having first
+                         relocated itself — does it exactly once)
           → libuser     (two copies run at once against one library and each
                          MEASURES the physical address of the text it mapped.
                          One number from two processes is what shared means;

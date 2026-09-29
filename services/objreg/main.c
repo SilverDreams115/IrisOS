@@ -64,6 +64,10 @@
 struct obj_entry {
     char     name[VFS_EP_PATH_MAX];
     uint64_t text_bytes, data_bytes;
+    /* Where the IMAGE says its segments and its entry point are, unbiased.  A
+     * consumer maps at a base of its own and needs these to know where within
+     * it each piece belongs; the registry has no opinion about that base. */
+    uint64_t text_vaddr, data_vaddr, entry;
     uint32_t used;
 };
 
@@ -169,7 +173,7 @@ static long obj_read_file(const char *path) {
  * existed was here, and it is gone.
  */
 static int obj_load_segment(const Elf64_Phdr *ph, uint32_t dest_slot,
-                            uint64_t *out_bytes) {
+                            uint64_t *out_bytes, uint64_t *out_vaddr) {
     uint64_t base  = ph->p_vaddr & ~0xFFFULL;
     uint64_t pgoff = ph->p_vaddr - base;
     uint64_t bytes = (pgoff + ph->p_memsz + 0xFFFULL) & ~0xFFFULL;
@@ -199,6 +203,10 @@ static int obj_load_segment(const Elf64_Phdr *ph, uint32_t dest_slot,
     (void)iris_invoke2((long)dest_slot, INV_FRAME_UNMAP,
                        (long)IRIS_CPTR_OWN_VSPACE, (long)OBJ_VA_SEG);
     *out_bytes = bytes;
+    /* The PAGE the segment starts in, not `p_vaddr`: the frame covers whole
+     * pages and a consumer maps the frame, so the address it maps at is the
+     * page base or the mapping is off by `p_vaddr & 0xFFF`. */
+    *out_vaddr = base;
     return 1;
 }
 
@@ -245,13 +253,16 @@ static long obj_open(const char *path) {
      * branch nobody would exercise until the day it mattered. */
     if (!text || !data) { size = (long)IRIS_ERR_INVALID_ARG; goto fail; }
 
-    if (!obj_load_segment(text, OBJ_SLOT_TEXT(id), &g_obj[id].text_bytes)) {
+    if (!obj_load_segment(text, OBJ_SLOT_TEXT(id), &g_obj[id].text_bytes,
+                          &g_obj[id].text_vaddr)) {
         size = (long)IRIS_ERR_NO_MEMORY; goto fail;
     }
-    if (!obj_load_segment(data, OBJ_SLOT_DATA(id), &g_obj[id].data_bytes)) {
+    if (!obj_load_segment(data, OBJ_SLOT_DATA(id), &g_obj[id].data_bytes,
+                          &g_obj[id].data_vaddr)) {
         obj_slot_delete(OBJ_SLOT_TEXT(id));
         size = (long)IRIS_ERR_NO_MEMORY; goto fail;
     }
+    g_obj[id].entry = eh->e_entry;
 
     {
         uint32_t i = 0;
@@ -352,6 +363,18 @@ void objreg_main(iris_cptr_t bootstrap_ch_h) {
                  * program is a leaf and cannot pass the library on at all.
                  */
                 rep.cap_rights = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+            }
+        } else if (m.label == OBJREG_OP_LAYOUT) {
+            uint64_t id = m.words[0];
+            if (id >= g_nobj || !g_obj[id].used) {
+                rep.words[0]   = (uint64_t)(int64_t)IRIS_ERR_NOT_FOUND;
+                rep.word_count = 1u;
+            } else {
+                rep.label      = OBJREG_REP_OK;
+                rep.words[0]   = g_obj[id].text_vaddr;
+                rep.words[1]   = g_obj[id].data_vaddr;
+                rep.words[2]   = g_obj[id].entry;
+                rep.word_count = 3u;
             }
         } else if (m.label == OBJREG_OP_REVOKE) {
             uint64_t id = m.words[0];

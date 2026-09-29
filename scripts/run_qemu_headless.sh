@@ -536,6 +536,25 @@ if ! grep -Eq "\[USER\]\[INIT\] proc: reclaimed [0-9]+ of [0-9]+ KiB, all of it$
   exit 1
 fi
 
+# ...and a TWO-OBJECT program ran (Stage 10-run step 5).
+#
+# `dynprog` declares a `PT_INTERP`, so `svc_loader` does not relocate it and
+# `ldso` does -- after relocating ITSELF, at a bias in a region disjoint from
+# the program's.  42 means every one of those happened exactly once.
+#
+# It is also the runtime half of the double-relocation check.  The host suite
+# asserts that applying the pass twice at two bases corrupts every site; this
+# line asserts that the system does not.  A build where the loader stopped
+# honouring `PT_INTERP` would relocate the image and then `ldso` would relocate
+# it again, and `dynprog` would dereference a pointer one load bias past
+# everything and die -- exit 42 is the only outcome in which it did not.
+if ! grep -Eq "\[USER\]\[INIT\] proc: dynprog exit 42 OK$" "$LOG_FILE"; then
+  echo "[headless] a two-object program did not run:"
+  grep -E "dynprog|objreg" "$LOG_FILE" | sed 's/^/           /'
+  cat "$LOG_FILE"
+  exit 1
+fi
+
 # ...and one copy of a library serves two live programs (Stage 10-run step 4).
 #
 # Three lines, and the first is the only MEASUREMENT in this gate that two

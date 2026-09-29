@@ -1629,7 +1629,26 @@ iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
      * point outside the private user window, or a misaligned stack, is a
      * thread that faults on its first instruction and tells nobody why.
      */
-    if (entry < USER_PRIVATE_BASE || entry >= USER_VMO_BASE)
+    /*
+     * The bound is the STACK, not `USER_VMO_BASE`.
+     *
+     * It was `USER_VMO_BASE` because code only ever lived below it: the loader
+     * biases an image into `[USER_TEXT_BASE, USER_VMO_BASE)` and everything a
+     * task mapped for itself went above.  Stage 10-run step 5 made that false
+     * on purpose — a program with a `PT_INTERP` is started at its INTERPRETER,
+     * and `docs/contracts/program.md` §3 gives the interpreter a region of its
+     * own at `USER_VMO_BASE` precisely so two `ET_DYN` biases cannot collide.
+     * With the old bound, starting a two-object program was refused by the
+     * kernel with `INVALID_ARG` and nothing said which of the two addresses it
+     * disliked.
+     *
+     * Widening it costs nothing real.  This is a sanity bound and not an
+     * authority check: a thread can only execute what is MAPPED, and mapping
+     * is capability-controlled from end to end.  What it is worth keeping is
+     * the statement it makes — an entry point is in the task's own half of the
+     * address space, and code does not live on the stack.
+     */
+    if (entry < USER_PRIVATE_BASE || entry >= USER_STACK_BASE)
         return IRIS_ERR_INVALID_ARG;
     if (sp < USER_PRIVATE_BASE || sp > USER_SPACE_TOP)
         return IRIS_ERR_INVALID_ARG;

@@ -1,24 +1,22 @@
 /*
- * link_program.ld — linker script for an IRIS PROGRAM.
+ * link_dynprog.ld — linker script for a program that has an INTERPRETER.
  *
- * Identical to `link_service.ld` except for one line, and that line is the
- * whole difference between a program and a service at link time.
+ * `link_program.ld` with two additions, and they are the whole of what makes a
+ * program dynamic at link time:
  *
- * A service is never told where its own program headers are, because nothing
- * ever asks: the loader parses them out of the FILE and the service itself has
- * no reason to look.  So `link_service.ld` starts the image at 0 and the ELF
- * header and program header table sit at file offsets that no `PT_LOAD`
- * covers — they are in the file and not in the address space.
+ *   - a `.interp` section, holding the interpreter's NAME.  It is a plain
+ *     string in the image; nothing about it is a path, and what resolves it is
+ *     the spawner asking the object registry — never a search of a directory
+ *     this system does not have.
+ *   - a `PT_INTERP` program header pointing at it.  That header is what
+ *     `svc_loader` reads to decide NOT to relocate this image, because the
+ *     interpreter will, and doing it twice corrupts every relative relocation
+ *     silently (test_elf_reloc).
  *
- * A program must be able to find them.  `AT_PHDR` is a MAPPED address, and a
- * dynamic runtime walks that table to find `PT_DYNAMIC`, `PT_TLS` and its own
- * `PT_GNU_RELRO` — this is the first thing musl's startup does.  Reserving
- * `SIZEOF_HEADERS` puts the headers inside the first loadable segment, which
- * is what every real PIE does and what makes `AT_PHDR` answerable at all.
- *
- * Kept as a separate file rather than changed in place because every service
- * in this tree links with the other one, and a layout change that moves every
- * image's entry point is not a thing to do as a side effect.
+ * It is a separate file rather than a conditional in the other one because an
+ * empty `PT_INTERP` is worse than no script: `elf_image_has_interp` would be
+ * true for every program in the system, and every one of them would be loaded
+ * unrelocated and jump into nothing.
  */
 OUTPUT_FORMAT("elf64-x86-64")
 OUTPUT_ARCH(i386:x86-64)
@@ -43,10 +41,18 @@ PHDRS {
     text    PT_LOAD FILEHDR PHDRS ;
     data    PT_LOAD ;
     dynamic PT_DYNAMIC ;
+    interp  PT_INTERP ;
 }
 
 SECTIONS {
     . = SIZEOF_HEADERS;
+
+    /* The interpreter's name, first and KEPT: nothing references it, so
+     * without KEEP the linker is entitled to drop the one section that makes
+     * this a dynamic program. */
+    .interp : {
+        KEEP(*(.interp))
+    } :text :interp
 
     /* ── Executable segment (PF_R|PF_X) ─────────────────────────────── */
     .text : {
@@ -113,7 +119,6 @@ SECTIONS {
         *(.gnu.hash)
         *(.dynsym)
         *(.dynstr)
-        *(.interp)
         *(.plt .plt.*)
     }
 }

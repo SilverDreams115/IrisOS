@@ -102,6 +102,24 @@
  * reaches — is gone when this returns.  The masters themselves remain, so the
  * object can be handed out again.
  */
+/*
+ * OBJREG_OP_LAYOUT — where the object's segments go, and where it starts.
+ *   Request:  words[0] = object id
+ *   Reply OK: words[0] = text vaddr, unbiased, as the image declares it
+ *             words[1] = data vaddr, likewise
+ *             words[2] = entry point, likewise
+ *
+ * Unbiased on purpose: the registry holds ONE copy of the text and every
+ * consumer maps it at a base of its own, so an address here would be the
+ * registry's opinion about somebody else's address space.  The sizes come back
+ * from OPEN; this is the part a consumer needs in order to map.
+ *
+ * Asked rather than assumed.  A PIE's text is at vaddr 0 and its data one page
+ * up in every image this tree builds today, and that is a property of one
+ * linker script rather than of ELF.
+ */
+#define OBJREG_OP_LAYOUT      0x7506u
+
 #define OBJREG_OP_REVOKE      0x7504u
 
 /*

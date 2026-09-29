@@ -74,6 +74,19 @@ void test_program_abi(void) {
     ASSERT_EQ((long)(IRIS_PROG_STACK_OFF - IRIS_PROG_MMAP_END_OFF), 4096L);
     ASSERT_TRUE(IRIS_PROG_MMAP_OFF < IRIS_PROG_MMAP_END_OFF);
 
+    /*
+     * A thread may be STARTED anywhere code can legally be, and after step 5
+     * that includes the interpreter's region: a two-object program's first
+     * instruction is its interpreter's.  `ktcb_write_regs` bounds the entry by
+     * `USER_STACK_BASE`, so both code regions have to be below it and the
+     * interpreter's has to be above `USER_VMO_BASE` — which is the same
+     * address the loader randomises UP TO, and therefore the boundary that
+     * keeps two `ET_DYN` biases from ever meeting.
+     */
+    ASSERT_EQ((long)(USER_PRIVATE_BASE + IRIS_PROG_INTERP_OFF), (long)USER_VMO_BASE);
+    ASSERT_TRUE(USER_PRIVATE_BASE + IRIS_PROG_IMAGE_END_OFF <= USER_STACK_BASE);
+    ASSERT_TRUE(USER_PRIVATE_BASE + IRIS_PROG_INTERP_END_OFF <= USER_STACK_BASE);
+
     /* The object table: two slots per object, text first, and the last object
      * still inside the reserved range.  An off-by-one here would put a
      * library's data capability in the first slot a program owns. */

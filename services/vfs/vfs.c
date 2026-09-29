@@ -27,7 +27,20 @@
 #include "../common/console_client.h"
 #include "../common/iris_ipc_buffer.h"
 
-#define VFS_SERVICE_EXPORTS 20u
+/*
+ * How many files this service can publish.
+ *
+ * Four boot exports, the first `VFS_INITRD_NAME_COUNT` initrd images under
+ * their own names, and one per named fixture — and that last group is the one
+ * that grows: every PROGRAM this system gains is a file somebody has to be
+ * able to open by name.  Stage 10-run added five of them and the old bound of
+ * twenty was reached exactly, so the last one silently was not there and every
+ * consumer reported NOT_FOUND from wherever it happened to ask.
+ *
+ * Raised with room rather than to fit, and the seeding says so out loud now
+ * when it cannot publish something.
+ */
+#define VFS_SERVICE_EXPORTS 32u
 
 struct vfs_state {
     iris_cptr_t console_h;
@@ -257,20 +270,20 @@ static int vfs_seed_one_fixture(struct vfs_state *state, uint32_t index,
     int64_t  sz_rc, map_rc;
     uint64_t virt;
 
-    if (!state || state->initrd_c == IRIS_CPTR_NULL) return 0;
+    if (!state || state->initrd_c == IRIS_CPTR_NULL) { vfs_log("[VFS] seed: no initrd cap\n"); return 0; }
     for (slot = 0; slot < (uint32_t)(sizeof(state->exports)/sizeof(state->exports[0])); slot++)
         if (!state->exports[slot].ready) break;
-    if (slot == (uint32_t)(sizeof(state->exports)/sizeof(state->exports[0]))) return 0;
+    if (slot == (uint32_t)(sizeof(state->exports)/sizeof(state->exports[0]))) { vfs_log("[VFS] seed: export table full\n"); return 0; }
 
     vfs_slot_delete(VFS_SLOT_INITRD_VMO);
     /* A frame, and the call answers its size. */
     sz_rc = vfs_invoke((uint64_t)state->initrd_c, INV_BOOT_INITRD_FRAME, (uint64_t)index, VFS_INITRD_VMO_DEST, IRIS_CPTR_OWN_UNTYPED);
-    if (sz_rc <= 0) return 0;
+    if (sz_rc <= 0) { vfs_log("[VFS] seed: no frame\n"); return 0; }
 
     virt = VFS_INITRD_MAP_BASE + (uint64_t)index * VFS_INITRD_MAP_SLOT;
     map_rc = vfs_invoke((uint64_t)VFS_SLOT_INITRD_VMO, INV_FRAME_MAP, (uint64_t)vfs_self_vs(), virt, 0);
     vfs_slot_delete(VFS_SLOT_INITRD_VMO);
-    if (map_rc != 0) return 0;
+    if (map_rc != 0) { vfs_log("[VFS] seed: map refused\n"); return 0; }
 
     {
         struct vfs_export *exp = &state->exports[slot];
@@ -285,12 +298,27 @@ static int vfs_seed_one_fixture(struct vfs_state *state, uint32_t index,
     return 1;
 }
 
-/* File-backed content fixtures (must match kernel/core/initrd/initrd.c). */
+/*
+ * File-backed content fixtures (must match kernel/core/initrd/initrd.c).
+ *
+ * A fixture that does not seed is SAID, because the alternative is a file that
+ * simply is not there: every consumer of it then reports NOT_FOUND from
+ * wherever it happened to ask, several services away from the one that failed
+ * to publish it.  One line here is worth an afternoon there.
+ */
+static void vfs_seed_named(struct vfs_state *state, uint32_t index,
+                           const char *name) {
+    if (vfs_seed_one_fixture(state, index, name)) return;
+    vfs_log("[VFS] export NOT seeded: ");
+    vfs_log(name);
+    vfs_log("\n");
+}
+
 static void vfs_seed_fixture_exports(struct vfs_state *state) {
-    (void)vfs_seed_one_fixture(state, 12u, "fbk.dat");
-    (void)vfs_seed_one_fixture(state, 13u, "fbk2.dat");
-    (void)vfs_seed_one_fixture(state, 14u, "elfseg.dat");
-    (void)vfs_seed_one_fixture(state, 15u, "small.dat");
+    vfs_seed_named(state, 12u, "fbk.dat");
+    vfs_seed_named(state, 13u, "fbk2.dat");
+    vfs_seed_named(state, 14u, "elfseg.dat");
+    vfs_seed_named(state, 15u, "small.dat");
     /*
      * And the first PROGRAM, under a name.  This is the whole difference
      * between a service and a program in this tree today: a service is an
@@ -299,9 +327,11 @@ static void vfs_seed_fixture_exports(struct vfs_state *state) {
      * mapped, at its real size — because an ELF is just a file, and the
      * service that spawns it has no business knowing it came from the initrd.
      */
-    (void)vfs_seed_one_fixture(state, 22u, "hello");
-    (void)vfs_seed_one_fixture(state, 24u, "alloc");
-    (void)vfs_seed_one_fixture(state, 26u, "libuser");
+    vfs_seed_named(state, 22u, "hello");
+    vfs_seed_named(state, 24u, "alloc");
+    vfs_seed_named(state, 26u, "libuser");
+    vfs_seed_named(state, 27u, "ldso");
+    vfs_seed_named(state, 28u, "dynprog");
 }
 
 /* Single-threaded server: static IPC buffers, no stack pressure. */

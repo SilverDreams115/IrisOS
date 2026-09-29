@@ -37,6 +37,7 @@ static inline void sl_close_cap(iris_cptr_t h) {
 
 /* ELF64, shared with `proc` — see services/common/elf64.h. */
 #include "elf64.h"
+#include "elf_reloc.h"
 
 /* ── Temp VMO window layout in loader's address space ─────────────── */
 
@@ -700,51 +701,56 @@ static long sl_load_core(uint64_t initrd_c, long idx,
                            seg_p_memsz[i] - seg_p_filesz[i]);
         }
 
-        /* 9–10. Find PT_DYNAMIC and apply R_X86_64_RELATIVE relocations. */
+        /*
+         * 9–10. Relocate — UNLESS somebody else is going to.
+         *
+         * `R_X86_64_RELATIVE` is not idempotent and carries no record of
+         * having been applied, so an image relocated by two different things
+         * ends up relocated by whichever went last, at whichever base that one
+         * believed.  An image with a `PT_INTERP` has an interpreter whose
+         * whole job begins with relocating it, so this loader must not: it
+         * maps the segments, and the interpreter does the rest.  That is the
+         * same division every other system makes, for the same reason.
+         *
+         * `test_elf_reloc` applies the pass twice on purpose and asserts the
+         * damage, so this is a checked rule rather than a remembered one.
+         */
+        if (!elf_image_has_interp(phs, eh->e_phnum, eh->e_phentsize))
         for (uint16_t pi = 0; pi < eh->e_phnum; pi++) {
             const Elf64_Phdr *ph = &phs[pi];
             if (ph->p_type != PT_DYNAMIC) continue;
 
             const Elf64_Dyn *dyn =
                 (const Elf64_Dyn *)(uintptr_t)(SL_ELF_VADDR + ph->p_offset);
-            uint64_t rela_vaddr = 0, rela_sz = 0, rela_ent = sizeof(Elf64_Rela);
-
-            for (const Elf64_Dyn *d = dyn; d->d_tag != DT_NULL; d++) {
-                if (d->d_tag == DT_RELA)    rela_vaddr = d->d_val;
-                else if (d->d_tag == DT_RELASZ)  rela_sz   = d->d_val;
-                else if (d->d_tag == DT_RELAENT) rela_ent  = d->d_val;
-            }
-            if (rela_sz == 0 || rela_ent == 0) break;
+            uint64_t rela_vaddr = 0, rela_sz = 0, rela_ent = 0;
+            /* Bounded by what the segment actually holds: `DT_NULL` is the
+             * image's promise that the section ends, and a malformed image
+             * does not have to keep it. */
+            if (!elf_find_rela(dyn, ph->p_filesz / sizeof(Elf64_Dyn),
+                               &rela_vaddr, &rela_sz, &rela_ent))
+                break;
 
             uint64_t rela_foff = sl_vaddr_to_foff(eh, rela_vaddr);
             if (rela_foff == (uint64_t)-1) goto out;
-
-            const uint8_t *rela_raw =
-                (const uint8_t *)(uintptr_t)(SL_ELF_VADDR + rela_foff);
-            uint64_t n_rela = rela_sz / rela_ent;
-
-            for (uint64_t ri = 0; ri < n_rela; ri++) {
-                const Elf64_Rela *rel =
-                    (const Elf64_Rela *)(const void *)(rela_raw + ri * rela_ent);
-                if (ELF64_R_TYPE(rel->r_info) != R_X86_64_RELATIVE) continue;
-
-                /* Find segment covering r_offset (the relocation target rva) */
-                uint32_t si;
-                for (si = 0; si < seg_count; si++) {
-                    if (rel->r_offset >= seg_p_vaddr[si] &&
-                        rel->r_offset <  seg_p_vaddr[si] + seg_p_memsz[si])
-                        break;
-                }
-                r = (long)IRIS_ERR_INVALID_ARG;
-                if (si >= seg_count) goto out;
-
-                /* Loader address of the patch site */
-                uint64_t slot = SL_SEG_VADDR_BASE + (uint64_t)si * SL_SEG_SLOT_SIZE;
-                uint8_t *patch = (uint8_t *)(uintptr_t)
-                                     (slot + rel->r_offset - seg_map_base[si]);
-                uint64_t val = bias + (uint64_t)rel->r_addend;
-                sl_memcpy(patch, &val, sizeof(val));
+            if (rela_foff > elf_bytes || rela_sz > elf_bytes - rela_foff) {
+                r = (long)IRIS_ERR_INVALID_ARG; goto out;
             }
+
+            /* The segments as THIS address space can write them: the image's
+             * own vaddr, and the loader's temporary window for it. */
+            struct elf_seg_view view[SL_MAX_SEGS];
+            for (uint32_t si = 0; si < seg_count; si++) {
+                uint64_t slot = SL_SEG_VADDR_BASE + (uint64_t)si * SL_SEG_SLOT_SIZE;
+                view[si].vaddr = seg_p_vaddr[si];
+                view[si].bytes = seg_p_memsz[si];
+                view[si].host  = (uint8_t *)(uintptr_t)
+                                     (slot + seg_p_vaddr[si] - seg_map_base[si]);
+            }
+            r = elf_apply_relative(view, seg_count, bias,
+                                   (const uint8_t *)(uintptr_t)
+                                       (SL_ELF_VADDR + rela_foff),
+                                   rela_sz, rela_ent);
+            if (r < 0) goto out;
             break;  /* one PT_DYNAMIC only */
         }
 

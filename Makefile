@@ -131,6 +131,8 @@ SERVICE_PROC_ELF      := services/proc/proc.elf
 SERVICE_ALLOC_ELF     := services/alloc/alloc.elf
 SERVICE_OBJREG_ELF    := services/objreg/objreg.elf
 SERVICE_LIBUSER_ELF   := services/libuser/libuser.elf
+SERVICE_LDSO_ELF      := services/ldso/ldso.elf
+SERVICE_DYNPROG_ELF   := services/dynprog/dynprog.elf
 # userboot: linked as raw flat binary (OUTPUT_FORMAT(binary)) for direct kernel mapping
 SERVICE_USERBOOT_BIN  := services/userboot/userboot.bin
 # objcopy-embedded initrd object files (binary blobs → linkable .o)
@@ -155,6 +157,8 @@ KERNEL_PROC_BIN_OBJ       := $(BUILD_DIR)/proc_bin.o
 KERNEL_ALLOC_BIN_OBJ      := $(BUILD_DIR)/alloc_bin.o
 KERNEL_OBJREG_BIN_OBJ     := $(BUILD_DIR)/objreg_bin.o
 KERNEL_LIBUSER_BIN_OBJ    := $(BUILD_DIR)/libuser_bin.o
+KERNEL_LDSO_BIN_OBJ       := $(BUILD_DIR)/ldso_bin.o
+KERNEL_DYNPROG_BIN_OBJ    := $(BUILD_DIR)/dynprog_bin.o
 KERNEL_BOOTFIX_BADELF_OBJ := $(BUILD_DIR)/bootfix_badelf_bin.o
 KERNEL_FILEBK_FBK_OBJ     := $(BUILD_DIR)/filebk_fbk_bin.o
 KERNEL_FILEBK_FBK2_OBJ    := $(BUILD_DIR)/filebk_fbk2_bin.o
@@ -166,7 +170,7 @@ KERNEL_DEMO_DEFINES :=
 ifeq ($(ENABLE_RUNTIME_SELFTESTS),1)
 KERNEL_DEMO_DEFINES      += -DIRIS_ENABLE_RUNTIME_SELFTESTS
 endif
-KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_KSLAB_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_FPU_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_COREDISP_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_DISPATCH_OBJ) $(KERNEL_SYSCALL_IPC_OBJ) $(KERNEL_SYSCALL_VM_OBJ) $(KERNEL_SYSCALL_PROC_OBJ) $(KERNEL_SYSCALL_CAP_OBJ) $(KERNEL_SYSCALL_IRQ_OBJ) $(KERNEL_SYSCALL_DIAG_OBJ) $(KERNEL_SYSCALL_EP_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_UCOPYASM_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_FBCON_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KFAULT_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KENDPOINT_OBJ) $(KERNEL_ACPI_OBJ) $(KERNEL_IOMMU_OBJ) $(KERNEL_SMP_OBJ) $(KERNEL_APTRAMP_OBJ) $(KERNEL_TLB_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_BOOT_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_KLOG_OBJ) $(KERNEL_PANIC_OBJ) $(KERNEL_LAPIC_OBJ) $(KERNEL_NC_KREPLY_OBJ) $(KERNEL_NC_KCNODE_OBJ) $(KERNEL_NC_KSCHEDCTX_OBJ) $(KERNEL_NC_KASIDPOOL_OBJ) $(KERNEL_NC_KUNTYPED_OBJ) $(KERNEL_SYSCALL_CSPACE_OBJ) $(KERNEL_SYSCALL_SCHED_OBJ) $(KERNEL_SYSCALL_UNTYPED_OBJ) $(KERNEL_SYSCALL_REPLY_OBJ) $(KERNEL_SYSCALL_CNODE_OPS_OBJ) $(KERNEL_SYSCALL_INVOKE_OBJ) $(KERNEL_NC_KTCB_OBJ) $(KERNEL_SYSCALL_TCB_OBJ) $(KERNEL_NC_CSPACE_OBJ) $(KERNEL_NC_KVSPACE_OBJ) $(KERNEL_NC_KFRAME_OBJ) $(KERNEL_NC_ROOT_BOOTINFO_OBJ) $(KERNEL_NC_KPAGETABLE_OBJ) $(KERNEL_NC_KIOSPACE_OBJ) $(KERNEL_NC_KIOPT_OBJ) $(KERNEL_SYSCALL_FRAME_OBJ) $(KERNEL_SYSCALL_IOSPACE_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_IRIS_TEST_BIN_OBJ) $(KERNEL_LIFECYCLE_PROBE_BIN_OBJ) $(KERNEL_PAGER_BIN_OBJ) $(KERNEL_TIMER_BIN_OBJ) $(KERNEL_PCI_BIN_OBJ) $(KERNEL_BLK_BIN_OBJ) $(KERNEL_NET_BIN_OBJ) $(KERNEL_FS_BIN_OBJ) $(KERNEL_IP_BIN_OBJ) $(KERNEL_HELLO_BIN_OBJ) $(KERNEL_PROC_BIN_OBJ) $(KERNEL_ALLOC_BIN_OBJ) $(KERNEL_OBJREG_BIN_OBJ) $(KERNEL_LIBUSER_BIN_OBJ) $(KERNEL_BOOTFIX_BADELF_OBJ) $(KERNEL_FILEBK_FBK_OBJ) $(KERNEL_FILEBK_FBK2_OBJ) $(KERNEL_FILEBK_ELFSEG_OBJ) $(KERNEL_FILEBK_SMALL_OBJ) $(KERNEL_DEMO_OBJS)
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_KSLAB_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_FPU_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_COREDISP_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_DISPATCH_OBJ) $(KERNEL_SYSCALL_IPC_OBJ) $(KERNEL_SYSCALL_VM_OBJ) $(KERNEL_SYSCALL_PROC_OBJ) $(KERNEL_SYSCALL_CAP_OBJ) $(KERNEL_SYSCALL_IRQ_OBJ) $(KERNEL_SYSCALL_DIAG_OBJ) $(KERNEL_SYSCALL_EP_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_UCOPYASM_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_FBCON_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KFAULT_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KENDPOINT_OBJ) $(KERNEL_ACPI_OBJ) $(KERNEL_IOMMU_OBJ) $(KERNEL_SMP_OBJ) $(KERNEL_APTRAMP_OBJ) $(KERNEL_TLB_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_BOOT_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_KLOG_OBJ) $(KERNEL_PANIC_OBJ) $(KERNEL_LAPIC_OBJ) $(KERNEL_NC_KREPLY_OBJ) $(KERNEL_NC_KCNODE_OBJ) $(KERNEL_NC_KSCHEDCTX_OBJ) $(KERNEL_NC_KASIDPOOL_OBJ) $(KERNEL_NC_KUNTYPED_OBJ) $(KERNEL_SYSCALL_CSPACE_OBJ) $(KERNEL_SYSCALL_SCHED_OBJ) $(KERNEL_SYSCALL_UNTYPED_OBJ) $(KERNEL_SYSCALL_REPLY_OBJ) $(KERNEL_SYSCALL_CNODE_OPS_OBJ) $(KERNEL_SYSCALL_INVOKE_OBJ) $(KERNEL_NC_KTCB_OBJ) $(KERNEL_SYSCALL_TCB_OBJ) $(KERNEL_NC_CSPACE_OBJ) $(KERNEL_NC_KVSPACE_OBJ) $(KERNEL_NC_KFRAME_OBJ) $(KERNEL_NC_ROOT_BOOTINFO_OBJ) $(KERNEL_NC_KPAGETABLE_OBJ) $(KERNEL_NC_KIOSPACE_OBJ) $(KERNEL_NC_KIOPT_OBJ) $(KERNEL_SYSCALL_FRAME_OBJ) $(KERNEL_SYSCALL_IOSPACE_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_IRIS_TEST_BIN_OBJ) $(KERNEL_LIFECYCLE_PROBE_BIN_OBJ) $(KERNEL_PAGER_BIN_OBJ) $(KERNEL_TIMER_BIN_OBJ) $(KERNEL_PCI_BIN_OBJ) $(KERNEL_BLK_BIN_OBJ) $(KERNEL_NET_BIN_OBJ) $(KERNEL_FS_BIN_OBJ) $(KERNEL_IP_BIN_OBJ) $(KERNEL_HELLO_BIN_OBJ) $(KERNEL_PROC_BIN_OBJ) $(KERNEL_ALLOC_BIN_OBJ) $(KERNEL_OBJREG_BIN_OBJ) $(KERNEL_LIBUSER_BIN_OBJ) $(KERNEL_LDSO_BIN_OBJ) $(KERNEL_DYNPROG_BIN_OBJ) $(KERNEL_BOOTFIX_BADELF_OBJ) $(KERNEL_FILEBK_FBK_OBJ) $(KERNEL_FILEBK_FBK2_OBJ) $(KERNEL_FILEBK_ELFSEG_OBJ) $(KERNEL_FILEBK_SMALL_OBJ) $(KERNEL_DEMO_OBJS)
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 KERNEL_DST  := $(EFI_IRIS_DIR)/KERNEL.ELF
 
@@ -211,6 +215,21 @@ SERVICE_LDFLAGS := -nostdlib -static -pie -T services/link_service.ld
 # A PROGRAM links with a script of its own: see services/link_program.ld for
 # the single line that differs and why it has to.
 PROGRAM_LDFLAGS := -nostdlib -static -pie -T services/link_program.ld
+# A program with an interpreter links with the script that gives it a PT_INTERP.
+# `--no-dynamic-linker` suppresses the interpreter ld would name ON ITS OWN.
+# Without it the output carries TWO strings in `.interp` -- the linker's
+# "/lib/ld64.so.1" first and this program's own second -- and the first
+# NUL-terminated one is the one a spawner reads, which is a path into a
+# directory this system does not have.
+DYNPROG_LDFLAGS := -nostdlib -static -pie --no-dynamic-linker \
+                   -T services/link_dynprog.ld
+# The interpreter itself: no stack protector anywhere in it, because its first
+# C frame runs before this image's own relocations are... no: they are applied
+# by then, but the GUARD is seeded by a service's entry.S and an interpreter
+# has no such entry.  Rather than seed one for a single function, it is built
+# without.
+LDSO_CFLAGS := -ffreestanding -fno-stack-protector -fPIE -mno-red-zone \
+               $(COMMON_WARNINGS) $(SERVICE_INCLUDES) -MMD -MP
 
 EFI_LIBDIR_FLAGS := -L/usr/lib -L/usr/lib/x86_64-linux-gnu -L/usr/lib/x86_64-linux-gnu/gnuefi
 LDFLAGS_EFI      := -nostdlib -znocombreloc -T $(EFI_LDS) -shared -Bsymbolic $(EFI_LIBDIR_FLAGS)
@@ -295,6 +314,8 @@ TEST_UNIT_SRCS  := \
     services/common/prog_stack.c \
     tests/kernel/test_prog_mem.c \
     services/common/prog_mem_plan.c \
+    tests/kernel/test_elf_reloc.c \
+    services/common/elf_reloc.c \
     tests/kernel/test_klog.c \
     kernel/core/klog/klog.c \
     kernel/drivers/fbcon/fbcon.c \
@@ -557,12 +578,16 @@ $(BUILD_DIR)/ub_entry.o: services/userboot/entry.S | dirs
 $(BUILD_DIR)/ub_main.o: services/userboot/main.c | dirs
 	gcc $(USERBOOT_CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/ub_elf_reloc.o: services/common/elf_reloc.c | dirs
+	gcc $(USERBOOT_CFLAGS) -c $< -o $@
+
 $(BUILD_DIR)/ub_svc_loader.o: services/common/svc_loader.c | dirs
 	gcc $(USERBOOT_CFLAGS) -c $< -o $@
 
-$(SERVICE_USERBOOT_BIN): $(BUILD_DIR)/ub_entry.o $(BUILD_DIR)/ub_main.o $(BUILD_DIR)/ub_svc_loader.o services/userboot/link_userboot.ld
+$(SERVICE_USERBOOT_BIN): $(BUILD_DIR)/ub_entry.o $(BUILD_DIR)/ub_main.o $(BUILD_DIR)/ub_svc_loader.o $(BUILD_DIR)/ub_elf_reloc.o services/userboot/link_userboot.ld
 	ld -nostdlib -static -T services/userboot/link_userboot.ld \
 	    $(BUILD_DIR)/ub_entry.o $(BUILD_DIR)/ub_main.o $(BUILD_DIR)/ub_svc_loader.o \
+	    $(BUILD_DIR)/ub_elf_reloc.o \
 	    -o $(SERVICE_USERBOOT_BIN)
 
 $(KERNEL_USERBOOT_BIN_OBJ): $(SERVICE_USERBOOT_BIN) | dirs
@@ -589,6 +614,9 @@ $(KERNEL_USERBOOT_BIN_OBJ): $(SERVICE_USERBOOT_BIN) | dirs
 # etc.) — the explicit order dependency below enforces this.
 
 # ── shared ring-3 ELF loader (linked into init + svcmgr) ─────────────────────
+$(BUILD_DIR)/elf_reloc.o: services/common/elf_reloc.c | dirs
+	gcc $(SERVICE_CFLAGS) -c $< -o $@
+
 $(BUILD_DIR)/svc_loader.o: services/common/svc_loader.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
@@ -602,7 +630,7 @@ $(BUILD_DIR)/svcmgr_entry.o: services/svcmgr/entry.S | dirs
 $(BUILD_DIR)/svcmgr_main.o: services/svcmgr/svcmgr.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_SVCMGR_ELF): $(BUILD_DIR)/svcmgr_entry.o $(BUILD_DIR)/svcmgr_main.o $(BUILD_DIR)/svc_loader.o $(STACK_GUARD_OBJ)
+$(SERVICE_SVCMGR_ELF): $(BUILD_DIR)/svcmgr_entry.o $(BUILD_DIR)/svcmgr_main.o $(BUILD_DIR)/svc_loader.o $(BUILD_DIR)/elf_reloc.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 
 $(KERNEL_SVCMGR_BIN_OBJ): $(SERVICE_SVCMGR_ELF) | dirs
@@ -656,7 +684,7 @@ $(BUILD_DIR)/init_bootstrap.o: services/init/init_bootstrap.c | dirs
 $(BUILD_DIR)/init_launch.o: services/init/init_launch.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_INIT_ELF): $(BUILD_DIR)/init_entry.o $(BUILD_DIR)/init_main.o $(BUILD_DIR)/init_bootstrap.o $(BUILD_DIR)/init_launch.o $(BUILD_DIR)/init_test.o $(BUILD_DIR)/svc_loader.o $(STACK_GUARD_OBJ)
+$(SERVICE_INIT_ELF): $(BUILD_DIR)/init_entry.o $(BUILD_DIR)/init_main.o $(BUILD_DIR)/init_bootstrap.o $(BUILD_DIR)/init_launch.o $(BUILD_DIR)/init_test.o $(BUILD_DIR)/svc_loader.o $(BUILD_DIR)/elf_reloc.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 
 $(KERNEL_INIT_BIN_OBJ): $(SERVICE_INIT_ELF) | dirs
@@ -849,7 +877,8 @@ $(BUILD_DIR)/proc_main.o: services/proc/main.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
 $(SERVICE_PROC_ELF): $(BUILD_DIR)/proc_entry.o $(BUILD_DIR)/proc_main.o \
-                     $(BUILD_DIR)/svc_loader.o $(BUILD_DIR)/prog_stack.o $(STACK_GUARD_OBJ)
+                     $(BUILD_DIR)/svc_loader.o $(BUILD_DIR)/prog_stack.o \
+                     $(BUILD_DIR)/elf_reloc.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 
 $(KERNEL_PROC_BIN_OBJ): $(SERVICE_PROC_ELF) | dirs
@@ -911,6 +940,49 @@ $(KERNEL_LIBUSER_BIN_OBJ): $(SERVICE_LIBUSER_ELF) | dirs
 	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
 	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
 	    $(SERVICE_LIBUSER_ELF) $@
+
+# ── ldso (Stage 10-run step 5: the interpreter) ──────────────────────────────
+#
+# It links with the PROGRAM script, not a script of its own: an interpreter is
+# an ET_DYN object loaded at a bias like any other, and the one thing it needs
+# that a service does not is its headers inside the first PT_LOAD, which is
+# exactly what that script is for.
+$(BUILD_DIR)/ldso_start.o: services/ldso/dlstart.S | dirs
+	gcc $(SERVICE_ASFLAGS) -c $< -o $@
+
+# No stack protector: `dl_main` runs before anything has seeded a canary for
+# THIS image, and a guard read from an unrelocated global is the one check that
+# would fire on correct code.
+$(BUILD_DIR)/ldso_main.o: services/ldso/main.c | dirs
+	gcc $(LDSO_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/ldso_elf_reloc.o: services/common/elf_reloc.c | dirs
+	gcc $(LDSO_CFLAGS) -c $< -o $@
+
+$(SERVICE_LDSO_ELF): $(BUILD_DIR)/ldso_start.o $(BUILD_DIR)/ldso_main.o \
+                     $(BUILD_DIR)/ldso_elf_reloc.o services/link_program.ld
+	ld $(PROGRAM_LDFLAGS) $(filter %.o,$^) -o $@
+
+$(KERNEL_LDSO_BIN_OBJ): $(SERVICE_LDSO_ELF) | dirs
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	    $(SERVICE_LDSO_ELF) $@
+
+# ── dynprog (the program that has one) ───────────────────────────────────────
+$(BUILD_DIR)/dynprog_entry.o: services/dynprog/entry.S | dirs
+	gcc $(SERVICE_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/dynprog_main.o: services/dynprog/main.c | dirs
+	gcc $(SERVICE_CFLAGS) -c $< -o $@
+
+$(SERVICE_DYNPROG_ELF): $(BUILD_DIR)/dynprog_entry.o $(BUILD_DIR)/dynprog_main.o \
+                        $(STACK_GUARD_OBJ) services/link_dynprog.ld
+	ld $(DYNPROG_LDFLAGS) $(filter %.o,$^) -o $@
+
+$(KERNEL_DYNPROG_BIN_OBJ): $(SERVICE_DYNPROG_ELF) | dirs
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	    $(SERVICE_DYNPROG_ELF) $@
 
 # ── boot-growth test fixtures (Phase 28): non-service initrd blobs ────────────
 # badelf.bin is a 256-byte invalid-ELF blob (a known header + zero pad) used by
@@ -976,7 +1048,7 @@ IRIS_TEST_OBJS := $(patsubst services/iris_test/%.c,$(BUILD_DIR)/iris_test_%.o,$
 $(BUILD_DIR)/iris_test_%.o: services/iris_test/%.c services/iris_test/it_priv.h | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_IRIS_TEST_ELF): $(BUILD_DIR)/iris_test_entry.o $(IRIS_TEST_OBJS) $(BUILD_DIR)/svc_loader.o $(STACK_GUARD_OBJ)
+$(SERVICE_IRIS_TEST_ELF): $(BUILD_DIR)/iris_test_entry.o $(IRIS_TEST_OBJS) $(BUILD_DIR)/svc_loader.o $(BUILD_DIR)/elf_reloc.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 	strip --strip-all $@
 
@@ -1089,7 +1161,7 @@ clean:
 # The Stage 10 services were left out of the line above as each was added,
 # so `clean` did not clean them: a stale `services/*/[name].elf` is relinked
 # into the kernel by a build that looks clean.
-	rm -f $(SERVICE_PCI_ELF) $(SERVICE_BLK_ELF) $(SERVICE_NET_ELF) $(SERVICE_FS_ELF) $(SERVICE_IP_ELF) $(SERVICE_HELLO_ELF) $(SERVICE_PROC_ELF) $(SERVICE_ALLOC_ELF) $(SERVICE_OBJREG_ELF) $(SERVICE_LIBUSER_ELF)
+	rm -f $(SERVICE_PCI_ELF) $(SERVICE_BLK_ELF) $(SERVICE_NET_ELF) $(SERVICE_FS_ELF) $(SERVICE_IP_ELF) $(SERVICE_HELLO_ELF) $(SERVICE_PROC_ELF) $(SERVICE_ALLOC_ELF) $(SERVICE_OBJREG_ELF) $(SERVICE_LIBUSER_ELF) $(SERVICE_LDSO_ELF) $(SERVICE_DYNPROG_ELF)
 
 # Makefile is a real prerequisite: the source list and the flags live in it, so
 # editing either must relink.  Without this, adding a translation unit to

@@ -94,6 +94,10 @@ extern const uint8_t _binary_services_objreg_objreg_elf_start[];
 extern const uint8_t _binary_services_objreg_objreg_elf_end[];
 extern const uint8_t _binary_services_libuser_libuser_elf_start[];
 extern const uint8_t _binary_services_libuser_libuser_elf_end[];
+extern const uint8_t _binary_services_ldso_ldso_elf_start[];
+extern const uint8_t _binary_services_ldso_ldso_elf_end[];
+extern const uint8_t _binary_services_dynprog_dynprog_elf_start[];
+extern const uint8_t _binary_services_dynprog_dynprog_elf_end[];
 extern const uint8_t _binary_services_pager_pager_elf_start[];
 extern const uint8_t _binary_services_pager_pager_elf_end[];
 
@@ -221,6 +225,16 @@ static const struct initrd_entry g_initrd[] = {
      * one number from two processes is what "shared" means. */
     { _binary_services_libuser_libuser_elf_start,
       _binary_services_libuser_libuser_elf_end  },
+    /* [27] ldso — the INTERPRETER.  Not a service and not started by anything:
+     * `objreg` holds it, and a program that names it in its `PT_INTERP` gets
+     * it mapped into its address space before its first instruction. */
+    { _binary_services_ldso_ldso_elf_start,
+      _binary_services_ldso_ldso_elf_end  },
+    /* [28] dynprog — the first TWO-OBJECT program.  Its relocations are
+     * applied by the interpreter and by nobody else, and it checks that by
+     * dereferencing them. */
+    { _binary_services_dynprog_dynprog_elf_start,
+      _binary_services_dynprog_dynprog_elf_end  },
 };
 
 #define INITRD_ENTRY_COUNT \

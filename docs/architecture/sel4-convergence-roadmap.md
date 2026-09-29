@@ -2879,7 +2879,7 @@ inside the valid range — the one thing that boundary exists to prevent.
 stage that had closed without anyone returning to them, which is the exact
 failure §5.1 was written to stop.  All six are answered in ledger A-35.
 
-## Stage 10-run — the dynamic C runtime  ← OPEN (steps 1-4 of 8 closed)
+## Stage 10-run — the dynamic C runtime  ← OPEN (steps 1-5 of 8 closed)
 
 Precondition: 10-abi (the surface a runtime binds to is frozen), 10-mem (a
 grant is a run of frame capabilities), 11-life, 13-form.  All met.
@@ -3247,15 +3247,93 @@ that exists only to be proved about.  What step 5 changes is that the object
 becomes an INTERPRETER the loader jumps into; what the registry holds and how
 it hands it out does not change at all.
 
-**Step 5 — the loader learns a second object.**  `PT_INTERP`, two biases, the
-`auxv` the interpreter needs (`AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_BASE`,
-`AT_ENTRY`, `AT_PAGESZ`, `AT_RANDOM`).  The existing `R_X86_64_RELATIVE` pass
-becomes conditional on there being no interpreter — **when there is one, the
-loader must not relocate, because the interpreter will**, and applying
-`RELATIVE` twice is not idempotent: the second pass reads an already-relocated
-value as the addend.
-*Closes when:* a two-object program starts, and a deliberate double-relocation
-is caught by a test rather than by a debugger.
+**Step 5 — the loader learns a second object.**  ✅ **CLOSED.**  `PT_INTERP`,
+two biases, and the `auxv` an interpreter needs.  The `R_X86_64_RELATIVE` pass
+is conditional on there being no interpreter — **when there is one the loader
+must not relocate, because the interpreter will**, and applying `RELATIVE`
+twice is not idempotent.
+
+*Closed by:* the boot, on every runtime lane and at smp1/2/4.
+
+```
+[USER][INIT] proc: dynprog exit 42 OK
+```
+
+`dynprog` declares `PT_INTERP "ldso"`.  `proc` reads that name out of the
+image, asks `objreg` for it, maps the registry's SHARED text into the child at
+a random bias in the interpreter region and a PRIVATE copy of its data beside
+it, and starts the thread at the interpreter's entry rather than the program's.
+`ldso` relocates ITSELF in assembly, then relocates the program, then jumps to
+`AT_ENTRY`.  42 means every one of those happened exactly once.
+
+**The double relocation is caught two ways, and both were asked for.**
+`test_elf_reloc` applies the pass twice at two different bases and asserts the
+damage — the value ends up at whichever base went last, with no error and
+nothing about the result that says which pass it has had.  And `dynprog` is the
+runtime half: its check is a POINTER DEREFERENCE, not a comparison of numbers,
+so an image relocated twice holds an address one load bias past everything and
+dies before it can report, and an image relocated by nobody holds its link-time
+value and dies the same way.  Exit 42 is the only outcome in which exactly one
+pass happened at the right base.
+
+Landed:
+  - **`services/common/elf_reloc.{h,c}`** — the pass, extracted so the test
+    tests what the loader runs.  Pure, and it touches no global of its own,
+    which is what lets `ldso` call it before it has relocated itself: a helper
+    that referenced a global would work in the loader and crash in the
+    interpreter, at the one moment nothing can report anything.
+  - **`services/ldso`** — the interpreter.  Its self-relocation is assembly,
+    because until it has run no global in the image is trustworthy and C that
+    looks harmless — a string literal in a struct, a table of function
+    pointers — compiles into exactly the things that are not yet right.  It
+    learns its own base from `AT_BASE` rather than from `GOT[0]`: both work,
+    and one of them is on the stack in the open.
+  - **`ldso` has a relocation of its own, deliberately.**  Its self-relocation
+    is the hardest code in the system to test — it runs once, before anything
+    can report — and an image with no relative relocations would exercise none
+    of it while looking healthy.  One `static const char *const` makes it
+    load-bearing.
+  - **`services/link_program.ld` declares `PT_PHDR`**, and
+    **`services/link_dynprog.ld`** adds `.interp` and `PT_INTERP`.  `PT_PHDR`
+    is how an interpreter turns `AT_PHDR` into a load base without assuming
+    anything about the layout, and it is a separate script rather than a
+    conditional because an empty `PT_INTERP` would make `elf_image_has_interp`
+    true for every program in the system.
+  - **`--no-dynamic-linker`**, because without it `ld` writes its OWN
+    `/lib/ld64.so.1` into `.interp` first and the image names a path into a
+    directory this system does not have.
+  - **`OBJREG_OP_LAYOUT`** — the registry answers where an object's segments
+    and entry are, unbiased.  Asked rather than assumed: a PIE's text at vaddr
+    0 and its data one page up is a property of one linker script.
+
+Two things the work found:
+  - **The kernel refused the entry point.**  `ktcb_write_regs` bounded it by
+    `USER_VMO_BASE`, which was right while code only ever lived in the image
+    region — and the interpreter's region starts exactly there.  Starting a
+    two-object program was refused with a bare `INVALID_ARG` that named neither
+    address.  The bound is the STACK now, which is the statement that was
+    always meant: an entry point is in the task's own half, and code does not
+    live on the stack.  It costs nothing, because a thread can only execute
+    what is mapped and mapping is capability-controlled end to end.
+  - **A spawner must hold nothing of its child's.**  `proc` kept the
+    interpreter's private data frame and the last paging level
+    `iris_map_frame` left in its scratch slot — both charged to the CHILD'S
+    budget — so that budget answered `BUSY` to `Untyped_Reset` for ever, the
+    loader's leaf scan skipped it, and the fifth spawn of a boot ran out of
+    memory.  **This is the third time this exact shape has cost a session**
+    (the loader's TCB leaf in step 3 was the first), so it is written where the
+    next one will read it.  The mappings survive the drop because a live
+    mapping holds its own reference (T137), which is the same property step 4
+    had to state precisely.
+
+*Not here, and it belongs to step 6:* symbol resolution.  No `DT_NEEDED`, no
+`GLOB_DAT`, no `JUMP_SLOT`.  What is here is the two-object load itself, which
+had to exist before any of that could.
+
+*Not expressible yet:* `PT_GNU_RELRO`.  `mprotect` in this system is
+unmap-and-remap of a whole frame and a frame does not split, so a dynamic
+program's relocated pages stay writable.  `link_dynprog.ld` says so where a
+reader will find it rather than leaving it to be discovered.
 
 **Step 6 — musl, resolving by capability.**  `libc.so` is the interpreter.  Its
 `__syscall` backend is IRIS invocations.  `dynlink.c`'s object resolution is

@@ -76,10 +76,20 @@
 #define PROC_SLOT_CHILD_EP    47u
 #define PROC_SLOT_OBJ_TEXT    48u
 #define PROC_SLOT_OBJ_DATA    49u
+/* ...and what it takes to put an INTERPRETER into a child: the child's address
+ * space (so this service can map into it), the interpreter's shared text and
+ * its data master from the registry, the PRIVATE copy of that data charged to
+ * the child, and scratch for the paging levels the child's walk needs. */
+#define PROC_SLOT_CHILD_VS    50u
+#define PROC_SLOT_ITEXT       51u
+#define PROC_SLOT_IDATA       52u
+#define PROC_SLOT_IPRIV       53u
+#define PROC_SLOT_CHILD_PT    54u
 
 /* ── where we map, in our own address space ──────────────────────────────── */
 #define PROC_VA_IMAGE  0x80E0000000ULL
 #define PROC_VA_STACK  0x80E8000000ULL
+#define PROC_VA_OBJ    0x80EC000000ULL   /* a master being copied, briefly */
 
 /* The image pool, and the largest program this can read.
  *
@@ -274,6 +284,9 @@ struct proc_image {
     uint32_t phnum;
     int      has_phdr;    /* whether phdr_vaddr was FOUND, not merely nonzero */
     int      has_interp;
+    /* The interpreter's NAME, as the image spells it.  A name, not a path:
+     * nothing searches for it, and what resolves it is `objreg`. */
+    char     interp[VFS_EP_PATH_MAX];
 };
 
 /*
@@ -307,11 +320,30 @@ static uint32_t proc_parse(uint64_t size, struct proc_image *out) {
     out->phdr_vaddr = 0;
     out->has_phdr   = 0;
     out->has_interp = 0;
+    out->interp[0]  = '\0';
 
     for (uint32_t i = 0; i < out->phnum; i++) {
         const Elf64_Phdr *p = (const Elf64_Phdr *)(uintptr_t)
                                  ((uintptr_t)ph + i * out->phentsize);
-        if (p->p_type == PT_INTERP) out->has_interp = 1;
+        if (p->p_type == PT_INTERP) {
+            /*
+             * Copied out NOW, while the image is still mapped, and bounded by
+             * what the image itself declares the segment to be.  An interpreter
+             * name is a string in a file somebody else wrote: it can run off
+             * the end of its own segment, off the end of the image, or never
+             * terminate, and all three have to be the reason a spawn fails
+             * rather than the reason this service reads somebody's memory.
+             */
+            uint64_t n = p->p_filesz;
+            const char *src = (const char *)(uintptr_t)(PROC_VA_IMAGE + p->p_offset);
+            uint32_t k = 0;
+            if (p->p_offset > size || n > size - p->p_offset) return PROC_STEP_ELF;
+            if (n == 0u || n >= VFS_EP_PATH_MAX)               return PROC_STEP_ELF;
+            while (k < n && src[k]) { out->interp[k] = src[k]; k++; }
+            if (k == n) return PROC_STEP_ELF;   /* never terminated */
+            out->interp[k] = '\0';
+            out->has_interp = 1;
+        }
         if (p->p_type == PT_PHDR) { out->phdr_vaddr = p->p_vaddr; out->has_phdr = 1; }
     }
     if (!out->has_phdr) {
@@ -330,7 +362,6 @@ static uint32_t proc_parse(uint64_t size, struct proc_image *out) {
      * `AT_PHDR`, and a runtime given a wrong one walks arbitrary memory.  It is
      * refused here rather than started with a plausible guess. */
     if (!out->has_phdr)        return PROC_STEP_ELF;
-    if (out->has_interp)       return PROC_STEP_INTERP;
     return 0;
 }
 
@@ -375,6 +406,181 @@ static int proc_resolve_object(uint64_t id) {
 }
 
 /*
+ * Put an INTERPRETER into a child that has not started yet.
+ *
+ * This is the second object of a two-object program, and it is loaded the way
+ * a shared library should be: its TEXT is the registry's single copy, mapped
+ * read+execute into this child exactly as it is into every other, and its DATA
+ * is a PRIVATE frame carved from THIS CHILD'S budget and filled from the
+ * registry's read-only master.  Nothing about that is special to an
+ * interpreter — it is what step 4 built, used for the first time by something
+ * other than a test.
+ *
+ * `*out_base` receives the bias it was loaded at and `*out_entry` the address
+ * to start the thread at.  Returns 0, or the PROC_STEP_* it failed at.
+ *
+ * ── Why this service maps into the child rather than the loader ────────────
+ *
+ * Because the loader loads ONE image, from one frame, and the second object
+ * does not come from a frame at all — it comes from a registry that already
+ * holds it split into segments, shared.  Teaching the loader about that would
+ * be teaching it about the registry; doing it here costs the child's address
+ * space capability for the length of a spawn, and that capability is dropped
+ * before this returns because holding it keeps the child's page tables alive
+ * past its death and blocks the reset of the budget they were charged to.
+ */
+static uint32_t proc_load_interp(const char *name, uint32_t child_vs,
+                                 uint32_t child_budget,
+                                 uint64_t *out_base, uint64_t *out_entry,
+                                 long *detail) {
+    struct iris_msg m;
+    uint64_t text_bytes, data_bytes, text_vaddr, data_vaddr, entry;
+    uint64_t id, base, span;
+
+    proc_slot_delete(PROC_SLOT_ITEXT);
+    proc_slot_delete(PROC_SLOT_IDATA);
+    proc_slot_delete(PROC_SLOT_IPRIV);
+
+    /* ── ask the registry for it, by name ── */
+    {
+        uint32_t n = 0;
+        while (name[n]) n++;
+        if (!g_buf || n == 0u || n + 1u > VFS_EP_PATH_MAX) return PROC_STEP_INTERP;
+        proc_msg_zero(&m);
+        m.label = OBJREG_OP_OPEN;
+        for (uint32_t i = 0; i < n; i++) g_buf[i] = (uint8_t)name[i];
+        g_buf[n] = 0u;
+        m.buf_len = n + 1u;
+        if (iris_msg_call((long)PROC_SLOT_OBJREG_EP, &m) != 0) return PROC_STEP_INTERP;
+        if (m.label != OBJREG_REP_OK) { *detail = (long)m.words[0]; return PROC_STEP_INTERP; }
+        id         = m.words[0];
+        text_bytes = m.words[1];
+        data_bytes = m.words[2];
+    }
+    {
+        proc_msg_zero(&m);
+        m.label = OBJREG_OP_LAYOUT; m.words[0] = id; m.word_count = 1u;
+        if (iris_msg_call((long)PROC_SLOT_OBJREG_EP, &m) != 0) return PROC_STEP_INTERP;
+        if (m.label != OBJREG_REP_OK) return PROC_STEP_INTERP;
+        text_vaddr = m.words[0];
+        data_vaddr = m.words[1];
+        entry      = m.words[2];
+    }
+    if (text_bytes == 0u || data_bytes == 0u) return PROC_STEP_INTERP;
+
+    /*
+     * A bias in the INTERPRETER's own region.
+     *
+     * Its own, and not a corner of the program's: two `ET_DYN` objects biased
+     * out of one range can overlap, and a loader that had to check for that
+     * would be a loader with a failure mode.  Disjoint ranges cannot collide
+     * at all, which is why docs/contracts/program.md §3 gives the interpreter
+     * a region rather than a convention.
+     */
+    {
+        uint64_t hi = (text_vaddr + text_bytes > data_vaddr + data_bytes)
+                          ? text_vaddr + text_bytes : data_vaddr + data_bytes;
+        uint64_t room, a, d;
+        span = (hi + 0xFFFULL) & ~0xFFFULL;
+        if (span == 0u ||
+            span >= IRIS_PROG_INTERP_END_OFF - IRIS_PROG_INTERP_OFF)
+            return PROC_STEP_INTERP;
+        room = (IRIS_PROG_INTERP_END_OFF - IRIS_PROG_INTERP_OFF - span) >> 12;
+        __asm__ volatile ("rdtsc" : "=a"(a), "=d"(d));
+        a = (a ^ (d << 13)) * 6364136223846793005ULL + 1442695040888963407ULL;
+        base = USER_PRIVATE_BASE + IRIS_PROG_INTERP_OFF +
+               ((room ? ((a >> 20) % room) : 0u) << 12);
+    }
+
+    /* ── the shared text, read+execute, the same physical frame as everywhere ── */
+    {
+        proc_msg_zero(&m);
+        m.label = OBJREG_OP_TEXT; m.words[0] = id; m.word_count = 1u;
+        m.recv_slot = (long)PROC_SLOT_ITEXT;
+        if (iris_msg_call((long)PROC_SLOT_OBJREG_EP, &m) != 0) return PROC_STEP_INTERP;
+        if (m.label != OBJREG_REP_OK) return PROC_STEP_INTERP;
+        /* The paging levels the child's walk needs come out of the CHILD's
+         * budget, so they die with it and the region resets clean. */
+        *detail = iris_map_frame(PROC_SLOT_ITEXT, child_vs, child_budget,
+                                 PROC_SLOT_CHILD_PT, base + text_vaddr,
+                                 text_bytes, 2ull /*EXEC*/);
+        if (*detail != 0) return PROC_STEP_INTERP;
+    }
+
+    /*
+     * ── the data, COPIED, and charged to the child ──
+     *
+     * There is no copy-on-write here and there never will be, so a shared
+     * writable data segment would be silent sharing between processes that
+     * believe they are isolated.  The registry publishes a read-only master;
+     * the copy is explicit, it comes out of the budget of the process that
+     * will use it, and it dies with that process.
+     */
+    {
+        proc_msg_zero(&m);
+        m.label = OBJREG_OP_DATA; m.words[0] = id; m.word_count = 1u;
+        m.recv_slot = (long)PROC_SLOT_IDATA;
+        if (iris_msg_call((long)PROC_SLOT_OBJREG_EP, &m) != 0) return PROC_STEP_INTERP;
+        if (m.label != OBJREG_REP_OK) return PROC_STEP_INTERP;
+
+        if (iris_invoke((long)child_budget, INV_UNTYPED_RETYPE,
+                        (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
+                        (long)((uint64_t)PROC_SLOT_IPRIV << 32),
+                        (long)data_bytes) != 0)
+            return PROC_STEP_INTERP;
+        /* Both ends in THIS address space for the length of one copy. */
+        if (iris_map_frame(PROC_SLOT_IDATA, IRIS_CPTR_OWN_VSPACE,
+                           IRIS_CPTR_OWN_UNTYPED, PROC_SLOT_PT,
+                           PROC_VA_OBJ, data_bytes, 0ull) != 0)
+            return PROC_STEP_INTERP;
+        if (iris_map_frame(PROC_SLOT_IPRIV, IRIS_CPTR_OWN_VSPACE,
+                           IRIS_CPTR_OWN_UNTYPED, PROC_SLOT_PT,
+                           PROC_VA_OBJ + data_bytes, data_bytes, 1ull) != 0)
+            return PROC_STEP_INTERP;
+        {
+            const volatile uint8_t *src = (const volatile uint8_t *)(uintptr_t)PROC_VA_OBJ;
+            volatile uint8_t *dst = (volatile uint8_t *)(uintptr_t)(PROC_VA_OBJ + data_bytes);
+            for (uint64_t i = 0; i < data_bytes; i++) dst[i] = src[i];
+        }
+        (void)iris_invoke2((long)PROC_SLOT_IDATA, INV_FRAME_UNMAP,
+                           (long)IRIS_CPTR_OWN_VSPACE, (long)PROC_VA_OBJ);
+        (void)iris_invoke2((long)PROC_SLOT_IPRIV, INV_FRAME_UNMAP,
+                           (long)IRIS_CPTR_OWN_VSPACE, (long)(PROC_VA_OBJ + data_bytes));
+        proc_slot_delete(PROC_SLOT_IDATA);
+
+        if (iris_map_frame(PROC_SLOT_IPRIV, child_vs, child_budget,
+                           PROC_SLOT_CHILD_PT, base + data_vaddr,
+                           data_bytes, 1ull /*WRITABLE*/) != 0)
+            return PROC_STEP_INTERP;
+    }
+
+    /*
+     * Everything this service was holding on the CHILD'S behalf goes, now.
+     *
+     * The mappings survive: a live mapping holds its own reference to the
+     * frame (T137), so the child keeps its interpreter and this service keeps
+     * nothing.  That matters more than it sounds.  Every one of these is
+     * CHARGED TO THE CHILD'S BUDGET — the private data frame, and the paging
+     * levels `iris_map_frame` retyped into its scratch slot and left there —
+     * so a capability kept here is a live object in the child's region and
+     * `Untyped_Reset` on it answers BUSY for ever.  The loader's leaf scan
+     * then skips that leaf and carves a fresh budget for the next spawn, and
+     * this service runs out of memory after a handful of children.
+     *
+     * That is the third time this exact shape has cost a debugging session,
+     * so it is stated rather than remembered: a spawner holds nothing of its
+     * child's once the child can reach it itself.
+     */
+    proc_slot_delete(PROC_SLOT_ITEXT);
+    proc_slot_delete(PROC_SLOT_IPRIV);
+    proc_slot_delete(PROC_SLOT_CHILD_PT);
+
+    *out_base  = base;
+    *out_entry = base + entry;
+    return 0;
+}
+
+/*
  * The spawn.
  *
  * Returns PROC_STEP_RUNNING, or the step it failed at.  A step number rather
@@ -391,12 +597,17 @@ static uint32_t proc_spawn(const char *const *argv, uint32_t argc,
     iris_cptr_t child_h = IRIS_CPTR_NULL, boot_h = IRIS_CPTR_NULL;
     long size, r;
     int32_t obj_mint_text = 0, obj_mint_data = 0;
+    uint64_t interp_base = 0, interp_entry = 0;
+    uint32_t child_budget_c = 0;
     *detail = 0;
     uint64_t bias, rsp;
 
     /* Whatever the last spawn left. */
     proc_slot_delete(PROC_SLOT_CHILD_STACK);
     proc_slot_delete(PROC_SLOT_CHILD_TCB);
+    proc_slot_delete(PROC_SLOT_CHILD_VS);
+    proc_slot_delete(PROC_SLOT_ITEXT);
+    proc_slot_delete(PROC_SLOT_IPRIV);
 
     size = proc_read_image(path, ws, why);
     if (size < 0) return PROC_STEP_PATH;
@@ -464,7 +675,14 @@ static uint32_t proc_spawn(const char *const *argv, uint32_t argc,
                               /*own_budget_slot=*/(uint32_t)IRIS_CPTR_OWN_UNTYPED,
                               /*keep_cnode_dest=*/0u,
                               ((uint64_t)PROC_SLOT_CHILD_TCB << 32),
-                              /*keep_vspace_dest=*/0u);
+                              /* The child's ADDRESS SPACE, and only when there
+                               * is a second object to put in it.  It is dropped
+                               * before this function returns: holding it keeps
+                               * every page table in that space alive past the
+                               * child's death and blocks the reset of the
+                               * budget they were charged to. */
+                              img.has_interp
+                                  ? ((uint64_t)PROC_SLOT_CHILD_VS << 32) : 0u);
         if (objsel) {
             obj_mint_text = pm[n - 2u].result;
             obj_mint_data = pm[n - 1u].result;
@@ -477,7 +695,8 @@ static uint32_t proc_spawn(const char *const *argv, uint32_t argc,
     }
     /* Arithmetic on the capability the spawn already returned — see
      * `svc_child_budget_slot`.  Nothing extra is kept for it. */
-    g_child_budget_c     = svc_child_budget_slot(ws, (uint64_t)child_h);
+    child_budget_c       = svc_child_budget_slot(ws, (uint64_t)child_h);
+    g_child_budget_c     = child_budget_c;
     g_child_budget_bytes = budget ? budget : (uint64_t)PROC_BUDGET_DEFAULT;
     /*
      * And the loader's OWN copy of the child's thread goes, now.
@@ -504,6 +723,31 @@ static uint32_t proc_spawn(const char *const *argv, uint32_t argc,
         return PROC_STEP_START;
     if (ctx.rip < img.entry) return PROC_STEP_START;
     bias = ctx.rip - img.entry;
+
+    /*
+     * ── the second object ──
+     *
+     * The loader did not relocate this image, because it has a `PT_INTERP` and
+     * the interpreter will.  So the interpreter has to BE there, and it has to
+     * be entered instead of the program — the program's own entry travels on
+     * the stack as `AT_ENTRY`, which is where the interpreter reads it.
+     */
+    if (img.has_interp) {
+        uint32_t step;
+        if (child_budget_c == 0u) return PROC_STEP_INTERP;
+        step = proc_load_interp(img.interp, PROC_SLOT_CHILD_VS, child_budget_c,
+                                &interp_base, &interp_entry, detail);
+        /* The address space capability has done its whole job; see the mint.
+         * The failure path drops what the success path drops, because a spawn
+         * that failed halfway still charged the child's budget for whatever it
+         * got as far as. */
+        proc_slot_delete(PROC_SLOT_CHILD_VS);
+        proc_slot_delete(PROC_SLOT_ITEXT);
+        proc_slot_delete(PROC_SLOT_IDATA);
+        proc_slot_delete(PROC_SLOT_IPRIV);
+        proc_slot_delete(PROC_SLOT_CHILD_PT);
+        if (step != 0u) return step;
+    }
 
     /* The stack, mapped here so it can be written, at the same size the loader
      * mapped it there. */
@@ -537,7 +781,10 @@ static uint32_t proc_spawn(const char *const *argv, uint32_t argc,
             { AT_PHENT,         img.phentsize },
             { AT_PHNUM,         img.phnum },
             { AT_PAGESZ,        4096u },
-            { AT_BASE,          0u },          /* no interpreter yet: step 4 */
+            /* Where the interpreter went, or 0 when there is none.  A runtime
+             * reads this to find itself; `dynprog` reads it to assert that a
+             * SECOND object was loaded at all. */
+            { AT_BASE,          interp_base },
             { AT_ENTRY,         bias + img.entry },
             { AT_RANDOM,        rnd_child },
             { AT_IRIS_OBJC,     objsel ? 1u : 0u },
@@ -555,11 +802,18 @@ static uint32_t proc_spawn(const char *const *argv, uint32_t argc,
     proc_slot_delete(PROC_SLOT_CHILD_STACK);
     if (rsp == 0u) return PROC_STEP_STACK;
 
-    /* Same entry, the stack we just built, and go.  `%rdi` is 0: a program's
-     * first argument is its stack pointer and its own entry stub reads it from
-     * `%rsp` — see services/hello/entry.S. */
+    /*
+     * The stack we just built, and the INTERPRETER's entry when there is one.
+     *
+     * `%rdi` is 0: a program's first argument is its stack pointer and its own
+     * entry stub reads it from `%rsp` — see services/hello/entry.S.  The
+     * program's own entry is not lost by starting somewhere else; it travels
+     * on that stack as `AT_ENTRY`, and jumping to it is the last thing the
+     * interpreter does.
+     */
     if (iris_invoke((long)PROC_SLOT_CHILD_TCB, INV_TCB_WRITE_REGS,
-                    (long)ctx.rip, (long)rsp, 0) != 0)
+                    (long)(img.has_interp ? interp_entry : ctx.rip),
+                    (long)rsp, 0) != 0)
         return PROC_STEP_START;
     if (iris_invoke0((long)PROC_SLOT_CHILD_TCB, INV_TCB_RESUME) != 0)
         return PROC_STEP_START;
