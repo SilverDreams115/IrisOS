@@ -361,7 +361,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_main.c
 TEST_UNIT_BIN   := $(BUILD_DIR)/test_unit
 
-.PHONY: all dirs run run-headless clean help check check-abi check-purity smoke smoke-runtime smoke-runtime-selftests smoke-net-virtio smoke-persist smoke-screen config-sync test-unit
+.PHONY: all dirs run run-headless clean help check check-abi check-purity smoke smoke-runtime smoke-runtime-selftests smoke-stage10 smoke-net-virtio smoke-persist smoke-screen config-sync test-unit
 
 all: config-sync $(BOOT_APP) $(KERNEL_DST)
 
@@ -1191,6 +1191,31 @@ smoke-runtime: all
 smoke-runtime-selftests: all
 	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-90}" IRIS_QEMU_EXPECT_SELFTESTS=1 \
 		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-selftests.log \
+		bash scripts/run_qemu_headless.sh
+
+# ── the Stage 10-run vertical slice, as a lane (step 8) ──────────────────────
+#
+# One target, both processor counts, and the same assertions either way.  It is
+# a lane and not a demonstration because it is named, because CI runs it on
+# every commit, and because every claim in it is REQUIRED rather than reported:
+# `run_qemu_headless.sh` fails the build if a file stops being loadable by path,
+# if a program stops surviving its budget running out, if an interpreter stops
+# relocating exactly once, if a C program stops linking against the C library,
+# if the shell stops reading an exit status, or if two processes stop sharing
+# one copy of a library.
+#
+# Four processors as well as one, because every claim in it involves a spawn,
+# and a spawn is where this system's memory accounting and its scheduler meet.
+smoke-stage10: all
+	@echo '== stage 10-run vertical slice: 1 processor =='
+	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-180}" \
+		IRIS_QEMU_SMP=1 IRIS_QEMU_EXPECT_SELFTESTS=1 \
+		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-stage10-smp1.log \
+		bash scripts/run_qemu_headless.sh
+	@echo '== stage 10-run vertical slice: 4 processors =='
+	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-180}" \
+		IRIS_QEMU_SMP=4 IRIS_QEMU_EXPECT_SELFTESTS=1 \
+		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-stage10-smp4.log \
 		bash scripts/run_qemu_headless.sh
 
 smoke-full: all

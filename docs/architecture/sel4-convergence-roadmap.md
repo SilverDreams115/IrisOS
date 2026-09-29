@@ -2879,7 +2879,7 @@ inside the valid range — the one thing that boundary exists to prevent.
 stage that had closed without anyone returning to them, which is the exact
 failure §5.1 was written to stop.  All six are answered in ledger A-35.
 
-## Stage 10-run — the dynamic C runtime  ← OPEN (steps 1-6 of 8 closed)
+## Stage 10-run — the dynamic C runtime  ← OPEN (7 of 8 closed; step 7 is the one left)
 
 Precondition: 10-abi (the surface a runtime binds to is frozen), 10-mem (a
 grant is a run of frame capabilities), 11-life, 13-form.  All met.
@@ -3416,16 +3416,80 @@ Two things the wiring taught:
 not link, which is a refusal rather than a silent zero; static TLS belongs with
 whatever needs it first.
 
-**Step 7 — descriptors.**  `open`/`read`/`write`/`close`/`dup`/`lseek` over VFS
-grants and `fs`.  Requires the VFS to gain WRITE, which is a protocol decision
-to be taken deliberately and not in passing.
+**Step 7 — descriptors.**  ⬜ **NOT DONE, and deliberately not done in
+passing.**  `open`/`read`/`write`/`close`/`dup`/`lseek` over VFS grants
+and `fs`.
 *Closes when:* `dup` produces a visible derivation child, and **revoking in the
 parent kills the child's descriptor** — the property that makes this not a
 translation layer.
 
-**Step 8 — the gate.**  The vertical slice runs on every commit, at one and at
-four processors.
-*Closes when:* it is a lane, not a demonstration.
+*What the work found, written down so the next attempt starts here.*
+
+The close condition is the whole of the design: a descriptor must BE a
+capability, so that `dup` is an MDB derivation and revocation propagates for
+free.  Anything where libc keeps a table and stamps a capability on the side
+satisfies the sentence and not the claim.
+
+The VFS already has most of the semantics — `VFS_EP_OP_GRANT_OPEN`,
+`GRANT_DERIVE` (a reduced-rights copy; rights are monotonic and can never be
+recovered) and `GRANT_REVOKE` (bumps the export generation, so every grant on
+that backing fails closed).  What it does not have is the shape: **a grant is
+an INDEX inside a session**, and the caller is identified by an
+`IRIS_BADGE_FILEGRANT_S(s)` badge on the endpoint.  A descriptor that is a
+CPtr needs the other arrangement — one capability per grant, badged with the
+grant, so that holding it IS the authority and copying it IS `dup`.
+
+That is a protocol change to a subsystem roughly thirty tests pin (T210–T238),
+and it needs three decisions that are the project's rather than an
+implementation's:
+
+  - **A third badge class.**  The file-grant badge space is `0x0F00` for the
+    admin and `0x0F10 + s` for sessions — small and closed.  A per-grant class
+    has to be carved without colliding with the session range or the badge
+    conventions in `endpoint_proto.h`.
+  - **Who mints it.**  The VFS would have to mint a badged copy of its own
+    master endpoint, and today the session caps are minted by the pager
+    supervisor, not by the VFS.  The kernel's no-re-badge rule means the VFS
+    needs an UNBADGED master to mint from, which is a change to how the VFS is
+    given its own endpoint.
+  - **WRITE**, which this step's own text already flags: the VFS has no write
+    path at all, and adding one decides whether a file's bytes are a service's
+    private state or a frame a holder can map.  That is the decision the
+    roadmap says to take deliberately, and it is upstream of `write(2)`.
+
+The half that needs none of it — `dup` as `CSpace_Mint`, `close` as
+`CNode_Delete`, and revocation reaching a duplicate — is already proved by
+step 4: `libuser` mints, and one `CSpace_Revoke` in `objreg` destroys four
+derived capabilities across two address spaces.  What step 7 adds is making a
+FILE one of those objects.
+
+**Step 8 — the gate.**  ✅ **CLOSED.**  The vertical slice runs on every
+commit, at one and at four processors.
+
+*Closed by:* `make smoke-stage10`, and a CI job that runs it.  It is a lane
+rather than a demonstration because it is named, because every claim in it is
+REQUIRED rather than reported, and because the same assertions run on every
+other headless lane too — a build where any of it stops being true fails
+whichever lane happens to run:
+
+```
+== stage 10-run vertical slice: 1 processor ==
+[headless] stage 10-run: the vertical slice held
+== stage 10-run vertical slice: 4 processors ==
+[headless] stage 10-run: the vertical slice held
+```
+
+What that one line stands for, and each of these fails the build on its own: a
+file read BY PATH became a process and exited 42; a program spent its budget,
+survived running out, gave it back, and its region came back whole; an
+interpreter relocated a second object exactly once; a C library resolved an
+ordinary C program's symbols against the table its spawner filled and that
+program printed and exited 7; the shell ran it and read that 7; and one copy of
+a library served two live processes with private data and a revoke that reached
+both.
+
+Four processors as well as one, because every claim in it involves a spawn, and
+a spawn is where this system's memory accounting and its scheduler meet.
 
 ### What declining static costs, stated because it was a real choice
 

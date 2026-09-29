@@ -636,6 +636,22 @@ if ! grep -Eq "\[USER\]\[INIT\] objreg: one copy of the text, private data, and 
   exit 1
 fi
 
+# ── Stage 10-run: the vertical slice, as one verdict ─────────────────────────
+#
+# Every claim above was checked one grep at a time, which is how a gate should
+# work and not how a person should read one.  This line is the summary, and it
+# is printed only when all of them held: a file read by path became a process,
+# a program spent its budget and gave it back, an interpreter relocated a
+# second object exactly once, a C library resolved an ordinary C program's
+# symbols against the table its spawner filled, the shell ran it and read what
+# it exited with, and one copy of a library served two live processes.
+#
+# Step 8 is what makes that a LANE rather than a demonstration: `make
+# smoke-stage10` runs it at one and at four processors, and CI runs it on every
+# commit.  Nothing here is conditional -- a build where any of it stopped being
+# true fails above, whichever headless lane happens to run.
+echo "[headless] stage 10-run: the vertical slice held"
+
 # The kernel survived a fault of its own (ledger A-37).
 #
 # `idt.c` halts on any exception that did not come from ring 3, which is the

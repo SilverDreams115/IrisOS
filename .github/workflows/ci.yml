@@ -184,6 +184,13 @@ jobs:
       - name: Runtime smoke on a 4-CPU machine
         run: IRIS_QEMU_TIMEOUT_SECS=180 IRIS_QEMU_SMP=4 make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests
 
+      # Stage 10-run's vertical slice, at one and at four processors.  It is the
+      # same headless lane with the same assertions; naming it is what makes the
+      # slice a thing CI reports on rather than something a reader has to infer
+      # from six greps inside another job.
+      - name: Stage 10-run vertical slice (1 and 4 processors)
+        run: IRIS_QEMU_TIMEOUT_SECS=180 make ENABLE_RUNTIME_SELFTESTS=1 smoke-stage10
+
       - name: Upload selftest runtime serial log
         if: always()
         uses: actions/upload-artifact@v4
