@@ -168,8 +168,15 @@
  * serial port: a spawn that failed names the step it failed at. */
 #define PROC_OP_INFO              0x7402u
 /*
- * PROC_OP_REAP — RESET the budget the last child was carved from, and say how
+ * PROC_OP_REAP — RESET the budget the LAST child was carved from, and say how
  * much came back.
+ *
+ * The last one only, and that is a real limit rather than an oversight worth
+ * hiding: this service tracks one budget, so a spawner that starts several
+ * children and wants each region back must reap between them.  Nothing leaks
+ * either way — the loader's leaf scan RESETs a budget when it reuses the leaf,
+ * so an unreaped region is reclaimed by the next spawn that needs it.  What
+ * reaping buys is knowing WHEN, and a number.
  *
  * Reply OK: words[0] = the bytes the child was given
  *           words[1] = the bytes available in that region now

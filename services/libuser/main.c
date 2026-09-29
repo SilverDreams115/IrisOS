@@ -220,13 +220,35 @@ int libuser_main(const uint64_t *sp) {
             return LU_NO_PARENT;
     }
 
-    /* Round three, after the parent has revoked it in the registry: the
-     * capability must be GONE, in this process and in the other one, from one
-     * invocation in a third. */
+    /*
+     * Round three, after the parent has revoked it in the registry.
+     *
+     * Two facts, and they are DIFFERENT facts, which is the whole reason this
+     * round reports both.
+     *
+     * The CAPABILITY must be gone — in this process and in the other one, from
+     * one invocation in a third.  That is what revoke is.
+     *
+     * The MAPPING is not.  `CSpace_Revoke` is capability-scoped: it destroys
+     * the derived capabilities and does not touch a page table, because a live
+     * mapping holds its own reference to the frame (T137 pins this).  So this
+     * program can still READ the library it can no longer name, until it
+     * unmaps it — and it reports that rather than assuming either way, because
+     * a system that changed its mind about this would otherwise change it
+     * silently.
+     *
+     * Revoke is therefore withdrawal of AUTHORITY, not eviction: the holder
+     * cannot map it again, cannot pass it on, and cannot ask anything about
+     * it, and the memory is not reclaimable until the last mapping goes.
+     */
     {
         long what = iris_invoke0((long)text_slot, INV_CAP_IDENTIFY);
+        const volatile uint8_t *t = (const volatile uint8_t *)(uintptr_t)text_va;
+        uint64_t still_readable;
         if (what >= 0) return LU_STILL_THERE;
-        if (lu_report(OBJREG_ROUND_AFTER, (uint64_t)(uint32_t)(-what), text_pa, id) != 0)
+        still_readable = (t[0] == 0x7fu && t[1] == 'E') ? 1u : 0u;
+        if (lu_report(OBJREG_ROUND_AFTER, (uint64_t)(uint32_t)(-what),
+                      still_readable, id) != 0)
             return LU_NO_PARENT;
     }
 

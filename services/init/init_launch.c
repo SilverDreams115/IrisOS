@@ -2316,11 +2316,14 @@ static void init_write_report(const char *text, uint32_t len) {
 
 void init_report_findings(void) {
         /* Sized with room over the worst case (measured line by line at 769
-     * bytes, 872 once the program line was added, when every conditional line
-     * prints its widest value), and the
+     * bytes, then 872 with the program line and about 1100 with the memory and
+     * shared-object lines, when every conditional line prints its widest
+     * value).  Doubled rather than trimmed: this session already lost a boot
+     * to a log line one word longer than its buffer, and a report is the one
+     * output that has to survive being extended.  The
      * writers refuse to pass it either way -- the size is comfort, the bound
      * is the guarantee. */
-    static char body[1024];
+    static char body[2048];
 
     /* Ask again rather than report what mount saw: the count was taken before
      * this task wrote its own file, so the cached number is always one short of
@@ -2347,14 +2350,46 @@ void init_report_findings(void) {
 
 /* ── proc spawn (the first thing init starts in order to start something else) */
 
-/* A small decimal, appended.  There is no printf here and the numbers ARE the
- * evidence, so they are spelled out rather than summarised. */
-static void init_app_num(char *b, uint32_t *k, uint64_t v) {
+/*
+ * A log line, built safely.
+ *
+ * There is no printf here and the numbers ARE the evidence, so they get
+ * spelled out — and the obvious way to do that, a `char[N]` plus a hand-kept
+ * index, is a stack smash waiting for somebody to add a word to a message.
+ * It waited for exactly one commit: a 131-character line into a 112-byte
+ * buffer took the canary, `__stack_chk_fail` exited init with 255, and the
+ * boot stopped with no output at all to say why.
+ *
+ * So the buffer and its bound travel together and every append checks.  A line
+ * that would not fit is TRUNCATED, which is a bad log line; the alternative
+ * was a dead supervisor.
+ */
+struct init_line { char b[192]; uint32_t k; };
+
+static void il_reset(struct init_line *L) { L->k = 0; L->b[0] = '\0'; }
+
+static void il_str(struct init_line *L, const char *s) {
+    while (*s && L->k + 1u < (uint32_t)sizeof(L->b)) L->b[L->k++] = *s++;
+}
+
+static void il_num(struct init_line *L, uint64_t v) {
     char d[24];
     uint32_t n = 0;
     if (v == 0u) d[n++] = '0';
     while (v && n < 20u) { d[n++] = (char)('0' + (uint32_t)(v % 10u)); v /= 10u; }
-    while (n) b[(*k)++] = d[--n];
+    while (n && L->k + 1u < (uint32_t)sizeof(L->b)) L->b[L->k++] = d[--n];
+}
+
+/* Signed, for a kernel error, which is the only negative number logged here. */
+static void il_err(struct init_line *L, long v) {
+    if (v < 0) { il_str(L, "-"); il_num(L, (uint64_t)(-v)); }
+    else       { il_num(L, (uint64_t)v); }
+}
+
+static const char *il_done(struct init_line *L) {
+    if (L->k + 1u < (uint32_t)sizeof(L->b)) L->b[L->k++] = '\n';
+    L->b[L->k] = '\0';
+    return L->b;
 }
 
 /*
@@ -2407,27 +2442,12 @@ static uint32_t init_start_program(const char *path, const char *arg,
 
     if (iris_msg_call((long)INIT_SLOT_PROC_EP, &m) != 0) return PROC_STEP_NONE;
     if (m.label != PROC_REP_OK) {
-        char e[96];
-        uint32_t j = 0;
-        const char *pre = "[USER][INIT] proc: ";
-        while (pre[j]) { e[j] = pre[j]; j++; }
-        for (uint32_t i = 0; path[i] && j < 60u; i++) e[j++] = path[i];
-        {
-            const char *mid = " did not start, step ";
-            for (uint32_t i = 0; mid[i]; i++) e[j++] = mid[i];
-        }
-        init_app_num(e, &j, m.words[0]);
-        e[j++] = ' '; e[j++] = 'w'; e[j++] = 'h'; e[j++] = 'y'; e[j++] = ' ';
-        init_app_num(e, &j, m.words[1]);
-        {
-            long d = (long)m.words[2];
-            const char *er = " err ";
-            for (uint32_t i = 0; er[i]; i++) e[j++] = er[i];
-            if (d < 0) { e[j++] = '-'; init_app_num(e, &j, (uint64_t)(-d)); }
-            else       { init_app_num(e, &j, (uint64_t)d); }
-        }
-        e[j++] = '\n'; e[j] = 0;
-        init_log(e);
+        struct init_line L; il_reset(&L);
+        il_str(&L, "[USER][INIT] proc: "); il_str(&L, path);
+        il_str(&L, " did not start, step "); il_num(&L, m.words[0]);
+        il_str(&L, " why ");                il_num(&L, m.words[1]);
+        il_str(&L, " err ");                il_err(&L, (long)m.words[2]);
+        init_log(il_done(&L));
         return (uint32_t)m.words[0];
     }
     return PROC_STEP_RUNNING;
@@ -2490,12 +2510,14 @@ static long init_run_program(const char *path, uint32_t *out_step) {
 
 /* Hex, for a physical address.  It is the one number here a person will want to
  * compare by eye, and decimal is the wrong base for it. */
-static void init_app_hex(char *b, uint32_t *k, uint64_t v) {
+static void il_hex(struct init_line *L, uint64_t v) {
     static const char hx[] = "0123456789abcdef";
     int started = 0;
     for (int sh = 60; sh >= 0; sh -= 4) {
         uint32_t d = (uint32_t)((v >> sh) & 0xFu);
-        if (d || started || sh == 0) { b[(*k)++] = hx[d]; started = 1; }
+        if (!d && !started && sh != 0) continue;
+        started = 1;
+        if (L->k + 1u < (uint32_t)sizeof(L->b)) L->b[L->k++] = hx[d];
     }
 }
 
@@ -2522,15 +2544,12 @@ static int init_share_recv(uint32_t reply_slot, struct iris_msg *m) {
             if (ea >= 0 && eb >= 0) {
                 /* The status IS the diagnosis: `libuser` returns a different
                  * number for each thing it could not do. */
-                char e[96];
-                uint32_t j = 0;
-                const char *pre = "[USER][INIT] objreg: consumers exited without reporting, ";
-                while (pre[j]) { e[j] = pre[j]; j++; }
-                init_app_num(e, &j, (uint64_t)ea);
-                e[j++] = ' '; e[j++] = 'a'; e[j++] = 'n'; e[j++] = 'd'; e[j++] = ' ';
-                init_app_num(e, &j, (uint64_t)eb);
-                e[j++] = '\n'; e[j] = 0;
-                init_log(e);
+                struct init_line L; il_reset(&L);
+                il_str(&L, "[USER][INIT] objreg: consumers exited without reporting, ");
+                il_num(&L, (uint64_t)ea);
+                il_str(&L, " and ");
+                il_num(&L, (uint64_t)eb);
+                init_log(il_done(&L));
                 return 0;
             }
         }
@@ -2630,7 +2649,7 @@ static int init_prove_shared_objects(void) {
     struct iris_msg m;
     long objid;
     uint64_t text_pa[2] = { 0, 0 }, priv_pa[2] = { 0, 0 };
-    int ok = 0, seen_before = 0, seen_after = 0;
+    int ok = 0, seen_before = 0, seen_after = 0, still_mapped = 0;
     uint32_t started = 0;
 
     /*
@@ -2704,19 +2723,12 @@ static int init_prove_shared_objects(void) {
     g_init_found.obj_private = (priv_pa[0] != 0u && priv_pa[1] != 0u &&
                                 priv_pa[0] != priv_pa[1]);
     {
-        char e[112];
-        uint32_t j = 0;
-        const char *pre = "[USER][INIT] objreg: text at 0x";
-        while (pre[j]) { e[j] = pre[j]; j++; }
-        init_app_hex(e, &j, text_pa[0]);
-        { const char *mid = " and 0x"; for (uint32_t i = 0; mid[i]; i++) e[j++] = mid[i]; }
-        init_app_hex(e, &j, text_pa[1]);
-        { const char *mid = ", data 0x"; for (uint32_t i = 0; mid[i]; i++) e[j++] = mid[i]; }
-        init_app_hex(e, &j, priv_pa[0]);
-        { const char *mid = " and 0x"; for (uint32_t i = 0; mid[i]; i++) e[j++] = mid[i]; }
-        init_app_hex(e, &j, priv_pa[1]);
-        e[j++] = '\n'; e[j] = 0;
-        init_log(e);
+        struct init_line L; il_reset(&L);
+        il_str(&L, "[USER][INIT] objreg: text at 0x"); il_hex(&L, text_pa[0]);
+        il_str(&L, " and 0x");                         il_hex(&L, text_pa[1]);
+        il_str(&L, ", data 0x");                       il_hex(&L, priv_pa[0]);
+        il_str(&L, " and 0x");                         il_hex(&L, priv_pa[1]);
+        init_log(il_done(&L));
     }
 
     /* ── round two: both still hold it.  Then, and only then, revoke. ── */
@@ -2739,15 +2751,11 @@ static int init_prove_shared_objects(void) {
         goto out;
     }
     {
-        char e[96];
-        uint32_t j = 0;
-        const char *pre = "[USER][INIT] objreg: revoke destroyed ";
-        while (pre[j]) { e[j] = pre[j]; j++; }
-        init_app_num(e, &j, m.words[0] + m.words[1]);
-        { const char *t = " derived capabilities\n";
-          for (uint32_t i = 0; t[i]; i++) e[j++] = t[i]; }
-        e[j] = 0;
-        init_log(e);
+        struct init_line L; il_reset(&L);
+        il_str(&L, "[USER][INIT] objreg: revoke destroyed ");
+        il_num(&L, m.words[0] + m.words[1]);
+        il_str(&L, " derived capabilities");
+        init_log(il_done(&L));
     }
 
     /* ── round three: neither holds it any more ── */
@@ -2757,9 +2765,25 @@ static int init_prove_shared_objects(void) {
         if (!init_share_recv(i == 0u ? INIT_SLOT_SHARE_RA : INIT_SLOT_SHARE_RB, &m))
             goto out;
         if (m.label != OBJREG_ROUND_AFTER) goto out;
+        /* words[1] says whether the MAPPING survived the revoke.  It does, and
+         * that is the contract T137 pins: revoke is capability-scoped and a
+         * live mapping holds its own reference.  Recorded rather than assumed,
+         * because the difference between "cannot name it" and "cannot read it"
+         * is the difference between withdrawing authority and evicting, and
+         * only one of those is a thing this system can do. */
+        if (m.words[1]) still_mapped++;
         seen_after++;
     }
     g_init_found.obj_revoked = (seen_before == 2 && seen_after == 2);
+    {
+        struct init_line L; il_reset(&L);
+        il_str(&L, "[USER][INIT] objreg: after the revoke ");
+        il_num(&L, (uint64_t)seen_after);
+        il_str(&L, " of 2 lost the capability and ");
+        il_num(&L, (uint64_t)still_mapped);
+        il_str(&L, " kept the mapping");
+        init_log(il_done(&L));
+    }
 
     /* Let them go, and read what they made of it all. */
     init_share_go(INIT_SLOT_SHARE_RA);
@@ -2780,30 +2804,23 @@ static int init_prove_shared_objects(void) {
         }
         g_init_found.obj_exit = (uint32_t)((ea == 42 && eb == 42) ? 42 : 0);
         {
-            char e[96];
-            uint32_t j = 0;
-            const char *pre = "[USER][INIT] objreg: consumers exited ";
-            while (pre[j]) { e[j] = pre[j]; j++; }
-            init_app_num(e, &j, (uint64_t)(ea < 0 ? 0 : ea));
-            e[j++] = ' '; e[j++] = 'a'; e[j++] = 'n'; e[j++] = 'd'; e[j++] = ' ';
-            init_app_num(e, &j, (uint64_t)(eb < 0 ? 0 : eb));
-            e[j++] = '\n'; e[j] = 0;
-            init_log(e);
+            struct init_line L; il_reset(&L);
+            il_str(&L, "[USER][INIT] objreg: consumers exited ");
+            il_num(&L, (uint64_t)(ea < 0 ? 0 : ea));
+            il_str(&L, " and ");
+            il_num(&L, (uint64_t)(eb < 0 ? 0 : eb));
+            init_log(il_done(&L));
         }
         ok = (g_init_found.obj_shared && g_init_found.obj_private &&
               g_init_found.obj_revoked && ea == 42 && eb == 42);
     }
 
     {
-        char e[112];
-        uint32_t j = 0;
-        const char *pre = "[USER][INIT] objreg: ";
-        const char *tail = ok ? "one copy of the text, private data, and one revoke reached both\n"
-                              : "the sharing claims did NOT all hold\n";
-        while (pre[j]) { e[j] = pre[j]; j++; }
-        for (uint32_t i = 0; tail[i]; i++) e[j++] = tail[i];
-        e[j] = 0;
-        init_log(e);
+        struct init_line L; il_reset(&L);
+        il_str(&L, "[USER][INIT] objreg: ");
+        il_str(&L, ok ? "one copy of the text, private data, and one revoke reached both"
+                      : "the sharing claims did NOT all hold");
+        init_log(il_done(&L));
     }
 
 out:
@@ -2917,27 +2934,22 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
 
     /* ── the first program: does it START correctly? ── */
     {
-        char e[80];
-        uint32_t j = 0, step = PROC_STEP_NONE;
-        long ec;
-        const char *pre = "[USER][INIT] proc: hello exit ";
+        struct init_line L;
+        uint32_t step = PROC_STEP_NONE;
+        long ec = init_run_program("hello", &step);
 
-        ec = init_run_program("hello", &step);
         g_init_found.prog_step = step;
         if (step != PROC_STEP_RUNNING) goto out;
-
-        while (pre[j]) { e[j] = pre[j]; j++; }
-        init_app_num(e, &j, (ec < 0) ? 0u : (uint64_t)ec);
         /* 42 is `hello`'s "everything the contract promised was there".  Any
          * other number names the piece that was not. */
         hello_ok = (ec == 42);
         g_init_found.prog_exit = (uint32_t)((ec < 0) ? 0 : ec);
         g_init_found.prog_ran  = 1u;
-        e[j++] = ' ';
-        if (hello_ok) { e[j++] = 'O'; e[j++] = 'K'; }
-        else          { e[j++] = 'B'; e[j++] = 'A'; e[j++] = 'D'; }
-        e[j++] = '\n'; e[j] = 0;
-        init_log(e);
+        il_reset(&L);
+        il_str(&L, "[USER][INIT] proc: hello exit ");
+        il_num(&L, (ec < 0) ? 0u : (uint64_t)ec);
+        il_str(&L, hello_ok ? " OK" : " BAD");
+        init_log(il_done(&L));
         if (!hello_ok) goto out;
     }
     /* Its thread goes now.  Nothing else here needs it, and while it exists the
@@ -2946,23 +2958,18 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
 
     /* ── the second: does MEMORY work, and does running out stay survivable? ── */
     {
-        char e[80];
-        uint32_t j = 0, step = PROC_STEP_NONE;
-        long ec;
-        const char *pre = "[USER][INIT] proc: alloc exit ";
+        struct init_line L;
+        uint32_t step = PROC_STEP_NONE;
+        long ec = init_run_program("alloc", &step);
 
-        ec = init_run_program("alloc", &step);
         if (step != PROC_STEP_RUNNING) goto out;
-
-        while (pre[j]) { e[j] = pre[j]; j++; }
-        init_app_num(e, &j, (ec < 0) ? 0u : (uint64_t)ec);
         alloc_ok = (ec == 42);
         g_init_found.prog_mem_exit = (uint32_t)((ec < 0) ? 0 : ec);
-        e[j++] = ' ';
-        if (alloc_ok) { e[j++] = 'O'; e[j++] = 'K'; }
-        else          { e[j++] = 'B'; e[j++] = 'A'; e[j++] = 'D'; }
-        e[j++] = '\n'; e[j] = 0;
-        init_log(e);
+        il_reset(&L);
+        il_str(&L, "[USER][INIT] proc: alloc exit ");
+        il_num(&L, (ec < 0) ? 0u : (uint64_t)ec);
+        il_str(&L, alloc_ok ? " OK" : " BAD");
+        init_log(il_done(&L));
         if (!alloc_ok) goto out;
     }
 
@@ -2996,14 +3003,10 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
             goto out;
         }
         if ((long)m.words[0] != (long)IRIS_ERR_BUSY) {
-            char e[80];
-            uint32_t j = 0;
-            const char *pre = "[USER][INIT] proc: reclaim refused for the wrong reason, err -";
-            long d = (long)m.words[0];
-            while (pre[j]) { e[j] = pre[j]; j++; }
-            init_app_num(e, &j, (d < 0) ? (uint64_t)(-d) : (uint64_t)d);
-            e[j++] = '\n'; e[j] = 0;
-            init_log(e);
+            struct init_line L; il_reset(&L);
+            il_str(&L, "[USER][INIT] proc: reclaim refused for the wrong reason, err ");
+            il_err(&L, (long)m.words[0]);
+            init_log(il_done(&L));
             goto out;
         }
 
@@ -3013,20 +3016,14 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
         m.label = PROC_OP_REAP;
         if (iris_msg_call((long)INIT_SLOT_PROC_EP, &m) != 0 ||
             m.label != PROC_REP_OK) {
-            char e[96];
-            uint32_t j = 0;
-            const char *pre = "[USER][INIT] proc: reclaim FAILED after the last cap went, err -";
-            long d = (long)m.words[0];
-            while (pre[j]) { e[j] = pre[j]; j++; }
-            init_app_num(e, &j, (d < 0) ? (uint64_t)(-d) : (uint64_t)d);
-            e[j++] = '\n'; e[j] = 0;
-            init_log(e);
+            struct init_line L; il_reset(&L);
+            il_str(&L, "[USER][INIT] proc: reclaim FAILED after the last cap went, err ");
+            il_err(&L, (long)m.words[0]);
+            init_log(il_done(&L));
             goto out;
         }
         {
-            char e[96];
-            uint32_t j = 0;
-            const char *pre = "[USER][INIT] proc: reclaimed ";
+            struct init_line L;
             uint64_t given = m.words[0], back = m.words[1];
             /* Exactly what it was given, and the number is printed either way:
              * "most of it" is the answer a leak gives, so it must be visible
@@ -3034,17 +3031,11 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h) {
             reclaim_ok = (back == given && given != 0u);
             g_init_found.prog_given     = (uint32_t)(given >> 10);
             g_init_found.prog_reclaimed = (uint32_t)(back >> 10);
-            while (pre[j]) { e[j] = pre[j]; j++; }
-            init_app_num(e, &j, back >> 10);
-            e[j++] = ' '; e[j++] = 'o'; e[j++] = 'f'; e[j++] = ' ';
-            init_app_num(e, &j, given >> 10);
-            {
-                const char *tail = reclaim_ok ? " KiB, all of it\n"
-                                              : " KiB, NOT all of it\n";
-                for (uint32_t i = 0; tail[i]; i++) e[j++] = tail[i];
-            }
-            e[j] = 0;
-            init_log(e);
+            il_reset(&L);
+            il_str(&L, "[USER][INIT] proc: reclaimed "); il_num(&L, back >> 10);
+            il_str(&L, " of ");                          il_num(&L, given >> 10);
+            il_str(&L, reclaim_ok ? " KiB, all of it" : " KiB, NOT all of it");
+            init_log(il_done(&L));
         }
     }
 

@@ -3162,8 +3162,9 @@ object, spawns TWO programs against it through `proc`, and they run at the same
 time:
 
 ```
-[USER][INIT] objreg: text at 0x1522e000 and 0x1522e000, data 0x16052000 and 0x16455000
+[USER][INIT] objreg: text at 0x1522e000 and 0x1522e000, data 0x16051000 and 0x16454000
 [USER][INIT] objreg: revoke destroyed 4 derived capabilities
+[USER][INIT] objreg: after the revoke 2 of 2 lost the capability and 2 kept the mapping
 [USER][INIT] objreg: consumers exited 42 and 42
 ```
 
@@ -3177,12 +3178,29 @@ system that shares everything, the second alone by one that shares nothing, and
 "both read the same bytes" is satisfied by two independent copies of a file,
 which is exactly what a registry exists to not produce.
 
-The revoke is the third property and it is asked in both directions in the same
-sense as step 3's reclamation: both programs are asked what their object
-capability IS, before and after — `Cap_Identify`, not a read, because a read
+The revoke is the third property, and the third line is there because the
+revoke does two DIFFERENT amounts of thing and the difference matters.
+
+One invocation in the registry destroyed four derived capabilities — text and
+data, in two address spaces, at once.  Both programs are asked what their
+object capability IS, before and after (`Cap_Identify`, not a read: a read
 would prove it by faulting and would kill the process that was supposed to
-report.  One invocation in the registry destroyed four derived capabilities:
-text and data, in two address spaces, at once.
+report), and both lost it.
+
+It does **not** unmap.  `CSpace_Revoke` is capability-scoped and a live mapping
+holds its own reference to the frame — **T137 has pinned exactly this since
+long before this service existed** — so a consumer that had already mapped the
+library keeps reading it until it unmaps, and the memory is not reclaimable
+until the last mapping goes.  So the guarantee is withdrawal of AUTHORITY, not
+eviction: after a revoke a holder cannot map the object again, cannot pass it
+on, and cannot ask anything about it.  A registry that wanted eviction would
+have to ask the holders to unmap and nothing in this system can make them.
+
+That is stated here and measured there rather than assumed, because the first
+draft of this service's own header claimed the stronger thing — "removes the
+object from every process at once" — which is the kind of sentence that is
+right about the capability and wrong about the memory, and which nobody would
+have caught by reading it.
 
 Landed:
   - **`services/objreg`** — the registry.  It reads an ELF through the VFS

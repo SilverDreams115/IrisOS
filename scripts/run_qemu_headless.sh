@@ -564,7 +564,8 @@ if [ -z "$obj_t1" ] || [ "$obj_t1" != "$obj_t2" ] || [ -z "$obj_d1" ] || [ "$obj
   cat "$LOG_FILE"
   exit 1
 fi
-if ! grep -Eq "\[USER\]\[INIT\] objreg: revoke destroyed [1-9][0-9]* derived capabilities$" "$LOG_FILE"; then
+if ! grep -Eq "\[USER\]\[INIT\] objreg: revoke destroyed [1-9][0-9]* derived capabilities$" "$LOG_FILE" ||
+   ! grep -Eq "\[USER\]\[INIT\] objreg: after the revoke 2 of 2 lost the capability and 2 kept the mapping$" "$LOG_FILE"; then
   echo "[headless] the registry revoke reached nothing:"
   grep -E "OBJREG|objreg" "$LOG_FILE" | sed 's/^/           /'
   cat "$LOG_FILE"

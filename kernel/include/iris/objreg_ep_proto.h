@@ -29,13 +29,27 @@
  * a library's data on the process that has it, where a budget can see it, and
  * it is what a dynamic loader with no COW has to do anyway.
  *
- * ── The registry can take it back ──────────────────────────────────────────
+ * ── The registry can take the AUTHORITY back — and only that ───────────────
  *
  * Every capability it hands out is a derivation child of the master it holds,
- * so `CSpace_Revoke` on the master removes the object from every process at
- * once.  That is not a feature bolted on; it is what the MDB already does, and
- * it is the reason a registry is a better place for a library than a file each
- * process opens for itself.
+ * so `CSpace_Revoke` on the master destroys the object's capability in every
+ * process at once.  That is not a feature bolted on; it is what the MDB
+ * already does, and it is the reason a registry is a better place for a
+ * library than a file each process opens for itself.
+ *
+ * What it does NOT do is unmap.  Revoke is capability-scoped: a live mapping
+ * holds its own reference to the frame, so a process that had already mapped
+ * the library keeps READING it until it unmaps, and the memory is not
+ * reclaimable until the last mapping goes.  T137 pins exactly this and has
+ * since long before this service existed.
+ *
+ * So the guarantee is precise and it is worth being precise about: after a
+ * revoke a holder cannot map the object again, cannot pass it on, and cannot
+ * ask anything about it — it is withdrawal of AUTHORITY, not eviction.  A
+ * registry that wanted eviction would have to ask the holders to unmap, and
+ * there is nothing in this system that can make them.  `libuser` reports which
+ * of the two happened rather than assuming, so a kernel that ever changed its
+ * mind about it could not change it silently.
  */
 
 /* Slots in the registry's own CSpace.  1..19 keep the meanings
@@ -113,7 +127,8 @@
  *           words[1] = the physical address of this process's own data copy
  *           words[2] = which consumer is speaking
  *   BEFORE: words[0] = what the object capability identifies as (a frame)
- *   AFTER:  words[0] = the error asking now gives (it is gone)
+ *   AFTER:  words[0] = the error asking now gives (the capability is gone)
+ *           words[1] = 1 if the MAPPING still reads (see above: it does)
  */
 #define OBJREG_ROUND_MAPPED   0x7601u
 #define OBJREG_ROUND_BEFORE   0x7602u
