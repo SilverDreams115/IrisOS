@@ -70,11 +70,21 @@ static void iospace_walk(struct KIOSpace *io, uint64_t dma,
 
     struct KIOPageTable *cur = io->root;
     uint32_t level = io->levels;
+    /*
+     * BOUND: the paging levels, `level` down to KIOPT_LEVEL_LEAF, decremented
+     * every pass — a small constant fixed by the hardware's table depth, not by
+     * anything ring 3 chooses.
+     */
     while (level > KIOPT_LEVEL_LEAF) {
         uint64_t e = io_table(cur)[io_index(dma, level)];
         if (!(e & (IOPTE_READ | IOPTE_WRITE))) break;
         uint64_t next_phys = e & IOPTE_ADDR;
         struct KIOPageTable *next = 0;
+        /*
+         * BOUND: the page-table list of one IOSpace — one entry per level the user
+         * retyped for this device, so ring 3 lengthens it only out of its own
+         * Untyped.
+         */
         for (struct KIOPageTable *t = io->tables; t; t = t->next)
             if (t->paddr == next_phys) { next = t; break; }
         if (!next) break;              /* a level the space does not own */
@@ -256,6 +266,10 @@ void kiospace_obj_close(struct KObject *obj) {
     struct KIOPageTable *t = io->tables;
     io->tables = 0;
     io->root   = 0;
+    /*
+     * BOUND: the same list, on teardown: `next` is read first and one entry is
+     * released per pass, so it strictly shrinks.
+     */
     while (t) {
         struct KIOPageTable *next = t->next;
         t->next       = 0;

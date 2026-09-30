@@ -37,6 +37,12 @@ static void ktcb_live_inc(void) {
     uint32_t n = atomic_fetch_add_explicit(&ktcb_live, 1u, memory_order_relaxed) + 1u;
     atomic_fetch_add_explicit(&ktcb_retyped, 1u, memory_order_relaxed);
     uint32_t hw = atomic_load_explicit(&ktcb_hwm, memory_order_relaxed);
+    /*
+     * BOUND: monotonicity, not a count.  The high-water mark only rises, `n` is
+     * fixed, and a failed compare-exchange reloads `hw`, so every retry either
+     * raises `hw` or makes `n > hw` false.  Concurrent writers can only end it
+     * sooner.
+     */
     while (n > hw &&
            !atomic_compare_exchange_weak_explicit(&ktcb_hwm, &hw, n,
                                                   memory_order_relaxed,

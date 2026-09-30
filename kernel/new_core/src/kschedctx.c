@@ -29,6 +29,12 @@ static void kschedctx_live_inc(void) {
     uint32_t n = atomic_fetch_add_explicit(&kschedctx_live, 1u, memory_order_relaxed) + 1u;
     atomic_fetch_add_explicit(&kschedctx_retyped, 1u, memory_order_relaxed);
     uint32_t hw = atomic_load_explicit(&kschedctx_hwm, memory_order_relaxed);
+    /*
+     * BOUND: monotonicity, not a count.  The high-water mark only rises, `n` is
+     * fixed, and a failed compare-exchange reloads `hw`, so every retry either
+     * raises `hw` or makes `n > hw` false.  Concurrent writers can only end it
+     * sooner.
+     */
     while (n > hw &&
            !atomic_compare_exchange_weak_explicit(&kschedctx_hwm, &hw, n,
                                                   memory_order_relaxed,
@@ -236,6 +242,12 @@ int kschedctx_apply_refills(struct KSchedContext *sc, uint64_t now) {
     if (!sc) return 0;
     uint64_t flags = irq_spinlock_lock(&sc->lock);
     int gained = 0;
+    /*
+     * BOUND: `sc->refill_count`, which decrements every pass and is capped by
+     * `sc->refill_max` — the ring's size, fixed when the scheduling context was
+     * configured.  Ring 3 chooses that size once, out of its own Untyped, and
+     * cannot grow it while this runs: `sc->lock` is held.
+     */
     while (sc->refill_count > 0 && sc->refills[sc->refill_head].at <= now) {
         sc->remaining_budget += sc->refills[sc->refill_head].amount;
         sc->refill_head = (sc->refill_head + 1u) % sc->refill_max;

@@ -98,6 +98,13 @@ void kendpoint_obj_close(struct KObject *obj) {
     struct task *wake_head = 0;
 
     struct task *t = ep->queue_head;
+    /*
+     * BOUND: the waiter queue of one endpoint.  The kernel sets no ceiling —
+     * waiters are intrusive through the TCB (`task.ep_next`) — so ring 3 decides
+     * the length, and what limits it is the number of TCBs it retyped from its
+     * own Untyped.
+     */
+    /* Each pass takes one thread off the queue, so the list strictly shrinks. */
     while (t) {
         struct task *nxt = t->ep_next;
         t->ep_next       = 0;
@@ -132,6 +139,10 @@ void kendpoint_obj_close(struct KObject *obj) {
      * every one of them drops the staged transfer capability first — which is
      * the reference whose destructor wanted `mdb_lock`.
      */
+    /*
+     * BOUND: the wake list this walk owns — built by the walk above, off the
+     * endpoint, and unreachable from anywhere else.  One entry consumed per pass.
+     */
     while (wake_head) {
         struct task *w = wake_head;
         wake_head = w->ep_next;
@@ -140,6 +151,10 @@ void kendpoint_obj_close(struct KObject *obj) {
         task_wakeup(w);
         kobject_release(&w->base);          /* The queue's */
     }
+    /*
+     * BOUND: the kill list, same shape as the wake list above: private to this
+     * function, one entry consumed per pass.
+     */
     while (kill_head) {
         struct task *k = kill_head;
         kill_head = k->ep_next;
@@ -209,6 +224,12 @@ void kendpoint_cancel_waiter(struct task *t) {
         removed = 1;
     } else {
         struct task *prev = ep->queue_head;
+        /*
+         * BOUND: the waiter queue of one endpoint.  The kernel sets no ceiling —
+         * waiters are intrusive through the TCB (`task.ep_next`) — so ring 3 decides
+         * the length, and what limits it is the number of TCBs it retyped from its
+         * own Untyped.
+         */
         while (prev && prev->ep_next != t)
             prev = prev->ep_next;
         if (prev) {

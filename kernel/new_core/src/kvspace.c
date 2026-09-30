@@ -143,6 +143,13 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
     /* kvspace_invalidate() should have swept this already; the loop is a
      * safety net for unusual teardown paths (e.g. direct CNode slot deletion
      * without prior process teardown). */
+    /*
+     * BOUND: the mapping list of one VSpace — one entry per mapped frame.  Ring 3
+     * lengthens it by mapping more, and each mapping costs it a KFrameMapping
+     * carved from its own Untyped, so the charter's bound applies: what bounds an
+     * allocation is the budget it was given.
+     */
+    /* Teardown: one entry consumed per pass, and `next` is read first. */
     while (m) {
         struct KFrameMapping *next = m->next;
         struct KFrame        *f    = m->frame;
@@ -181,6 +188,11 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
     {
         struct KPageTable *t = vs->tables;
         vs->tables = 0;
+        /*
+         * BOUND: the page-table list of one VSpace — one entry per level the user
+         * retyped and mapped, so ring 3 lengthens it only by spending its own Untyped.
+         */
+        /* Teardown: one entry consumed per pass, and `next` is read first. */
         while (t) {
             struct KPageTable *next = t->next;
             t->next      = 0;
@@ -436,6 +448,13 @@ void kvspace_node_free(struct KVSpace *vs, struct KFrameMapping *m) {
 static void kvspace_release_nodes(struct KVSpace *vs) {
     struct KFrameMapping *m = vs->free_nodes;
     vs->free_nodes = 0;
+    /*
+     * BOUND: the mapping list of one VSpace — one entry per mapped frame.  Ring 3
+     * lengthens it by mapping more, and each mapping costs it a KFrameMapping
+     * carved from its own Untyped, so the charter's bound applies: what bounds an
+     * allocation is the budget it was given.
+     */
+    /* Each pass frees one entry, after reading `next`. */
     while (m) {
         struct KFrameMapping *next = m->next;
         kuntyped_release_child(m, sizeof(struct KFrameMapping));
@@ -454,6 +473,10 @@ void kvspace_detach_tables(struct KVSpace *vs, uint64_t cr3) {
     if (!vs || !cr3) return;
     spinlock_lock(&vs->lock);
     for (uint32_t lvl = KPT_LEVEL_PT; lvl <= KPT_LEVEL_PDPT; lvl++) {
+        /*
+         * BOUND: the page-table list of one VSpace — one entry per level the user
+         * retyped and mapped, so ring 3 lengthens it only by spending its own Untyped.
+         */
         for (struct KPageTable *t = vs->tables; t; t = t->next) {
             if (t->level != lvl) continue;
             (void)paging_detach_table_in(cr3, t->mapped_va, (int)lvl, t->paddr);
@@ -585,12 +608,22 @@ iris_error_t kvspace_unmap_table(struct KVSpace *vs, struct KPageTable *pt) {
     const uint64_t span = 4096ULL << (9u * pt->level);
     const uint64_t base = pt->mapped_va & ~(span - 1ULL);
 
+    /*
+     * BOUND: the mapping list of one VSpace — one entry per mapped frame.  Ring 3
+     * lengthens it by mapping more, and each mapping costs it a KFrameMapping
+     * carved from its own Untyped, so the charter's bound applies: what bounds an
+     * allocation is the budget it was given.
+     */
     for (struct KFrameMapping *m = vs->mappings; m; m = m->next) {
         if (m->user_va >= base && m->user_va < base + span) {
             spinlock_unlock(&vs->lock);
             return IRIS_ERR_BUSY;
         }
     }
+    /*
+     * BOUND: the page-table list of one VSpace — one entry per level the user
+     * retyped and mapped, so ring 3 lengthens it only by spending its own Untyped.
+     */
     for (struct KPageTable *t = vs->tables; t; t = t->next) {
         if (t == pt) continue;
         if (t->level < pt->level &&
@@ -614,6 +647,11 @@ iris_error_t kvspace_unmap_table(struct KVSpace *vs, struct KPageTable *pt) {
     paging_flush_table_walk(pt->mapped_va);
     tlb_shootdown_page(vs, pt->mapped_va);
 
+    /*
+     * BOUND: the page-table list of one VSpace — one entry per level the user
+     * retyped and mapped, so ring 3 lengthens it only by spending its own Untyped.
+     */
+    /* Stops at `pt` or at the end; the list is not modified while walking. */
     for (struct KPageTable **link = &vs->tables; *link; link = &(*link)->next) {
         if (*link == pt) { *link = pt->next; break; }
     }
@@ -676,6 +714,13 @@ void kvspace_invalidate(struct KVSpace *vs) {
     vs->mapping_count = 0;
     spinlock_unlock(&vs->lock);
 
+    /*
+     * BOUND: the mapping list of one VSpace — one entry per mapped frame.  Ring 3
+     * lengthens it by mapping more, and each mapping costs it a KFrameMapping
+     * carved from its own Untyped, so the charter's bound applies: what bounds an
+     * allocation is the budget it was given.
+     */
+    /* The list was detached from the VSpace first, so nothing appends. */
     while (list) {
         struct KFrameMapping *m = list;
         struct KFrame        *f = m->frame;
@@ -706,6 +751,12 @@ iris_error_t kvspace_unmap_page(struct KVSpace *vs, uint64_t user_va) {
     cr3  = vs->cr3;
     m    = 0;
     link = &vs->mappings;
+    /*
+     * BOUND: the mapping list of one VSpace — one entry per mapped frame.  Ring 3
+     * lengthens it by mapping more, and each mapping costs it a KFrameMapping
+     * carved from its own Untyped, so the charter's bound applies: what bounds an
+     * allocation is the budget it was given.
+     */
     while (*link) {
         if ((*link)->user_va == user_va) {
             m    = *link;

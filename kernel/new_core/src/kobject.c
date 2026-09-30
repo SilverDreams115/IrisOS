@@ -60,7 +60,14 @@ static void kobject_underflow_num(uint32_t v) {
     char b[12];
     int  n = 0;
     if (v == 0u) { serial_write("0"); return; }
+    /*
+     * BOUND: 11 passes, stated in the guard, and a uint32_t has at most 10
+     * decimal digits so the guard is slack rather than load-bearing.  The second
+     * loop counts the first one's output back down.  Ring 3 cannot reach either:
+     * this runs only on the way to a panic for a refcount that underflowed.
+     */
     while (v && n < 11) { b[n++] = (char)('0' + (v % 10u)); v /= 10u; }
+    /* BOUND: `n` from the loop above, at most 11, decremented every pass. */
     while (n--) { char c[2]; c[0] = b[n]; c[1] = 0; serial_write(c); }
 }
 

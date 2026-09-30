@@ -1260,6 +1260,18 @@ check-purity: check-abi
 check-locks:
 	python3 scripts/check_lock_order.py
 
+# Stage V phase 2's two measurable targets, which share a definition of
+# "core": the files spec_driver.c links — what a refinement proof would have
+# to cover, and what spec-differential and spec-exhaustive already drive.
+#
+#   every loop with its bound written — a counted `for` states its bound in
+#     its header; a while, a for(;;) or a pointer walk must carry a `BOUND:`
+#     note saying what stops it and whether ring 3 can make that larger
+#   core <= 12k lines — code lines, comments excluded, because the ceiling is
+#     about how much there is to PROVE
+check-loops:
+	python3 scripts/check_loop_bounds.py
+
 smoke:
 	bash scripts/smoke_local.sh
 

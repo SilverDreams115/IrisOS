@@ -116,6 +116,12 @@ static irq_spinlock_t mdb_lock;
 
 static void mdb_note_max(_Atomic uint32_t *hwm, uint32_t v) {
     uint32_t cur = atomic_load_explicit(hwm, memory_order_relaxed);
+    /*
+     * BOUND: not a count — monotonicity.  `hwm` only ever increases, `v` is
+     * fixed, and a failed compare-exchange reloads `cur`, so each retry either
+     * raises `cur` or the guard `v > cur` goes false.  Ring 3 cannot lengthen it:
+     * concurrent writers can only push `cur` up, which ends it sooner.
+     */
     while (v > cur &&
            !atomic_compare_exchange_weak_explicit(hwm, &cur, v,
                                                   memory_order_relaxed,
@@ -130,6 +136,17 @@ static void mdb_node_count_inc(void) {
 /* Depth of a node (root = 0).  mdb_lock held. */
 static uint32_t mdb_depth_of(struct KCSlot *s) {
     uint32_t d = 0;
+    /*
+     * BOUND: the length of one MDB ancestor chain, which is at most the number of
+     * OCCUPIED SLOTS in the system — every node of the tree is a slot, and a slot
+     * exists only in a CNode somebody retyped out of their own Untyped.
+     *
+     * So ring 3 CAN make this longer, and the bound on how much is the charter's:
+     * what bounds an allocation is the budget it was given.  Same argument as
+     * D-12, applied to a walk instead of a teardown.  `mdb_audit` caps its own
+     * version of this walk at 2^20 because it must survive a corrupt tree; this
+     * one trusts the acyclicity A9 asserts.
+     */
     for (struct KCSlot *p = s->mdb_parent; p; p = p->mdb_parent) d++;
     return d;
 }
@@ -197,6 +214,11 @@ static void mdb_detach_reparent(struct KCSlot *s) {
             /* Splice the whole child list into parent's children. */
             uint32_t n = 0;
             struct KCSlot *last = 0;
+            /*
+             * BOUND: the number of children of one slot — each is an occupied slot, so at
+             * most the occupied-slot count.  Ring 3 grows it by minting more copies, and
+             * every copy costs it a slot of its own Untyped.
+             */
             for (struct KCSlot *c = child; c; c = c->mdb_next_sib) {
                 c->mdb_parent = parent;
                 last = c; n++;
@@ -212,6 +234,10 @@ static void mdb_detach_reparent(struct KCSlot *s) {
             /* Root deletion: no surviving ancestor — promote children.
              * A promoted child stops being a "derived live" node. */
             struct KCSlot *c = child;
+            /*
+             * BOUND: as above, the child list of one slot; each pass unlinks one child, so
+             * the list strictly shrinks.
+             */
             while (c) {
                 struct KCSlot *next = c->mdb_next_sib;
                 c->mdb_parent   = 0;
@@ -348,6 +374,13 @@ static int             cascade_running;
  */
 static int kcnode_cascade_drain(uint32_t budget) {
     uint32_t done = 0;
+    /*
+     * BOUND: `budget` CNodes when non-zero — that is D-12's slice — and otherwise
+     * the number of CNodes on the cascade list, which is finite because each
+     * holds a reference and each pass removes one.  A CNode emptied here can
+     * enqueue its own children, so the TOTAL work is the subtree; what this loop
+     * bounds is how much of it happens before returning.
+     */
     for (;;) {
         uint64_t f = irq_spinlock_lock(&cascade_lock);
         struct KObject *o = cascade_head;
@@ -753,6 +786,10 @@ static void mdb_relocate(struct KCSlot *from, struct KCNode *from_cn,
     if (to->mdb_prev_sib) to->mdb_prev_sib->mdb_next_sib = to;
     else if (to->mdb_parent) to->mdb_parent->mdb_first_child = to;
     if (to->mdb_next_sib) to->mdb_next_sib->mdb_prev_sib = to;
+    /*
+     * BOUND: the child list of the slot just moved — occupied slots, as above.
+     * Nothing is inserted while it runs: `mdb_lock` is held.
+     */
     for (struct KCSlot *c = to->mdb_first_child; c; c = c->mdb_next_sib)
         c->mdb_parent = to;
 
@@ -958,6 +995,14 @@ iris_error_t kcnode_slot_revoke_bounded(struct KCNode *cn, uint32_t slot_idx,
     if (out_more) *out_more = 0;
     atomic_fetch_add_explicit(&cdt_revoke_count, 1u, memory_order_relaxed);
 
+    /*
+     * BOUND: `budget` victims when non-zero (D-8's slice), and otherwise the size
+     * of the subtree below the invoked slot.  Each pass DESTROYS one capability,
+     * so the subtree is strictly smaller every iteration and the same arguments
+     * mean less work on re-entry — which is why this needs no cursor and no
+     * zombie.  Unbounded for kernel-internal callers, which pass budget 0 because
+     * they run during teardown with nowhere to return to.
+     */
     for (;;) {
         if (budget != 0u && revoked >= budget) {
             /* Slice spent.  Is there more to do?  Answering here, under the
@@ -1003,6 +1048,12 @@ iris_error_t kcnode_slot_revoke_bounded(struct KCNode *cn, uint32_t slot_idx,
             break;                      /* subtree exhausted; root survives */
         }
         /* Deterministic order: deepest-leftmost leaf first. */
+        /*
+         * BOUND: the depth of the subtree, terminating because A9 says the derivation
+         * tree is acyclic and `make spec-prove` proves reparenting introduces no
+         * cycle.  If that were ever false this is where it would hang, which is the
+         * argument for proving it rather than reviewing it.
+         */
         while (v->mdb_first_child) v = v->mdb_first_child;
 
         struct KCNode *v_cn = v->mdb_cnode;
@@ -1252,6 +1303,12 @@ uint32_t kcnode_mdb_validate(struct KCNode **set, uint32_t n,
             {
                 uint32_t d = 0;
                 struct KCSlot *p = s->mdb_parent;
+                /*
+                 * BOUND: 2^20 explicitly, and deliberately NOT the acyclicity argument the
+                 * other walks use — this is the audit, whose job is to report a corrupt tree,
+                 * so it may not assume the tree is sound.  A cap it can survive beats a walk
+                 * that is correct only when there is nothing to find.
+                 */
                 while (p && d < (1u << 20)) {
                     if (p == s) { r.errors++; break; }
                     p = p->mdb_parent; d++;
@@ -1270,6 +1327,7 @@ uint32_t kcnode_mdb_validate(struct KCNode **set, uint32_t n,
                 if (mdb_slot_in_set(p, set, n)) {
                     /* parent's child list must contain s exactly once */
                     uint32_t seen = 0;
+                    /* BOUND: one slot's child list — occupied slots; `mdb_lock` held. */
                     for (struct KCSlot *c = p->mdb_first_child; c; c = c->mdb_next_sib)
                         if (c == s) seen++;
                     if (seen != 1u) r.errors++;
@@ -1280,6 +1338,7 @@ uint32_t kcnode_mdb_validate(struct KCNode **set, uint32_t n,
                 if (!s->mdb_prev_sib && p->mdb_first_child != s) r.errors++;
             }
             /* children's parent pointers must point back at s */
+            /* BOUND: one slot's child list — occupied slots; `mdb_lock` held. */
             for (struct KCSlot *c = s->mdb_first_child; c; c = c->mdb_next_sib) {
                 if (c->mdb_parent != s) r.errors++;
                 if (!c->object) r.errors++;              /* no empty slot linked */

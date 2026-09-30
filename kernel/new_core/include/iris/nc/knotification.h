@@ -18,7 +18,8 @@
  *
  * Invariants:
  *   - signal_bits is protected by both atomics and the KObject spinlock.
- *   - Up to KNOTIF_WAITERS_MAX tasks may block concurrently.
+ *   - Any number of tasks may block concurrently: the queue is intrusive
+ *     through the TCB and the kernel sets no ceiling (see below).
  *   - knotification_signal() wakes exactly one waiter (the first blocked one).
  *   - knotification_close() wakes all waiters so they can observe CLOSED.
  *   - knotification_signal() is safe to call from IRQ context.
@@ -78,7 +79,7 @@ uint64_t              knotification_take_pending(struct KNotification *n);
 void         knotification_signal(struct KNotification *n, uint64_t bits);
 
 /* Block until signal_bits != 0. Atomically clears all pending bits
- * and returns them in *out_bits. Up to KNOTIF_WAITERS_MAX tasks may block
+ * and returns them in *out_bits. Any number of tasks may block
  * concurrently; returns IRIS_ERR_BUSY if the waiter table is full. */
 iris_error_t knotification_wait(struct KNotification *n, uint64_t *out_bits);
 /*

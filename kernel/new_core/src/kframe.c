@@ -354,6 +354,12 @@ iris_error_t kframe_unmap_page(struct KFrame *f, struct KVSpace *vs,
      * the VA is occupied by a different frame — report INVALID_ARG. */
     m    = NULL;
     link = &vs->mappings;
+    /*
+     * BOUND: the mapping list of one VSpace — one entry per frame mapped, so ring
+     * 3 lengthens it by mapping more frames, each of which costs it a frame it
+     * retyped from its own Untyped.  `vs->lock` is held, so nothing is inserted
+     * while it walks.
+     */
     while (*link) {
         if ((*link)->user_va == user_va) {
             if ((*link)->frame != f) {

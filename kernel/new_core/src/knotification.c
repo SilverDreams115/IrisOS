@@ -35,6 +35,13 @@ static void knotif_live_unlink(struct KNotification *n) {
 
 static iris_error_t knotif_waiters_enqueue(struct KNotification *n, struct task *t) {
     if (t->notif_next || n->queue_tail == t) return IRIS_OK;  /* already queued */
+    /*
+     * BOUND: the waiter queue of one notification.  The kernel sets NO ceiling —
+     * KNOTIF_WAITERS_MAX was removed under charter P2 because it was a number the
+     * kernel invented — so ring 3 decides the length, and what limits it is the
+     * number of TCBs the principals retyped from their own Untyped.  The
+     * charter's bound again: what bounds an allocation is the budget it was given.
+     */
     for (struct task *w = n->queue_head; w; w = w->notif_next)
         if (w == t) return IRIS_OK;
     t->notif_next = 0;
@@ -55,6 +62,13 @@ static iris_error_t knotif_waiters_enqueue(struct KNotification *n, struct task 
 
 static void knotif_waiters_remove(struct KNotification *n, struct task *t) {
     struct task *prev = 0;
+    /*
+     * BOUND: the waiter queue of one notification.  The kernel sets NO ceiling —
+     * KNOTIF_WAITERS_MAX was removed under charter P2 because it was a number the
+     * kernel invented — so ring 3 decides the length, and what limits it is the
+     * number of TCBs the principals retyped from their own Untyped.  The
+     * charter's bound again: what bounds an allocation is the budget it was given.
+     */
     for (struct task *w = n->queue_head; w; prev = w, w = w->notif_next) {
         if (w != t) continue;
         if (prev) prev->notif_next = w->notif_next;
@@ -72,6 +86,13 @@ static void knotif_waiters_remove(struct KNotification *n, struct task *t) {
  * thread gets the signal instead. */
 static int knotif_waiters_wake_one(struct KNotification *n) {
     struct task *prev = 0;
+    /*
+     * BOUND: the waiter queue of one notification.  The kernel sets NO ceiling —
+     * KNOTIF_WAITERS_MAX was removed under charter P2 because it was a number the
+     * kernel invented — so ring 3 decides the length, and what limits it is the
+     * number of TCBs the principals retyped from their own Untyped.  The
+     * charter's bound again: what bounds an allocation is the budget it was given.
+     */
     for (struct task *w = n->queue_head; w; prev = w, w = w->notif_next) {
         if (w->state != TASK_BLOCKED_IRQ) continue;
         struct task *next = w->notif_next;
@@ -93,6 +114,11 @@ static void knotif_waiters_wake_all(struct KNotification *n) {
     n->queue_head = 0;
     n->queue_tail = 0;
     n->waiter_count = 0;
+    /*
+     * BOUND: the queue this detached a moment ago.  `queue_head` was set to 0
+     * before the walk, so nothing can be appended to the list being drained and
+     * each pass consumes one entry.
+     */
     while (w) {
         struct task *next = w->notif_next;
         w->notif_next = 0;
@@ -171,6 +197,11 @@ void knotification_cancel_waiter(struct task *t) {
     if (!t) return;
     spinlock_lock(&live_lock);
     struct KNotification *n = live_head;
+    /*
+     * BOUND: the live notification registry — one entry per KNotification that
+     * exists, so ring 3 lengthens it by retyping notifications out of its own
+     * Untyped.  `next` is read before the body, so a removal mid-walk is safe.
+     */
     while (n) {
         struct KNotification *next = n->live_next;
         spinlock_lock(&n->base.lock);
@@ -301,9 +332,18 @@ void knotification_unbind_task(struct task *t) {
 
 /*
  * Wait: block until signal_bits != 0. Returns all pending bits atomically.
- * Up to KNOTIF_WAITERS_MAX tasks may block concurrently.
+ * Any number of tasks may block concurrently — the ceiling was removed
+ * (charter P2: the kernel does not invent a number); see knotification.h.
  */
 iris_error_t knotification_wait(struct KNotification *n, uint64_t *out_bits) {
+    /*
+     * BOUND: NOT a bounded loop, and that is correct — this is a BLOCKING wait.
+     * It re-runs only when the thread was woken and another took the bits in
+     * between, and it returns on CLOSED.  What bounds the kernel's time here is
+     * that the thread YIELDS inside the body; it does not spin.  Written down
+     * rather than exempted, because "it blocks" is the answer and a reader is
+     * entitled to see it.
+     */
     for (;;) {
         uint64_t bits = atomic_load_explicit(&n->signal_bits, memory_order_acquire);
         if (bits != 0) {
