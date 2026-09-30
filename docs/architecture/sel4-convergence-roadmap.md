@@ -3991,7 +3991,7 @@ model.
 | **0 — the boundary** | `IRIS_VERIFIED_CONFIG`, `make IRIS_VERIFIED=1`, `make smoke-verified`, the charter amendment | ✅ **CLOSED.**  IRIS-V builds, boots uniprocessor with no IOMMU, and passes `SUITE PASS 325/325` |
 | **1 — the executable specification** | `spec/authority_model.py`, `spec/spec_driver.c`, `spec/differential.py`, `spec/shrink.py`, `make spec-differential` | ✅ **CLOSED.**  Random traces drive the model and the real `kcnode.c`/`cspace.c`/`kobject.c` and the states are compared exactly; every charter invariant is checked against the model after every trace |
 | **2 — the provable core** | D-7 retired (lifetime by CDT, not by counter), D-3 specified, D-12 closed, zero function pointers, every loop with its bound written, core ≤ 12k lines | ◐ **D-3's definitional half CLOSED** (`make spec-rights`, exhaustive).  The rest is blocked, and each blocker is measured below rather than estimated |
-| **3 — the abstract specification** | Isabelle/HOL; the 37 invariants as theorems | ◐ **WRITTEN; PARTLY PROVED, BY SMT AND NOT BY ISABELLE.**  `spec/isabelle/IRIS_Authority.thy` states the CSpace half and still ends in `oops` — no Isabelle on this machine, so nothing builds on those as if they held.  `make spec-prove` restates the same model for z3 and discharges **18 of 18** reachable obligations over symbolic state: the rights algebra over all 2³² values, and A7/A8/well-formedness preserved by derive and by delete-with-reparent for every state and every legal operation.  Owed: A9's acyclicity and A10's transitive closure (inductions), and O2 (not modelled) |
+| **3 — the abstract specification** | Isabelle/HOL; the 37 invariants as theorems | ◐ **WRITTEN; PARTLY PROVED, BY SMT AND NOT BY ISABELLE.**  `spec/isabelle/IRIS_Authority.thy` states the CSpace half and still ends in `oops` — no Isabelle on this machine, so nothing builds on those as if they held.  `make spec-prove` restates the same model for z3 and discharges **28 of 28** reachable obligations over symbolic state: the rights algebra over all 2³² values, and A7/A8/O2/well-formedness preserved by derive, delete-with-reparent and retype for every state and every legal operation, plus A9 relatively (no new cycle) and A10 to depth 4.  Owed: the inductions that lift A9 and A10 to unbounded statements |
 | **4 — the refinement** | `abstract ⊑ executable ⊑ C`, in the gate | — |
 | **5 — beyond functional correctness** | integrity, information flow, binary verification | — |
 
@@ -4178,12 +4178,14 @@ the invariants and EVERY legal operation on it:
 | | |
 |---|---|
 | the rights algebra, 9 properties | over all 2³² values, not the 7-bit space `spec-rights` enumerates |
-| A7 and A8 under derive | all three of `mdb_badge_derive`'s outcomes, not just the inheriting one |
-| A7 and A8 under delete-with-reparent | the step that creates edges between capabilities never directly related |
-| well-formedness under both | no occupied slot ever names an empty one as parent |
-| A10, one step | revoke clears a child and spares its root |
+| A7, A8 and O2 under derive | all three of `mdb_badge_derive`'s outcomes, not just the inheriting one |
+| A7, A8 and O2 under delete-with-reparent | the step that creates edges between capabilities never directly related |
+| A7, A8 and O2 under retype | with the new object's id constrained FRESH, since reusing a live id is the one way retype could break O2 |
+| well-formedness under all three | no occupied slot ever names an empty slot — or a non-slot — as its parent |
+| A9, relatively | reparenting introduces no cycle that was not already there (no 6-cycle before ⟹ no 3-cycle after) |
+| A10, to depth 4 | revoke clears every descendant, spares its root, and touches nothing else |
 
-**18 of 18, and the count is the least interesting part.**  "Over every state"
+**28 of 28, and the count is the least interesting part.**  "Over every state"
 is the inductive step of a refinement proof, and it is what neither the
 differential (evidence over traces) nor `spec-rights` (exhaustion over a
 finite space) can give.  What it does NOT give is the C: `spec-prove` proves

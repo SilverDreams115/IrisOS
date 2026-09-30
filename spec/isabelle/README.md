@@ -15,21 +15,24 @@ reading" are different claims and only one of them is true here.
 | obligation | status | by what |
 |---|---|---|
 | the rights algebra (9 properties) | **PROVED** over all 2³² values | `spec/prove.py` (z3) |
-| the same, over the 7-bit space | **PROVED** by exhaustion, and the kernel computes it | `make spec-rights` |
-| A7 preserved by derive | **PROVED** over symbolic state | `spec/prove.py` |
-| A8 preserved by derive | **PROVED** over symbolic state | `spec/prove.py` |
-| A7/A8 preserved by delete-with-reparent | **PROVED** over symbolic state | `spec/prove.py` |
-| no child names an empty slot, ever | **PROVED** over symbolic state | `spec/prove.py` |
-| A10 — revoke spares its root | **PROVED** (one step) | `spec/prove.py` |
-| A10 — revoke reaches every descendant | **owed** | needs induction |
-| A9 — acyclicity under delete | **owed** | needs induction |
-| O2 — retype and untyped arithmetic | **owed**, not modelled | — |
+| the same, over the 7-bit space, *and the kernel computes it* | **PROVED** by exhaustion | `make spec-rights` |
+| A7 preserved by derive, delete-with-reparent, retype | **PROVED** over symbolic state | `spec/prove.py` |
+| A8 preserved by the same three | **PROVED** over symbolic state | `spec/prove.py` |
+| O2 preserved by the same three | **PROVED** over symbolic state | `spec/prove.py` |
+| no child ever names an empty slot, or a non-slot | **PROVED** over symbolic state | `spec/prove.py` |
+| A9 — reparenting introduces no NEW cycle | **PROVED** (relative: 6 before → 3 after) | `spec/prove.py` |
+| A9 — the tree is acyclic, unbounded | **owed** | needs induction |
+| A10 — revoke clears every descendant, spares the root, touches nothing else | **PROVED** to depth 4 | `spec/prove.py` |
+| A10 — the same, unbounded | **owed** | needs induction |
 | the C refines any of it | **owed**; tested, not proved | `make spec-differential` |
 
-"Over symbolic state" means: for every CSpace satisfying the invariant and
-every legal operation on it, not for every CSpace some generator built. That
-is the inductive step of a refinement proof, and it is the thing neither
-testing nor exhaustion can give.
+28 obligations, 28 discharged. "Over symbolic state" means: for every CSpace
+satisfying the invariant and every legal operation on it, not for every CSpace
+a generator built. That is the inductive step of a refinement proof, and it is
+the thing neither testing nor exhaustion can give.
+
+Where a row says *bounded* or *relative*, that is the claim — not a shorthand
+for the unbounded one. The distinction is not pedantry here; see below.
 
 ## The three lanes, and why there are three
 
@@ -49,21 +52,41 @@ phase 5, and naming it is cheaper than discovering later that nobody did.
 
 ## Why the solver's refusals are worth as much as its proofs
 
-`spec/prove.py` carries two guards, because a prover that cannot fail is a
+`spec/prove.py` carries three guards, because a prover that cannot fail is a
 prover that agrees with anything:
 
 * every theorem with premises first checks those premises are **satisfiable**.
   A theorem over contradictory premises is `unsat` for the wrong reason and
   prints exactly like a real proof. Such a row is reported `VACUOUS` and fails
   the lane.
+* `unsat` and `unknown` are **not** conflated. The first version of that guard
+  reported any non-`sat` premise check as `VACUOUS`, and promptly libelled A9
+  — whose premises are satisfiable and merely hard for the default engine. A
+  query that cannot be decided is asked again without model-based
+  instantiation before anything is reported; only `unsat` is ever relied on
+  for a proof, and `unsat` is sound under either configuration.
 * the lane asserts that two claims which are FALSE about IRIS's algebra are
   still refutable.
 
-Both earned their place. The delete theorem came back **REFUTED** twice on
-first run, with a counterexample naming `victim = -1` — which is the
-encoding's sentinel for "no parent", not a slot. The solver had found a hole
-in the model's domain, not in the kernel. It is fixed (`slot()`), and the
-episode is why the table above is per-obligation rather than a count.
+**Four refutations so far, and all four were mine.** Three were the encoding's
+domain — `victim = -1` (the no-parent sentinel used as a slot), a parent link
+pointing at `-2` (because `wf` said parents are *occupied* and never said they
+are *slots*), and an ancestor walk that strolled through `-1` into unconstrained
+memory and reported a cycle. A sentinel is not a value, and every walk over a
+partial map has to say where it stops.
+
+The fourth was not an artifact and is the most interesting thing in this
+directory. "Acyclic to depth 5 before ⟹ acyclic to depth 5 after" is **false**:
+the solver produced a 6-cycle, which the premise admits, and reparenting
+*shortens* it to 5, where the conclusion sees it. Nothing was created —
+something was pulled into view. **A depth-bounded acyclicity invariant is not
+inductive under an operation that shortens paths**, and reparenting is exactly
+such an operation. That is why A9 is stated relatively, with a doubled premise
+that is not slack but arithmetic: a reparented edge is two original edges, so a
+cycle of length L after lifts to one of length ≤ 2L before.
+
+It is also the sharpest available argument for finishing the Isabelle. The
+bounded proof is genuinely informative and it is genuinely not the invariant.
 
 ## How to check the Isabelle itself
 

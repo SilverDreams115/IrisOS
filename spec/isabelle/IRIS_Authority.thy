@@ -237,7 +237,8 @@ text \<open>
   None is proved IN ISABELLE.  They are written as `oops` rather than `sorry`
   on purpose: `sorry` would let a later theory build on them as if they held.
 
-  Five of them now have a machine-checked discharge somewhere else.
+  All five now have a machine-checked discharge somewhere else, two of them
+  only in a bounded or relative form that is stated exactly below.
   `spec/prove.py` states the same obligations over the same state — slots as
   arrays, rights as 32-bit words, the derivation tree as a parent map — and
   an SMT solver discharges them for EVERY state satisfying the invariant and
@@ -248,15 +249,19 @@ text \<open>
     * the SMT encoding is a SECOND formalisation, and if it disagrees with
       this one it proves something about a neighbouring system.  Isabelle
       proving THIS text is what removes that gap;
-    * it discharges one-step preservation, not the closure properties —
-      `revoke_removes_exactly_the_subtree` needs an induction over the tree
-      and the solver gets only its root-survives half;
-    * and nothing in it touches `retype_preserves_O2`, because the SMT model
-      does not carry the untyped region arithmetic.
+    * it discharges one-step preservation and bounded unrollings, not the
+      closure properties: `revoke_removes_exactly_the_subtree` is proved to
+      depth 4, and the unbounded claim needs an induction over the tree;
+    * and `delete_preserves_A9` is proved only in its relative form, because
+      a DEPTH-BOUNDED acyclicity invariant is not inductive under reparenting
+      — the solver refuted the naive statement, which is the sharpest single
+      argument in this file for proving the unbounded one.
 
-  So: A7 and A8 under derive and under delete-with-reparent are MACHINE
-  CHECKED over unbounded state; A9 and O2 and the recursive half of A10 are
-  still owed.  Marked per lemma below.
+  So: A7, A8 and O2 under derive, delete-with-reparent and retype are MACHINE
+  CHECKED over unbounded state; A9 is machine-checked in its relative form
+  (no NEW cycle) and A10 to a bounded depth; the inductions that lift those
+  two to unbounded statements are what remains, and they are what Isabelle is
+  for.  Marked per lemma below.
 \<close>
 
 lemma derive_preserves_A7:
@@ -277,11 +282,19 @@ lemma delete_preserves_A9:
       capability loses its ancestry because an intermediate slot went.  That
       is the step where acyclicity is easiest to break.\<close>
   "inv_A9 C \<Longrightarrow> inv_A9 (delete C i)"
-  \<comment> \<open>NOT discharged.  `spec/prove.py` proves that reparenting preserves A7,
-      A8 and well-formedness, which is the part that made the new edges; it
-      does NOT prove acyclicity, because the SMT encoding has no reachability
-      relation and adding one makes the fragment undecidable.  This one wants
-      an induction, so it wants Isabelle.\<close>
+  \<comment> \<open>PARTLY discharged, and the attempt taught something worth writing down.
+      `make spec-prove` proves the RELATIVE statement: no cycle of length <= 6
+      before implies no cycle of length <= 3 after, i.e. reparenting
+      introduces no cycle that was not already there.  The doubled premise is
+      not slack — a reparented edge is two original edges, so a cycle of
+      length L after lifts to one of length <= 2L before.
+
+      The naive statement (same bound either side) is FALSE and the solver
+      refuted it with a 6-cycle that reparenting SHORTENS to 5.  Nothing was
+      created; something was pulled into view.  A bounded acyclicity invariant
+      is not inductive under an operation that shortens paths, which is what
+      reparenting is — so the step from "no new cycle" to "acyclic" is the
+      induction, and it is this lemma's remaining content.\<close>
   oops
 
 lemma revoke_removes_exactly_the_subtree:
@@ -290,14 +303,26 @@ lemma revoke_removes_exactly_the_subtree:
   "revoke C i = C' \<Longrightarrow>
      (\<forall>d. descendant C i d \<longrightarrow> \<not> occupied C' d) \<and>
      (occupied C i \<longrightarrow> occupied C' i)"
-  \<comment> \<open>HALF discharged: the solver proves the root survives and a child is
-      cleared.  "every descendant" is a transitive closure and is owed.\<close>
+  \<comment> \<open>Discharged to BOUNDED depth by `make spec-prove`: the root survives,
+      every descendant within 4 links is cleared, and nothing that is not a
+      descendant is touched.  The unrolling is what stands in for the
+      transitive closure, which the decidable fragment cannot express; the
+      unbounded claim is the induction and is owed.\<close>
   oops
 
 lemma retype_preserves_O2:
   "inv_O2 C \<Longrightarrow> inv_O2 (retype C ut ty dst)"
-  \<comment> \<open>NOT discharged, and not modelled in SMT at all: O2 is about untyped
-      region arithmetic, which `spec/prove.py` does not carry.\<close>
+  \<comment> \<open>SMT-discharged over symbolic state: `make spec-prove`, row
+      "O2 retype preserves it".
+
+      The first annotation here said O2 was untyped region arithmetic and so
+      could not be modelled.  That is what O2 is ABOUT; it is not what this
+      definition says.  `inv_O2` is structural — every MDB edge is a
+      derivation or a creation from an Untyped — and `spec/authority_model.py`
+      carries no base, no size and no cursor either.  Structural, therefore
+      decidable, and the excuse was a misreading of the text directly above
+      it.  Derive and delete-with-reparent preserve it too, which is what
+      makes the tree readable as storage ownership at all.\<close>
   oops
 
 

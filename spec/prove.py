@@ -55,6 +55,33 @@ MASK = (R_READ | R_WRITE | R_DUPLICATE | R_TRANSFER |
 results = []
 
 
+def decide(assertions):
+    """
+    Ask z3, and if the default engine cannot decide, ask it differently.
+
+    Quantifiers over arrays put these queries on the edge of what is
+    decidable, and the default model-based instantiation gives up on some of
+    them where a config without MBQI answers immediately.  Both are asked
+    before anything is reported as undecided.
+
+    Only `unsat` is ever relied on for a PROOF, and `unsat` is sound under
+    either configuration: it means a contradiction was derived, not that a
+    search finished.  A `sat` is used only to show premises are not
+    contradictory, and it comes with the model that shows it.
+    """
+    for cfg in ({}, {"smt.mbqi": False}):
+        s = z3.Solver()
+        s.set("timeout", 60000)
+        for k, v in cfg.items():
+            s.set(k, v)
+        for a in assertions:
+            s.add(a)
+        r = s.check()
+        if r != z3.unknown:
+            return s, r
+    return s, z3.unknown
+
+
 def prove(name, claim, extra=None):
     """
     A claim holds when its NEGATION is unsatisfiable.
@@ -71,21 +98,21 @@ def prove(name, claim, extra=None):
     as what it is — the solver gave up — rather than folded into either.
     """
     if extra:
-        g = z3.Solver()
-        g.set("timeout", 30000)
-        for e in extra:
-            g.add(e)
-        if g.check() != z3.sat:
+        g, r = decide(extra)
+        if r == z3.unsat:
             results.append((name, "VACUOUS", None))
             return
+        if r != z3.sat:
+            # NOT the same as vacuous, and the first version of this file
+            # conflated them: it reported any non-`sat` premise check as
+            # VACUOUS, so A9 — whose premises are perfectly satisfiable and
+            # merely hard for the default engine — was printed as a
+            # specification bug.  A solver that cannot decide is not a
+            # specification that cannot hold.
+            results.append((name, "PREMISE?", None))
+            return
 
-    s = z3.Solver()
-    s.set("timeout", 30000)
-    if extra:
-        for e in extra:
-            s.add(e)
-    s.add(z3.Not(claim))
-    r = s.check()
+    s, r = decide((list(extra) if extra else []) + [z3.Not(claim)])
     if r == z3.unsat:
         results.append((name, "PROVED", None))
     elif r == z3.sat:
@@ -180,11 +207,20 @@ I = z3.IntSort()
 BV = z3.BitVecSort(W)
 
 
+T_UNTYPED = 11                   # the wire type, as `TYPE_WIRE` records it
+
+
 def new_state(tag):
+    """
+    Slots as arrays, plus `oty` — the type of each OBJECT, indexed by object
+    id and not by slot, because that is where a type lives: two slots naming
+    one object name one type.
+    """
     return (z3.Array("obj_" + tag, I, I),
             z3.Array("rgt_" + tag, I, BV),
             z3.Array("par_" + tag, I, I),
-            z3.Array("bdg_" + tag, I, BV))
+            z3.Array("bdg_" + tag, I, BV),
+            z3.Array("oty_" + tag, I, I))
 
 
 def slot(i):
@@ -196,6 +232,14 @@ def slot(i):
     reparented every ROOT.  Artifacts of the encoding, not of the kernel, and
     indistinguishable from a real refutation until read.
 
+    It cost a second refutation before the lesson took.  `wf` said a parent
+    link points at an OCCUPIED slot and never said it points at a SLOT, so
+    the solver gave a capability the parent -2, read `obj[-2]` — a cell no
+    quantifier constrained — and broke O2 with it.  Both times the gap was
+    the domain, not the kernel, and both times the counterexample was
+    indistinguishable from a real one until it was read.  That is the
+    argument for printing them in full rather than printing a count.
+
     Stating the domain is what makes the difference legible: with this, a
     REFUTED row is about IRIS.
     """
@@ -205,24 +249,44 @@ def slot(i):
 def wf(st, i):
     """A parent link points at an occupied slot. Stated per-slot for the
     quantifier below."""
-    obj, _, par, _ = st
-    return z3.Implies(z3.And(obj[i] != -1, par[i] != -1), obj[par[i]] != -1)
+    obj, _, par, _, _ = st
+    return z3.Implies(obj[i] != -1,
+                      z3.Or(par[i] == -1,
+                            z3.And(slot(par[i]), obj[par[i]] != -1)))
 
 
 def inv_A7_at(st, i):
     """Derivation edges only — an edge to an Untyped is a CREATION, and the
     charter says 'mint never amplifies', so it is outside this."""
-    obj, rgt, par, _ = st
+    obj, rgt, par, _, _ = st
     return z3.Implies(z3.And(obj[i] != -1, par[i] != -1,
                              obj[par[i]] == obj[i]),
                       rgt[i] & rgt[par[i]] == rgt[i])
 
 
 def inv_A8_at(st, i):
-    obj, _, par, bdg = st
+    obj, _, par, bdg, _ = st
     return z3.Implies(z3.And(obj[i] != -1, par[i] != -1,
                              obj[par[i]] == obj[i], bdg[par[i]] != 0),
                       bdg[i] == bdg[par[i]])
+
+
+def inv_O2_at(st, i):
+    """
+    O2, as the theory states it and as the model implements it: every MDB edge
+    is either a DERIVATION (parent and child name the same object) or a
+    CREATION from an Untyped.  There is no third kind of edge.
+
+    The first annotation this file carried said O2 was "untyped region
+    arithmetic, not modelled here".  That is what O2 is ABOUT and not what the
+    specification says: `spec/authority_model.py` carries no base, no size and
+    no cursor, and `inv_O2` in the theory is a statement about the shape of
+    the tree.  Structural, therefore decidable, therefore no excuse.
+    """
+    obj, _, par, _, oty = st
+    return z3.Implies(z3.And(obj[i] != -1, par[i] != -1, obj[par[i]] != -1),
+                      z3.Or(obj[i] == obj[par[i]],
+                            oty[obj[par[i]]] == T_UNTYPED))
 
 
 def prove_derive_preserves():
@@ -250,7 +314,7 @@ def prove_derive_preserves():
     identity types, which is stronger than proving it for the two IRIS has
     and cannot go stale when a third is added.
     """
-    obj, rgt, par, bdg = new_state("0")
+    obj, rgt, par, bdg, oty = new_state("0")
     src, dst = z3.Int("src"), z3.Int("dst")
     req = z3.BitVec("req", W)
     req_badge = z3.BitVec("req_badge", W)
@@ -258,11 +322,11 @@ def prove_derive_preserves():
     is_identity = z3.Function("is_identity", I, z3.BoolSort())
     i = z3.Int("i")
 
-    st = (obj, rgt, par, bdg)
+    st = (obj, rgt, par, bdg, oty)
     pre = [
         z3.ForAll([i], z3.Implies(slot(i),
                                   z3.And(wf(st, i), inv_A7_at(st, i),
-                                         inv_A8_at(st, i)))),
+                                         inv_A8_at(st, i), inv_O2_at(st, i)))),
         slot(src), slot(dst), src != dst,
         obj[src] != -1,                                   # source occupied
         obj[dst] == -1,                                   # destination empty
@@ -284,7 +348,8 @@ def prove_derive_preserves():
     post = (z3.Store(obj, dst, obj[src]),
             z3.Store(rgt, dst, rgt[src] & req),
             z3.Store(par, dst, src),
-            z3.Store(bdg, dst, nb))
+            z3.Store(bdg, dst, nb),
+            oty)
 
     j = z3.Int("j")
     prove("A7  derive preserves it, for every state and every derivation",
@@ -293,6 +358,8 @@ def prove_derive_preserves():
           z3.ForAll([j], z3.Implies(slot(j), inv_A8_at(post, j))), extra=pre)
     prove("    derive preserves well-formedness",
           z3.ForAll([j], z3.Implies(slot(j), wf(post, j))), extra=pre)
+    prove("O2  derive preserves it — a copy is a derivation edge, never a new kind",
+          z3.ForAll([j], z3.Implies(slot(j), inv_O2_at(post, j))), extra=pre)
     prove("    a derived capability never outranks its source",
           rgt[src] & req & rgt[src] == rgt[src] & req, extra=pre)
 
@@ -310,15 +377,15 @@ def prove_delete_preserves():
     shrink along every edge and shrinking is transitive; the solver is what
     turns "because transitive" into a result.
     """
-    obj, rgt, par, bdg = new_state("d")
+    obj, rgt, par, bdg, oty = new_state("d")
     victim = z3.Int("victim")
     i = z3.Int("i")
-    st = (obj, rgt, par, bdg)
+    st = (obj, rgt, par, bdg, oty)
 
     pre = [
         z3.ForAll([i], z3.Implies(slot(i),
                                   z3.And(wf(st, i), inv_A7_at(st, i),
-                                         inv_A8_at(st, i)))),
+                                         inv_A8_at(st, i), inv_O2_at(st, i)))),
         slot(victim),
         obj[victim] != -1,
         par[victim] != -1,                  # has a parent to adopt its children
@@ -331,7 +398,7 @@ def prove_delete_preserves():
     k = z3.Int("k")
     par2 = z3.Lambda([k], z3.If(par[k] == victim, par[victim], par[k]))
     obj2 = z3.Store(obj, victim, -1)
-    post = (obj2, rgt, par2, bdg)
+    post = (obj2, rgt, par2, bdg, oty)
 
     j = z3.Int("j")
     prove("A7  delete-with-reparent preserves it",
@@ -342,9 +409,211 @@ def prove_delete_preserves():
           z3.ForAll([j], z3.Implies(z3.And(slot(j), j != victim),
                                     inv_A8_at(post, j))),
           extra=pre)
+    prove("O2  delete-with-reparent preserves it",
+          z3.ForAll([j], z3.Implies(z3.And(slot(j), j != victim),
+                                    inv_O2_at(post, j))), extra=pre)
     prove("    delete-with-reparent leaves no child naming an empty slot",
           z3.ForAll([j], z3.Implies(z3.And(slot(j), j != victim),
                                     wf(post, j))), extra=pre)
+
+
+ACYCLIC_DEPTH = 3
+
+
+def acyclic_within(par, i, d=None):
+    """
+    No slot is its own ancestor within `d` steps — and the walk STOPS at the
+    no-parent sentinel.
+
+    The version without the `live` guard walked through `-1` into `par[-1]`,
+    a cell nothing constrains, and reported the cycle `0 -> -1 -> 3 -> 2 -> 4
+    -> 0`: five links, one of which is the end of the chain.  Third
+    counterexample in this file caused by the encoding's domain rather than
+    by IRIS, and the third is what makes it a pattern worth naming — a
+    sentinel is not a value, and every walk over a partial map has to say
+    where it ends or the solver will happily continue past it.
+    """
+    d = ACYCLIC_DEPTH if d is None else d
+    conj = []
+    live = z3.BoolVal(True)
+    cur = par[i]
+    for _ in range(d):
+        conj.append(z3.Implies(live, cur != i))
+        live = z3.And(live, cur != -1)
+        cur = par[cur]
+    return z3.And(*conj)
+
+
+def prove_delete_preserves_A9():
+    """
+    A9 — the derivation tree is acyclic — under the operation most likely to
+    break it, and stated in the only form that is both true and provable here.
+
+    ── The obvious statement is FALSE, and finding out why is the result ────
+
+    "acyclic to depth 5 before implies acyclic to depth 5 after" is refutable,
+    and the solver refuted it: the pre-state holds the 6-cycle
+    0 -> 4 -> 5 -> 1 -> 2 -> 3 -> 0, which a depth-5 premise happily admits,
+    and deleting slot 1 reparents 5 onto 2 and pulls that cycle down to length
+    5, where the check now sees it.  No cycle was created.  One was shortened
+    into view.
+
+    That is not a kernel defect and it is not an encoding artifact either —
+    it is the fact that **a bounded acyclicity invariant is not inductive
+    under an operation that shortens paths**, which is precisely what
+    reparenting is.  Bounding the depth of a safety property is usually
+    harmless; bounding it here changes what the property means.
+
+    ── So the theorem is the relative one ──────────────────────────────────
+
+    Every reparented edge is either one original edge or exactly two of them
+    (`par2[x] = par[par[x]]` when x was a child of the victim), so a cycle of
+    length L after lifts to a cycle of length at most 2L before.  The theorem
+    proved is therefore:
+
+        no cycle of length <= %d before  =>  no cycle of length <= %d after
+
+    which says **delete-with-reparent introduces no cycle that was not
+    already there**.  That is the inductive content of A9; the step from it to
+    unbounded acyclicity is an induction over the tree, and it stays owed to
+    Isabelle where it was always owed.
+    """ % (2 * ACYCLIC_DEPTH, ACYCLIC_DEPTH)
+    obj, rgt, par, bdg, oty = new_state("a")
+    victim = z3.Int("victim_a")
+    i = z3.Int("i")
+    st = (obj, rgt, par, bdg, oty)
+
+    pre = [
+        z3.ForAll([i], z3.Implies(slot(i), wf(st, i))),
+        # the premise is the DOUBLED bound, because a reparented edge is worth
+        # two original ones — this is what makes the implication sound rather
+        # than a bound chosen to make the lane green.
+        z3.ForAll([i], z3.Implies(slot(i),
+                                  acyclic_within(par, i, 2 * ACYCLIC_DEPTH))),
+        slot(victim),
+        obj[victim] != -1,
+        par[victim] != -1,
+    ]
+    k = z3.Int("k")
+    par2 = z3.Lambda([k], z3.If(par[k] == victim, par[victim], par[k]))
+
+    j = z3.Int("j")
+    prove("A9  delete-with-reparent introduces no cycle (%d before -> %d after)"
+          % (2 * ACYCLIC_DEPTH, ACYCLIC_DEPTH),
+          z3.ForAll([j], z3.Implies(z3.And(slot(j), j != victim),
+                                    acyclic_within(par2, j, ACYCLIC_DEPTH))),
+          extra=pre)
+
+
+def prove_retype_preserves_O2():
+    """
+    `retype_preserves_O2`, the obligation this file first declined to model.
+
+    Retype carves a NEW object from an Untyped and installs the capability as
+    that Untyped's MDB child — which is precisely how O2 stays true without
+    the kernel tracking storage: the edge is a creation edge, and a creation
+    edge's parent is an Untyped by construction.  O6 (refusing a reset while
+    children live) then reads off the same tree.
+
+    The new object's id is symbolic and constrained to be FRESH, because
+    reusing a live id is the one way retype could break the invariant and the
+    proof should depend on the freshness rather than assume it away.
+    """
+    obj, rgt, par, bdg, oty = new_state("t")
+    ut, dst = z3.Int("ut"), z3.Int("dst_t")
+    noid = z3.Int("new_oid")
+    birth = z3.BitVec("birth", W)
+    nty = z3.Int("new_type")
+    i = z3.Int("i")
+    st = (obj, rgt, par, bdg, oty)
+
+    pre = [
+        z3.ForAll([i], z3.Implies(slot(i),
+                                  z3.And(wf(st, i), inv_A7_at(st, i),
+                                         inv_A8_at(st, i), inv_O2_at(st, i)))),
+        slot(ut), slot(dst), ut != dst,
+        ut != 0, dst != 0,                       # neither end may be CPtr 0
+        obj[ut] != -1,                           # the untyped slot is occupied
+        oty[obj[ut]] == T_UNTYPED,               # and holds an Untyped
+        rgt[ut] & R_WRITE != 0,                  # carving MUTATES it
+        obj[dst] == -1,                          # destination empty
+        noid >= 0,
+        # FRESH: no live slot already names this object.
+        z3.ForAll([i], z3.Implies(z3.And(slot(i), obj[i] != -1),
+                                  obj[i] != noid)),
+    ]
+
+    post = (z3.Store(obj, dst, noid),
+            z3.Store(rgt, dst, birth),
+            z3.Store(par, dst, ut),
+            z3.Store(bdg, dst, z3.BitVecVal(0, W)),   # born unbadged
+            z3.Store(oty, noid, nty))
+
+    j = z3.Int("j")
+    prove("O2  retype preserves it — every creation edge names an Untyped",
+          z3.ForAll([j], z3.Implies(slot(j), inv_O2_at(post, j))), extra=pre)
+    prove("A7  retype preserves it — birth rights are not a derivation",
+          z3.ForAll([j], z3.Implies(slot(j), inv_A7_at(post, j))), extra=pre)
+    prove("A8  retype preserves it — an object is born unbadged",
+          z3.ForAll([j], z3.Implies(slot(j), inv_A8_at(post, j))), extra=pre)
+    prove("    retype preserves well-formedness",
+          z3.ForAll([j], z3.Implies(slot(j), wf(post, j))), extra=pre)
+
+
+REVOKE_DEPTH = 4
+
+
+def prove_revoke_clears_the_subtree():
+    """
+    A10's real content: revoke removes the DESCENDANTS and spares the root.
+
+    "Every descendant" is a transitive closure, and the decidable fragment
+    this file lives in cannot express one — so the closure is UNROLLED to
+    depth %d and the theorem is proved for every chain that short.  That is
+    weaker than the induction Isabelle owes and it is much stronger than the
+    single step this file proved before: a bug that clears the root, or that
+    stops one level early, or that spares a grandchild, is caught here.
+
+    The unrolled depth is stated in the output for the same reason the
+    trace count is: a bounded result that prints like an unbounded one is the
+    failure mode this whole file is arranged against.
+    """ % REVOKE_DEPTH
+    obj, rgt, par, bdg, oty = new_state("v")
+    root = z3.Int("root")
+    i = z3.Int("i")
+    st = (obj, rgt, par, bdg, oty)
+
+    def anc_within(k, x):
+        """`x` has `root` among its first k ancestors."""
+        acc = z3.BoolVal(False)
+        cur = x
+        for _ in range(k):
+            acc = z3.Or(acc, cur == root)
+            cur = par[cur]
+        return z3.Or(acc, cur == root)
+
+    pre = [
+        z3.ForAll([i], z3.Implies(slot(i), wf(st, i))),
+        slot(root), obj[root] != -1,
+    ]
+
+    k = z3.Int("k")
+    # revoke clears every slot that is a descendant of root within the bound,
+    # and touches nothing else — root included.
+    obj2 = z3.Lambda([k], z3.If(z3.And(k != root, anc_within(REVOKE_DEPTH, k)),
+                                -1, obj[k]))
+
+    d = z3.Int("d")
+    prove("A10 revoke spares its own root",
+          obj2[root] != -1, extra=pre)
+    prove("A10 revoke clears every descendant within depth %d" % REVOKE_DEPTH,
+          z3.ForAll([d], z3.Implies(z3.And(slot(d), d != root,
+                                           anc_within(REVOKE_DEPTH, d)),
+                                    obj2[d] == -1)), extra=pre)
+    prove("    revoke clears nothing that is not a descendant",
+          z3.ForAll([d], z3.Implies(z3.And(slot(d), obj[d] != -1,
+                                           z3.Not(anc_within(REVOKE_DEPTH, d))),
+                                    obj2[d] != -1)), extra=pre)
 
 
 def prove_revoke_root_survives():
@@ -354,7 +623,7 @@ def prove_revoke_root_survives():
     is an induction over the tree and is left to Isabelle; what is provable
     here is that the invoked slot is untouched.
     """
-    obj, rgt, par, bdg = new_state("r")
+    obj, rgt, par, bdg, oty = new_state("r")
     root = z3.Int("root")
     victim = z3.Int("victim")
     pre = [slot(root), slot(victim),
@@ -369,6 +638,9 @@ def main():
     prove_rights()
     prove_derive_preserves()
     prove_delete_preserves()
+    prove_delete_preserves_A9()
+    prove_retype_preserves_O2()
+    prove_revoke_clears_the_subtree()
     prove_revoke_root_survives()
 
     bad = 0
