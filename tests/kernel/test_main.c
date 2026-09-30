@@ -68,6 +68,8 @@ static void host_back_fake_physmem(void) {
 void test_libc_fmt(void);
 void test_libc_malloc(void);
 
+void test_final_cap(void);
+
 int main(void) {
     host_back_fake_physmem();
     test_rights();
@@ -93,6 +95,7 @@ int main(void) {
     test_root_bootinfo();
     test_pagetable();
     test_cnode_guard();
+    test_final_cap();
     test_schedctx_refill();
     test_syscall_cspace();
     test_syscall_retype();

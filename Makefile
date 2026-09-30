@@ -401,6 +401,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_root_bootinfo.c \
     tests/kernel/test_pagetable.c \
     tests/kernel/test_cnode_guard.c \
+    tests/kernel/test_final_cap.c \
     tests/kernel/test_schedctx_refill.c \
     tests/kernel/test_syscall_cspace.c \
     tests/kernel/test_syscall_retype.c \

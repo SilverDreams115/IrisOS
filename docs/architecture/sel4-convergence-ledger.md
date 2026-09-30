@@ -1172,6 +1172,16 @@ about the kernel as a whole.
 So D-7's remaining work is one named design change — give the TCB capability
 slots — and the ledger says so instead of saying "months".
 
+**The gap is a test, not a paragraph.**  `test_final_cap` builds the exact
+shape: one slot names a notification, a thread then takes the reference
+`SYS_TCB_BIND_NOTIFICATION` takes (both retains, from outside the CSpace), and
+the MDB is unchanged — so `kcnode_slot_is_final_cap` still says "last
+capability" while `active_refs` is 2.  Believing the predicate there would
+finalise an object a thread still points at.  The test asserts the
+DISAGREEMENT, and says of itself that it must fail on the day the TCB gets
+capability slots, because a test that pins a defect without saying so becomes
+a test that defends one.
+
 Four tests, and they were written in the order that made each one answerable.
 
 **T322 — the rule itself, for every type RETYPE2 can make.**  Retype into slot A, copy into B, delete A: the region must still refuse to RESET.  Delete B: it must reset.  That is seL4's lifetime rule stated so it can be checked — an object exists exactly while a capability names it — and all ten types pass, including the two expected to be exceptions (a TCB and a VSpace).  A counter that over-counts fails the second half; one that under-counts fails the first.
