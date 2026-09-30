@@ -1,5 +1,22 @@
 # How close IRIS is to seL4 — a file-by-file audit
 
+> **SUPERSEDED IN PART — Stage V, 2026-09-30.** This is a dated record and is
+> kept as written. Two of its statements are no longer the tree's position:
+>
+> * **D-7 is no longer "deliberate and permanent."** That claim was withdrawn
+>   in charter §5, because the convergence roadmap's phase 2 required the
+>   opposite and two normative documents cannot both be obeyed. The mechanism
+>   is still two counters; what changed is that keeping them is no longer
+>   the plan. Its target property — an object is alive exactly while a
+>   capability names it — is now checked against the real kernel on every
+>   `spec-differential` trace and all 4084101 of `spec-exhaustive` at depth 5.
+> * **The per-object destructor pointers this audit describes are gone.**
+>   Destruction dispatches on `obj->type`; the 18 `KObjectOps` tables were
+>   deleted and `check-purity` fails if one returns to a kernel file.
+>
+> The gate numbers below are also this date's: the tree now runs fourteen
+> lanes, 325/325 runtime and 28213 host assertions.
+
 **Date**: 2026-09-11. **Second pass** — the first read the tree by layer;
 this one read all 58 kernel `.c`/`.S` files individually, plus the headers,
 and it found things the layer view could not.

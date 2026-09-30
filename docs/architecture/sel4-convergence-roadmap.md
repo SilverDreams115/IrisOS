@@ -114,9 +114,12 @@ PENDING.  The claim is worth stating as a total rather than as a list, because
 a list invites the reader to assume the unlisted ones are the unfinished ones,
 and there are none.  What still differs from seL4 after that is four rows in
 the ledger, and only two of them are open: CNode guards are half done (D-2) and
-CNode teardown is bounded by memory rather than by a budget (D-12, a latency
-property).  The rights set (D-3) and reference-counted lifetime (D-7) are
-deliberate and permanent, as is homing a thread to one processor (charter §6).
+CNode teardown is bounded PER OBJECT rather than per tree since Stage V sliced
+it (D-12).  The rights set (D-3) is deliberate and permanent, as is homing a
+thread to one processor (charter §6); reference-counted lifetime (D-7) had its
+permanence WITHDRAWN in Stage V — the charter claimed it and this document
+required the opposite, which was a governance defect and is recorded as one in
+charter §5.
 
 **P2** (mechanism, not policy) was AUDITED (ledger A-19) rather than assumed,
 and closed.  Five things the kernel was deciding for somebody else are gone: a
@@ -4269,7 +4272,9 @@ not have to take them again:
   to: it cannot follow `ops->destroy`, so the lock hierarchy is unchecked
   exactly where a destructor runs.
 - **D-7 is the large one and it is a charter amendment**, not a refactor.
-  Charter §6 records reference-counted lifetime as "deliberate, permanent",
+  Charter §5 recorded reference-counted lifetime as "deliberate, permanent"
+  and has WITHDRAWN that claim, because this document required the opposite
+  and two normative documents cannot both be obeyed,
   and a verified kernel cannot keep it: *an object exists exactly while a
   capability names it* has to be a theorem about the CDT, not a property of
   two counters that can disagree — and the ledger records that they did

@@ -865,9 +865,12 @@ blocking syscall is re-executed (D-1, Stage 9-evt).
 
 What remains is four rows, all in the
 [ledger](docs/architecture/sel4-convergence-ledger.md), and none of them is
-about authority: the rights set (D-3) and reference-counted lifetime (D-7) are
-deliberate and permanent, CNode guards are half done (D-2), and CNode teardown
-is bounded by memory rather than by a budget (D-12). A thread is also homed to
+about authority: the rights set (D-3) is deliberate and permanent;
+reference-counted lifetime (D-7) had its permanence WITHDRAWN in Stage V and is
+scheduled for retirement, with its target property now checked against the real
+kernel over 4084101 traces; CNode guards are half done (D-2); and CNode
+teardown (D-12) is bounded per object rather than per tree since Stage V
+sliced it. A thread is also homed to
 one processor and never migrated, which is registered in charter §6 as a
 policy IRIS declines to put in the kernel.
 

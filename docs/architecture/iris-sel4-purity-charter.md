@@ -229,11 +229,37 @@ per-thread kernel stacks with in-kernel blocking (D-1), CNodes without guards
 (D-2), the rights set (D-3), and the absent per-thread IPC buffer (D-4).  Six
 more were found the same way afterwards (D-5 … D-10).  Of the ten, **seven are
 closed**, D-2 is half closed (guards exist and are checked; the CNode's own
-default is still a pure radix walk), and two are deliberate and permanent:
-the rights set (D-3) and reference-counted object lifetime (D-7).  When those
-rows were written D-1 and D-2 carried no retirement stage, which was stated
-rather than implied: an entry with no stage is honest, an unrecorded
-divergence is not.  D-1 then closed anyway, in Stage 9-evt.
+default is still a pure radix walk), **one is deliberate and permanent** —
+the rights set (D-3) — and **one had its permanence WITHDRAWN**:
+reference-counted object lifetime (D-7).  When those rows were written D-1 and
+D-2 carried no retirement stage, which was stated rather than implied: an
+entry with no stage is honest, an unrecorded divergence is not.  D-1 then
+closed anyway, in Stage 9-evt.
+
+**D-7's permanence is withdrawn, and this paragraph is where it is recorded.**
+It was written here as deliberate and permanent, and the convergence roadmap's
+Stage V phase 2 then required it RETIRED — two normative documents asking for
+opposite things about the same mechanism, which is a defect in this tree's
+governance and not a difference of emphasis.  The roadmap is right and this
+was wrong, for the reason it gives: *an object exists exactly while a
+capability names it* has to be a THEOREM about the derivation tree, and it
+cannot be a theorem while it is a property of two counters that can disagree —
+which the ledger records them doing on three separate occasions.
+
+This is the second time a row written here as permanent turned out not to be;
+the first was IPC capability transfer, retired in ledger A-29 with the note
+that calling it permanent "was the wrong call".  Twice is a pattern worth
+naming: **permanence is a claim about the future, and this charter is not
+entitled to make many of them.** D-3 keeps its claim because it is a DESIGN
+choice — which rights exist — that a proof can formalise as easily as seL4's.
+D-7 lost its claim because it is a MECHANISM a proof cannot accept.
+
+What has actually been done is a measurement, not a retirement: `spec-prove`
+states the liveness target and `spec-differential`/`spec-exhaustive` now check
+it against the real kernel — the live-object count against the
+named-by-a-slot count, on every trace, 4084101 of them at depth 5, with no
+disagreement. That is the evidence retirement needs and it is not retirement.
+The two counters are still there.
 
 ### 5.1 Revisit triggers must fire
 
