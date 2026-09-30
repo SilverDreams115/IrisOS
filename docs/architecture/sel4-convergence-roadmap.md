@@ -3992,7 +3992,7 @@ model.
 | **1 — the executable specification** | `spec/authority_model.py`, `spec/spec_driver.c`, `spec/differential.py`, `spec/shrink.py`, `make spec-differential` | ✅ **CLOSED.**  Random traces drive the model and the real `kcnode.c`/`cspace.c`/`kobject.c` and the states are compared exactly; every charter invariant is checked against the model after every trace |
 | **2 — the provable core** | D-7 retired (lifetime by CDT, not by counter), D-3 specified, D-12 closed, zero function pointers, every loop with its bound written, core ≤ 12k lines | ◐ **D-3's definitional half CLOSED** (`make spec-rights`, exhaustive).  The rest is blocked, and each blocker is measured below rather than estimated |
 | **3 — the abstract specification** | Isabelle/HOL; the 37 invariants as theorems | ◐ **WRITTEN; PARTLY PROVED, BY SMT AND NOT BY ISABELLE.**  `spec/isabelle/IRIS_Authority.thy` states the CSpace half and still ends in `oops` — no Isabelle on this machine, so nothing builds on those as if they held.  `make spec-prove` restates the same model for z3 and discharges **28 of 28** reachable obligations over symbolic state: the rights algebra over all 2³² values, and A7/A8/O2/well-formedness preserved by derive, delete-with-reparent and retype for every state and every legal operation, plus A9 relatively (no new cycle) and A10 to depth 4.  Owed: the inductions that lift A9 and A10 to unbounded statements |
-| **4 — the refinement** | `abstract ⊑ executable ⊑ C`, in the gate | — |
+| **4 — the refinement** | `abstract ⊑ executable ⊑ C`, in the gate | ◐ **THE FIRST LINK EXISTS.**  `spec/invariants.py` holds the predicates once; `make spec-prove` proves them symbolically and `make spec-bridge` evaluates the SAME definitions concretely on states real traces built, requiring agreement with `authority_model.py`'s independently written checkers.  `abstract ⊑ executable` is therefore checked rather than assumed.  `executable ⊑ C` is still `spec-differential` — traces, not a refinement proof |
 | **5 — beyond functional correctness** | integrity, information flow, binary verification | — |
 
 ### What phase 1 found in its first sixty traces
@@ -4245,6 +4245,34 @@ not have to take them again:
   disagree, three times.  `spec/authority_model.py` already decides liveness
   by SEARCHING the slot space rather than counting, so the specification
   phase 2 must implement is written and is being checked every run.
+
+### Phase 4's first link, and the hole it closed
+
+Before it, `spec/` held two formalisations of the same invariants and no lane
+comparing them: `prove.py`'s predicates were PROVED and never run on a state
+the kernel produced, and `authority_model.py`'s checkers were VALIDATED
+against the real C and never proved.  Both lanes green, and **the chain
+between them broken in the middle** — nothing would have noticed the two
+drifting apart, and the proved side is the one no hardware ever executes,
+which is the worse of the two to have wrong because it is the one that looks
+strongest.
+
+`spec/invariants.py` now holds `wf`, A7, A8 and O2 once, written against a
+two-line logic backend: `prove.py` instantiates them as z3 expressions over
+arrays and proves them, `bridge.py` instantiates the same definitions as
+Python bools over dicts and runs them on 400 states that real traces built,
+requiring agreement with the model's own checkers on every one.
+
+Writing it found one genuine asymmetry: `chk_rights_monotone` skips an edge
+when the parent is an Untyped AND the objects differ, while `inv_A7` applies
+only when the objects are the SAME.  Those differ on exactly one shape — a
+non-Untyped parent whose child names another object — which violates O2 and
+should be unreachable.  `bridge.py` COUNTS that shape and fails if it ever
+occurs, because "unreachable" was a claim about the model and unchecked
+claims about the model are what this phase exists to stop.
+
+Both lanes carry a deliberately wrong predicate and fail if it is not caught.
+The bridge's caught it on the first trace.
 
 ### The rule this stage adds to the project
 

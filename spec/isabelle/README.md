@@ -24,6 +24,7 @@ reading" are different claims and only one of them is true here.
 | A9 — the tree is acyclic, unbounded | **owed** | needs induction |
 | A10 — revoke clears every descendant, spares the root, touches nothing else | **PROVED** to depth 4 | `spec/prove.py` |
 | A10 — the same, unbounded | **owed** | needs induction |
+| the proved predicates are the tested ones | **CHECKED** over 400 real-trace states | `make spec-bridge` |
 | the C refines any of it | **owed**; tested, not proved | `make spec-differential` |
 
 28 obligations, 28 discharged. "Over symbolic state" means: for every CSpace
@@ -40,7 +41,17 @@ for the unbounded one. The distinction is not pedantry here; see below.
 make spec-differential   # the model agrees with the real C over N traces
 make spec-rights         # the rights algebra, exhaustive over its space
 make spec-prove          # the invariants, over EVERY state
+make spec-bridge         # the proved predicates ARE the tested ones
 ```
+
+The fourth exists because the first three left a hole in the middle. `prove.py`
+proved its predicates; `authority_model.py`'s checkers were validated against
+the C; **nothing compared the two**, so they could have drifted with every lane
+green — and the proved side is the one no hardware ever executes. The
+predicates now live once in `spec/invariants.py`, proved symbolically by one
+lane and evaluated concretely by the other on states real traces built. Writing
+it turned up one genuine asymmetry between the two readings of A7, which
+`bridge.py` now checks is unreachable instead of asserting it.
 
 They are a ladder, and the top of it is still not the top of the ladder.
 `spec-prove` proves the **model**. What connects that model to `kcnode.c` is

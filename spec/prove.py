@@ -33,6 +33,7 @@ says so and returns 0, because a machine without a prover should not fail a
 build — it should say that this evidence is missing on it.
 """
 
+import os
 import sys
 
 try:
@@ -203,6 +204,10 @@ def prove_rights():
 # `spec/isabelle/IRIS_Authority.thy` declares, in the form a solver can
 # reason about.
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import invariants                                            # noqa: E402
+
+L = invariants.SYM(z3)
 I = z3.IntSort()
 BV = z3.BitVecSort(W)
 
@@ -216,11 +221,12 @@ def new_state(tag):
     id and not by slot, because that is where a type lives: two slots naming
     one object name one type.
     """
-    return (z3.Array("obj_" + tag, I, I),
-            z3.Array("rgt_" + tag, I, BV),
-            z3.Array("par_" + tag, I, I),
-            z3.Array("bdg_" + tag, I, BV),
-            z3.Array("oty_" + tag, I, I))
+    return invariants.State(z3.Array("obj_" + tag, I, I),
+                            z3.Array("rgt_" + tag, I, BV),
+                            z3.Array("par_" + tag, I, I),
+                            z3.Array("bdg_" + tag, I, BV),
+                            z3.Array("oty_" + tag, I, I),
+                            slot)
 
 
 def slot(i):
@@ -249,27 +255,15 @@ def slot(i):
 def wf(st, i):
     """A parent link points at an occupied slot. Stated per-slot for the
     quantifier below."""
-    obj, _, par, _, _ = st
-    return z3.Implies(obj[i] != -1,
-                      z3.Or(par[i] == -1,
-                            z3.And(slot(par[i]), obj[par[i]] != -1)))
-
+    return invariants.wf(L, st, i)
 
 def inv_A7_at(st, i):
     """Derivation edges only — an edge to an Untyped is a CREATION, and the
     charter says 'mint never amplifies', so it is outside this."""
-    obj, rgt, par, _, _ = st
-    return z3.Implies(z3.And(obj[i] != -1, par[i] != -1,
-                             obj[par[i]] == obj[i]),
-                      rgt[i] & rgt[par[i]] == rgt[i])
-
+    return invariants.inv_A7(L, st, i)
 
 def inv_A8_at(st, i):
-    obj, _, par, bdg, _ = st
-    return z3.Implies(z3.And(obj[i] != -1, par[i] != -1,
-                             obj[par[i]] == obj[i], bdg[par[i]] != 0),
-                      bdg[i] == bdg[par[i]])
-
+    return invariants.inv_A8(L, st, i)
 
 def inv_O2_at(st, i):
     """
@@ -283,11 +277,7 @@ def inv_O2_at(st, i):
     no cursor, and `inv_O2` in the theory is a statement about the shape of
     the tree.  Structural, therefore decidable, therefore no excuse.
     """
-    obj, _, par, _, oty = st
-    return z3.Implies(z3.And(obj[i] != -1, par[i] != -1, obj[par[i]] != -1),
-                      z3.Or(obj[i] == obj[par[i]],
-                            oty[obj[par[i]]] == T_UNTYPED))
-
+    return invariants.inv_O2(L, st, i)
 
 def prove_derive_preserves():
     """
@@ -322,7 +312,7 @@ def prove_derive_preserves():
     is_identity = z3.Function("is_identity", I, z3.BoolSort())
     i = z3.Int("i")
 
-    st = (obj, rgt, par, bdg, oty)
+    st = invariants.State(obj, rgt, par, bdg, oty, slot)
     pre = [
         z3.ForAll([i], z3.Implies(slot(i),
                                   z3.And(wf(st, i), inv_A7_at(st, i),
@@ -345,11 +335,11 @@ def prove_derive_preserves():
     # the post-state: the destination gains the source's object, the reduced
     # rights, the derived badge and the source as its MDB parent.  Nothing
     # else moves.
-    post = (z3.Store(obj, dst, obj[src]),
-            z3.Store(rgt, dst, rgt[src] & req),
-            z3.Store(par, dst, src),
-            z3.Store(bdg, dst, nb),
-            oty)
+    post = invariants.State(z3.Store(obj, dst, obj[src]),
+                            z3.Store(rgt, dst, rgt[src] & req),
+                            z3.Store(par, dst, src),
+                            z3.Store(bdg, dst, nb),
+                            oty, slot)
 
     j = z3.Int("j")
     prove("A7  derive preserves it, for every state and every derivation",
@@ -380,7 +370,7 @@ def prove_delete_preserves():
     obj, rgt, par, bdg, oty = new_state("d")
     victim = z3.Int("victim")
     i = z3.Int("i")
-    st = (obj, rgt, par, bdg, oty)
+    st = invariants.State(obj, rgt, par, bdg, oty, slot)
 
     pre = [
         z3.ForAll([i], z3.Implies(slot(i),
@@ -398,7 +388,7 @@ def prove_delete_preserves():
     k = z3.Int("k")
     par2 = z3.Lambda([k], z3.If(par[k] == victim, par[victim], par[k]))
     obj2 = z3.Store(obj, victim, -1)
-    post = (obj2, rgt, par2, bdg, oty)
+    post = invariants.State(obj2, rgt, par2, bdg, oty, slot)
 
     j = z3.Int("j")
     prove("A7  delete-with-reparent preserves it",
@@ -481,7 +471,7 @@ def prove_delete_preserves_A9():
     obj, rgt, par, bdg, oty = new_state("a")
     victim = z3.Int("victim_a")
     i = z3.Int("i")
-    st = (obj, rgt, par, bdg, oty)
+    st = invariants.State(obj, rgt, par, bdg, oty, slot)
 
     pre = [
         z3.ForAll([i], z3.Implies(slot(i), wf(st, i))),
@@ -525,7 +515,7 @@ def prove_retype_preserves_O2():
     birth = z3.BitVec("birth", W)
     nty = z3.Int("new_type")
     i = z3.Int("i")
-    st = (obj, rgt, par, bdg, oty)
+    st = invariants.State(obj, rgt, par, bdg, oty, slot)
 
     pre = [
         z3.ForAll([i], z3.Implies(slot(i),
@@ -543,11 +533,11 @@ def prove_retype_preserves_O2():
                                   obj[i] != noid)),
     ]
 
-    post = (z3.Store(obj, dst, noid),
-            z3.Store(rgt, dst, birth),
-            z3.Store(par, dst, ut),
-            z3.Store(bdg, dst, z3.BitVecVal(0, W)),   # born unbadged
-            z3.Store(oty, noid, nty))
+    post = invariants.State(z3.Store(obj, dst, noid),
+                            z3.Store(rgt, dst, birth),
+                            z3.Store(par, dst, ut),
+                            z3.Store(bdg, dst, z3.BitVecVal(0, W)),  # unbadged
+                            z3.Store(oty, noid, nty), slot)
 
     j = z3.Int("j")
     prove("O2  retype preserves it — every creation edge names an Untyped",
@@ -581,7 +571,7 @@ def prove_revoke_clears_the_subtree():
     obj, rgt, par, bdg, oty = new_state("v")
     root = z3.Int("root")
     i = z3.Int("i")
-    st = (obj, rgt, par, bdg, oty)
+    st = invariants.State(obj, rgt, par, bdg, oty, slot)
 
     def anc_within(k, x):
         """`x` has `root` among its first k ancestors."""

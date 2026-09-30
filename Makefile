@@ -427,7 +427,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_main.c
 TEST_UNIT_BIN   := $(BUILD_DIR)/test_unit
 
-.PHONY: spec-driver spec-differential spec-rights spec-prove smoke-verified all dirs run run-headless clean help check check-abi check-purity smoke smoke-runtime smoke-runtime-selftests smoke-stage10 smoke-net-virtio smoke-persist smoke-screen config-sync test-unit
+.PHONY: spec-driver spec-differential spec-rights spec-prove spec-bridge smoke-verified all dirs run run-headless clean help check check-abi check-purity smoke smoke-runtime smoke-runtime-selftests smoke-stage10 smoke-net-virtio smoke-persist smoke-screen config-sync test-unit
 
 all: config-sync $(BOOT_APP) $(KERNEL_DST)
 
@@ -1403,7 +1403,7 @@ SPEC_DRIVER_SRCS := spec/spec_driver.c tests/kernel/stubs.c \
 $(SPEC_DRIVER_BIN): $(SPEC_DRIVER_SRCS) | dirs
 	gcc $(TEST_UNIT_CFLAGS) $(SPEC_DRIVER_SRCS) -o $@
 
-.PHONY: spec-driver spec-differential spec-rights spec-prove
+.PHONY: spec-driver spec-differential spec-rights spec-prove spec-bridge
 spec-driver: $(SPEC_DRIVER_BIN)
 
 spec-differential: $(SPEC_DRIVER_BIN)
@@ -1438,6 +1438,19 @@ spec-rights: $(SPEC_RIGHTS_BIN)
 .PHONY: spec-prove
 spec-prove:
 	@python3 spec/prove.py
+
+# The link between what is PROVED and what is TESTED, and it was missing.
+# `spec/invariants.py` holds the predicates once; `spec-prove` instantiates
+# them symbolically and proves them, and this lane instantiates the SAME
+# definitions concretely on states real traces built and requires them to
+# agree with `authority_model.py`'s independently written checkers.
+#
+# Without it the two sides could drift with every lane still green, and the
+# proved side is the one no hardware executes — the worse of the two to have
+# wrong, because it is the one that looks strongest.
+.PHONY: spec-bridge
+spec-bridge:
+	@python3 spec/bridge.py $${SPEC_BRIDGE_STATES:-400}
 
 smoke-verified:
 	@echo "== IRIS-V: the verified configuration (uniprocessor, no IOMMU) =="
