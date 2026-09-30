@@ -280,6 +280,12 @@ static void dump(void) {
             if (g_objs[oi] == seen[k]) { named_tracked++; break; }
     }
     printf("live %u named %u\n", g_alive, named_tracked);
+    /*
+     * D-7's mechanism, measured: how many slots seL4's isFinalCapability
+     * calls final.  The model counts the objects exactly one slot names,
+     * which is the same number if the predicate is right.
+     */
+    printf("final %u\n", kcnode_count_final_caps(g_cn, NCNODES));
 }
 
 int main(void) {

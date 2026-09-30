@@ -1101,6 +1101,33 @@ The test suite was the last holder, and converting it took one change rather tha
 **Three things the migration found, none of them in the kernel's IPC path.**  The suite's per-thread frames first came from its rotating object pool, which DELETES the slot it is about to reuse, and from the Untyped several tests REVOKE — either takes a live buffer's capability away from a running thread, and the kernel panicked on an active-reference underflow within three tests.  They have a pool and a CNode of their own now, which is the right shape regardless: an IPC buffer outlives every operation in a test, so borrowing a slot with a shorter life than the thing put in it was the mistake.  Slot 0 of a CNode is the null slot and refuses publication.  And T313's gauge leg compared against a sample taken at the top of the test, which made it an assertion about how many other threads happened to be alive; it is measured around the act now.  T313's fourth leg asserts the fallback still behaves (an oversized payload clamps to the kernel constant), so the old path cannot rot unobserved while it survives |
 | D-7 | **Object lifetime is REFERENCE COUNTED, not derivation-driven** (permanence WITHDRAWN, charter §5, Stage V) | Every `KObject` carries two atomic counters — `refcount` (lifecycle) and `active_refs` (published/CSpace) — and a `close`/`destroy` pair fired when each reaches zero (`kobject.c`).  An object dies when the last reference goes, wherever that reference lived | seL4 has NO per-object reference count.  An object exists while a capability to it exists, and dies when its Untyped is revoked or its last cap is deleted; `cteDelete`/`finaliseCap` walk the derivation tree, and ZOMBIE capabilities make a long deletion preemptible | Refcounting is a strictly weaker collector than the derivation tree, and the difference is not theoretical — it is the CAUSE of three entries this ledger already records as separate incidents.  **(1)** The CSpace-cycle row above: a CNode reachable only through another CNode keeps its own count above zero and is uncollectable.  seL4 does not have this problem because it does not count.  **(2)** The self-naming-slot defect Stage 7-proc fixed — a slot naming its own CNode took an ACTIVE reference, so the count never fell and the root CSpace never emptied — was a refcount lie, and the fix (take no active ref on a self-naming slot) is a special case bolted onto the counter rather than a property of the model.  **(3)** It is why `KProcess` had to break the root-CSpace cycle pre-emptively, at a moment it knew because it counted threads.  It also costs 8 bytes of atomics per object and an acquire fence per release | **SEMANTICS MET, MEASURED, and now CHECKED AGAINST THE C over 4084101 traces; the gap is MECHANISM.**  D-7's target — *an object is alive exactly while a capability names it* — was stated in the model and asserted of the model, and nothing asserted it of the KERNEL.  `spec_driver.c` could not: its destructor was a no-op and its objects were never freed, so the one question this row is about had no answer there.  It has one now.  The destructor marks the object dead, the dump carries `live` beside `named`, and the model computes the same figure the other way — by walking the CSpace — so every trace in `spec-differential` and all 194481 in `spec-exhaustive` (4084101 at depth 5) assert the two agree.  A whole-trace form runs at every `reset`: all slots deleted, and anything still alive prints `LEAK`, inside the compared region so it cannot be dropped.  **Nothing has disagreed.**  That does not retire the refcount — the mechanism is still two counters where seL4 has none, and the three incidents this row lists are still why that matters — but the property those incidents violated is now a checked one rather than a hoped-for one, and it is the measurement that has to pass before the mechanism can go.
 
+**And building the MECHANISM found why it could not have worked.**  What
+replaces `active_refs` is seL4's `isFinalCapability` — no MDB neighbour names
+this slot's object, so deleting it finalises the object — and
+`kcnode_slot_is_final_cap` now implements it.  Neighbour-local is sound only
+while every capability to one object is CONNECTED in the tree, which
+derivation gives for free (a derivation child names its parent's object, O2,
+proved by `make spec-prove`).
+
+IRIS severed it in one place.  Deleting a ROOT promoted its children and
+cleared `mdb_parent`, `mdb_next_sib` AND `mdb_prev_sib`, so two children of one
+root, both naming one object, became two roots that could not see each other —
+and the predicate called BOTH final, which would finalise the object while the
+other still named it.  The differential found it in four operations:
+`seed 8 0 ; mint 8 7 2 42 ; mint 8 22 1 0 ; delete 8` — model `final 0`,
+kernel `final 2`.
+
+Nothing had noticed because IRIS answers "is this the last capability?" with a
+count, and a count does not care how the tree is shaped.  That is D-7's whole
+thesis, demonstrated: **the refcount was hiding a structural defect in the
+CDT, not merely duplicating it.**  Promotion keeps the siblings linked now, and
+`mdb_audit`'s rule "a root belongs to no sibling list" — IRIS's MDB as a forest
+of ISOLATED roots, where seL4's is connected — went with it, replaced by a
+STRONGER one: sibling bidirectionality is checked for every node including
+roots, where it had been checked only for nodes with a parent, plus a new check
+that a sibling list never mixes roots with non-roots.  The predicate agrees
+with ground truth on 4084101 traces at depth 5.
+
 Four tests, and they were written in the order that made each one answerable.
 
 **T322 — the rule itself, for every type RETYPE2 can make.**  Retype into slot A, copy into B, delete A: the region must still refuse to RESET.  Delete B: it must reset.  That is seL4's lifetime rule stated so it can be checked — an object exists exactly while a capability names it — and all ten types pass, including the two expected to be exceptions (a TCB and a VSpace).  A counter that over-counts fails the second half; one that under-counts fails the first.

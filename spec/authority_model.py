@@ -564,6 +564,19 @@ class AuthorityModel:
                      if not self.slots[i].empty
                      and self.slots[i].obj in self.seeded})
         out.append("live %d named %d" % (named, named))
+        #
+        # D-7's mechanism: how many capabilities are the LAST one to their
+        # object.  seL4 answers this from the MDB neighbourhood
+        # (`isFinalCapability`); the model answers it by counting, which is
+        # ground truth.  The driver prints the kernel's neighbour-local
+        # answer beside it, so a disagreement is the predicate being wrong —
+        # and the predicate is what has to replace `active_refs` before D-7
+        # can be retired at all.
+        #
+        from collections import Counter
+        cnt = Counter(self.slots[i].obj for i in self.slots
+                      if not self.slots[i].empty)
+        out.append("final %d" % sum(1 for o in cnt if cnt[o] == 1))
         return "\n".join(out)
 
 

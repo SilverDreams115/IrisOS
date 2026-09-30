@@ -327,4 +327,15 @@ void kcnode_cascade_drain_slice(void);
 /* Non-zero while teardown is still owed. */
 int kcnode_cascade_pending(void);
 
+/*
+ * seL4's isFinalCapability: no MDB neighbour names this slot's object, so
+ * deleting it finalises the object.  The predicate D-7's retirement needs in
+ * place of `active_refs`.  `mdb_lock` held by the caller.
+ */
+int kcnode_slot_is_final_cap(const struct KCSlot *s);
+
+/* How many occupied slots across `cns` the predicate calls final; takes
+ * `mdb_lock` itself.  For the differential. */
+uint32_t kcnode_count_final_caps(struct KCNode *const *cns, uint32_t ncn);
+
 #endif /* IRIS_NC_KCNODE_H */

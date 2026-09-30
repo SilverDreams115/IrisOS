@@ -233,19 +233,39 @@ static void mdb_detach_reparent(struct KCSlot *s) {
         } else {
             /* Root deletion: no surviving ancestor — promote children.
              * A promoted child stops being a "derived live" node. */
-            struct KCSlot *c = child;
             /*
-             * BOUND: as above, the child list of one slot; each pass unlinks one child, so
-             * the list strictly shrinks.
+             * The promoted children stay SIBLINGS of each other.
+             *
+             * This used to clear `mdb_next_sib` and `mdb_prev_sib` too, so a
+             * root with two children naming one object left two roots naming
+             * one object with no link between them — the only place in the
+             * MDB where capabilities to the same object become mutually
+             * invisible.  Nothing noticed, because IRIS answers "is this the
+             * last capability?" with a reference count, which does not care
+             * how the tree is shaped.
+             *
+             * seL4 answers it from the tree (`isFinalCapability`), and that is
+             * what D-7's retirement has to replace `active_refs` with.  The
+             * predicate is neighbour-local and sound only while every
+             * capability to one object is CONNECTED; severing these broke
+             * exactly that, and `kcnode_slot_is_final_cap` called both of the
+             * two roots final — which would finalise the object while the
+             * other still named it.
+             *
+             * Found by the differential in four operations:
+             *   seed 8 0 ; mint 8 7 2 42 ; mint 8 22 1 0 ; delete 8
+             *
+             * Only the parent link goes; `mdb_unlink_from_parent` already
+             * handles a sibling list with no parent (no head pointer to
+             * update, and it repairs `next->prev`).
+             *
+             * BOUND: the child list of one slot — occupied slots, `mdb_lock`
+             * held, and the list is not modified while it walks.
              */
-            while (c) {
-                struct KCSlot *next = c->mdb_next_sib;
-                c->mdb_parent   = 0;
-                c->mdb_next_sib = 0;
-                c->mdb_prev_sib = 0;
+            for (struct KCSlot *c = child; c; c = c->mdb_next_sib) {
+                c->mdb_parent = 0;
                 atomic_fetch_add_explicit(&mdb_orphan_promotions, 1u, memory_order_relaxed);
                 atomic_fetch_sub_explicit(&cdt_derived_live, 1u, memory_order_relaxed);
-                c = next;
             }
         }
         s->mdb_first_child = 0;
@@ -463,6 +483,60 @@ static void kcnode_cascade(struct KCNode *cn) {
      * drained at the dispatcher's preemption point.
      */
     (void)kcnode_cascade_drain(IRIS_CASCADE_SLICE - 1u);
+}
+
+/*
+ * ── seL4's isFinalCapability, which is what D-7 needs instead of a count ───
+ *
+ * "An object exists exactly while a capability names it" is decidable from
+ * the derivation tree, and seL4 decides it here: a capability is FINAL when no
+ * MDB neighbour names the same object, so deleting it finalises the object.
+ * That predicate is what replaces IRIS's `active_refs`, and until it exists
+ * and is known correct, D-7 cannot be retired whatever the charter says.
+ *
+ * Neighbour-local is sound only if every capability to one object is
+ * CONNECTED in the tree, which derivation gives for free: a derivation child
+ * names its parent's object (charter O2, proved by `make spec-prove`), while a
+ * retype child names a new one.  So the capabilities to an object form a
+ * connected subtree and its boundary is visible from any member.
+ *
+ * `mdb_lock` must be held.
+ */
+int kcnode_slot_is_final_cap(const struct KCSlot *s) {
+    if (!s || !s->object) return 0;
+    const struct KObject *o = s->object;
+
+    if (s->mdb_parent && s->mdb_parent->object == o) return 0;
+    /* BOUND: one slot's child list — occupied slots; `mdb_lock` held. */
+    for (const struct KCSlot *c = s->mdb_first_child; c; c = c->mdb_next_sib)
+        if (c->object == o) return 0;
+    /* BOUND: the sibling list from here forward — occupied slots. */
+    for (const struct KCSlot *c = s->mdb_next_sib; c; c = c->mdb_next_sib)
+        if (c->object == o) return 0;
+    /* BOUND: the same list backwards — occupied slots. */
+    for (const struct KCSlot *c = s->mdb_prev_sib; c; c = c->mdb_prev_sib)
+        if (c->object == o) return 0;
+    return 1;
+}
+
+/*
+ * How many occupied slots the predicate above calls final.
+ *
+ * Exists so the differential can compare it with the number of objects that
+ * exactly one slot names, which the model computes by counting.  If the
+ * predicate is right the two are equal: an object named once contributes one
+ * final slot, an object named more contributes none.
+ */
+uint32_t kcnode_count_final_caps(struct KCNode *const *cns, uint32_t ncn) {
+    uint32_t n = 0;
+    uint64_t f = irq_spinlock_lock(&mdb_lock);
+    for (uint32_t i = 0; i < ncn; i++) {
+        if (!cns[i]) continue;
+        for (uint32_t k = 0; k < cns[i]->slot_count; k++)
+            if (kcnode_slot_is_final_cap(&cns[i]->slots[k])) n++;
+    }
+    irq_spinlock_unlock(&mdb_lock, f);
+    return n;
 }
 
 void kcnode_obj_close(struct KObject *obj) {
@@ -1319,8 +1393,24 @@ uint32_t kcnode_mdb_validate(struct KCNode **set, uint32_t n,
             if (!s->mdb_parent) {
                 r.roots++;
                 if (s->mdb_flags & MDB_FLAG_UNPARENTED) r.unparented_roots++;
-                /* A root belongs to no sibling list. */
-                if (s->mdb_next_sib || s->mdb_prev_sib) r.errors++;
+                /*
+                 * A root MAY belong to a sibling list.
+                 *
+                 * This read "a root belongs to no sibling list" and counted an
+                 * error otherwise, which is IRIS's MDB as a forest of ISOLATED
+                 * roots.  seL4's is connected, and the difference is not
+                 * cosmetic: `isFinalCapability` is neighbour-local and sound
+                 * only while every capability to one object can see the
+                 * others.  Root promotion severed exactly that — two children
+                 * of a deleted root, both naming one object, became two roots
+                 * that could not see each other — so the predicate called both
+                 * of them final.
+                 *
+                 * Promotion keeps them linked now, so this rule went with it.
+                 * What replaces it is stronger, not weaker: the sibling list's
+                 * bidirectionality is checked for roots too, below, where
+                 * before it was checked only for slots that had a parent.
+                 */
             } else {
                 struct KCSlot *p = s->mdb_parent;
                 if (!p->object) r.errors++;              /* parent must be live */
@@ -1332,11 +1422,17 @@ uint32_t kcnode_mdb_validate(struct KCNode **set, uint32_t n,
                         if (c == s) seen++;
                     if (seen != 1u) r.errors++;
                 }
-                /* sibling list bidirectionality */
-                if (s->mdb_next_sib && s->mdb_next_sib->mdb_prev_sib != s) r.errors++;
-                if (s->mdb_prev_sib && s->mdb_prev_sib->mdb_next_sib != s) r.errors++;
+                /* A non-root at the head of its list must BE its parent's
+                 * first child.  Roots have no head pointer to agree with. */
                 if (!s->mdb_prev_sib && p->mdb_first_child != s) r.errors++;
             }
+            /* Sibling bidirectionality, for every node including roots. */
+            if (s->mdb_next_sib && s->mdb_next_sib->mdb_prev_sib != s) r.errors++;
+            if (s->mdb_prev_sib && s->mdb_prev_sib->mdb_next_sib != s) r.errors++;
+            /* A sibling list never mixes roots with non-roots: promotion moves
+             * a whole list at once, so both ends agree about having a parent. */
+            if (s->mdb_next_sib &&
+                (!s->mdb_parent) != (!s->mdb_next_sib->mdb_parent)) r.errors++;
             /* children's parent pointers must point back at s */
             /* BOUND: one slot's child list — occupied slots; `mdb_lock` held. */
             for (struct KCSlot *c = s->mdb_first_child; c; c = c->mdb_next_sib) {
