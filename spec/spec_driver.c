@@ -149,6 +149,10 @@ uint64_t sys_untyped_retype2(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3)
 uint64_t sys_cspace_mint(uint64_t a0, uint64_t a1, uint64_t a2);
 uint64_t sys_cspace_move(uint64_t a0, uint64_t a1, uint64_t a2);
 uint64_t sys_cspace_rotate(uint64_t a0, uint64_t a1, uint64_t a2);
+uint64_t sys_cspace_revoke(uint64_t a0, uint64_t a1, uint64_t a2);
+uint64_t sys_cnode_delete(uint64_t a0, uint64_t a1, uint64_t a2);
+uint64_t sys_cap_identify(uint64_t a0, uint64_t a1, uint64_t a2);
+uint64_t sys_cap_same_object(uint64_t a0, uint64_t a1, uint64_t a2);
 
 /* A seeded object needs SOME type; the trace picks one and nothing here
  * depends on which, because the authority model does not. */
@@ -335,6 +339,24 @@ int main(void) {
             if (a >= SPC || b >= SPC) continue;
             printf("r %d\n", (int)(long)(int64_t)sys_cspace_move(
                        (uint64_t)a, (uint64_t)0u | ((uint64_t)b << 32), 0));
+        } else if (!strcmp(op, "srevoke") && sscanf(line, "%*s %u", &a) == 1) {
+            if (a >= SPC) continue;
+            printf("r %d\n", (int)(long)(int64_t)sys_cspace_revoke((uint64_t)a, 0, 0));
+        } else if (!strcmp(op, "sdelete") && sscanf(line, "%*s %u", &a) == 1) {
+            if (a >= SPC) continue;
+            /* cptr 0 addresses the caller's own root; arg1 is the slot. */
+            printf("r %d\n", (int)(long)(int64_t)sys_cnode_delete(0, (uint64_t)a, 0));
+        } else if (!strcmp(op, "ident") && sscanf(line, "%*s %u", &a) == 1) {
+            /* A QUERY, and it is in the trace for the same reason the return
+             * codes are: "what does this slot hold" is a fact both sides must
+             * agree about, and it is observable where the dump's canonical
+             * numbering is not. */
+            if (a >= SPC) continue;
+            printf("r %d\n", (int)(long)(int64_t)sys_cap_identify((uint64_t)a, 0, 0));
+        } else if (!strcmp(op, "same") && sscanf(line, "%*s %u %u", &a, &b) == 2) {
+            if (a >= SPC || b >= SPC) continue;
+            printf("r %d\n", (int)(long)(int64_t)sys_cap_same_object(
+                       (uint64_t)a, (uint64_t)b, 0));
         } else if (!strcmp(op, "revoke") &&
                    sscanf(line, "%*s %u", &a) == 1) {
             uint32_t n = 0;

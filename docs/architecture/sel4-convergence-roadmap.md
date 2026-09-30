@@ -3990,8 +3990,8 @@ model.
 |---|---|---|
 | **0 — the boundary** | `IRIS_VERIFIED_CONFIG`, `make IRIS_VERIFIED=1`, `make smoke-verified`, the charter amendment | ✅ **CLOSED.**  IRIS-V builds, boots uniprocessor with no IOMMU, and passes `SUITE PASS 325/325` |
 | **1 — the executable specification** | `spec/authority_model.py`, `spec/spec_driver.c`, `spec/differential.py`, `spec/shrink.py`, `make spec-differential` | ✅ **CLOSED.**  Random traces drive the model and the real `kcnode.c`/`cspace.c`/`kobject.c` and the states are compared exactly; every charter invariant is checked against the model after every trace |
-| **2 — the provable core** | D-7 retired (lifetime by CDT, not by counter), D-3 specified, D-12 closed, zero function pointers, every loop with its bound written, core ≤ 12k lines | — (scoped; see below) |
-| **3 — the abstract specification** | Isabelle/HOL; the 37 invariants as theorems | — |
+| **2 — the provable core** | D-7 retired (lifetime by CDT, not by counter), D-3 specified, D-12 closed, zero function pointers, every loop with its bound written, core ≤ 12k lines | ◐ **D-3's definitional half CLOSED** (`make spec-rights`, exhaustive).  The rest is blocked, and each blocker is measured below rather than estimated |
+| **3 — the abstract specification** | Isabelle/HOL; the 37 invariants as theorems | ◐ **WRITTEN, UNCHECKED.**  `spec/isabelle/IRIS_Authority.thy` states the CSpace half; no Isabelle exists on this machine, so not one lemma has been through a prover, and they end in `oops` rather than `sorry` so nothing can build on them as if they held |
 | **4 — the refinement** | `abstract ⊑ executable ⊑ C`, in the gate | — |
 | **5 — beyond functional correctness** | integrity, information flow, binary verification | — |
 
@@ -4122,6 +4122,37 @@ for it separately.
 
 **4500 traces across two seed spaces** with both layers in the language.
 
+### The whole CSpace door, and what the queries settled
+
+`srevoke`, `sdelete`, `ident` and `same` complete the CSpace syscall
+surface in the trace language: seven labels now driven through the door a
+ring-3 caller uses — `CSPACE_MINT`, `CSPACE_MOVE`, `CSPACE_REVOKE`,
+`CNODE_DELETE`, `CAP_IDENTIFY`, `CAP_SAME_OBJECT` and `UNTYPED_RETYPE` —
+alongside the primitives underneath them.  That is the first real instalment
+of D-3's catalogue half: for these seven, what each requires and what each
+answers is no longer defined only in the handler.
+
+The queries are in the trace for the same reason the return codes are.
+*"What does this slot hold"* and *"do these two capabilities name one
+object"* are facts both implementations must agree about, and they are
+observable where the dump's canonical numbering is not.
+
+Two rules fell out:
+
+- **CPtr 0 means two different things depending on its position.**  Invoked,
+  it is the null capability and naming it is `INVALID_ARG` — `identify`,
+  `same_object` and `revoke` all say so.  As an ARGUMENT, it is an ordinary
+  slot index: `CNODE_DELETE` takes the slot in `arg1`, and deleting slot 0
+  succeeds like deleting any empty slot.  Nothing can ever be PUBLISHED
+  there, and the slot still exists.
+- **`SYS_CSPACE_REVOKE` answers the COUNT it destroyed, not a status.**  Zero
+  is a perfectly good answer for a capability nobody derived, so a caller
+  reading it as a status sees success as failure — a mistake this project
+  has already made once, in `objreg`.  The model returned OK; the kernel
+  returned 1.
+
+**5000 traces across two seed spaces** with the full door in the language.
+
 ### What phase 1 still does NOT cover
 
 IPC, and two-level CSpace addressing.  `retype` reaches only CNode 0, because
@@ -4130,7 +4161,27 @@ are their own piece of work.  IPC needs the rest of the syscall layer, and
 `spec_driver.c` ABORTS rather than answering plausibly if a CSpace operation
 ever reaches it — the gap is loud rather than silent.
 
-### Phase 2, scoped rather than started
+### Phase 3, written and not checked
+
+`spec/isabelle/IRIS_Authority.thy` states the state, the rights algebra, the
+four CSpace operations and their order of refusal, and the invariants A7, A8,
+A9, O2 and the D-7 liveness target as definitions — then the preservation
+theorems as obligations.  **Not one is proved**, and the README says so
+twice, because a directory of unchecked theory files next to a charter full
+of MET rows is exactly how "reviewed" and "proved" get blurred.
+
+It is worth having anyway because it is not a guess: the same model exists as
+`spec/authority_model.py`, which is driven through the real C over thousands
+of traces, so the Isabelle is that specification in the language phase 4
+needs rather than a fresh reading of the kernel.  That is the order seL4
+used, and the reason its C could be written against something.
+
+`P1`–`P3` are listed there as obligations no refinement can discharge: they
+are statements about WHERE code lives, and a proof can show the kernel does
+what its specification says without showing that the specification contains
+no policy.  That judgement stays with review and `check-purity`.
+
+### Phase 2, and the measurements that block what is left
 
 The measurements that decide how it is done, taken so the next person does
 not have to take them again:

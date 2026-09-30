@@ -100,6 +100,7 @@ class AuthorityModel:
         self.slots = {i: Slot() for i in range(ncnodes * slots_per_cnode)}
         self.objs: dict = {}
         self._next_oid = 1
+        self.last_revoked = 0
 
     # ── helpers ────────────────────────────────────────────────────────────
     def _new_obj(self, type_: str) -> int:
@@ -375,6 +376,71 @@ class AuthorityModel:
             return ERR_INVALID_ARG
         return self.mint(src_sid, dst_sid, rights, badge)
 
+    # The wire values `CAP_IDENTIFY` answers: the enumerator's VALUE is the
+    # ABI, which is why `kobject.h` keeps KOBJ_PROCESS and KOBJ_VMO reserved
+    # after deleting the objects — renumbering would change what every other
+    # capability calls itself.
+    TYPE_WIRE = {T_NOTIFICATION: 2, T_ENDPOINT: 8, T_CNODE: 9,
+                 T_SC: 10, T_UNTYPED: 11, T_REPLY: 12}
+
+    def identify(self, sid: int) -> int:
+        """
+        `SYS_CAP_IDENTIFY` — what a slot holds, asked of the kernel.
+
+        CPtr 0 is INVALID_ARG, not NOT_FOUND, and the distinction is the one
+        that runs through this whole layer: **the same number means two
+        different things depending on its position.**  Invoked, 0 is the null
+        capability and naming it is malformed.  As an ARGUMENT — the slot
+        index `SYS_CNODE_DELETE` takes — 0 is an ordinary slot, and deleting
+        it succeeds like deleting any empty slot.
+        """
+        s = self.slots.get(sid)
+        if s is None or sid == 0:
+            return ERR_INVALID_ARG
+        if s.empty:
+            return ERR_NOT_FOUND
+        return self.TYPE_WIRE[self.objs[s.obj].type]
+
+    def same_object(self, a_sid: int, b_sid: int) -> int:
+        """
+        `SYS_CAP_SAME_OBJECT` — do two capabilities name one object?
+
+        The question a holder cannot answer by comparing numbers, which is
+        the whole reason it is a syscall: two CPtrs into different CNodes,
+        with different rights and different badges, may be the same object,
+        and only the kernel knows.
+        """
+        a = self.slots.get(a_sid)
+        b = self.slots.get(b_sid)
+        if a is None or b is None or a_sid == 0 or b_sid == 0:
+            return ERR_INVALID_ARG      # invoked: the null capability
+        if a.empty or b.empty:
+            return ERR_NOT_FOUND
+        return 1 if a.obj == b.obj else 0
+
+    def syscall_revoke(self, sid: int) -> int:
+        """`SYS_CSPACE_REVOKE` — the revoke as ring 3 reaches it."""
+        if sid == 0:
+            return ERR_INVALID_ARG      # invoked: the null capability
+        r = self.revoke(sid)
+        if r != OK:
+            return r
+        # `SYS_CSPACE_REVOKE` answers the COUNT it destroyed, not a status.
+        # Zero is a perfectly good answer for a capability nobody derived, so
+        # a caller that reads it as a status sees success as failure — which
+        # is a mistake this project has already made once, in `objreg`.
+        return self.last_revoked
+
+    def syscall_delete(self, sid: int) -> int:
+        """
+        `SYS_CNODE_DELETE` on the caller's own root.
+
+        Slot 0 IS addressable here — it is arg1, an index, not the invoked
+        capability — so deleting it succeeds like deleting any empty slot.
+        Nothing can ever be published there, but the slot exists.
+        """
+        return self.delete(sid)
+
     def delete(self, sid: int) -> int:
         """
         Empty one slot. Its children are REPARENTED to its parent, so no
@@ -416,10 +482,12 @@ class AuthorityModel:
             # differential disagreed on its first trace once RETURN CODES were
             # compared and not only states, which is the whole reason they are.
             return ERR_NOT_FOUND
-        for d in self._descendants(sid):
+        victims = self._descendants(sid)
+        for d in victims:
             self.slots[d].children.clear()
             self._clear(d)
         s.children.clear()
+        self.last_revoked = len(victims)
         return OK
 
     def ut_reset(self, ut_sid: int) -> int:

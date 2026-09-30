@@ -97,6 +97,19 @@ def gen_trace(rng, nops):
                 ops.append("smove %d %d" % (src % SPC, dst))
             if dst not in occupied:
                 occupied.append(dst)
+        elif r < 0.62:
+            # the read-only queries: what a slot holds, and whether two
+            # capabilities name one object
+            if rng.random() < 0.5:
+                ops.append("ident %d" % rng.randrange(SPC))
+            else:
+                ops.append("same %d %d" % (rng.randrange(SPC),
+                                           rng.randrange(SPC)))
+        elif r < 0.70:
+            if rng.random() < 0.5:
+                ops.append("srevoke %d" % (rng.choice(occupied) % SPC))
+            else:
+                ops.append("sdelete %d" % (rng.choice(occupied) % SPC))
         elif r < 0.85:
             ops.append("delete %d" % rng.choice(occupied))
         else:
@@ -127,6 +140,14 @@ def run_model(ops):
                                           int(f[3]), int(f[4])))
         elif f[0] == "smove":
             results.append(m.move(int(f[1]), int(f[2])))
+        elif f[0] == "srevoke":
+            results.append(m.syscall_revoke(int(f[1])))
+        elif f[0] == "sdelete":
+            results.append(m.syscall_delete(int(f[1])))
+        elif f[0] == "ident":
+            results.append(m.identify(int(f[1])))
+        elif f[0] == "same":
+            results.append(m.same_object(int(f[1]), int(f[2])))
         elif f[0] == "delete":
             results.append(m.delete(int(f[1])))
         elif f[0] == "revoke":
