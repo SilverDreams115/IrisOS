@@ -256,6 +256,32 @@ int main(void) {
         if (sscanf(line, "%15s", op) != 1) continue;
 
         /*
+         * `reset` — end this trace, print its dump, and empty the CSpace so
+         * the next one starts clean in the SAME process.
+         *
+         * Exhaustive enumeration (`spec/exhaustive.py`) runs tens of
+         * thousands of short traces, and a process launch per trace costs
+         * more than the trace does.  The reset DELETES every slot rather
+         * than reallocating the CNodes, so the objects are freed through the
+         * ordinary lifecycle and nothing leaks across traces — which matters
+         * when there are 38416 of them and the page allocator is finite.
+         *
+         * Deleting every slot of every CNode also exercises teardown far
+         * harder than the random lane does: it is the only thing here that
+         * empties a populated CSpace completely, every single time.
+         */
+        if (!strcmp(op, "reset")) {
+            printf("--\n");
+            dump();
+            printf("==\n");
+            for (unsigned ci = 0; ci < NCNODES; ci++)
+                for (unsigned si = 0; si < SPC; si++)
+                    (void)kcnode_slot_delete(g_cn[ci], si);
+            fflush(stdout);
+            continue;
+        }
+
+        /*
          * Every operation's RESULT is printed, not just the final state.
          *
          * Comparing states alone misses a whole class: an operation the

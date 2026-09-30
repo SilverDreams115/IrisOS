@@ -427,7 +427,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_main.c
 TEST_UNIT_BIN   := $(BUILD_DIR)/test_unit
 
-.PHONY: spec-driver spec-differential spec-rights spec-prove spec-bridge smoke-verified all dirs run run-headless clean help check check-abi check-purity smoke smoke-runtime smoke-runtime-selftests smoke-stage10 smoke-net-virtio smoke-persist smoke-screen config-sync test-unit
+.PHONY: spec-driver spec-differential spec-rights spec-prove spec-bridge spec-exhaustive smoke-verified all dirs run run-headless clean help check check-abi check-purity smoke smoke-runtime smoke-runtime-selftests smoke-stage10 smoke-net-virtio smoke-persist smoke-screen config-sync test-unit
 
 all: config-sync $(BOOT_APP) $(KERNEL_DST)
 
@@ -1403,7 +1403,7 @@ SPEC_DRIVER_SRCS := spec/spec_driver.c tests/kernel/stubs.c \
 $(SPEC_DRIVER_BIN): $(SPEC_DRIVER_SRCS) | dirs
 	gcc $(TEST_UNIT_CFLAGS) $(SPEC_DRIVER_SRCS) -o $@
 
-.PHONY: spec-driver spec-differential spec-rights spec-prove spec-bridge
+.PHONY: spec-driver spec-differential spec-rights spec-prove spec-bridge spec-exhaustive
 spec-driver: $(SPEC_DRIVER_BIN)
 
 spec-differential: $(SPEC_DRIVER_BIN)
@@ -1451,6 +1451,19 @@ spec-prove:
 .PHONY: spec-bridge
 spec-bridge:
 	@python3 spec/bridge.py $${SPEC_BRIDGE_STATES:-400}
+
+# The model against the real C over EVERY trace of length <= N, not 200 random
+# ones.  `spec-differential` samples; this is total over a bounded domain, and
+# it is the only lane that says something exhaustive about the KERNEL rather
+# than about a model of it.
+#
+# Bounded model checking, which is the standard thing between testing and
+# proof.  It does not prove refinement: a disagreement needing five operations
+# is outside it, which is why the random lane keeps running.  Depth 4 is
+# 194481 traces in ~13 s; SPEC_DEPTH=5 is 4.1M and takes minutes.
+.PHONY: spec-exhaustive
+spec-exhaustive: $(SPEC_DRIVER_BIN)
+	@python3 spec/exhaustive.py $${SPEC_DEPTH:-4}
 
 smoke-verified:
 	@echo "== IRIS-V: the verified configuration (uniprocessor, no IOMMU) =="

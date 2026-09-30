@@ -3992,7 +3992,7 @@ model.
 | **1 — the executable specification** | `spec/authority_model.py`, `spec/spec_driver.c`, `spec/differential.py`, `spec/shrink.py`, `make spec-differential` | ✅ **CLOSED.**  Random traces drive the model and the real `kcnode.c`/`cspace.c`/`kobject.c` and the states are compared exactly; every charter invariant is checked against the model after every trace |
 | **2 — the provable core** | D-7 retired (lifetime by CDT, not by counter), D-3 specified, D-12 closed, zero function pointers, every loop with its bound written, core ≤ 12k lines | ◐ **D-3's definitional half CLOSED** (`make spec-rights`, exhaustive).  The rest is blocked, and each blocker is measured below rather than estimated |
 | **3 — the abstract specification** | Isabelle/HOL; the 37 invariants as theorems | ◐ **WRITTEN; PARTLY PROVED, BY SMT AND NOT BY ISABELLE.**  `spec/isabelle/IRIS_Authority.thy` states the CSpace half and still ends in `oops` — no Isabelle on this machine, so nothing builds on those as if they held.  `make spec-prove` restates the same model for z3 and discharges **28 of 28** reachable obligations over symbolic state: the rights algebra over all 2³² values, and A7/A8/O2/well-formedness preserved by derive, delete-with-reparent and retype for every state and every legal operation, plus A9 relatively (no new cycle) and A10 to depth 4.  Owed: the inductions that lift A9 and A10 to unbounded statements |
-| **4 — the refinement** | `abstract ⊑ executable ⊑ C`, in the gate | ◐ **THE FIRST LINK EXISTS.**  `spec/invariants.py` holds the predicates once; `make spec-prove` proves them symbolically and `make spec-bridge` evaluates the SAME definitions concretely on states real traces built, requiring agreement with `authority_model.py`'s independently written checkers.  `abstract ⊑ executable` is therefore checked rather than assumed.  `executable ⊑ C` is still `spec-differential` — traces, not a refinement proof |
+| **4 — the refinement** | `abstract ⊑ executable ⊑ C`, in the gate | ◐ **THE FIRST LINK EXISTS.**  `spec/invariants.py` holds the predicates once; `make spec-prove` proves them symbolically and `make spec-bridge` evaluates the SAME definitions concretely on states real traces built, requiring agreement with `authority_model.py`'s independently written checkers.  `abstract ⊑ executable` is therefore checked rather than assumed.  `executable ⊑ C` is now TOTAL below a bound: `make spec-exhaustive` runs every trace of length ≤ 4 over a fixed alphabet — 194481 of them, and 4.1M at depth 5 — through the model and the real C, comparing every intermediate result code and every final state.  Bounded model checking, not a refinement proof |
 | **5 — beyond functional correctness** | integrity, information flow, binary verification | — |
 
 ### What phase 1 found in its first sixty traces
@@ -4273,6 +4273,40 @@ claims about the model are what this phase exists to stop.
 
 Both lanes carry a deliberately wrong predicate and fail if it is not caught.
 The bridge's caught it on the first trace.
+
+### Phase 4's second link — the softest claim, made total
+
+After `spec-prove` and `spec-bridge` the chain read: predicates PROVED for
+every symbolic state, those predicates CHECKED to be the model's own, and the
+model AGREEING with the real `kcnode.c` **over 200 random traces**.  Everything
+above the last line was a proof or a total check; the last line was sampling,
+and it was the only line that touched the kernel at all.
+
+`make spec-exhaustive` makes it total below a bound: every sequence of at most
+four operations over a 21-symbol alphabet — **194481 traces**, ~13 s — through
+both sides, compared on every intermediate result code and on every final
+state, with the charter invariants checked after each.  Depth 5 is **4084101
+traces** in ~4.5 minutes and has been run clean.  *No disagreement was found*
+becomes *no disagreement exists, below this bound*.
+
+It is bounded model checking and it is not refinement.  A disagreement needing
+six operations, or a slot index outside the three used, is outside it — which
+is why `spec-differential`'s random traces keep running alongside and why the
+depth is printed on every run.
+
+`spec_driver.c` gained a `reset` operation to make it affordable: it empties
+the CSpace in the same process by DELETING every slot rather than
+reallocating, so nothing leaks across traces.  That is not only speed — it
+means a populated CSpace is torn fully down after every one of the 194481
+traces, which the random lane almost never does.
+
+**The lane was sabotaged before it was believed.**  A model broken to check
+occupancy before authority — the exact ordering phase 1 found the kernel
+disagreeing about — is caught at depth 3 and MISSED at depth 2.  That is the
+bound behaving like a bound.  It also exposed a gap: every mint in the
+alphabet had DUPLICATE on its source, so the rule was only ever caught
+indirectly through the badge ordering, and `mint 2 0 5 0` was added to reach
+it head-on.
 
 ### The rule this stage adds to the project
 

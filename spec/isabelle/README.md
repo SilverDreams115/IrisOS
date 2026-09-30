@@ -25,7 +25,8 @@ reading" are different claims and only one of them is true here.
 | A10 — revoke clears every descendant, spares the root, touches nothing else | **PROVED** to depth 4 | `spec/prove.py` |
 | A10 — the same, unbounded | **owed** | needs induction |
 | the proved predicates are the tested ones | **CHECKED** over 400 real-trace states | `make spec-bridge` |
-| the C refines any of it | **owed**; tested, not proved | `make spec-differential` |
+| the C agrees with the model on every trace of length ≤ 4 | **TOTAL** over that bound — 194481 traces (4.1M at depth 5) | `make spec-exhaustive` |
+| the C refines the model, unbounded | **owed**; tested, not proved | `make spec-differential` |
 
 28 obligations, 28 discharged. "Over symbolic state" means: for every CSpace
 satisfying the invariant and every legal operation on it, not for every CSpace
@@ -42,6 +43,7 @@ make spec-differential   # the model agrees with the real C over N traces
 make spec-rights         # the rights algebra, exhaustive over its space
 make spec-prove          # the invariants, over EVERY state
 make spec-bridge         # the proved predicates ARE the tested ones
+make spec-exhaustive     # the model vs the real C over EVERY short trace
 ```
 
 The fourth exists because the first three left a hole in the middle. `prove.py`
@@ -55,8 +57,13 @@ it turned up one genuine asymmetry between the two readings of A7, which
 
 They are a ladder, and the top of it is still not the top of the ladder.
 `spec-prove` proves the **model**. What connects that model to `kcnode.c` is
-`spec-differential` — thousands of traces where the two agree on the state
-and on every return code — and agreement over traces is evidence, not proof.
+`spec-differential` — thousands of random traces — and `spec-exhaustive`,
+which is total rather than sampled: every sequence of at most four operations
+over a fixed alphabet, compared on every intermediate return code and every
+final state. That is bounded model checking, and it upgrades the weakest link
+from *no disagreement was found* to *no disagreement exists, below this bound*.
+It is still not refinement: a disagreement needing six operations is outside
+it.
 seL4's claim is *model proved AND C refines model proved*. IRIS's is *model
 proved AND C matches model tested*. The gap between those two sentences is
 phase 5, and naming it is cheaper than discovering later that nobody did.
