@@ -164,17 +164,49 @@ static const char *const g_type_names[] = {
     "ep", "notif", "cnode", "ut", "reply", "sc"
 };
 
-static void obj_destroy(struct KObject *o) { (void)o; }
+/*
+ * ── D-7's target property, made observable ─────────────────────────────────
+ *
+ * The ledger's D-7 row says object lifetime is REFERENCE COUNTED where seL4's
+ * is derivation-driven, and that the two "can disagree" — recording three
+ * separate incidents where they did.  Nothing checked it, and this driver
+ * could not: its destructor was a no-op and its objects were never freed, so
+ * the one question D-7 is about — *is this object still alive?* — had no
+ * answer here at all.
+ *
+ * Now it has one.  The destructor still returns no storage, because freeing it
+ * would make the dump depend on the allocator, but it MARKS the object dead
+ * and the live count goes into the dump beside the slots.  The model computes
+ * the same number a completely different way — how many distinct objects at
+ * least one slot names — so every trace in `spec-differential` and all 194481
+ * in `spec-exhaustive` now assert:
+ *
+ *     an object is alive  <=>  a capability names it
+ *
+ * which is D-7's target stated exactly, checked against the real kcnode.c
+ * rather than against the model that already believes it.
+ */
+#define MAX_TRACKED 8192
+static struct KObject *g_objs[MAX_TRACKED];
+static unsigned        g_nobjs;
+static unsigned        g_alive;
+
+static void obj_destroy(struct KObject *o) {
+    (void)o;
+    if (g_alive) g_alive--;
+}
 static const struct KObjectOps g_ops = { .close = NULL, .destroy = obj_destroy };
 
-/* Objects are never freed here: the driver is a short-lived process and a
- * destructor that returned storage would make the dump depend on the
- * allocator.  What matters is whether a SLOT still names one. */
+/* Storage is not returned — see above — but the object is tracked so the
+ * trace can be freed as a whole at `reset`, which is what keeps an exhaustive
+ * run's memory flat across millions of traces. */
 static struct KObject *obj_new(kobject_type_t t) {
     struct KObject *o = (struct KObject *)kpage_alloc((uint32_t)sizeof(*o));
     if (!o) return NULL;
     memset(o, 0, sizeof(*o));
     kobject_init_test(o, t, &g_ops);
+    if (g_nobjs < MAX_TRACKED) g_objs[g_nobjs++] = o;
+    g_alive++;
     return o;
 }
 
@@ -232,6 +264,22 @@ static void dump(void) {
                    s, canon, type_name(sl->object->type),
                    (unsigned)sl->rights, (unsigned long long)sl->badge);
     }
+    /*
+     * D-7: how many objects the KERNEL still considers alive.
+     *
+     * `nseen` above is how many DISTINCT objects the slots name, computed by
+     * walking the CSpace.  `g_alive` is how many the reference counts have not
+     * yet destroyed, computed by counting destructor calls.  The two are
+     * arrived at by completely different means and D-7 says they may diverge —
+     * so the dump carries both, and the model computes the first
+     * independently.  A trace where they differ is the fourth incident.
+     */
+    unsigned named_tracked = 0;
+    for (unsigned k = 0; k < nseen; k++) {
+        for (unsigned oi = 0; oi < g_nobjs; oi++)
+            if (g_objs[oi] == seen[k]) { named_tracked++; break; }
+    }
+    printf("live %u named %u\n", g_alive, named_tracked);
 }
 
 int main(void) {
@@ -273,10 +321,29 @@ int main(void) {
         if (!strcmp(op, "reset")) {
             printf("--\n");
             dump();
-            printf("==\n");
             for (unsigned ci = 0; ci < NCNODES; ci++)
                 for (unsigned si = 0; si < SPC; si++)
                     (void)kcnode_slot_delete(g_cn[ci], si);
+            /*
+             * Every slot is gone, so every object this trace made should be
+             * destroyed — D-7's property applied to the whole trace at once,
+             * and the loudest place to check it.
+             *
+             * Printed BEFORE the `==` separator on purpose: after it, the line
+             * lands in the next segment's result section, where the comparator
+             * keeps only lines beginning "r " and would drop it without a
+             * word.  Inside this segment it is part of the dump, the model has
+             * no such line, and the trace fails.  A leak detector whose output
+             * is discarded is worse than none, because it reads like evidence.
+             */
+            if (g_alive != 0u)
+                printf("LEAK %u objects alive with no slot naming them\n",
+                       g_alive);
+            printf("==\n");
+            for (unsigned oi = 0; oi < g_nobjs; oi++)
+                kpage_free(g_objs[oi], (uint32_t)sizeof(struct KObject));
+            g_nobjs = 0;
+            g_alive = 0;
             fflush(stdout);
             continue;
         }
@@ -316,9 +383,27 @@ int main(void) {
                 o = obj_new(g_types[b % 4u]);
             }
             if (!o) return 2;
-            printf("r %d\n", (int)kcnode_mint(cn_of(a), idx_of(a), o,
-                                              RIGHT_READ | RIGHT_WRITE |
-                                              RIGHT_DUPLICATE | RIGHT_TRANSFER));
+            {
+                int mr = (int)kcnode_mint(cn_of(a), idx_of(a), o,
+                                          RIGHT_READ | RIGHT_WRITE |
+                                          RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                /*
+                 * Drop the BIRTH reference: the slot holds its own now.
+                 *
+                 * Without this the driver kept a reference to everything it
+                 * ever seeded, so no seeded object could ever die and the
+                 * liveness figure above read `live 3 named 2` — which looks
+                 * exactly like the leak D-7 warns about and was the driver
+                 * holding the object up.  The host suites already do this
+                 * (`kcnode_mint(...); kobject_release(marker)`); the driver
+                 * did not, because until now nothing here could tell.
+                 *
+                 * On a FAILED mint this destroys the object, which is right:
+                 * nothing names it.
+                 */
+                if (o->type != KOBJ_UNTYPED) kobject_release(o);
+                printf("r %d\n", mr);
+            }
         } else if (!strcmp(op, "mint") &&
                    sscanf(line, "%*s %u %u %u %u", &a, &b, &c, &d) == 4) {
             if (a >= NSLOTS || b >= NSLOTS) continue;

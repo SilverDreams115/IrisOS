@@ -99,14 +99,31 @@ class AuthorityModel:
         self.spc = slots_per_cnode
         self.slots = {i: Slot() for i in range(ncnodes * slots_per_cnode)}
         self.objs: dict = {}
+        # Objects the TEST fabricated (see `_new_obj`) — the population whose
+        # liveness the driver can observe, and therefore the one D-7's check
+        # compares.
+        self.seeded: set = set()
         self._next_oid = 1
         self.last_revoked = 0
 
     # ── helpers ────────────────────────────────────────────────────────────
-    def _new_obj(self, type_: str) -> int:
+    def _new_obj(self, type_: str, seeded: bool = False) -> int:
+        """
+        `seeded` marks an object the TEST fabricated rather than one a retype
+        carved from an Untyped.
+
+        The distinction exists for D-7 and nothing else: the driver can hook a
+        fabricated object's destructor and count it, and cannot hook a real
+        retyped object's, because that one runs the kernel's own.  So the
+        liveness comparison is over the population both sides can actually
+        see, and saying which population that is beats comparing two different
+        ones and calling the difference a kernel bug — which is what the first
+        version of this did.
+        """
         oid = self._next_oid
         self._next_oid += 1
         self.objs[oid] = Obj(oid, type_)
+        self.seeded.add(oid) if seeded else None
         return oid
 
     def _descendants(self, sid: int):
@@ -239,7 +256,12 @@ class AuthorityModel:
             return ERR_INVALID_ARG
         if not s.empty:
             self.delete(sid)
-        oid = self._new_obj(type_)
+        # An Untyped is NOT in the tracked population: the driver builds one
+        # with `kuntyped_create` over real backing memory, so its destructor is
+        # the kernel's own and cannot be hooked to count.  Excluded on both
+        # sides, and named here so the exclusion is a decision rather than a
+        # coincidence of which branch calls `obj_new`.
+        oid = self._new_obj(type_, seeded=(type_ != T_UNTYPED))
         s.obj, s.rights, s.badge = oid, rights, 0
         s.parent = None
         return OK
@@ -522,6 +544,26 @@ class AuthorityModel:
             out.append("slot %d obj=%d type=%s rights=%d badge=%d parent=%s" % (
                 sid, canon[s.obj], self.objs[s.obj].type, s.rights, s.badge,
                 str(s.parent) if s.parent is not None else "-"))
+        #
+        # D-7's target property, as a NUMBER both sides compute differently.
+        #
+        # `named` is how many distinct objects the slots name — the derivation
+        # model's answer, obtained by walking the CSpace.  The driver prints
+        # the same figure beside `live`, which is how many the KERNEL's
+        # reference counts have not destroyed yet, obtained by counting
+        # destructor calls.  The ledger's D-7 row says those two can diverge
+        # and records three occasions when they did; putting both in the dump
+        # makes every trace in `spec-differential` and all 194481 in
+        # `spec-exhaustive` assert that they do not.
+        #
+        # The model prints them EQUAL by construction, because in the model an
+        # object is alive exactly while a slot names it — that is the whole
+        # claim.  The kernel is where the number can come out different.
+        #
+        named = len({self.slots[i].obj for i in self.slots
+                     if not self.slots[i].empty
+                     and self.slots[i].obj in self.seeded})
+        out.append("live %d named %d" % (named, named))
         return "\n".join(out)
 
 
