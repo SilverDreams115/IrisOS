@@ -17,7 +17,7 @@ static const struct KObjectOps tracked_ops = { .close = NULL, .destroy = tracked
 static struct KObject *make_obj(kobject_type_t type) {
     struct KObject *o = (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
     if (!o) return NULL;
-    kobject_init(o, type, &tracked_ops);
+    kobject_init_test(o, type, &tracked_ops);
     return o;
 }
 

@@ -2177,6 +2177,21 @@ true.
 | 7 | `dom_lock` | global — the domain schedule's cursor |
 | 8 | `CpuRunQueue.lock` | per CPU — **leaf, nothing may be taken under it** |
 
+**The function-pointer blind spot is CLOSED.**  This section used to say a
+lock taken through a function pointer slips through, and the destructor was
+reached through `ops->destroy`.  Destruction dispatches on `obj->type` now
+(`kobject_dispatch_destroy`, a switch in `kobject.c`; the 18 `KObjectOps`
+tables are deleted and `check-purity` fails if one returns to a kernel file),
+so the analysis follows it.
+
+The checker resolves the dispatch by the ARGUMENT at each release site —
+`kobject_release(&ep->base)` can only reach the endpoint's destructor, not the
+union of all of them.  Unresolvable spellings keep the union, which
+over-reports and never under-reports: a checker may cry wolf and must never
+stay silent.  Without that resolution the first run reported 16 inversions, 15
+of them type-impossible.  The 16th was real, is recorded in the ledger, and is
+fixed.
+
 **Enforced**: `make check-locks` (`scripts/check_lock_order.py`) holds the
 table above as data and reports any edge that goes up it, following calls three
 hops deep.  It runs in CI next to the purity gate.  A static check rather than
@@ -3990,7 +4005,7 @@ model.
 |---|---|---|
 | **0 — the boundary** | `IRIS_VERIFIED_CONFIG`, `make IRIS_VERIFIED=1`, `make smoke-verified`, the charter amendment | ✅ **CLOSED.**  IRIS-V builds, boots uniprocessor with no IOMMU, and passes `SUITE PASS 325/325` |
 | **1 — the executable specification** | `spec/authority_model.py`, `spec/spec_driver.c`, `spec/differential.py`, `spec/shrink.py`, `make spec-differential` | ✅ **CLOSED.**  Random traces drive the model and the real `kcnode.c`/`cspace.c`/`kobject.c` and the states are compared exactly; every charter invariant is checked against the model after every trace |
-| **2 — the provable core** | D-7 retired (lifetime by CDT, not by counter), D-3 specified, D-12 closed, zero function pointers, every loop with its bound written, core ≤ 12k lines | ◐ **D-3's definitional half CLOSED** (`make spec-rights`, exhaustive).  The rest is blocked, and each blocker is measured below rather than estimated |
+| **2 — the provable core** | D-7 retired (lifetime by CDT, not by counter), D-3 specified, D-12 closed, zero function pointers, every loop with its bound written, core ≤ 12k lines | ◐ **D-3's definitional half CLOSED** (`make spec-rights`, exhaustive) and **ZERO FUNCTION POINTERS DONE**: destruction dispatches on `obj->type`, the 18 `KObjectOps` tables are deleted, and `check-purity` fails if one returns to a kernel file.  It paid for itself immediately — the lock checker could then follow destructors and named a real rank-1-under-rank-2 inversion.  D-7 and D-12 remain, measured below rather than estimated |
 | **3 — the abstract specification** | Isabelle/HOL; the 37 invariants as theorems | ◐ **WRITTEN; PARTLY PROVED, BY SMT AND NOT BY ISABELLE.**  `spec/isabelle/IRIS_Authority.thy` states the CSpace half and still ends in `oops` — no Isabelle on this machine, so nothing builds on those as if they held.  `make spec-prove` restates the same model for z3 and discharges **28 of 28** reachable obligations over symbolic state: the rights algebra over all 2³² values, and A7/A8/O2/well-formedness preserved by derive, delete-with-reparent and retype for every state and every legal operation, plus A9 relatively (no new cycle) and A10 to depth 4.  Owed: the inductions that lift A9 and A10 to unbounded statements |
 | **4 — the refinement** | `abstract ⊑ executable ⊑ C`, in the gate | ◐ **THE FIRST LINK EXISTS.**  `spec/invariants.py` holds the predicates once; `make spec-prove` proves them symbolically and `make spec-bridge` evaluates the SAME definitions concretely on states real traces built, requiring agreement with `authority_model.py`'s independently written checkers.  `abstract ⊑ executable` is therefore checked rather than assumed.  `executable ⊑ C` is now TOTAL below a bound: `make spec-exhaustive` runs every trace of length ≤ 4 over a fixed alphabet — 194481 of them, and 4.1M at depth 5 — through the model and the real C, comparing every intermediate result code and every final state.  Bounded model checking, not a refinement proof |
 | **5 — beyond functional correctness** | integrity, information flow, binary verification | — |
@@ -4226,7 +4241,23 @@ no policy.  That judgement stays with review and `check-purity`.
 The measurements that decide how it is done, taken so the next person does
 not have to take them again:
 
-- **The function pointers are three dispatch sites, not a pervasive style.**
+- **The function pointers are GONE.**  Done as described below, and the
+  measurement held: three dispatch sites, 18 tables, and the type -> destructor
+  mapping not one-to-one.  What the measurement did NOT predict was the cost
+  centre — **12 host test files and `spec_driver.c`** build fixtures of real
+  types on heap storage and must observe destruction without the real
+  destructor handing that heap to an Untyped that never owned it.  A type
+  cannot answer that, so `struct KObjectOps` survives behind `IRIS_HOST_TEST`,
+  exists in no kernel build, and `check-purity` enforces it.
+
+  The kernel-side fixture needed no such escape: `boot_selftest.c`'s fake
+  waiters are stack `struct task`s, and `task_backing_free_on_destroy` now
+  returns for a task that is neither Untyped-born nor a slot of
+  `ktcb_backing[]` — a bounds test that is a hardening in its own right, since
+  before it any such task had `sizeof(struct task)` bytes zeroed wherever it
+  lived.
+
+  The original measurement, kept because it was right:
   `kobject.c` lines 110 and 127-128 are the whole of it; everything else the
   grep finds is a comment.  But there are **18 ops tables across 17 files**,
   and the mapping from type to destructor is **not one-to-one**: `kbootcap`

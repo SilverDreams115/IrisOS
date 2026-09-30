@@ -13,6 +13,7 @@
 #include <iris/nc/kuntyped.h>
 #include <iris/paging.h>
 #include <stdatomic.h>
+#include <iris/nc/kobject_dispatch.h>
 
 static _Atomic uint32_t kiopagetable_live;
 
@@ -20,28 +21,24 @@ uint32_t kiopagetable_live_count(void) {
     return atomic_load_explicit(&kiopagetable_live, memory_order_relaxed);
 }
 
-static void kiopagetable_obj_close(struct KObject *obj) {
+void kiopagetable_obj_close(struct KObject *obj) {
     (void)obj;
     /* Nothing to wake.  A level installed in an IOSpace is held by that
      * space's table list, so its refcount cannot reach zero while it is part
      * of a live walk. */
 }
 
-static void kiopagetable_obj_destroy(struct KObject *obj) {
+void kiopagetable_obj_destroy(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kiopagetable_live, 1u, memory_order_relaxed);
     kobject_storage_free(obj, (uint32_t)sizeof(struct KIOPageTable), 0);
 }
 
-static const struct KObjectOps kiopagetable_ops = {
-    .close   = kiopagetable_obj_close,
-    .destroy = kiopagetable_obj_destroy,
-};
 
 struct KIOPageTable *kiopagetable_alloc_at(void *mem, uint64_t paddr) {
     if (!mem || !paddr || (paddr & 0xFFFULL)) return 0;
 
     struct KIOPageTable *pt = (struct KIOPageTable *)mem;  /* arrives zeroed */
-    kobject_init_in_untyped(&pt->base, KOBJ_IO_PAGE_TABLE, &kiopagetable_ops,
+    kobject_init_in_untyped(&pt->base, KOBJ_IO_PAGE_TABLE,
                             (uint32_t)sizeof(struct KIOPageTable));
     pt->paddr      = paddr;
     pt->mapped_io  = 0;

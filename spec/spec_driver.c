@@ -174,7 +174,7 @@ static struct KObject *obj_new(kobject_type_t t) {
     struct KObject *o = (struct KObject *)kpage_alloc((uint32_t)sizeof(*o));
     if (!o) return NULL;
     memset(o, 0, sizeof(*o));
-    kobject_init(o, t, &g_ops);
+    kobject_init_test(o, t, &g_ops);
     return o;
 }
 

@@ -53,17 +53,31 @@ typedef enum {
 
 struct KObject;
 
+/*
+ * RETIRED — see `kobject_dispatch.h`.
+ *
+ * Destruction dispatches on `obj->type`, as seL4's does, and the object
+ * carries no function pointer.  This declaration survives ONLY for host test
+ * fixtures, which build objects of real types on heap storage and must observe
+ * destruction without running the real destructor; it does not exist in a
+ * kernel build, and `check-purity` fails if it appears in one.
+ */
+#ifdef IRIS_HOST_TEST
 struct KObjectOps {
     void (*close)(struct KObject *obj);
     void (*destroy)(struct KObject *obj);
 };
+#endif
 
 struct KObject {
     kobject_type_t            type;
     _Atomic uint32_t          refcount;    /* lifecycle ref — not visible to callers */
     _Atomic uint32_t          active_refs; /* published handle/global refs */
     spinlock_t                lock;        /* guards mutable state — separate from lifecycle */
-    const struct KObjectOps  *ops;         /* non-NULL for every initialized object */
+#ifdef IRIS_HOST_TEST
+    /* Host test fixtures only — the kernel dispatches on `type`. */
+    const struct KObjectOps  *ops;
+#endif
     /* Where this object's STORAGE came from, and how much of it.
      * 0 = the kernel slab.  Non-zero = a child block of an Untyped, of exactly
      * this many bytes — what kuntyped_release_child needs to hand it back.
@@ -98,23 +112,27 @@ struct KObject {
 
 /*
  * Invariants:
- *   - ops != NULL for every initialized KObject
- *   - ops->destroy() is the only real destruction path
+ *   - the type's destructor is the only real destruction path, and it is
+ *     reached from `obj->type` — see kobject_dispatch.h
  *   - refcount >= 1 while any HandleEntry points to this object
- *   - ops->destroy() is called exactly once, when refcount reaches 0
- *   - ops->destroy() must not touch refcount
+ *   - that destructor is called exactly once, when refcount reaches 0
+ *   - it must not touch refcount
  *   - refcount and lock protect different things — never used interchangeably
  */
 
 struct KUntyped;
 
-void kobject_init(struct KObject *obj, kobject_type_t type,
-                  const struct KObjectOps *ops);
+void kobject_init(struct KObject *obj, kobject_type_t type);
+#ifdef IRIS_HOST_TEST
+/* Host test fixtures: an object of a real TYPE whose destruction the test
+ * observes instead of the kernel performing it. */
+void kobject_init_test(struct KObject *obj, kobject_type_t type,
+                       const struct KObjectOps *ops);
+#endif
 /* Same, for an object placement-built in an Untyped child block of
  * `block_bytes` bytes (what was passed to kuntyped_alloc_child*).  The block
  * arrives zeroed, so this only records where the storage came from. */
 void kobject_init_in_untyped(struct KObject *obj, kobject_type_t type,
-                             const struct KObjectOps *ops,
                              uint32_t block_bytes);
 /*
  * Release the object's STORAGE — the last act of any destroy callback.

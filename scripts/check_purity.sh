@@ -259,6 +259,43 @@ for fn in "${ALLOC_FNS[@]}"; do
     fi
 done
 
+# ── A per-object destructor pointer never returns to the kernel ─────────────
+#
+# Destruction dispatches on `obj->type` (kernel/new_core/src/kobject.c), as
+# seL4's does.  `struct KObjectOps` survives only for HOST TEST fixtures, which
+# build objects of real types on heap storage and must observe destruction
+# without the real destructor handing that heap back to an Untyped that never
+# owned it — so every use of it must sit behind IRIS_HOST_TEST, which a kernel
+# build does not define.
+#
+# This is checked rather than trusted because the failure is silent: an ops
+# table added to a kernel file compiles, links, runs, and quietly reopens the
+# hole `scripts/check_lock_order.py` §9.1 admits to — it cannot follow an
+# indirect destructor, so the lock hierarchy goes unchecked exactly where a
+# destructor runs.
+ops_leak=""
+for kf in kernel/new_core/src/*.c kernel/core/*.c kernel/core/*/*.c; do
+    [ -f "$kf" ] || continue
+    case "$kf" in kernel/new_core/src/kobject.c) continue ;; esac
+    if strip_comments "$kf" | grep -qE "KObjectOps|->ops\b"; then
+        ops_leak="$ops_leak$kf
+"
+    fi
+done
+ops_leak="${ops_leak%
+}"
+if [ -n "$ops_leak" ]; then
+    echo "[purity] FAIL: a per-object destructor pointer is back in the kernel:"
+    echo "$ops_leak" | sed 's/^/           /'
+    echo "         Destruction dispatches on obj->type — add the type to the"
+    echo "         switches in kernel/new_core/src/kobject.c and declare the"
+    echo "         functions in kobject_dispatch.h.  KObjectOps exists only for"
+    echo "         host test fixtures, behind IRIS_HOST_TEST."
+    fail=1
+else
+    echo "[purity] destructor dispatch: by type, no ops pointer in any kernel file"
+fi
+
 if [ "$fail" -ne 0 ]; then
     echo "[purity] RESULT: FAIL"
     exit 1

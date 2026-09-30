@@ -30,7 +30,7 @@ static const struct KObjectOps cg_ops = { .close = NULL, .destroy = cg_destroy }
 
 static struct KObject *cg_obj(void) {
     struct KObject *o = (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
-    if (o) kobject_init(o, KOBJ_ENDPOINT, &cg_ops);
+    if (o) kobject_init_test(o, KOBJ_ENDPOINT, &cg_ops);
     return o;
 }
 

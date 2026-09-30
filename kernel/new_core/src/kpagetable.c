@@ -13,6 +13,7 @@
 #include <iris/nc/kuntyped.h>
 #include <iris/paging.h>
 #include <stdatomic.h>
+#include <iris/nc/kobject_dispatch.h>
 
 static _Atomic uint32_t kpagetable_live;
 
@@ -20,14 +21,14 @@ uint32_t kpagetable_live_count(void) {
     return atomic_load_explicit(&kpagetable_live, memory_order_relaxed);
 }
 
-static void kpagetable_obj_close(struct KObject *obj) {
+void kpagetable_obj_close(struct KObject *obj) {
     (void)obj;
     /* Nothing to wake.  A table installed in a VSpace is held by that VSpace's
      * table list, so its refcount cannot reach zero while it is part of a live
      * walk — the close callback is never the thing that unmaps it. */
 }
 
-static void kpagetable_obj_destroy(struct KObject *obj) {
+void kpagetable_obj_destroy(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kpagetable_live, 1u, memory_order_relaxed);
     /* The 4 KiB region goes back the way every retyped region does: it stays
      * inside the Untyped, and the child entry the header block holds is what
@@ -35,16 +36,12 @@ static void kpagetable_obj_destroy(struct KObject *obj) {
     kobject_storage_free(obj, (uint32_t)sizeof(struct KPageTable), 0);
 }
 
-static const struct KObjectOps kpagetable_ops = {
-    .close   = kpagetable_obj_close,
-    .destroy = kpagetable_obj_destroy,
-};
 
 struct KPageTable *kpagetable_alloc_at(void *mem, uint64_t paddr) {
     if (!mem || !paddr || (paddr & 0xFFFULL)) return 0;
 
     struct KPageTable *pt = (struct KPageTable *)mem;  /* block arrives zeroed */
-    kobject_init_in_untyped(&pt->base, KOBJ_PAGE_TABLE, &kpagetable_ops,
+    kobject_init_in_untyped(&pt->base, KOBJ_PAGE_TABLE,
                             (uint32_t)sizeof(struct KPageTable));
     pt->paddr     = paddr;
     pt->mapped_vs = 0;

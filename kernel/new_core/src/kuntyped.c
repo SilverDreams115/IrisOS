@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kobject_dispatch.h>
 #include <iris/kslab.h>
 #include <iris/paging.h>
 #include <stdatomic.h>
@@ -51,14 +52,14 @@ uint32_t kuntyped_live_count(void) {
     return atomic_load_explicit(&kuntyped_live, memory_order_relaxed);
 }
 
-static void kuntyped_obj_close(struct KObject *obj) {
+void kuntyped_obj_close(struct KObject *obj) {
     (void)obj;
     /* No tasks to wake.  Physical region is NOT freed on close — seL4 semantics:
      * untyped memory is reclaimable only after all children are destroyed and
      * SYS_UNTYPED_RESET is called. */
 }
 
-static void kuntyped_obj_destroy(struct KObject *obj) {
+void kuntyped_obj_destroy(struct KObject *obj) {
     struct KUntyped *u      = (struct KUntyped *)obj;
     struct KUntyped *parent = u->alloc_parent;
     struct KUntyped *hdrs   = u->hdr_budget;   /* Read before the free */
@@ -78,10 +79,6 @@ static void kuntyped_obj_destroy(struct KObject *obj) {
     if (hdrs) kobject_release(&hdrs->base);
 }
 
-static const struct KObjectOps kuntyped_ops = {
-    .close   = kuntyped_obj_close,
-    .destroy = kuntyped_obj_destroy,
-};
 
 /*
  * A sub-untyped's header lives in its parent.
@@ -100,7 +97,7 @@ struct KUntyped *kuntyped_create_at(void *mem, uint64_t phys_base,
                                     uint64_t size, int is_device) {
     if (!mem || !size) return 0;
     struct KUntyped *u = (struct KUntyped *)mem;   /* block arrives zeroed */
-    kobject_init_in_untyped(&u->base, KOBJ_UNTYPED, &kuntyped_ops,
+    kobject_init_in_untyped(&u->base, KOBJ_UNTYPED,
                             (uint32_t)sizeof(struct KUntyped));
     irq_spinlock_init(&u->lock);
     u->phys_base   = phys_base;
@@ -120,7 +117,7 @@ struct KUntyped *kuntyped_create(uint64_t phys_base, uint64_t size, int is_devic
     struct KUntyped *u = kslab_alloc((uint32_t)sizeof(struct KUntyped));
     if (!u) return 0;
 
-    kobject_init(&u->base, KOBJ_UNTYPED, &kuntyped_ops);
+    kobject_init(&u->base, KOBJ_UNTYPED);
     irq_spinlock_init(&u->lock);
     u->phys_base   = phys_base;
     u->total_size  = size;

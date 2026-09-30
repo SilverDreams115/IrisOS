@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/nc/ktcb.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kobject_dispatch.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/task.h>
 #include <stdatomic.h>
@@ -56,7 +57,7 @@ void task_backing_free_on_destroy(struct task *t);
  * a sched_ctx (SC_BIND refuses unconfigured targets precisely so no reference
  * can leak here).
  */
-static void ktcb_obj_destroy(struct KObject *obj) {
+void ktcb_obj_destroy(struct KObject *obj) {
     struct task *t = (struct task *)obj;   /* KObject at offset 0 */
     atomic_fetch_sub_explicit(&ktcb_live, 1u, memory_order_relaxed);
     atomic_fetch_add_explicit(&ktcb_destroyed, 1u, memory_order_relaxed);
@@ -64,11 +65,10 @@ static void ktcb_obj_destroy(struct KObject *obj) {
     else                     task_backing_free_on_destroy(t);
 }
 
-static const struct KObjectOps ktcb_ops = { .destroy = ktcb_obj_destroy };
 
 void ktcb_object_init(struct task *t) {
     if (!t) return;
-    kobject_init(&t->base, KOBJ_TCB, &ktcb_ops);  /* refcount = 1 (execution ref) */
+    kobject_init(&t->base, KOBJ_TCB);  /* refcount = 1 (execution ref) */
     irq_spinlock_init(&t->obj_lock);
     t->configured = 1;   /* pool birth: execution state built by the creator */
     t->started    = 1;   /* ...and already runnable: its entry frame is set */
@@ -83,7 +83,7 @@ struct task *ktcb_alloc_at(void *mem) {
     /* Block arrives zero-filled from kuntyped_alloc_children_atomic; set only
      * the non-zero identity fields.  NOTE: TASK_READY == 0, so the state MUST
      * be set explicitly — an inactive TCB is never runnable. */
-    kobject_init_in_untyped(&t->base, KOBJ_TCB, &ktcb_ops,
+    kobject_init_in_untyped(&t->base, KOBJ_TCB,
                             (uint32_t)sizeof(struct task));  /* refcount = 1 (creator) */
     irq_spinlock_init(&t->obj_lock);
     t->state      = TASK_SUSPENDED;         /* inactive until TCB_CONFIGURE */

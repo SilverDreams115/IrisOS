@@ -20,6 +20,7 @@
  */
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kobject_dispatch.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/rights.h>
 #include <iris/kslab.h>
@@ -346,11 +347,11 @@ static void kcnode_cascade(struct KCNode *cn) {
     }
 }
 
-static void kcnode_obj_close(struct KObject *obj) {
+void kcnode_obj_close(struct KObject *obj) {
     kcnode_cascade((struct KCNode *)obj);
 }
 
-static void kcnode_obj_destroy(struct KObject *obj) {
+void kcnode_obj_destroy(struct KObject *obj) {
     struct KCNode *cn = (struct KCNode *)obj;
     /*
      * Not kcnode_obj_close: destroy must finish HERE.  Deferring it would put
@@ -367,10 +368,6 @@ static void kcnode_obj_destroy(struct KObject *obj) {
     kobject_storage_free(obj, KCNODE_ALLOC_SIZE(cn->slot_count), 0);
 }
 
-static const struct KObjectOps kcnode_ops = {
-    .close   = kcnode_obj_close,
-    .destroy = kcnode_obj_destroy,
-};
 
 /* ── Untyped-backed variant ──────────────────────────────── */
 
@@ -378,7 +375,7 @@ struct KCNode *kcnode_alloc_at(void *mem, uint32_t num_slots) {
     if (!mem || num_slots == 0u || num_slots > KCNODE_MAX_SLOTS) return 0;
     if (num_slots & (num_slots - 1u)) return 0; /* must be power-of-2 */
     struct KCNode *cn = (struct KCNode *)mem;
-    kobject_init_in_untyped(&cn->base, KOBJ_CNODE, &kcnode_ops,
+    kobject_init_in_untyped(&cn->base, KOBJ_CNODE,
                             KCNODE_ALLOC_SIZE(num_slots));
     irq_spinlock_init(&cn->lock);
     cn->slot_count = num_slots;
@@ -393,7 +390,7 @@ struct KCNode *kcnode_alloc(uint32_t num_slots) {
     if (num_slots & (num_slots - 1u)) return 0; /* must be power-of-2 */
     struct KCNode *cn = kslab_alloc(KCNODE_ALLOC_SIZE(num_slots));
     if (!cn) return 0;
-    kobject_init(&cn->base, KOBJ_CNODE, &kcnode_ops);
+    kobject_init(&cn->base, KOBJ_CNODE);
     irq_spinlock_init(&cn->lock);
     cn->slot_count = num_slots;
     cn->slots = (struct KCSlot *)(cn + 1); /* inline array after header */

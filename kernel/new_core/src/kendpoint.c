@@ -2,6 +2,7 @@
 #include <iris/nc/kendpoint.h>
 #include <iris/nc/kfault.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kobject_dispatch.h>
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/task.h>
@@ -10,15 +11,32 @@
 
 static _Atomic uint32_t kendpoint_live;
 
+/*
+ * Drop the capability a sender staged into a message it never delivered.
+ *
+ * Its own function because it must happen OUTSIDE `ep->lock` — see the walk
+ * below — and because both drains need it.
+ */
+static void ep_drop_staged_cap(struct task *t) {
+    if (!t || !t->ep_cap_obj) return;
+    struct KObject *o = t->ep_cap_obj;
+    t->ep_cap_obj    = 0;
+    t->ep_cap_rights = 0;
+    t->ep_cap_badge  = 0;
+    kobject_release(o);
+}
+
 /* Live KEndpoint object count (additive diagnostics). */
 uint32_t kendpoint_live_count(void) {
     return atomic_load_explicit(&kendpoint_live, memory_order_relaxed);
 }
 
-static void kendpoint_obj_close(struct KObject *obj) {
+void kendpoint_obj_close(struct KObject *obj) {
     struct KEndpoint *ep = (struct KEndpoint *)obj;
     uint64_t flags = irq_spinlock_lock(&ep->lock);
     ep->closed = 1;
+
+
 
     /* Wake all blocked tasks; release any staged caps from blocking senders.
      * A1.10: the staging ref is dropped but the source SLOT is NOT consumed —
@@ -58,16 +76,30 @@ static void kendpoint_obj_close(struct KObject *obj) {
      * on each is what keeps them alive until the kill.
      */
     struct task *kill_head = 0;
+    /*
+     * And the wakes happen after it too, for the SAME reason the kills do.
+     *
+     * The staged transfer object was released INSIDE this walk, and
+     * `t->ep_cap_obj` is whatever a sender put in the message — any type, a
+     * CNode included.  Dropping its last reference runs `kcnode_obj_destroy`,
+     * which empties every slot and takes `mdb_lock` (rank 1) while this holds
+     * `ep->lock` (rank 2).  The hierarchy inverted, on the lock every IPC on
+     * this endpoint needs.
+     *
+     * The rule is three comments up and this file already applies it twice —
+     * `ep_cap_src_cn` is deliberately left set so its refs drop outside, and
+     * the fault callers were moved to `kill_head` for exactly this.  The
+     * transferred capability was the one place it was still broken, and it
+     * stayed broken because the destructor was reached through
+     * `ops->destroy`: §9.1 says outright that the analysis does not follow a
+     * function pointer, so nothing reported it.  Destruction dispatches on
+     * `obj->type` now, the call is direct, and `check-locks` named this line.
+     */
+    struct task *wake_head = 0;
 
     struct task *t = ep->queue_head;
     while (t) {
         struct task *nxt = t->ep_next;
-        if (t->ep_cap_obj) {
-            kobject_release(t->ep_cap_obj);
-            t->ep_cap_obj    = 0;
-            t->ep_cap_rights = 0;
-            t->ep_cap_badge  = 0;
-        }
         t->ep_next       = 0;
         t->blocking_ep   = 0;
         t->ipc_ep_closed = 1;
@@ -84,8 +116,8 @@ static void kendpoint_obj_close(struct KObject *obj) {
             t->ep_next       = kill_head;   /* off the queue; onto the list */
             kill_head        = t;           /* keeps the reference */
         } else {
-            task_wakeup(t);
-            kobject_release(&t->base);      /* The queue's */
+            t->ep_next = wake_head;         /* off the queue; onto the list */
+            wake_head  = t;                 /* keeps the reference */
         }
         t = nxt;
     }
@@ -95,11 +127,24 @@ static void kendpoint_obj_close(struct KObject *obj) {
 
     irq_spinlock_unlock(&ep->lock, flags);
 
-    /* Outside the lock: each of these can tear a whole address space down. */
+    /*
+     * Outside the lock: each of these can tear a whole address space down, and
+     * every one of them drops the staged transfer capability first — which is
+     * the reference whose destructor wanted `mdb_lock`.
+     */
+    while (wake_head) {
+        struct task *w = wake_head;
+        wake_head = w->ep_next;
+        w->ep_next = 0;
+        ep_drop_staged_cap(w);
+        task_wakeup(w);
+        kobject_release(&w->base);          /* The queue's */
+    }
     while (kill_head) {
         struct task *k = kill_head;
         kill_head = k->ep_next;
         k->ep_next = 0;
+        ep_drop_staged_cap(k);
         kfault_resolve(k, /*killed=*/1);
         task_kill_external(k);
         kobject_release(&k->base);          /* The queue's */
@@ -110,25 +155,23 @@ static void kendpoint_obj_close(struct KObject *obj) {
  * The kslab-backed kendpoint_alloc is retired: every KEndpoint payload
  * lives inside the KUntyped region it was retyped from (S2/S14). */
 
-static void kendpoint_obj_destroy_ut(struct KObject *obj) {
+void kendpoint_obj_destroy_ut(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kendpoint_live, 1u, memory_order_relaxed);
     kuntyped_release_child(obj, sizeof(struct KEndpoint));
 }
 
-static const struct KObjectOps kendpoint_ops_ut = {
-    .close   = kendpoint_obj_close,
-    .destroy = kendpoint_obj_destroy_ut,
-};
 
 struct KEndpoint *kendpoint_alloc_at(void *mem) {
     if (!mem) return 0;
     struct KEndpoint *ep = (struct KEndpoint *)mem;
-    kobject_init(&ep->base, KOBJ_ENDPOINT, &kendpoint_ops_ut);
+    kobject_init(&ep->base, KOBJ_ENDPOINT);
     irq_spinlock_init(&ep->lock);
     /* ep_state, closed, queue_head/tail already zero (kuntyped_bump_alloc zeroes) */
     atomic_fetch_add_explicit(&kendpoint_live, 1u, memory_order_relaxed);
     return ep;
 }
+
+
 
 void kendpoint_close(struct KEndpoint *ep) {
     if (!ep) return;

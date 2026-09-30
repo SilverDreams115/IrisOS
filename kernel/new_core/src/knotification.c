@@ -6,6 +6,7 @@
 #include <iris/task.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <iris/nc/kobject_dispatch.h>
 
 static struct KNotification *live_head = 0;
 static spinlock_t            live_lock;
@@ -119,7 +120,7 @@ static void knotif_waiters_wake_all(struct KNotification *n) {
 
 /* ── KObject ops ──────────────────────────────────────────────── */
 
-static void knotification_close(struct KObject *obj) {
+void knotification_close(struct KObject *obj) {
     struct KNotification *n = (struct KNotification *)obj;
     spinlock_lock(&n->base.lock);
     n->closed = 1;
@@ -142,17 +143,13 @@ static void knotification_close(struct KObject *obj) {
  * authority to create one is possession of sufficient KUntyped plus a free
  * CSpace destination slot — never a kernel-side numeric quota.
  */
-static void knotification_destroy_ut(struct KObject *obj) {
+void knotification_destroy_ut(struct KObject *obj) {
     struct KNotification *n = (struct KNotification *)obj;
     knotif_live_unlink(n);
     atomic_fetch_sub_explicit(&knotif_live, 1u, memory_order_relaxed);
     kuntyped_release_child(obj, sizeof(struct KNotification));
 }
 
-static const struct KObjectOps knotification_ops_ut = {
-    .close   = knotification_close,
-    .destroy = knotification_destroy_ut,
-};
 
 /* ── Public API ───────────────────────────────────────────────── */
 
@@ -160,7 +157,7 @@ struct KNotification *knotification_alloc_at(void *mem) {
     if (!mem) return 0;
     struct KNotification *n = (struct KNotification *)mem;
     /* mem was already zeroed by the untyped carve */
-    kobject_init(&n->base, KOBJ_NOTIFICATION, &knotification_ops_ut);
+    kobject_init(&n->base, KOBJ_NOTIFICATION);
     knotif_live_link(n);
     atomic_fetch_add_explicit(&knotif_live, 1u, memory_order_relaxed);
     return n;

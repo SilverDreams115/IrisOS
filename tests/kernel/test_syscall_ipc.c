@@ -77,7 +77,7 @@ static struct task *ip_caller(void) {
 
     struct KObject *nt = (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
     if (!nt) return NULL;
-    kobject_init(nt, KOBJ_NOTIFICATION, &ip_ops);
+    kobject_init_test(nt, KOBJ_NOTIFICATION, &ip_ops);
     if (kcnode_mint(root, S_NOTEP, nt, RIGHT_READ | RIGHT_WRITE) != IRIS_OK) return NULL;
 
     void *rpm = kpage_alloc((uint32_t)sizeof(struct KReply));
@@ -91,7 +91,7 @@ static struct task *ip_caller(void) {
     /* A capability the caller holds but may NOT hand on. */
     struct KObject *x = (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
     if (!x) return NULL;
-    kobject_init(x, KOBJ_NOTIFICATION, &ip_ops);
+    kobject_init_test(x, KOBJ_NOTIFICATION, &ip_ops);
     if (kcnode_mint(root, S_XFER_NOTRANSFER, x, RIGHT_READ | RIGHT_WRITE) != IRIS_OK)
         return NULL;
 

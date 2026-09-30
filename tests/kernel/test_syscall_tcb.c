@@ -60,7 +60,7 @@ static struct task *tb_caller(struct KCNode **out_root, uint32_t slot,
     struct task *target = (struct task *)kpage_alloc((uint32_t)sizeof(struct task));
     if (!target) return NULL;
     memset(target, 0, sizeof(*target));
-    kobject_init(&target->base, KOBJ_TCB, &tb_ops);
+    kobject_init_test(&target->base, KOBJ_TCB, &tb_ops);
     if (kcnode_mint(root, slot, &target->base,
                     RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE) != IRIS_OK)
         return NULL;
@@ -212,7 +212,7 @@ void test_syscall_tcb(void) {
         /* slot 9 holds a notification, not an endpoint */
         struct KObject *nt = (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
         ASSERT_NOT_NULL(nt);
-        kobject_init(nt, KOBJ_NOTIFICATION, &tb_ops);
+        kobject_init_test(nt, KOBJ_NOTIFICATION, &tb_ops);
         ASSERT_EQ(kcnode_mint(root, 9, nt, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
 
         ASSERT_EQ(tb_err(sys_tcb_set_fault_handler(TCB_SLOT, 9, 0, 0)),
@@ -233,7 +233,7 @@ void test_syscall_tcb(void) {
          * simply swap meanings. */
         struct KObject *wep = (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
         ASSERT_NOT_NULL(wep);
-        kobject_init(wep, KOBJ_ENDPOINT, &tb_ops);
+        kobject_init_test(wep, KOBJ_ENDPOINT, &tb_ops);
         ASSERT_EQ(kcnode_mint(root, 10, wep, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
         ASSERT_EQ(tb_err(sys_tcb_watch(TCB_SLOT, 10, 1)),
                   (long)IRIS_ERR_WRONG_TYPE);
@@ -250,7 +250,7 @@ void test_syscall_tcb(void) {
         ASSERT_NOT_NULL(t);
         struct KObject *ep = (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
         ASSERT_NOT_NULL(ep);
-        kobject_init(ep, KOBJ_ENDPOINT, &tb_ops);
+        kobject_init_test(ep, KOBJ_ENDPOINT, &tb_ops);
         ASSERT_EQ(kcnode_mint(root, 12, ep, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
 
         /* WRONG_TYPE, not INVALID_ARG: the resolver identified the capability

@@ -20,7 +20,7 @@ static const struct KObjectOps test_task_ops = {
     .close = NULL, .destroy = test_task_destroy
 };
 static void test_task_init(struct task *t) {
-    kobject_init(&t->base, KOBJ_TCB, &test_task_ops);   /* refcount 1 */
+    kobject_init_test(&t->base, KOBJ_TCB, &test_task_ops);   /* refcount 1 */
 }
 
 static struct KReply *test_kreply_alloc(struct task *caller) {

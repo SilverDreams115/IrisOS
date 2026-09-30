@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/nc/kframe.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kobject_dispatch.h>
 #include <iris/nc/kvspace.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/kslab.h>
@@ -57,12 +58,12 @@ void kframe_stat_cleanup(void) {
     atomic_fetch_sub_explicit(&kframe_live_mappings, 1u, memory_order_relaxed);
 }
 
-static void kframe_obj_close(struct KObject *obj) {
+void kframe_obj_close(struct KObject *obj) {
     (void)obj;
     /* No tasks to wake — KFrame has no blocked waiters. */
 }
 
-static void kframe_obj_destroy(struct KObject *obj) {
+void kframe_obj_destroy(struct KObject *obj) {
     struct KFrame   *f      = (struct KFrame *)obj;
     struct KUntyped *parent = f->alloc_parent;
 
@@ -83,10 +84,6 @@ static void kframe_obj_destroy(struct KObject *obj) {
     }
 }
 
-static const struct KObjectOps kframe_ops = {
-    .close   = kframe_obj_close,
-    .destroy = kframe_obj_destroy,
-};
 
 /*
  * The Untyped-born frame.
@@ -106,7 +103,7 @@ struct KFrame *kframe_alloc_at(void *mem, uint64_t paddr, uint64_t size) {
     if (!mem || !size || (size & 0xFFFULL)) return 0;
 
     struct KFrame *f = (struct KFrame *)mem;   /* block arrives zeroed */
-    kobject_init_in_untyped(&f->base, KOBJ_FRAME, &kframe_ops,
+    kobject_init_in_untyped(&f->base, KOBJ_FRAME,
                             (uint32_t)sizeof(struct KFrame));
     f->paddr        = paddr;
     f->size         = size;
@@ -123,7 +120,7 @@ struct KFrame *kframe_alloc(uint64_t paddr, uint64_t size,
     struct KFrame *f = kslab_alloc((uint32_t)sizeof(struct KFrame));
     if (!f) return 0;
 
-    kobject_init(&f->base, KOBJ_FRAME, &kframe_ops);
+    kobject_init(&f->base, KOBJ_FRAME);
     f->paddr        = paddr;
     f->size         = size;
     f->alloc_parent = alloc_parent;

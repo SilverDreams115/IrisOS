@@ -24,7 +24,7 @@ static const struct KObjectOps mdb_ops = { .close = NULL, .destroy = mdb_tracked
 static struct KObject *mk_obj(kobject_type_t type) {
     struct KObject *o = (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
     if (!o) return NULL;
-    kobject_init(o, type, &mdb_ops);
+    kobject_init_test(o, type, &mdb_ops);
     return o;
 }
 

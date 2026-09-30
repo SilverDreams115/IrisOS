@@ -24,6 +24,7 @@
 #include <iris/iommu.h>
 #include <iris/paging.h>
 #include <stdatomic.h>
+#include <iris/nc/kobject_dispatch.h>
 
 static _Atomic uint32_t kiospace_live;
 
@@ -225,7 +226,7 @@ iris_error_t kiospace_unmap(struct KIOSpace *io, uint64_t dma,
  * difference between a teardown and a use-after-free with a bus master on the
  * other end.
  */
-static void kiospace_obj_close(struct KObject *obj) {
+void kiospace_obj_close(struct KObject *obj) {
     struct KIOSpace *io = (struct KIOSpace *)obj;
 
     if (io->unit != 0xFFu && io->installed) {
@@ -265,21 +266,17 @@ static void kiospace_obj_close(struct KObject *obj) {
     }
 }
 
-static void kiospace_obj_destroy(struct KObject *obj) {
+void kiospace_obj_destroy(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kiospace_live, 1u, memory_order_relaxed);
     kobject_storage_free(obj, (uint32_t)sizeof(struct KIOSpace), 0);
 }
 
-static const struct KObjectOps kiospace_ops = {
-    .close   = kiospace_obj_close,
-    .destroy = kiospace_obj_destroy,
-};
 
 struct KIOSpace *kiospace_alloc_at(void *mem) {
     if (!mem) return 0;
 
     struct KIOSpace *io = (struct KIOSpace *)mem;   /* arrives zeroed */
-    kobject_init_in_untyped(&io->base, KOBJ_IOSPACE, &kiospace_ops,
+    kobject_init_in_untyped(&io->base, KOBJ_IOSPACE,
                             (uint32_t)sizeof(struct KIOSpace));
     io->source_id = 0;
     io->domain_id = 0;

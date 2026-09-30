@@ -366,6 +366,24 @@ lock taken through a function pointer slips through".  The destructor is
 reached through `ops->destroy`.  The checker was not wrong; the inversion was
 in the shape it documents itself as unable to see.
 
+**That blind spot is closed, and the first thing through it was another one of
+these.**  Destruction now dispatches on `obj->type` — `kobject_dispatch_destroy`
+in `kobject.c`, a switch, with the 18 `KObjectOps` tables deleted — so the call
+is direct and the analysis follows it.  Run against the refactored tree,
+`check-locks` named `kendpoint.c:67`: the walk released `t->ep_cap_obj`, the
+capability a sender STAGED into a message it never delivered, while holding
+`ep->lock`.  That object is whatever the sender put there — a CNode included —
+so dropping its last reference runs `kcnode_obj_destroy`, which empties every
+slot under `mdb_lock`.  Rank 1 taken under rank 2.
+
+The rule was already written in that file, three comments above the line that
+broke it, and already applied TWICE: `ep_cap_src_cn` is deliberately left set
+so its references drop outside the lock, and the fault callers were moved to a
+deferred `kill_head` for exactly this reason.  The transferred capability was
+the one place it was still wrong, and it stayed wrong because nothing could
+see it.  Fixed the same way — a `wake_head` list, and `ep_drop_staged_cap`
+called from both drains after the unlock.
+
 Whether it can deadlock today is a separate question from whether it is wrong.
 Nothing currently takes `ep->lock` while holding `mdb_lock` — revoke is
 careful to do its lifecycle releases outside — so the ABBA has one arm.  What

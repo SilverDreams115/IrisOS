@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/nc/kreply.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kobject_dispatch.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kschedctx.h>
 #include <iris/task.h>
@@ -52,7 +53,7 @@ static void kreply_abandon_caller(struct task *caller) {
  * authority without invoking SYS_REPLY.  Wake the caller with an error
  * signal via ipc_ep_closed.  kreply_cancel_caller does the same thing.
  */
-static void kreply_obj_close(struct KObject *obj) {
+void kreply_obj_close(struct KObject *obj) {
     struct KReply *r    = (struct KReply *)obj;
     uint64_t       flags = irq_spinlock_lock(&r->lock);
     struct task   *caller = r->caller;
@@ -68,20 +69,16 @@ static void kreply_obj_close(struct KObject *obj) {
 
 /* The ONLY KReply storage is untyped-backed — payload returns to the
  * source KUntyped region (kslab is never involved). */
-static void kreply_obj_destroy_ut(struct KObject *obj) {
+void kreply_obj_destroy_ut(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kreply_live, 1u, memory_order_relaxed);
     kuntyped_release_child(obj, sizeof(struct KReply));
 }
 
-static const struct KObjectOps kreply_ops_ut = {
-    .close   = kreply_obj_close,
-    .destroy = kreply_obj_destroy_ut,
-};
 
 struct KReply *kreply_alloc_at(void *mem) {
     if (!mem) return 0;
     struct KReply *r = (struct KReply *)mem;
-    kobject_init(&r->base, KOBJ_REPLY, &kreply_ops_ut);
+    kobject_init(&r->base, KOBJ_REPLY);
     irq_spinlock_init(&r->lock);
     /* caller/staged already zero (kuntyped_alloc_children_atomic zeroes) */
     atomic_fetch_add_explicit(&kreply_live, 1u, memory_order_relaxed);

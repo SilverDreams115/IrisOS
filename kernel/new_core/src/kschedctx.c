@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/nc/kschedctx.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kobject_dispatch.h>
 #include <iris/nc/kuntyped.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -34,7 +35,7 @@ static void kschedctx_live_inc(void) {
                                                   memory_order_relaxed)) { }
 }
 
-static void kschedctx_obj_close(struct KObject *obj) {
+void kschedctx_obj_close(struct KObject *obj) {
     (void)obj;
     /* No tasks to wake: the bound task holds a ref; releasing sched_ctx drops
      * the refcount and triggers destroy. */
@@ -42,17 +43,13 @@ static void kschedctx_obj_close(struct KObject *obj) {
 
 /* The ONLY storage path is untyped-backed — the payload returns to
  * its source region (kslab is never involved). */
-static void kschedctx_obj_destroy_ut(struct KObject *obj) {
+void kschedctx_obj_destroy_ut(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kschedctx_live, 1u, memory_order_relaxed);
     atomic_fetch_add_explicit(&kschedctx_destroyed, 1u, memory_order_relaxed);
     struct KSchedContext *sc = (struct KSchedContext *)obj;
     kuntyped_release_child(obj, kschedctx_bytes(sc->refill_max));
 }
 
-static const struct KObjectOps kschedctx_ops_ut = {
-    .close   = kschedctx_obj_close,
-    .destroy = kschedctx_obj_destroy_ut,
-};
 
 struct KSchedContext *kschedctx_alloc_at(void *mem, uint32_t refill_max) {
     if (!mem) return 0;
@@ -63,7 +60,7 @@ struct KSchedContext *kschedctx_alloc_at(void *mem, uint32_t refill_max) {
     sc->refill_count     = 0;
     sc->consumed_run     = 0;
     sc->consume_start    = 0;
-    kobject_init(&sc->base, KOBJ_SCHED_CONTEXT, &kschedctx_ops_ut);
+    kobject_init(&sc->base, KOBJ_SCHED_CONTEXT);
     irq_spinlock_init(&sc->lock);
     /* A freshly retyped SC is born UNCONFIGURED and unbound —
      * explicitly invalid budget until SC_CONFIGURE. */

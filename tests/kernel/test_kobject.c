@@ -20,7 +20,7 @@ void test_kobject(void) {
     /* ── init ── */
     g_close_fired = g_destroy_fired = 0;
     struct KObject obj;
-    kobject_init(&obj, KOBJ_CHANNEL, &nofree_ops);
+    kobject_init_test(&obj, KOBJ_CHANNEL, &nofree_ops);
     ASSERT_EQ(obj.type, KOBJ_CHANNEL);
     ASSERT_EQ(atomic_load(&obj.refcount), 1u);
     ASSERT_EQ(atomic_load(&obj.active_refs), 0u);
@@ -41,7 +41,7 @@ void test_kobject(void) {
     /* ── active_retain / active_release fire close exactly once ── */
     g_close_fired = g_destroy_fired = 0;
     struct KObject obj2;
-    kobject_init(&obj2, KOBJ_NOTIFICATION, &nofree_ops);
+    kobject_init_test(&obj2, KOBJ_NOTIFICATION, &nofree_ops);
     kobject_active_retain(&obj2);
     kobject_active_retain(&obj2);
     ASSERT_EQ(atomic_load(&obj2.active_refs), 2u);
@@ -60,7 +60,7 @@ void test_kobject(void) {
     /* ── retain/release symmetry over multiple refs ── */
     g_close_fired = g_destroy_fired = 0;
     struct KObject obj3;
-    kobject_init(&obj3, KOBJ_VMO, &nofree_ops);
+    kobject_init_test(&obj3, KOBJ_VMO, &nofree_ops);
     for (int i = 0; i < 10; i++) kobject_retain(&obj3);
     ASSERT_EQ(atomic_load(&obj3.refcount), 11u);
     for (int i = 0; i < 10; i++) kobject_release(&obj3);
@@ -71,13 +71,13 @@ void test_kobject(void) {
 
     /* ── type field preserved through init ── */
     struct KObject obj4;
-    kobject_init(&obj4, KOBJ_PROCESS, &nofree_ops);
+    kobject_init_test(&obj4, KOBJ_PROCESS, &nofree_ops);
     ASSERT_EQ(obj4.type, KOBJ_PROCESS);
     kobject_release(&obj4);
 
     /* ── ops pointer preserved ── */
     struct KObject obj5;
-    kobject_init(&obj5, KOBJ_ENDPOINT, &nofree_ops);
+    kobject_init_test(&obj5, KOBJ_ENDPOINT, &nofree_ops);
     ASSERT_EQ(obj5.ops, &nofree_ops);
     kobject_release(&obj5);
 }

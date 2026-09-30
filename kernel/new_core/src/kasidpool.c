@@ -2,6 +2,7 @@
 #include <iris/nc/kasidpool.h>
 #include <iris/nc/kuntyped.h>
 #include <stdatomic.h>
+#include <iris/nc/kobject_dispatch.h>
 
 static _Atomic uint32_t kasidpool_live;
 
@@ -34,17 +35,13 @@ iris_error_t kasidpool_carve_range(uint16_t *out_first, uint16_t *out_count) {
     return IRIS_OK;
 }
 
-static void kasidpool_obj_close(struct KObject *obj) { (void)obj; }
+void kasidpool_obj_close(struct KObject *obj) { (void)obj; }
 
-static void kasidpool_obj_destroy(struct KObject *obj) {
+void kasidpool_obj_destroy(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kasidpool_live, 1u, memory_order_relaxed);
     kuntyped_release_child(obj, sizeof(struct KAsidPool));
 }
 
-static const struct KObjectOps kasidpool_ops = {
-    .close   = kasidpool_obj_close,
-    .destroy = kasidpool_obj_destroy,
-};
 
 struct KAsidPool *kasidpool_alloc_at(void *mem, uint16_t first, uint16_t count) {
     if (!mem || !count) return 0;
@@ -52,7 +49,7 @@ struct KAsidPool *kasidpool_alloc_at(void *mem, uint16_t first, uint16_t count) 
     p->first = first;
     p->count = count;
     for (uint32_t i = 0; i < KASID_POOL_WORDS; i++) p->used[i] = 0;
-    kobject_init(&p->base, KOBJ_ASID_POOL, &kasidpool_ops);
+    kobject_init(&p->base, KOBJ_ASID_POOL);
     spinlock_init(&p->lock);
     atomic_fetch_add_explicit(&kasidpool_live, 1u, memory_order_relaxed);
     return p;

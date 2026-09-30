@@ -780,6 +780,22 @@ void task_reset_slot(struct task *t) {
  */
 void task_backing_free_on_destroy(struct task *t) {
     if (!t) return;
+    /*
+     * Only a slot of the backing pool is returned to the backing pool.
+     *
+     * A TCB reaches here when it is not Untyped-born, and "not Untyped-born"
+     * had been read as "pool-born" — which is one case too few.  A `struct
+     * task` that is neither (the notification selftest builds two on the
+     * stack, so a queue can be handed a waiter to release) would have had
+     * `sizeof(struct task)` bytes zeroed wherever it happened to live.
+     *
+     * The pool is a static array, so membership is an exact test and not a
+     * heuristic.  It also removes the last reason for a per-object destructor
+     * pointer: the one type whose destroy could not be reached from
+     * `obj->type` alone was the TCB, because a test fixture had to substitute
+     * a no-op, and the substitution existed only to dodge this write.
+     */
+    if (t < &ktcb_backing[0] || t >= &ktcb_backing[TASK_BOOTSTRAP_MAX]) return;
     uint32_t gen = t->object_generation + 1u;
     uint8_t *raw = (uint8_t *)t;
     for (uint32_t i = 0; i < sizeof(*t); i++) raw[i] = 0;

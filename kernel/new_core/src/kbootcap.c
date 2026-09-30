@@ -4,29 +4,22 @@
 #include <iris/nc/kuntyped.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <iris/nc/kobject_dispatch.h>
 
-static void kbootcap_close(struct KObject *obj) {
+void kbootcap_close(struct KObject *obj) {
     (void)obj;
 }
 
-static void kbootcap_destroy(struct KObject *obj) {
+void kbootcap_destroy(struct KObject *obj) {
     kslab_free((struct KBootstrapCap *)obj, (uint32_t)sizeof(struct KBootstrapCap));
 }
 
 /* Untyped-backed: the block goes back to the region it was carved from. */
-static void kbootcap_destroy_ut(struct KObject *obj) {
+void kbootcap_destroy_ut(struct KObject *obj) {
     kuntyped_release_child(obj, (uint64_t)sizeof(struct KBootstrapCap));
 }
 
-static const struct KObjectOps kbootcap_ops = {
-    .close = kbootcap_close,
-    .destroy = kbootcap_destroy,
-};
 
-static const struct KObjectOps kbootcap_ops_ut = {
-    .close = kbootcap_close,
-    .destroy = kbootcap_destroy_ut,
-};
 
 struct KBootstrapCap *kbootcap_alloc_ports(uint32_t kind, uint16_t first,
                                            uint16_t last) {
@@ -42,7 +35,7 @@ struct KBootstrapCap *kbootcap_alloc_ports(uint32_t kind, uint16_t first,
 
     cap = kslab_alloc((uint32_t)sizeof(struct KBootstrapCap));
     if (!cap) return 0;
-    kobject_init(&cap->base, KOBJ_BOOTSTRAP_CAP, &kbootcap_ops);
+    kobject_init(&cap->base, KOBJ_BOOTSTRAP_CAP);
     cap->kind       = kind;
     cap->port_first = first;
     cap->port_last  = last;
@@ -76,7 +69,7 @@ struct KBootstrapCap *kbootcap_alloc_from(struct KUntyped *pool, uint32_t kind,
     struct KBootstrapCap *cap =
         kuntyped_alloc_child_top(pool, sizeof(struct KBootstrapCap));
     if (!cap) return 0;
-    kobject_init_in_untyped(&cap->base, KOBJ_BOOTSTRAP_CAP, &kbootcap_ops_ut,
+    kobject_init_in_untyped(&cap->base, KOBJ_BOOTSTRAP_CAP,
                             (uint32_t)sizeof(struct KBootstrapCap));
     cap->kind       = kind;
     cap->port_first = first;

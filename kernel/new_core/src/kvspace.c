@@ -9,6 +9,7 @@
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kfault.h>
 #include <stdatomic.h>
+#include <iris/nc/kobject_dispatch.h>
 
 /* Live KVSpace object count (additive diagnostics, SYS_SCHED_INFO
  * ext4 tier).  Lets VM tests prove a child's VSpace is destroyed on process
@@ -117,7 +118,7 @@ uint32_t kvspace_live_count(void) {
  * "nobody can reach this any more", destroy means "nobody holds it at all",
  * and only the second is safe to free storage under.
  */
-static void kvspace_obj_close(struct KObject *obj) {
+void kvspace_obj_close(struct KObject *obj) {
     kvspace_invalidate((struct KVSpace *)obj);
 }
 
@@ -233,7 +234,7 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
 /* One destructor for both births: kobject_storage_free returns the header to
  * wherever it came from — the kernel slab for the root task's address space,
  * an Untyped child block for every other. */
-static void kvspace_obj_destroy(struct KObject *obj) {
+void kvspace_obj_destroy(struct KObject *obj) {
     struct KVSpace  *vs   = (struct KVSpace *)obj;
     struct KUntyped *pool = vs->pt_pool;
 
@@ -242,10 +243,6 @@ static void kvspace_obj_destroy(struct KObject *obj) {
     if (pool) kobject_release(&pool->base);
 }
 
-static const struct KObjectOps kvspace_ops = {
-    .close   = kvspace_obj_close,
-    .destroy = kvspace_obj_destroy,
-};
 
 struct KVSpace *kvspace_retype_at(void *mem, uint64_t pml4_phys,
                                   struct KUntyped *pool) {
@@ -300,7 +297,7 @@ void kvspace_unbind(struct KVSpace *vs) {
 struct KVSpace *kvspace_alloc_at(void *mem, uint64_t cr3) {
     if (!mem) return 0;
     struct KVSpace *vs = (struct KVSpace *)mem;   /* block arrives zeroed */
-    kobject_init_in_untyped(&vs->base, KOBJ_VSPACE, &kvspace_ops,
+    kobject_init_in_untyped(&vs->base, KOBJ_VSPACE,
                             (uint32_t)sizeof(struct KVSpace));
     spinlock_init(&vs->lock);
     vs->cr3           = cr3;
@@ -318,7 +315,7 @@ struct KVSpace *kvspace_alloc_at(void *mem, uint64_t cr3) {
 struct KVSpace *kvspace_alloc(uint64_t cr3) {
     struct KVSpace *vs = kslab_alloc((uint32_t)sizeof(struct KVSpace));
     if (!vs) return 0;
-    kobject_init(&vs->base, KOBJ_VSPACE, &kvspace_ops);
+    kobject_init(&vs->base, KOBJ_VSPACE);
     spinlock_init(&vs->lock);
     vs->cr3           = cr3;
     vs->valid         = 1;

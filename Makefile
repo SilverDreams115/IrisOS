@@ -337,7 +337,7 @@ OBJCOPY_FLAGS    := -I elf64-x86-64 -O pei-x86-64 --subsystem=10 -j .text -j .sd
 
 # ── Host unit-test build ────────────────────────────────────────────────────
 TEST_UNIT_INCS  := -I tests/kernel/include -I kernel/new_core/include -I kernel/include -I tests/kernel
-TEST_UNIT_CFLAGS := -D__KERNEL__ -Wall -Wextra -Wshadow -std=c11 $(IRIS_WERROR) \
+TEST_UNIT_CFLAGS := -D__KERNEL__ -DIRIS_HOST_TEST -Wall -Wextra -Wshadow -std=c11 $(IRIS_WERROR) \
     -Wno-unused-function \
     $(TEST_UNIT_INCS)
 TEST_UNIT_SRCS  := \

@@ -26,7 +26,7 @@ static const struct KObjectOps pi_ops = { .close = NULL, .destroy = pi_destroy }
 
 static struct KObject *pi_obj(kobject_type_t type) {
     struct KObject *o = (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
-    if (o) kobject_init(o, type, &pi_ops);
+    if (o) kobject_init_test(o, type, &pi_ops);
     return o;
 }
 

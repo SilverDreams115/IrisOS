@@ -572,5 +572,5 @@ static const struct KObjectOps test_task_obj_ops = {
     .close = NULL, .destroy = test_task_obj_destroy
 };
 void test_task_object_init(struct task *t) {
-    kobject_init(&t->base, KOBJ_TCB, &test_task_obj_ops);
+    kobject_init_test(&t->base, KOBJ_TCB, &test_task_obj_ops);
 }

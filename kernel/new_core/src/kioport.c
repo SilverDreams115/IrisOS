@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/nc/kioport.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kobject_dispatch.h>
 #include <iris/kslab.h>
 #include <iris/nc/kuntyped.h>
 #include <stdatomic.h>
@@ -8,11 +9,11 @@
 
 static _Atomic uint32_t kioport_live;
 
-static void kioport_close(struct KObject *obj) {
+void kioport_close(struct KObject *obj) {
     (void)obj;
 }
 
-static void kioport_destroy(struct KObject *obj) {
+void kioport_destroy(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kioport_live, 1u, memory_order_relaxed);
     kobject_storage_free(obj, (uint32_t)sizeof(struct KIoPort), 0);
 }
@@ -26,10 +27,6 @@ static void kioport_destroy(struct KObject *obj) {
  * ledger records — charging is what IRIS can do without changing what a
  * capability IS.
  */
-static const struct KObjectOps kioport_ops = {
-    .close   = kioport_close,
-    .destroy = kioport_destroy,
-};
 
 /*
  * `kioport_alloc` — DELETED.  It took the object's header from the kernel
@@ -46,7 +43,7 @@ struct KIoPort *kioport_alloc_from(struct KUntyped *pool, uint16_t base_port,
     if (!pool) return 0;
     struct KIoPort *port = kuntyped_alloc_child_top(pool, sizeof(struct KIoPort));
     if (!port) return 0;
-    kobject_init_in_untyped(&port->base, KOBJ_IOPORT, &kioport_ops,
+    kobject_init_in_untyped(&port->base, KOBJ_IOPORT,
                             (uint32_t)sizeof(struct KIoPort));
     port->base_port = base_port;
     port->count     = count;

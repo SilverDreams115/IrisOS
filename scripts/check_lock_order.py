@@ -60,6 +60,46 @@ RANK = {
     'klog_lock': 15,
 }
 
+#
+# ── Destruction is dispatched on the TYPE, and this has to know that ────────
+#
+# `kobject_release` used to end at a function pointer, and the docstring below
+# says a lock taken through one "slips through".  It no longer does: the call
+# is `kobject_dispatch_destroy`, a switch, so the graph is followable — and the
+# first honest run reported 16 inversions, every one of them because the union
+# of ALL destructors takes `mdb_lock` while the caller happened to hold a
+# per-object lock.
+#
+# A union is not what runs.  ONE destructor runs, the one the object's type
+# selects, so the call site's argument decides which.  These are the spellings
+# the tree uses where the type is unambiguous; anything else stays the union,
+# which over-reports and never under-reports.  A checker may cry wolf and must
+# never stay silent.
+RELEASE_FNS = ('kobject_release', 'kobject_active_release')
+DISPATCH_FNS = ('kobject_dispatch_destroy', 'kobject_dispatch_close')
+ARG_TYPE = {
+    'ep':       'kendpoint',   'cn':   'kcnode',      'src_cn':  'kcnode',
+    'dst_cn':   'kcnode',      'to_cn': 'kcnode',     'from_cn': 'kcnode',
+    'pivot_cn': 'kcnode',      'staged_cn': 'kcnode', 'auth_cn': 'kcnode',
+    'ut_slot_cn': 'kcnode',    'root_cn': 'kcnode',   'v_cn':    'kcnode',
+    'ut':       'kuntyped',    'u':    'kuntyped',    'mm_ut':   'kuntyped',
+    'hi_ut':    'kuntyped',    'fb_ut': 'kuntyped',   'boot_ut': 'kuntyped',
+    'a_ut':     'kuntyped',    'ram':  'kuntyped',    'dev':     'kuntyped',
+    'vs':       'kvspace',     'root_vs': 'kvspace',
+    'frame':    'kframe',      'f':    'kframe',      'fr':      'kframe',
+    'pt':       'kpagetable',
+    'sc':       'kschedctx',   'new_sc': 'kschedctx', 'root_budget': 'kschedctx',
+    'rp':       'kreply',      'r':    'kreply',
+    'n':        'knotification', 'notif': 'knotification', 'old_n': 'knotification',
+    'pool':     'kasidpool',   'p':    'kasidpool',
+    'port':     'kioport',     'ioport': 'kioport',
+    'irqcap':   'kirqcap',
+    't':        'ktcb',        'target': 'ktcb',      'caller':  'ktcb',
+    'receiver': 'ktcb',        'sender': 'ktcb',      'w':       'ktcb',
+    'cur':      'ktcb',        'to':   'ktcb',        'bound':   'ktcb',
+}
+ARG_RE = re.compile(r'kobject_(?:active_)?release\(\s*&?\s*([A-Za-z_]\w*)\s*->\s*base\s*\)')
+
 LOCK   = re.compile(r'(?:irq_)?spinlock_lock\(&\s*([\w\->\.\[\]]+)')
 UNLOCK = re.compile(r'(?:irq_)?spinlock_unlock\(&\s*([\w\->\.\[\]]+)')
 DEF    = re.compile(r'^[a-zA-Z_][\w \*]*\b([a-z_][a-z0-9_]*)\s*\(')
@@ -86,6 +126,9 @@ def main():
                 takes[fn].add(m.group(1))
             if fn:
                 calls[fn].update(CALL.findall(line))
+
+    for rf in RELEASE_FNS:
+        calls[rf] -= set(DISPATCH_FNS)
 
     reach = {f: set(v) for f, v in takes.items()}
     for _ in range(3):
@@ -139,7 +182,24 @@ def main():
                 held.append(m.group(1))
             if held and fn:
                 for c in CALL.findall(line):
-                    for tl in reach.get(c, ()):
+                    if c in RELEASE_FNS:
+                        a = ARG_RE.search(line)
+                        pre = ARG_TYPE.get(a.group(1)) if a else None
+                        if pre:
+                            suf = ('_obj_destroy', '_destroy', '_obj_destroy_ut',
+                                   '_destroy_ut', '_obj_close', '_close')
+                            tls = set()
+                            for sfx in suf:
+                                tls |= reach.get(pre + sfx, set())
+                        else:
+                            tls = set()
+                            for d in DISPATCH_FNS:
+                                for cc in calls.get(d, ()):
+                                    tls |= reach.get(cc, set())
+                        tls |= reach.get(c, set())
+                    else:
+                        tls = reach.get(c, ())
+                    for tl in tls:
                         for h in held:
                             rh, rt = rank(h), rank(tl)
                             if rh and rt and rt < rh:

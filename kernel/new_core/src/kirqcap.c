@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/nc/kirqcap.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kobject_dispatch.h>
 #include <iris/kslab.h>
 #include <iris/nc/kuntyped.h>
 #include <stdatomic.h>
@@ -8,19 +9,15 @@
 
 static _Atomic uint32_t kirqcap_live;
 
-static void kirqcap_close(struct KObject *obj) {
+void kirqcap_close(struct KObject *obj) {
     (void)obj;
 }
 
-static void kirqcap_destroy(struct KObject *obj) {
+void kirqcap_destroy(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kirqcap_live, 1u, memory_order_relaxed);
     kobject_storage_free(obj, (uint32_t)sizeof(struct KIrqCap), 0);
 }
 
-static const struct KObjectOps kirqcap_ops = {
-    .close   = kirqcap_close,
-    .destroy = kirqcap_destroy,
-};
 
 /*
  * A device capability is a kernel object, so it is charged.
@@ -39,7 +36,7 @@ struct KIrqCap *kirqcap_alloc_from(struct KUntyped *pool, uint8_t irq_num) {
     if (!pool) return 0;   /* no budget, no object — see kioport.c */
     struct KIrqCap *cap = kuntyped_alloc_child_top(pool, sizeof(struct KIrqCap));
     if (!cap) return 0;
-    kobject_init_in_untyped(&cap->base, KOBJ_IRQ_CAP, &kirqcap_ops,
+    kobject_init_in_untyped(&cap->base, KOBJ_IRQ_CAP,
                             (uint32_t)sizeof(struct KIrqCap));
     cap->irq_num = irq_num;
     atomic_fetch_add_explicit(&kirqcap_live, 1u, memory_order_relaxed);

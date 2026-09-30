@@ -49,7 +49,7 @@ static const struct KObjectOps sk_ops = { .close = NULL, .destroy = sk_destroy }
 
 static struct KObject *sk_obj(kobject_type_t type) {
     struct KObject *o = (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
-    if (o) kobject_init(o, type, &sk_ops);
+    if (o) kobject_init_test(o, type, &sk_ops);
     return o;
 }
 

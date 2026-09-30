@@ -56,7 +56,7 @@ static uintptr_t teardown_chain(int len) {
         (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
     ASSERT_NOT_NULL(marker);
     if (!marker) return 0;
-    kobject_init(marker, KOBJ_CHANNEL, &marker_ops);
+    kobject_init_test(marker, KOBJ_CHANNEL, &marker_ops);
     ASSERT_EQ(kcnode_mint(n[len - 1], 2, marker, RIGHT_READ), IRIS_OK);
     kobject_release(marker);            /* the tail CNode's slot holds it now */
 

@@ -1,21 +1,17 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/nc/kobject.h>
+#include <iris/nc/kobject_dispatch.h>
 #include <iris/serial.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/kslab.h>
 #include <iris/panic.h>
 
-void kobject_init(struct KObject *obj, kobject_type_t type,
-                  const struct KObjectOps *ops) {
-    /* "ops != NULL for every initialized KObject" — the header states it as an
-     * invariant and kobject_release dereferences ops->destroy unconditionally,
-     * so a NULL here is a jump through a null pointer at some unrelated later
-     * moment.  Checked where it is established, not where it is used. */
+void kobject_init(struct KObject *obj, kobject_type_t type) {
     IRIS_ASSERT(obj != 0, "kobject_init: NULL object");
-    IRIS_ASSERT(ops != 0 && ops->destroy != 0,
-                "kobject_init: object with no destructor");
     obj->type = type;
-    obj->ops  = ops;
+#ifdef IRIS_HOST_TEST
+    obj->ops = 0;                      /* a real object: dispatch on type */
+#endif
     obj->ut_block_bytes = 0u;          /* kernel-slab storage */
     obj->destroy_next   = 0;           /* not queued for teardown */
     spinlock_init(&obj->lock);
@@ -23,10 +19,29 @@ void kobject_init(struct KObject *obj, kobject_type_t type,
     atomic_store_explicit(&obj->active_refs, 0u, memory_order_relaxed);
 }
 
+#ifdef IRIS_HOST_TEST
+/*
+ * A host test fixture: a real TYPE on storage the kernel did not allocate.
+ *
+ * The suites build objects of type KOBJ_ENDPOINT, KOBJ_CNODE and so on out of
+ * heap memory, to drive CSpace and MDB logic that switches on type — and they
+ * must observe destruction without the real destructor running, because the
+ * real one would hand a heap block back to an Untyped that never owned it.
+ * That is the ONE thing a type cannot answer, so it is the one place a pointer
+ * survives, and it survives only in a build that is not the kernel.
+ */
+void kobject_init_test(struct KObject *obj, kobject_type_t type,
+                       const struct KObjectOps *ops) {
+    kobject_init(obj, type);
+    IRIS_ASSERT(ops != 0 && ops->destroy != 0,
+                "kobject_init_test: fixture with no destructor");
+    obj->ops = ops;
+}
+#endif
+
 void kobject_init_in_untyped(struct KObject *obj, kobject_type_t type,
-                             const struct KObjectOps *ops,
                              uint32_t block_bytes) {
-    kobject_init(obj, type, ops);
+    kobject_init(obj, type);
     obj->ut_block_bytes = block_bytes;
 }
 
@@ -96,6 +111,86 @@ void kobject_retain(struct KObject *obj) {
  * only on the way to a panic, so it costs nothing that matters.
  */
 
+/*
+ * ── Destruction, dispatched on the TYPE ─────────────────────────────────────
+ *
+ * seL4 does this and stores no pointer in the object.  IRIS stored one, in 18
+ * `KObjectOps` tables across 17 files, and the cost was never the indirect
+ * call: `scripts/check_lock_order.py` §9.1 admits it cannot follow
+ * `ops->destroy`, so the lock hierarchy went UNCHECKED exactly where a
+ * destructor runs, which is where it matters most.  The mapping from type to
+ * destructor also existed nowhere a reader or a tool could see it — only as
+ * initialisers scattered through the files that defined the objects.
+ *
+ * Here it is, as a table, in one place.
+ *
+ * `default:` is a PANIC and not a silent return.  An object whose type has no
+ * destructor is a leak or a type confusion, and both are worth stopping for at
+ * the moment they are provable rather than at the moment they are fatal.
+ */
+static void kobject_dispatch_close(struct KObject *obj) {
+#ifdef IRIS_HOST_TEST
+    if (obj->ops) { if (obj->ops->close) obj->ops->close(obj); return; }
+#endif
+    switch (obj->type) {
+    case KOBJ_NOTIFICATION:   knotification_close(obj);    break;
+    case KOBJ_BOOTSTRAP_CAP:  kbootcap_close(obj);         break;
+    case KOBJ_IRQ_CAP:        kirqcap_close(obj);          break;
+    case KOBJ_IOPORT:         kioport_close(obj);          break;
+    case KOBJ_ENDPOINT:       kendpoint_obj_close(obj);    break;
+    case KOBJ_CNODE:          kcnode_obj_close(obj);       break;
+    case KOBJ_SCHED_CONTEXT:  kschedctx_obj_close(obj);    break;
+    case KOBJ_UNTYPED:        kuntyped_obj_close(obj);     break;
+    case KOBJ_REPLY:          kreply_obj_close(obj);       break;
+    case KOBJ_VSPACE:         kvspace_obj_close(obj);      break;
+    case KOBJ_FRAME:          kframe_obj_close(obj);       break;
+    case KOBJ_PAGE_TABLE:     kpagetable_obj_close(obj);   break;
+    case KOBJ_ASID_POOL:      kasidpool_obj_close(obj);    break;
+    case KOBJ_IOSPACE:        kiospace_obj_close(obj);     break;
+    case KOBJ_IO_PAGE_TABLE:  kiopagetable_obj_close(obj); break;
+    /* A TCB has no close hook: nothing is published about a thread that is
+     * not already unwound by exit.  Stated rather than defaulted, so that
+     * adding one is a decision and not an omission. */
+    case KOBJ_TCB:            break;
+    default:                  break;   /* the reserved wire types */
+    }
+}
+
+static void kobject_dispatch_destroy(struct KObject *obj) {
+#ifdef IRIS_HOST_TEST
+    if (obj->ops) { obj->ops->destroy(obj); return; }
+#endif
+    switch (obj->type) {
+    case KOBJ_NOTIFICATION:   knotification_destroy_ut(obj);  break;
+    /*
+     * The one type whose storage decides its destructor.  A bootstrap cap is
+     * born either in the kernel slab or in an Untyped child block, and the
+     * object already records which in `ut_block_bytes` — so this reads the
+     * fact off the object instead of needing a second table to remember it.
+     */
+    case KOBJ_BOOTSTRAP_CAP:
+        if (obj->ut_block_bytes) kbootcap_destroy_ut(obj);
+        else                     kbootcap_destroy(obj);
+        break;
+    case KOBJ_IRQ_CAP:        kirqcap_destroy(obj);           break;
+    case KOBJ_IOPORT:         kioport_destroy(obj);           break;
+    case KOBJ_ENDPOINT:       kendpoint_obj_destroy_ut(obj);  break;
+    case KOBJ_CNODE:          kcnode_obj_destroy(obj);        break;
+    case KOBJ_SCHED_CONTEXT:  kschedctx_obj_destroy_ut(obj);  break;
+    case KOBJ_UNTYPED:        kuntyped_obj_destroy(obj);      break;
+    case KOBJ_REPLY:          kreply_obj_destroy_ut(obj);     break;
+    case KOBJ_TCB:            ktcb_obj_destroy(obj);          break;
+    case KOBJ_VSPACE:         kvspace_obj_destroy(obj);       break;
+    case KOBJ_FRAME:          kframe_obj_destroy(obj);        break;
+    case KOBJ_PAGE_TABLE:     kpagetable_obj_destroy(obj);    break;
+    case KOBJ_ASID_POOL:      kasidpool_obj_destroy(obj);     break;
+    case KOBJ_IOSPACE:        kiospace_obj_destroy(obj);      break;
+    case KOBJ_IO_PAGE_TABLE:  kiopagetable_obj_destroy(obj);  break;
+    default:
+        iris_panic("kobject_destroy: object type has no destructor");
+    }
+}
+
 void kobject_release(struct KObject *obj) {
     /* release on decrement: publishes all preceding writes to the potential
      * destructor that may run on another thread. */
@@ -107,7 +202,7 @@ void kobject_release(struct KObject *obj) {
         /* acquire fence: ensures this thread sees all writes that preceded
          * the release decrements issued by other threads. */
         atomic_thread_fence(memory_order_acquire);
-        obj->ops->destroy(obj);
+        kobject_dispatch_destroy(obj);
     }
 }
 
@@ -124,8 +219,6 @@ void kobject_active_release(struct KObject *obj) {
     IRIS_ASSERT(prev >= 1u, "kobject_active_release: active_refs underflow");
     if (prev == 1u) {
         atomic_thread_fence(memory_order_acquire);
-        if (obj->ops->close) {
-            obj->ops->close(obj);
-        }
+        kobject_dispatch_close(obj);
     }
 }

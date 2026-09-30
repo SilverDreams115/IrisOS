@@ -65,13 +65,19 @@ static struct KNotification *notif_fixture(void) {
  * suites and by iris_test's CDT tests, against the namespace that stays. */
 
 
-/* The fake waiters below are hand-installed into a notification queue,
- * which now holds a reference on what it names.  They are statics that outlive
- * the check, so the destructor only has to exist. */
-static void selftest_waiter_destroy(struct KObject *o) { (void)o; }
-static const struct KObjectOps selftest_waiter_ops = {
-    .close = 0, .destroy = selftest_waiter_destroy
-};
+/*
+ * The fake waiters below are hand-installed into a notification queue, which
+ * holds a reference on what it names, and the wake-all gives that reference
+ * back — so their destructor DOES run.
+ *
+ * They used to carry a no-op `KObjectOps` for exactly that reason.  They no
+ * longer need one: destruction dispatches on the type, KOBJ_TCB reaches
+ * `ktcb_obj_destroy`, and that now returns without touching storage for a
+ * `struct task` that is neither Untyped-born nor a slot of `ktcb_backing[]`.
+ * These are stack locals, so they are neither, and the bounds test that makes
+ * that safe is a hardening in its own right — before it, any such task would
+ * have had `sizeof(struct task)` bytes zeroed wherever it happened to live.
+ */
 
 static int notification_selftest(void) {
     struct KNotification *n = notif_fixture();
@@ -91,7 +97,7 @@ static int notification_selftest(void) {
     /* This installs a waiter WITHOUT going through the enqueue, so it
      * has to stand in for the reference the enqueue would have taken -- the
      * wake-all below gives one back for every waiter it empties. */
-    kobject_init(&fake_waiter.base, KOBJ_TCB, &selftest_waiter_ops);
+    kobject_init(&fake_waiter.base, KOBJ_TCB);
     n->queue_head = n->queue_tail = &fake_waiter;
     n->waiter_count = 1;
     kobject_active_retain(&n->base);
@@ -104,7 +110,7 @@ static int notification_selftest(void) {
     n->closed = 0;
     for (uint32_t i = 0; i < sizeof(cancelled_waiter); i++) ((uint8_t *)&cancelled_waiter)[i] = 0;
     cancelled_waiter.state = TASK_BLOCKED_IRQ;
-    kobject_init(&cancelled_waiter.base, KOBJ_TCB, &selftest_waiter_ops);  /* held by the queue */
+    kobject_init(&cancelled_waiter.base, KOBJ_TCB);  /* held by the queue */
     n->queue_head = n->queue_tail = &cancelled_waiter;
     n->waiter_count = 1;
     knotification_cancel_waiter(&cancelled_waiter);

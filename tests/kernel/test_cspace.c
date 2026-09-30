@@ -36,7 +36,7 @@ static const struct KObjectOps test_ops = { .close = NULL, .destroy = test_destr
 static struct KObject *make_obj(kobject_type_t type) {
     struct KObject *o = (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
     if (!o) return NULL;
-    kobject_init(o, type, &test_ops);
+    kobject_init_test(o, type, &test_ops);
     return o;
 }
 
