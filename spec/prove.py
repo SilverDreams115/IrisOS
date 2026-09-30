@@ -56,7 +56,32 @@ MASK = (R_READ | R_WRITE | R_DUPLICATE | R_TRANSFER |
 results = []
 
 
-def decide(assertions):
+_PREMISE_CACHE = {}
+
+
+def premises_satisfiable(extra):
+    """
+    Are these premises satisfiable, and is the answer worth caching?
+
+    It is: `move` states five theorems over ONE premise set, so without a
+    cache the same query runs five times — and each run is a chance for the
+    solver to time out and report the premises undecided, which fails the
+    lane.  That is exactly what it did, intermittently, on the commit that
+    added those five.  A gate that flakes is a gate people rerun until it is
+    green, which is worse than not having it.
+
+    Keyed on the assertions' printed form, which is exact for the way this
+    file builds them: the same premise list produces the same key.
+    """
+    key = "\u0000".join(a.sexpr() for a in extra)
+    if key in _PREMISE_CACHE:
+        return _PREMISE_CACHE[key]
+    _, r = decide(extra, timeout=180000)
+    _PREMISE_CACHE[key] = r
+    return r
+
+
+def decide(assertions, timeout=60000):
     """
     Ask z3, and if the default engine cannot decide, ask it differently.
 
@@ -72,7 +97,7 @@ def decide(assertions):
     """
     for cfg in ({}, {"smt.mbqi": False}):
         s = z3.Solver()
-        s.set("timeout", 60000)
+        s.set("timeout", timeout)
         for k, v in cfg.items():
             s.set(k, v)
         for a in assertions:
@@ -99,7 +124,7 @@ def prove(name, claim, extra=None):
     as what it is — the solver gave up — rather than folded into either.
     """
     if extra:
-        g, r = decide(extra)
+        r = premises_satisfiable(extra)
         if r == z3.unsat:
             results.append((name, "VACUOUS", None))
             return
@@ -553,6 +578,75 @@ def prove_retype_preserves_O2():
 REVOKE_DEPTH = 4
 
 
+def prove_move_preserves():
+    """
+    MOVE, which is the operation these theorems had quietly skipped.
+
+    derive, delete-with-reparent, retype and revoke were proved; `move` was
+    not, and it is the one that relocates a capability WITH its place in the
+    tree — the destination inherits the source's parent, every child
+    re-points at the destination, and the source empties.  Three edges rewired
+    at once is exactly the shape where A7 or O2 would break, and "we proved
+    the other four" is not an argument about the fifth.
+
+    `rotate` is NOT here and is not claimed: `sys_cspace_rotate` exists in the
+    kernel but no operation in `spec/authority_model.py` drives it, so there
+    is nothing for a theorem to be about yet.  Saying that beats a lemma over
+    a definition nobody wrote.
+    """
+    obj, rgt, par, bdg, oty = new_state("m")
+    src, dst = z3.Int("src_m"), z3.Int("dst_m")
+    i = z3.Int("i")
+    st = invariants.State(obj, rgt, par, bdg, oty, slot)
+
+    pre = [
+        z3.ForAll([i], z3.Implies(slot(i),
+                                  z3.And(wf(st, i), inv_A7_at(st, i),
+                                         inv_A8_at(st, i), inv_O2_at(st, i)))),
+        # A9 as a HYPOTHESIS, and it has to be one.
+        #
+        # Without it the well-formedness half is REFUTED, by a source that is
+        # its own parent: `wf` is satisfied by that state (the parent is a
+        # slot and it is occupied), the move gives the destination `par[src]`
+        # as its parent, and the source is then emptied — so the destination
+        # names an empty slot.  Acyclicity forbids the state, `wf` alone does
+        # not, and move is where the difference shows.
+        #
+        # The invariants are not independent, and this is the one place so far
+        # that says so out loud: four operations were proved from `wf` plus
+        # A7/A8/O2, and the fifth needs A9 as well.
+        z3.ForAll([i], z3.Implies(slot(i), acyclic_within(par, i))),
+        slot(src), slot(dst), src != dst,
+        src != 0, dst != 0,               # CPtr 0 names nothing, either end
+        obj[src] != -1,                   # source occupied
+        obj[dst] == -1,                   # destination empty
+    ]
+
+    # dst takes src's identity and its place; src's children re-point at dst;
+    # src empties.  Nothing else in the tree moves.
+    k = z3.Int("k")
+    obj2 = z3.Lambda([k], z3.If(k == dst, obj[src],
+                                z3.If(k == src, -1, obj[k])))
+    rgt2 = z3.Lambda([k], z3.If(k == dst, rgt[src], rgt[k]))
+    bdg2 = z3.Lambda([k], z3.If(k == dst, bdg[src], bdg[k]))
+    par2 = z3.Lambda([k], z3.If(k == dst, par[src],
+                                z3.If(k == src, -1,
+                                      z3.If(par[k] == src, dst, par[k]))))
+    post = invariants.State(obj2, rgt2, par2, bdg2, oty, slot)
+
+    j = z3.Int("j")
+    prove("A7  move preserves it — the capability travels with its ancestry",
+          z3.ForAll([j], z3.Implies(slot(j), inv_A7_at(post, j))), extra=pre)
+    prove("A8  move preserves it",
+          z3.ForAll([j], z3.Implies(slot(j), inv_A8_at(post, j))), extra=pre)
+    prove("O2  move preserves it",
+          z3.ForAll([j], z3.Implies(slot(j), inv_O2_at(post, j))), extra=pre)
+    prove("    move preserves well-formedness",
+          z3.ForAll([j], z3.Implies(slot(j), wf(post, j))), extra=pre)
+    prove("    move changes no capability's rights",
+          z3.And(rgt2[dst] == rgt[src], bdg2[dst] == bdg[src]), extra=pre)
+
+
 def prove_revoke_clears_the_subtree():
     """
     A10's real content: revoke removes the DESCENDANTS and spares the root.
@@ -630,6 +724,7 @@ def main():
     prove_delete_preserves()
     prove_delete_preserves_A9()
     prove_retype_preserves_O2()
+    prove_move_preserves()
     prove_revoke_clears_the_subtree()
     prove_revoke_root_survives()
 
