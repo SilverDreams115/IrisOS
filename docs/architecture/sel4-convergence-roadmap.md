@@ -4019,6 +4019,39 @@ times.
    attached to its grandparent rather than dangling — which the differential
    then confirmed directly.
 
+### And then the differential was made to compare RETURN CODES
+
+Comparing final states alone misses a whole class: an operation the kernel
+refuses and the model accepts agrees perfectly whenever the acceptance would
+not have changed anything visible.  And the refusal IS the specification for
+most of the rights rules — *"a mint without DUPLICATE is ACCESS_DENIED"* is a
+statement about a return value and about nothing else.
+
+Four more disagreements, **all four the model again**, and together they pin
+something no document in this tree had written down: **the ORDER in which a
+derivation is refused.**
+
+1. **Revoking an empty slot is `NOT_FOUND`, where deleting one is `OK`.**  The
+   asymmetry is deliberate and the reason is preemption: a revoke drops
+   `mdb_lock` between batches, so the slot it was invoked on can be deleted
+   underneath it — and the honest answer is NOT_FOUND if nothing had been
+   revoked and a partial count otherwise.  *"A revoke that destroyed half a
+   subtree and then found its own root gone has still destroyed half a
+   subtree."*
+2. **Deriving a slot into ITSELF is `INVALID_ARG`**, decided before the slot is
+   examined at all — a malformed request, not a conflict with what is there.
+3. **Authority is settled before feasibility.**  A mint without `DUPLICATE` is
+   refused before the destination is looked at, so a caller with no right to
+   copy does not get to learn whether the destination was occupied.
+4. **The refusals are ordered**: `DUPLICATE` → the rights intersection
+   collapsing to nothing → the badge rules → the destination being occupied.
+   A request that violates two of them is told about the first, and which one
+   a caller is told is part of the specification rather than an accident of
+   how the function was written.
+
+**4500 traces across two seed spaces**, states and return codes agreeing
+exactly.
+
 ### What phase 1 does NOT cover yet
 
 `retype` from an Untyped, and IPC.  The trace language has `seed`, `mint`,

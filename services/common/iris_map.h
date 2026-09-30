@@ -61,10 +61,37 @@ static inline long iris_map_frame(uint64_t frame_c, uint64_t vspace_c,
          * err -16, which reads as "the interpreter could not be found" and is
          * not what happened at all.
          */
+        /*
+         * Every 2 MiB region the RANGE touches, not every 2 MiB step from
+         * its start.
+         *
+         * This walked `vaddr + k * 2 MiB` while `k * 2 MiB < size`, which for
+         * any frame smaller than 2 MiB means it probed exactly one address:
+         * `vaddr` itself.  A range that CROSSES a 2 MiB boundary needs a
+         * level in the next region too — `Frame_Map` installs every page of
+         * the frame (D-10) — so the first pass installed the level for the
+         * first region, the retry found `Frame_Map` still answering
+         * MISSING_TABLE for the second, and the loop probed `vaddr` again and
+         * got ALREADY_EXISTS ("the walk was already complete").  Nothing was
+         * installed, and the helper returned ALREADY_EXISTS for a mapping
+         * that was merely unfinished.
+         *
+         * It reached the caller as `PROC_STEP_INTERP` err -7 and read as "the
+         * interpreter could not be found".  It was intermittent because the
+         * interpreter's load base is randomised per spawn: the failure needs
+         * the base to fall within one frame-length of a 2 MiB boundary, which
+         * for a ~50 KiB text is a couple of percent per spawn and several
+         * spawns per boot.
+         *
+         * So the walk is over the regions the range OCCUPIES: from the one
+         * containing its first byte to the one containing its last.
+         */
         int installed = 0;
         long why = r;
-        for (uint64_t off = 0; off < (size ? size : 4096u);
-             off += 0x200000ULL) {
+        const uint64_t span = size ? size : 4096u;
+        const uint64_t first = vaddr & ~0x1FFFFFULL;
+        const uint64_t last  = (vaddr + span - 1u) & ~0x1FFFFFULL;
+        for (uint64_t va = first; va <= last; va += 0x200000ULL) {
             long rt, mp, del;
             /*
              * The slot is freed before it is reused, and the answer is READ.
@@ -85,9 +112,12 @@ static inline long iris_map_frame(uint64_t frame_c, uint64_t vspace_c,
                              (long)((uint64_t)pt_slot << 32), 4096);
             if (rt != 0) return rt;         /* the budget, not the walk */
             mp = iris_invoke2((long)pt_slot, INV_PAGE_TABLE_MAP,
-                              (long)vspace_c, (long)(vaddr + off));
+                              (long)vspace_c, (long)va);
             if (mp == 0) { installed = 1; break; }
-            why = mp;                       /* the last real refusal */
+            /* ALREADY_EXISTS here means "this region is already walkable",
+             * which is not a refusal — it is the answer for every region but
+             * the one that is missing a level.  Keep looking. */
+            why = mp;
         }
         if (!installed) return why;
     }

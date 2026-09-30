@@ -180,29 +180,45 @@ int main(void) {
         unsigned a, b, c, d;
         if (sscanf(line, "%15s", op) != 1) continue;
 
+        /*
+         * Every operation's RESULT is printed, not just the final state.
+         *
+         * Comparing states alone misses a whole class: an operation the
+         * kernel refuses and the model accepts agrees perfectly whenever the
+         * acceptance would not have changed anything visible.  The refusal IS
+         * the specification for most of the rights rules — "a mint without
+         * DUPLICATE is ACCESS_DENIED" is a statement about a return value and
+         * about nothing else — so the return value is part of what the two
+         * implementations have to agree about.
+         */
         if (!strcmp(op, "seed") && sscanf(line, "%*s %u %u", &a, &b) == 2) {
+            struct KObject *o;
             if (a >= NSLOTS) continue;
-            struct KObject *o = obj_new(g_types[b % 4u]);
+            o = obj_new(g_types[b % 4u]);
             if (!o) return 2;
-            (void)kcnode_mint(cn_of(a), idx_of(a), o, RIGHT_READ | RIGHT_WRITE |
-                              RIGHT_DUPLICATE | RIGHT_TRANSFER);
+            printf("r %d\n", (int)kcnode_mint(cn_of(a), idx_of(a), o,
+                                              RIGHT_READ | RIGHT_WRITE |
+                                              RIGHT_DUPLICATE | RIGHT_TRANSFER));
         } else if (!strcmp(op, "mint") &&
                    sscanf(line, "%*s %u %u %u %u", &a, &b, &c, &d) == 4) {
             if (a >= NSLOTS || b >= NSLOTS) continue;
-            (void)kcnode_slot_derive(cn_of(a), idx_of(a), cn_of(b), idx_of(b),
-                                     (iris_rights_t)c, (uint64_t)d);
+            printf("r %d\n", (int)kcnode_slot_derive(cn_of(a), idx_of(a),
+                                                     cn_of(b), idx_of(b),
+                                                     (iris_rights_t)c,
+                                                     (uint64_t)d));
         } else if (!strcmp(op, "delete") &&
                    sscanf(line, "%*s %u", &a) == 1) {
             if (a >= NSLOTS) continue;
-            (void)kcnode_slot_delete(cn_of(a), idx_of(a));
+            printf("r %d\n", (int)kcnode_slot_delete(cn_of(a), idx_of(a)));
         } else if (!strcmp(op, "revoke") &&
                    sscanf(line, "%*s %u", &a) == 1) {
             uint32_t n = 0;
             if (a >= NSLOTS) continue;
-            (void)kcnode_slot_revoke(cn_of(a), idx_of(a), &n);
+            printf("r %d\n", (int)kcnode_slot_revoke(cn_of(a), idx_of(a), &n));
         }
     }
 
+    printf("--\n");
     dump();
     return 0;
 }

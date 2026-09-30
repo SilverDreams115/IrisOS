@@ -25,11 +25,11 @@ def disagrees(ops):
     if not ops:
         return False
     try:
-        want = run_model(ops).dump().strip()
-        got = run_kernel(ops).strip()
+        model, want_res = run_model(ops)
+        got, got_res = run_kernel(ops)
     except Exception:
         return False
-    return want != got
+    return want_res != got_res or model.dump().strip() != got.strip()
 
 
 def shrink(ops):
@@ -83,10 +83,14 @@ def main():
     print("=== the smallest trace that still disagrees (%d ops) ===" % len(small))
     for o in small:
         print("  " + o)
+    m, mres = run_model(small)
+    kdump, kres = run_kernel(small)
+    print("--- results   model %s" % mres)
+    print("              kernel %s" % kres)
     print("--- model says")
-    print("  " + "\n  ".join(run_model(small).dump().strip().splitlines() or ["(empty)"]))
+    print("  " + "\n  ".join(m.dump().strip().splitlines() or ["(empty)"]))
     print("--- kernel says")
-    print("  " + "\n  ".join(run_kernel(small).strip().splitlines() or ["(empty)"]))
+    print("  " + "\n  ".join(kdump.strip().splitlines() or ["(empty)"]))
     return 0
 
 

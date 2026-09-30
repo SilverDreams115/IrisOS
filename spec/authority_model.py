@@ -196,15 +196,35 @@ class AuthorityModel:
         dst = self.slots.get(dst_sid)
         if src is None or dst is None:
             return ERR_INVALID_ARG
+        # Deriving a slot into ITSELF is a malformed request, not a conflict
+        # with what is already there — and the kernel says so before it looks
+        # at the slot at all, empty or not.
+        if src_sid == dst_sid:
+            return ERR_INVALID_ARG
         if src.empty:
             return ERR_NOT_FOUND
-        if not dst.empty:
-            return ERR_ALREADY_EXISTS
+        # ── the ORDER of these checks is part of the specification ─────────
+        #
+        # Authority first, feasibility second.  The kernel refuses a mint
+        # without DUPLICATE before it looks at whether the destination is
+        # occupied, so a caller with no right to copy the capability does not
+        # get to learn anything about the destination slot either.  The model
+        # checked occupancy first and the two agreed on the STATE every time
+        # — the disagreement is visible only in the return code, which is why
+        # the differential compares those too.
         if not (src.rights & R_DUPLICATE):
             return ERR_ACCESS_DENIED
+
+        # Rights are reduced here, and a reduction to NOTHING is refused —
+        # before the badge is considered.  `mint 14 17 2 42` from a source
+        # carrying READ|DUPLICATE asks for WRITE, which intersects to zero,
+        # and the kernel says INVALID_ARG without ever reaching the badge
+        # rule that would also have refused it.  Two refusals, and which one
+        # the caller is told is part of the specification.
         new_rights = rights & src.rights          # reduction, never amplification
         if new_rights == 0:
             return ERR_INVALID_ARG                # collapse to NONE is refused
+
         # ── A8, in full, and it has three parts, not one ──────────────────
         #
         # The charter's A8 row says "badges are kernel-sealed identity; a
@@ -236,6 +256,12 @@ class AuthorityModel:
             if self.objs[src.obj].type not in (T_ENDPOINT, T_NOTIFICATION):
                 return ERR_INVALID_ARG                  # (3) identity types only
             new_badge = badge
+
+        # Feasibility LAST.  Everything above is about authority and about
+        # whether the request is well formed, and the kernel settles both
+        # before it looks at what is in the destination.
+        if not dst.empty:
+            return ERR_ALREADY_EXISTS
         dst.obj, dst.rights, dst.badge = src.obj, new_rights, new_badge
         dst.parent = src_sid
         src.children.append(dst_sid)
@@ -270,7 +296,18 @@ class AuthorityModel:
         if s is None:
             return ERR_INVALID_ARG
         if s.empty:
-            return OK
+            # NOT_FOUND, not OK — and the asymmetry with `delete` (which IS
+            # idempotent on an empty slot) is deliberate in the kernel.  A
+            # revoke drops `mdb_lock` between batches, which is what makes it
+            # preemptible, so the slot it was invoked on can be deleted
+            # underneath it by another processor.  `kcnode_slot_revoke_bounded`
+            # answers NOT_FOUND when nothing had been revoked yet and
+            # otherwise stops and reports what was: "a revoke that destroyed
+            # half a subtree and then found its own root gone has still
+            # destroyed half a subtree".  The model returned OK; the
+            # differential disagreed on its first trace once RETURN CODES were
+            # compared and not only states, which is the whole reason they are.
+            return ERR_NOT_FOUND
         for d in self._descendants(sid):
             self.slots[d].children.clear()
             self._clear(d)

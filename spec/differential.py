@@ -78,27 +78,33 @@ def gen_trace(rng, nops):
 
 
 def run_model(ops):
+    """Returns (model, [result of each operation])."""
     m = AuthorityModel(NCNODES, SPC)
+    results = []
     for line in ops:
         f = line.split()
         if f[0] == "seed":
-            m.seed(int(f[1]), ["ep", "notif", "cnode", "ut"][int(f[2]) % 4],
-                   R_READ | R_WRITE | R_DUPLICATE | R_TRANSFER)
+            results.append(m.seed(
+                int(f[1]), ["ep", "notif", "cnode", "ut"][int(f[2]) % 4],
+                R_READ | R_WRITE | R_DUPLICATE | R_TRANSFER))
         elif f[0] == "mint":
-            m.mint(int(f[1]), int(f[2]), int(f[3]), int(f[4]))
+            results.append(m.mint(int(f[1]), int(f[2]), int(f[3]), int(f[4])))
         elif f[0] == "delete":
-            m.delete(int(f[1]))
+            results.append(m.delete(int(f[1])))
         elif f[0] == "revoke":
-            m.revoke(int(f[1]))
-    return m
+            results.append(m.revoke(int(f[1])))
+    return m, results
 
 
 def run_kernel(ops):
+    """Returns (dump, [result of each operation])."""
     p = subprocess.run([DRIVER], input="\n".join(ops) + "\n",
                        capture_output=True, text=True, timeout=60)
     if p.returncode != 0:
         raise RuntimeError("spec_driver exited %d: %s" % (p.returncode, p.stderr))
-    return p.stdout.strip()
+    head, _, tail = p.stdout.partition("--\n")
+    res = [int(l.split()[1]) for l in head.splitlines() if l.startswith("r ")]
+    return tail.strip(), res
 
 
 def main():
@@ -120,9 +126,9 @@ def main():
         rng = random.Random(seed)
         ops = gen_trace(rng, rng.randrange(8, 60))
 
-        model = run_model(ops)
+        model, want_res = run_model(ops)
         want = model.dump().strip()
-        got = run_kernel(ops)
+        got, got_res = run_kernel(ops)
 
         why = check_all(model)
         if why:
@@ -134,7 +140,22 @@ def main():
                 break
             continue
 
-        if want != got:
+        if want_res != got_res:
+            bad += 1
+            first = next((k for k in range(min(len(want_res), len(got_res)))
+                          if want_res[k] != got_res[k]), None)
+            print("=== trace seed %d: model and kernel RETURNED differently ===" % seed)
+            if first is not None:
+                print("  op %d: `%s` -> model %d, kernel %d" % (
+                    first, ops[first], want_res[first], got_res[first]))
+            else:
+                print("  different number of results: %d vs %d" % (
+                    len(want_res), len(got_res)))
+            print("  " + "\n  ".join(ops))
+            if bad > 3:
+                print("... stopping after 4 disagreements")
+                break
+        elif want != got:
             bad += 1
             print("=== trace seed %d: model and kernel DISAGREE ===" % seed)
             print("--- trace")

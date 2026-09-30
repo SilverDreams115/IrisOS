@@ -3771,7 +3771,53 @@ That is the whole story of this entry and it is worth keeping in order:
    which confirmed the delete was succeeding and the slot was occupied
    BEFORE the helper ever ran.
 
-**The defect.**  `proc_load_interp` clears three of its four scratch slots on
+**The defect — and the first answer was wrong.**  Two things were found, and
+only the second one was the cause.  The first is recorded because it is a
+real asymmetry and because believing it was the answer cost fourteen clean
+boots' worth of false confidence: `proc_load_interp` clears three of its four
+scratch slots on entry and not `CHILD_PT`, so a slot left occupied by an
+earlier spawn survives into the next.  That is worth fixing and it is fixed.
+It is not what was failing.
+
+**The cause** is in `iris_map_frame`, and it is arithmetic.  When
+`Frame_Map` answers MISSING_TABLE the helper installs a page table and
+retries, and it looked for the missing level at `vaddr + k * 2 MiB` while
+`k * 2 MiB < size` — which for any frame smaller than 2 MiB probes exactly
+one address, `vaddr` itself.  A range that CROSSES a 2 MiB boundary needs a
+level in the next region too, because `Frame_Map` installs every page of the
+frame (D-10).  So the first pass installed the level for the first region;
+the retry found `Frame_Map` still answering MISSING_TABLE for the second;
+the loop probed `vaddr` again and got `ALREADY_EXISTS` — *"the walk was
+already complete"* — installed nothing, and returned ALREADY_EXISTS for a
+mapping that was merely unfinished.
+
+The walk now covers the regions the range OCCUPIES: from the one holding its
+first byte to the one holding its last.
+
+**Why it looked intermittent, and the arithmetic that confirms it.**  The
+interpreter's load base is randomised per spawn within its own region.  The
+failure needs the base to fall within one frame-length of a 2 MiB boundary:
+for `libc.so`'s ~50 KiB text that is about 2.4% per spawn, and a boot does
+several interpreter loads — which predicts roughly one boot in nine.  The
+observed rate was one in eight to fourteen.  It was never about SMP, never
+about load, and never about timing.
+
+**Blast radius.**  `iris_map_frame` is the shared helper **eleven** services
+map through — `proc`, `fb`, `objreg`, `libuser`, `console`, `ip`, `blk`,
+`net`, `fs`, `init`, and `services/common/prog_mem.c`, which is the C
+library's own heap.  So a C program whose `malloc` grew across a 2 MiB
+boundary had the same defect waiting for it.  It surfaced in the interpreter
+load first only because that path randomises its address on every spawn and
+therefore samples the hazard several times a boot; everything else maps at
+addresses that happen not to move.
+
+**And it is not a bug the differential could have found.**  It is in a ring-3
+helper, not in the kernel's authority model, so nothing in `spec/` covers it.
+It was found by the diagnostic chain instead — which is the argument for
+having both, and for the rule that a discarded return value is a diagnostic
+missing on the day it is needed.
+
+**The earlier finding, kept because it is also true.**  `proc_load_interp` clears three of its four scratch slots on
 entry — `ITEXT`, `IDATA`, `IPRIV` — and not `CHILD_PT`, the page-table
 scratch every `iris_map_frame` in it reuses.  The helper deletes that slot
 before each retype, but only on the branch where a level is actually
@@ -3870,6 +3916,18 @@ refused; and a fresh badge is for identity types only.
 **Measured**: 5300 random traces across two seed spaces, model and kernel
 agreeing exactly, with every charter invariant checked against the model
 after each one.
+
+**And then return codes.**  Comparing states alone misses every refusal that
+would not have changed anything visible — and the refusals ARE the rights
+specification.  Four more disagreements, all four the model, pinning what no
+document here had stated: revoke on an empty slot is NOT_FOUND where delete is
+OK (deliberate: revoke is preemptible and may find its own root gone);
+self-derivation is INVALID_ARG before the slots are examined; authority is
+settled before feasibility; and the refusals are ORDERED — DUPLICATE, then the
+rights intersection collapsing to nothing, then the badge rules, then the
+destination being occupied.  Which refusal a caller is told is part of the
+specification, and it is now pinned by 4500 traces rather than by the order
+somebody happened to write the function in.
 
 **What it does not cover yet**: `retype` from an Untyped, and IPC.
 `spec_driver.c` aborts rather than answering plausibly if a CSpace operation
