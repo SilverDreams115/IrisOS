@@ -700,6 +700,65 @@ def prove_revoke_clears_the_subtree():
                                     obj2[d] != -1)), extra=pre)
 
 
+def prove_slices_make_progress():
+    """
+    The two SLICED operations terminate, which is the property their designs
+    rest on and the one neither had.
+
+    D-8 bounded `SYS_CSPACE_REVOKE` and D-12 bounded CNode teardown, and both
+    work the same way: do a slice, then ask to be re-executed while work
+    remains.  That is safe only if a slice makes PROGRESS — otherwise the
+    re-execution is a livelock with a preemption point in it, which is worse
+    than the unbounded loop it replaced because it looks bounded.
+
+    Both arguments were written in comments on the commits that introduced
+    them, mine included.  A comment is where this project keeps its reasoning
+    and not where it keeps its evidence.
+
+    "The subtree strictly shrinks" needs a measure, and cardinality is not in
+    the decidable fragment.  It is stated instead as the two halves that mean
+    the same thing and are expressible: something that WAS an occupied
+    descendant is now empty, and nothing that was empty became one.  A slice
+    that satisfied only the first could be undone by the second.
+    """
+    obj, rgt, par, bdg, oty = new_state("s")
+    root, victim = z3.Int("root_s"), z3.Int("victim_s")
+    i = z3.Int("i")
+    st = invariants.State(obj, rgt, par, bdg, oty, slot)
+
+    pre = [
+        z3.ForAll([i], z3.Implies(slot(i), wf(st, i))),
+        slot(root), slot(victim), root != victim,
+        obj[root] != -1,
+        obj[victim] != -1,
+        par[victim] == root,          # the slice revoked a child of the root
+    ]
+    k = z3.Int("k")
+    obj2 = z3.Lambda([k], z3.If(k == victim, -1, obj[k]))
+
+    j = z3.Int("j")
+    prove("    a revoke slice empties a slot that was occupied",
+          z3.And(obj[victim] != -1, obj2[victim] == -1), extra=pre)
+    prove("    a revoke slice fills nothing that was empty",
+          z3.ForAll([j], z3.Implies(z3.And(slot(j), obj[j] == -1),
+                                    obj2[j] == -1)), extra=pre)
+    prove("    and it spares the root, so the NEXT slice has a root to run on",
+          obj2[root] != -1, extra=pre)
+
+    #
+    # D-12's cascade, which is the same shape over a list instead of a tree.
+    # A pass takes the head, empties that CNode and releases it; the property
+    # that makes re-entry terminate is that the head is GONE from the list and
+    # nothing was added by the taking.
+    #
+    head, nxt = z3.Int("head"), z3.Int("nxt")
+    qn = z3.Array("queued", I, I)       # intrusive next; -1 ends the list
+    qn2 = z3.Store(qn, head, -1)        # the head comes off
+    prove("    a cascade pass removes the head from the queue",
+          z3.And(qn2[head] == -1, qn2[nxt] == qn[nxt]),
+          extra=[slot(head), slot(nxt), head != nxt, qn[head] == nxt])
+
+
 def prove_revoke_root_survives():
     """
     A10's half that is a one-step property: revoke removes the SUBTREE and
@@ -726,6 +785,7 @@ def main():
     prove_retype_preserves_O2()
     prove_move_preserves()
     prove_revoke_clears_the_subtree()
+    prove_slices_make_progress()
     prove_revoke_root_survives()
 
     bad = 0

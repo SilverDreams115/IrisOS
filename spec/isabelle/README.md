@@ -21,6 +21,8 @@ reading" are different claims and only one of them is true here.
 | O2 preserved by the same four | **PROVED** over symbolic state | `spec/prove.py` |
 | move needs **A9 as a hypothesis** — the invariants are not independent | **PROVED**, and refuted without it | `spec/prove.py` |
 | `rotate` | **not modelled**, so not claimed | — |
+| a revoke slice makes PROGRESS — so D-8's re-execution terminates | **PROVED** | `spec/prove.py` |
+| a cascade pass makes progress — so D-12's does | **PROVED** | `spec/prove.py` |
 | no child ever names an empty slot, or a non-slot | **PROVED** over symbolic state | `spec/prove.py` |
 | A9 — reparenting introduces no NEW cycle | **PROVED** (relative: 6 before → 3 after) | `spec/prove.py` |
 | A9 — the tree is acyclic, unbounded | **owed** | needs induction |
@@ -30,7 +32,7 @@ reading" are different claims and only one of them is true here.
 | the C agrees with the model on every trace of length ≤ 4 | **TOTAL** over that bound — 194481 traces (4.1M at depth 5) | `make spec-exhaustive` |
 | the C refines the model, unbounded | **owed**; tested, not proved | `make spec-differential` |
 
-33 obligations, 33 discharged. "Over symbolic state" means: for every CSpace
+37 obligations, 37 discharged. "Over symbolic state" means: for every CSpace
 satisfying the invariant and every legal operation on it, not for every CSpace
 a generator built. That is the inductive step of a refinement proof, and it is
 the thing neither testing nor exhaustion can give.

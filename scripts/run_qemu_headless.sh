@@ -182,6 +182,42 @@ rm -f "$LOG_FILE"
 # the marker is for whatever is still on its way into the file; the log is a
 # `-serial file:` and the marker is not the last line.
 set +e
+#
+# ── No second QEMU, and say so if there is one ─────────────────────────────
+#
+# AGENTS.md: "Never run two QEMU instances at once.  They share
+# build/iris-disk.img and the second one fails to take the write lock, which
+# looks exactly like a boot that produced nothing."  That is the trap, and
+# the reason it is a trap is that the symptom is indistinguishable from a
+# kernel that died before it reached the serial port.
+#
+# This script already waits for its own QEMU to exit, so a sequential gate
+# should never collide — and twice in one session a lane came back rc=2 with
+# a stale log, which is what the collision looks like.  Rather than guess, the
+# condition is now CHECKED and named: wait briefly for a straggler, and if one
+# is still there, fail with the reason instead of producing an empty log for
+# somebody to misread as a boot failure.
+#
+waited=0
+while pgrep -x qemu-system-x86_64 >/dev/null 2>&1; do
+  if [ "$waited" -ge 30 ]; then
+    echo "[headless] another qemu-system-x86_64 is STILL running after 30 s."
+    echo "[headless] They share build/iris-disk.img; the second gets no write"
+    echo "[headless] lock and produces an empty log that reads like a dead"
+    echo "[headless] kernel.  Refusing to start rather than report that."
+    exit 2
+  fi
+  waited=$(( waited + 1 ))
+  sleep 1
+done
+# Say so even when the wait SUCCEEDED.  The intermittent this guards against
+# was seen three times in one session and never reproduced with its output
+# captured, so the useful thing is not a silent fix — it is a line in the log
+# the next time it happens, naming the cause and how long it took to clear.
+if [ "$waited" -gt 0 ]; then
+  echo "[headless] waited ${waited}s for a previous qemu to exit before starting"
+fi
+
 qemu-system-x86_64 \
   -machine q35 \
   "${IOMMU_ARGS[@]}" \
