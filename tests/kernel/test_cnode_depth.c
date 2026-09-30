@@ -74,6 +74,25 @@ static uintptr_t teardown_chain(int len) {
     g_deepest_frame = 0;
     g_marker_destroyed = 0;
     ASSERT_EQ(kcnode_slot_delete(holder, 1), IRIS_OK);   /* the whole attack */
+
+    /*
+     * D-12: teardown is SLICED now, so this is two claims and not one.
+     *
+     * A chain longer than the slice is NOT finished when the delete returns —
+     * that is the entire point, and asserting it is what stops the slice from
+     * being quietly removed later.  The dispatcher finishes the rest at its
+     * preemption point; a host test has no dispatcher, so it stands in for one
+     * and BOUNDS the number of passes, because work that never quiesces is the
+     * failure this design could have.
+     */
+    if (len > (int)IRIS_CASCADE_SLICE)
+        ASSERT_EQ(g_marker_destroyed, 0);                /* really deferred */
+    int passes = 0;
+    while (kcnode_cascade_pending() && passes < 8192) {
+        kcnode_cascade_drain_slice();
+        passes++;
+    }
+    ASSERT_TRUE(passes < 8192);                          /* it quiesced */
     ASSERT_EQ(g_marker_destroyed, 1);                    /* the tail did die */
 
     kobject_release(&holder->base);

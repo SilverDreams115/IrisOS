@@ -309,6 +309,101 @@ static irq_spinlock_t  cascade_lock;
 static struct KObject *cascade_head;      /* intrusive via obj->destroy_next */
 static int             cascade_running;
 
+/*
+ * ── D-12: the drain is SLICED, and the slice boundary is a whole CNode ──────
+ *
+ * Deleting the one capability that names a CNode empties its slots, which ends
+ * the last active reference of every CNode below it, to the bottom of the
+ * tree.  A-39 made the STACK cost of that constant; the time cost stayed
+ * proportional to the tree, and it is reachable from ring 3 by one syscall.
+ *
+ * The ledger's D-12 row said the repair shape was unresolved because D-8's
+ * trick — every slice destroys what it revoked, so the work strictly shrinks —
+ * "does not transfer, whereas a half-emptied CNode must not become reachable
+ * again".  That is true of a slice taken mid-CNode.  It is not true of this
+ * one: the drain already processes WHOLE CNodes, so every entry left on the
+ * list is either untouched — which is exactly the state the list already holds
+ * between an enqueue and the drain reaching it — or emptied and released.
+ * Slicing here introduces no state that could not be observed before it.
+ *
+ * What remains unbounded is ONE CNode's slots, which is bounded by that
+ * CNode's own allocation: fixed at retype, out of the principal's own Untyped.
+ * That is a per-object bound where there was none at all, and it is the
+ * charter's own rule — what bounds an allocation is the budget it was given —
+ * applied to time.
+ *
+ * The remainder is drained at the same preemption point the dead-task reaper
+ * uses (`sched_resume` calls `kcnode_cascade_drain_slice` beside
+ * `reap_pending_dead_task`), so nothing is stranded: a core that finds work
+ * queued takes a slice of it every dispatch.
+ */
+
+/*
+ * Drain at most `budget` queued CNodes (0 = until the list is empty).
+ *
+ * Returns non-zero if work remains.  The caller owns the loop — `running` is
+ * already set — and this clears it before returning either way, under the same
+ * hold that re-checks the list, so work enqueued at the last moment is not
+ * lost.
+ */
+static int kcnode_cascade_drain(uint32_t budget) {
+    uint32_t done = 0;
+    for (;;) {
+        uint64_t f = irq_spinlock_lock(&cascade_lock);
+        struct KObject *o = cascade_head;
+        if (!o) {
+            cascade_running = 0;   /* checked and cleared under one hold */
+            irq_spinlock_unlock(&cascade_lock, f);
+            return 0;
+        }
+        if (budget && done >= budget) {
+            /* Out of slice.  The list keeps its reference on everything still
+             * on it, so this is a pause and not a leak; the flag drops so the
+             * next close — or the next dispatch — owns the loop. */
+            cascade_running = 0;
+            irq_spinlock_unlock(&cascade_lock, f);
+            return 1;
+        }
+        struct KObject *nx = o->destroy_next;
+        cascade_head    = (nx == CASCADE_END) ? 0 : nx;
+        o->destroy_next = 0;       /* off the list: queueable again */
+        irq_spinlock_unlock(&cascade_lock, f);
+
+        kcnode_empty_slots((struct KCNode *)o);
+        kobject_release(o);        /* the reference taken when it was queued */
+        done++;
+    }
+}
+
+/*
+ * Is there teardown still owed?
+ *
+ * For the dispatcher's cheap check and for the tests, which have no dispatcher
+ * and must stand in for one — a sliced drain that nothing resumes is a leak,
+ * so "has it quiesced" has to be answerable.
+ */
+int kcnode_cascade_pending(void) {
+    uint64_t f = irq_spinlock_lock(&cascade_lock);
+    int pending = (cascade_head != 0);
+    irq_spinlock_unlock(&cascade_lock, f);
+    return pending;
+}
+
+/*
+ * The preemption-point drain.  Called from the dispatcher, beside the dead
+ * task reaper, and it is the reason a sliced cascade cannot strand work.
+ */
+void kcnode_cascade_drain_slice(void) {
+    uint64_t f = irq_spinlock_lock(&cascade_lock);
+    if (cascade_running || !cascade_head) {
+        irq_spinlock_unlock(&cascade_lock, f);
+        return;                    /* somebody owns it, or there is nothing */
+    }
+    cascade_running = 1;
+    irq_spinlock_unlock(&cascade_lock, f);
+    (void)kcnode_cascade_drain(IRIS_CASCADE_SLICE);
+}
+
 static void kcnode_cascade(struct KCNode *cn) {
     uint64_t f = irq_spinlock_lock(&cascade_lock);
     if (cascade_running) {
@@ -329,22 +424,12 @@ static void kcnode_cascade(struct KCNode *cn) {
 
     kcnode_empty_slots(cn);
 
-    for (;;) {
-        f = irq_spinlock_lock(&cascade_lock);
-        struct KObject *o = cascade_head;
-        if (!o) {
-            cascade_running = 0;   /* checked and cleared under one hold */
-            irq_spinlock_unlock(&cascade_lock, f);
-            return;
-        }
-        struct KObject *nx = o->destroy_next;
-        cascade_head    = (nx == CASCADE_END) ? 0 : nx;
-        o->destroy_next = 0;       /* off the list: queueable again */
-        irq_spinlock_unlock(&cascade_lock, f);
-
-        kcnode_empty_slots((struct KCNode *)o);
-        kobject_release(o);        /* the reference taken when it was queued */
-    }
+    /*
+     * This CNode counts as the first of the slice, so a delete that fires a
+     * cascade does bounded work before it returns to ring 3 and the rest is
+     * drained at the dispatcher's preemption point.
+     */
+    (void)kcnode_cascade_drain(IRIS_CASCADE_SLICE - 1u);
 }
 
 void kcnode_obj_close(struct KObject *obj) {

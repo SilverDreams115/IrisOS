@@ -305,4 +305,26 @@ void kcnode_mdb_stats(uint32_t *nodes_live, uint32_t *nodes_hwm,
 void kcnode_cdt_note_ipc_transfer(void);
 
 #endif /* __KERNEL__ */
+/*
+ * D-12's slice: CNodes emptied per teardown pass.
+ *
+ * In the header because it is part of the contract, not an implementation
+ * detail — a caller that must know whether a teardown could have finished
+ * needs the number, and the test that asserts the slicing actually happens
+ * needs it most of all.
+ */
+#define IRIS_CASCADE_SLICE 8u
+
+/*
+ * Drain a bounded slice of the CNode teardown cascade (D-12).
+ *
+ * Called from the dispatcher beside the dead-task reaper: teardown deferred by
+ * a slice boundary is finished here, a few CNodes per dispatch, so no cascade
+ * is ever left owing work with nobody to do it.
+ */
+void kcnode_cascade_drain_slice(void);
+
+/* Non-zero while teardown is still owed. */
+int kcnode_cascade_pending(void);
+
 #endif /* IRIS_NC_KCNODE_H */

@@ -8,6 +8,7 @@
 #include <iris/nc/kfault.h>
 #include <iris/nc/kschedctx.h>
 #include <iris/nc/kvspace.h>
+#include <iris/nc/kcnode.h>
 #include <stdatomic.h>
 #include <stdint.h>
 
@@ -324,6 +325,9 @@ struct task *sched_pick_for_dispatch(struct task *outgoing) {
     if (outgoing) fpu_save_to(outgoing->fpu_state);
 
     reap_pending_dead_task();
+    /* D-12: teardown deferred by a cascade slice boundary, finished a few
+     * CNodes per dispatch so nothing is left owing work with nobody to do it. */
+    kcnode_cascade_drain_slice();
 
     if (outgoing && outgoing->timeout_pending) {
         struct task *tf = outgoing;
