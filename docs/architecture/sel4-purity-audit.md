@@ -1,7 +1,7 @@
 # How close IRIS is to seL4 — a file-by-file audit
 
 > **SUPERSEDED IN PART — Stage V, 2026-09-30.** This is a dated record and is
-> kept as written. Two of its statements are no longer the tree's position:
+> kept as written. Three of its statements are no longer the tree's position:
 >
 > * **D-7 is no longer "deliberate and permanent."** That claim was withdrawn
 >   in charter §5, because the convergence roadmap's phase 2 required the
@@ -10,6 +10,12 @@
 >   the plan. Its target property — an object is alive exactly while a
 >   capability names it — is now checked against the real kernel on every
 >   `spec-differential` trace and all 4084101 of `spec-exhaustive` at depth 5.
+> * **D-2 is CLOSED, not "half closed."** Guards are capability-local and the
+>   ROOT guard rides on the thread (`SYS_TCB_CONFIGURE` arg3, seL4's
+>   `cspace_root_data`). The resolver has consumed and checked both since
+>   Stage 8-cap; four documents, a header comment and the ledger's own status
+>   field went on saying otherwise, and the ledger's said both in one
+>   paragraph.
 > * **The per-object destructor pointers this audit describes are gone.**
 >   Destruction dispatches on `obj->type`; the 18 `KObjectOps` tables were
 >   deleted and `check-purity` fails if one returns to a kernel file.

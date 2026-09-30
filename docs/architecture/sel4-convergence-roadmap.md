@@ -113,9 +113,11 @@ I1–I7, S1–S6, M1–M5, P1–P3 — and every one reads MET: none PARTIAL, no
 PENDING.  The claim is worth stating as a total rather than as a list, because
 a list invites the reader to assume the unlisted ones are the unfinished ones,
 and there are none.  What still differs from seL4 after that is four rows in
-the ledger, and only two of them are open: CNode guards are half done (D-2) and
-CNode teardown is bounded PER OBJECT rather than per tree since Stage V sliced
-it (D-12).  The rights set (D-3) is deliberate and permanent, as is homing a
+the ledger, and the only open one is CNode teardown, bounded PER OBJECT rather
+than per tree since Stage V sliced it (D-12).  CNode guards (D-2) are CLOSED —
+capability-local guards and a root guard on the thread — and were described as
+half done in three places for as long as it took somebody to read the
+resolver.  The rights set (D-3) is deliberate and permanent, as is homing a
 thread to one processor (charter §6); reference-counted lifetime (D-7) had its
 permanence WITHDRAWN in Stage V — the charter claimed it and this document
 required the opposite, which was a governance defect and is recorded as one in

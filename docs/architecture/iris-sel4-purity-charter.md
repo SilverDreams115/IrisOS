@@ -227,9 +227,15 @@ those left behind by a migration.  Four such were unrecorded until Stage 5
 closed and went into the ledger's "Structural divergences from seL4" section:
 per-thread kernel stacks with in-kernel blocking (D-1), CNodes without guards
 (D-2), the rights set (D-3), and the absent per-thread IPC buffer (D-4).  Six
-more were found the same way afterwards (D-5 … D-10).  Of the ten, **seven are
-closed**, D-2 is half closed (guards exist and are checked; the CNode's own
-default is still a pure radix walk), **one is deliberate and permanent** —
+more were found the same way afterwards (D-5 … D-10).  Of the ten, **eight are
+closed** — **including D-2, which this paragraph called half closed long
+after the other half landed**: guards are capability-local and checked, and
+the ROOT guard rides on the thread (`SYS_TCB_CONFIGURE` arg3, seL4's
+`cspace_root_data`), because a root CNode is reached through a structural
+pointer and has no slot to carry one.  What stayed written here was the state
+before that, which is the same failure this section records for D-7 one
+paragraph down: a normative document is only normative if it is current —
+**one is deliberate and permanent** —
 the rights set (D-3) — and **one had its permanence WITHDRAWN**:
 reference-counted object lifetime (D-7).  When those rows were written D-1 and
 D-2 carried no retirement stage, which was stated rather than implied: an

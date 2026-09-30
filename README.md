@@ -723,10 +723,12 @@ nothing, and 136 retired numbers answer `NOT_SUPPORTED` for ever (ledger A-32).
 
 What is left is registered and small: the **rights set** is IRIS's own and not
 translatable to seL4's one-to-one (D-3, deliberate), object lifetime is
-**reference-counted** where seL4 reads the derivation tree (D-7, deliberate),
-CNode guards exist on capabilities but the CNode's own default is still a pure
-radix walk (D-2, half closed), and CNode teardown is bounded by memory rather
-than by a budget (D-12, open — a latency property, not an authority one).
+**reference-counted** where seL4 reads the derivation tree (D-7, whose
+permanence was withdrawn in Stage V and whose target is now checked against
+the kernel over 4084101 traces), and CNode teardown is bounded per OBJECT
+rather than per tree since Stage V sliced it (D-12 — a latency property, not
+an authority one).  CNode guards (D-2) are CLOSED: capability-local guards
+plus a root guard carried on the thread, which is seL4's `cspace_root_data`.
 
 **Who pays, and who holds.** The budget answered *who pays* for memory: the
 kernel creates the object and charges it to an Untyped the caller named. That
@@ -868,9 +870,9 @@ What remains is four rows, all in the
 about authority: the rights set (D-3) is deliberate and permanent;
 reference-counted lifetime (D-7) had its permanence WITHDRAWN in Stage V and is
 scheduled for retirement, with its target property now checked against the real
-kernel over 4084101 traces; CNode guards are half done (D-2); and CNode
-teardown (D-12) is bounded per object rather than per tree since Stage V
-sliced it. A thread is also homed to
+kernel over 4084101 traces; CNode guards (D-2) are CLOSED, root guard
+included; and CNode teardown (D-12) is bounded per object rather than per tree
+since Stage V sliced it. A thread is also homed to
 one processor and never migrated, which is registered in charter §6 as a
 policy IRIS declines to put in the kernel.
 

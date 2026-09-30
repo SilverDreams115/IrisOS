@@ -22,9 +22,17 @@
  * CNode by kernel convention and is never populated.  cspace_resolve_cap()
  * rejects IRIS_CPTR_NULL with IRIS_ERR_INVALID_ARG before any traversal.
  *
- * seL4 compatibility note: this matches seL4's CPtr semantics — a raw
- * unsigned index into the process-local CNode tree rooted at the TCB's
- * CSpace root, without guard bits (simplified model, guard bits future).
+ * seL4 compatibility note: this matches seL4's CPtr semantics — an unsigned
+ * index into the CNode tree rooted at the thread's CSpace root, resolved
+ * [guard][index] MSB..LSB at each level, which is seL4's order.
+ *
+ * This said "without guard bits (simplified model, guard bits future)" long
+ * after the future arrived: guards are CAPABILITY-local (`KCSlot.guard`,
+ * `guard_bits`), installed by `SYS_CSPACE_SET_GUARD`, and the root CNode's
+ * guard rides on the thread because a root is reached through a structural
+ * pointer and has no slot to carry one — `SYS_TCB_CONFIGURE` arg3, which is
+ * seL4's `cspace_root_data`.  `cspace_resolve_cap` consumes and checks both.
+ * Ledger D-2 is CLOSED; see `test_cnode_guard` G-1..G-8 and T306/T312.
  */
 /*
  * `iris_cptr_t` and `IRIS_CPTR_NULL` come from nc/cptr.h, included above,
