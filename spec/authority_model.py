@@ -324,6 +324,57 @@ class AuthorityModel:
         src.children.append(dst_sid)
         return OK
 
+    def move(self, src_sid: int, dst_sid: int) -> int:
+        """
+        Move the capability AND its place in the derivation tree.
+
+        It is the same capability somewhere else, so its parent, its siblings
+        and its children all travel with it: children re-point at the
+        destination and the source ends fully empty.  Nothing is derived and
+        no reference changes — which is exactly why a move can publish into a
+        slot that a mint could not, and why the slot-0 rule has to be stated
+        separately for it.  It was not, until Stage V phase 1 encoded the rule
+        and asked where it applied.
+        """
+        src = self.slots.get(src_sid)
+        dst = self.slots.get(dst_sid)
+        if src is None or dst is None:
+            return ERR_INVALID_ARG
+        if src_sid == 0 or dst_sid == 0:
+            return ERR_INVALID_ARG           # CPtr 0 names nothing, either end
+        if src_sid == dst_sid:
+            return ERR_INVALID_ARG
+        if src.empty:
+            return ERR_NOT_FOUND
+        if not dst.empty:
+            return ERR_ALREADY_EXISTS
+
+        dst.obj, dst.rights, dst.badge = src.obj, src.rights, src.badge
+        dst.parent = src.parent
+        if src.parent is not None:
+            self.slots[src.parent].children.remove(src_sid)
+            self.slots[src.parent].children.append(dst_sid)
+        dst.children = list(src.children)
+        for c in dst.children:
+            self.slots[c].parent = dst_sid
+        src.obj, src.rights, src.badge, src.parent = None, 0, 0, None
+        src.children = []
+        return OK
+
+    def syscall_mint(self, src_sid: int, dst_sid: int, rights: int,
+                     badge: int) -> int:
+        """
+        `SYS_CSPACE_MINT` — the derivation as a ring-3 caller reaches it.
+
+        The syscall adds what the primitive does not have to know: CPtr 0 is
+        the null capability at both ends, so it is refused as a source and
+        refused as a destination, and for the destination the reason is that
+        a capability published there could never be invoked.
+        """
+        if src_sid == 0 or dst_sid == 0:
+            return ERR_INVALID_ARG
+        return self.mint(src_sid, dst_sid, rights, badge)
+
     def delete(self, sid: int) -> int:
         """
         Empty one slot. Its children are REPARENTED to its parent, so no

@@ -4102,6 +4102,26 @@ all now pinned:
 **4000 traces across two seed spaces** with `retype` in the language, states
 and return codes agreeing.
 
+### And then the SYSCALL layer, because that is where the defect lived
+
+The slot-0 gap was found by READING, not by the differential — and the
+reason is worth more than the defect: the differential was driving
+`kcnode_*` primitives, and the rule *"slot 0 is `IRIS_CPTR_NULL`, so nothing
+may be published there"* lives in the SYSCALLS.  A tool that cannot see the
+layer a rule lives in will not find the next gap in it either.
+
+So `smint`, `smove` and `srotate` go through the door a ring-3 caller uses.
+They are restricted to CNode 0 — the syscalls take CPtrs and this CSpace is
+one level deep — and the primitive-level `mint` stays, because it is the one
+that still reaches across CNodes.  Both layers are now driven, and the
+model gained `move`, which is the operation that carries a capability AND its
+place in the derivation tree: parent, siblings and children travel with it,
+nothing is derived, no reference changes.  That is exactly why a move can
+publish where a mint could not, and exactly why the rule had to be stated
+for it separately.
+
+**4500 traces across two seed spaces** with both layers in the language.
+
 ### What phase 1 still does NOT cover
 
 IPC, and two-level CSpace addressing.  `retype` reaches only CNode 0, because

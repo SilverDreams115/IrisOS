@@ -85,6 +85,18 @@ def gen_trace(rng, nops):
                 src, dst, rng.choice(RIGHTS_POOL), rng.choice([0, 0, 0, 7, 42])))
             if dst not in occupied:
                 occupied.append(dst)
+        elif r < 0.55:
+            # the SYSCALL publication paths, CNode 0 only
+            src = rng.choice(occupied)
+            dst = rng.randrange(SPC)
+            if rng.random() < 0.5:
+                ops.append("smint %d %d %d %d" % (
+                    src % SPC, dst, rng.choice(RIGHTS_POOL),
+                    rng.choice([0, 0, 7, 42])))
+            else:
+                ops.append("smove %d %d" % (src % SPC, dst))
+            if dst not in occupied:
+                occupied.append(dst)
         elif r < 0.85:
             ops.append("delete %d" % rng.choice(occupied))
         else:
@@ -110,6 +122,11 @@ def run_model(ops):
                 R_READ | R_WRITE | R_DUPLICATE | R_TRANSFER))
         elif f[0] == "mint":
             results.append(m.mint(int(f[1]), int(f[2]), int(f[3]), int(f[4])))
+        elif f[0] == "smint":
+            results.append(m.syscall_mint(int(f[1]), int(f[2]),
+                                          int(f[3]), int(f[4])))
+        elif f[0] == "smove":
+            results.append(m.move(int(f[1]), int(f[2])))
         elif f[0] == "delete":
             results.append(m.delete(int(f[1])))
         elif f[0] == "revoke":

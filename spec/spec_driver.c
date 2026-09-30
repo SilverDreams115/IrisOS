@@ -131,6 +131,24 @@ static struct task   *g_task;
 
 void test_set_current_task(struct task *t);   /* tests/kernel/stubs.c */
 uint64_t sys_untyped_retype2(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3);
+/*
+ * ── The SYSCALL layer, driven as well as the primitives ───────────────────
+ *
+ * Every other capability op here calls a `kcnode_*` primitive, and that was
+ * enough until it wasn't: the rule "slot 0 is IRIS_CPTR_NULL, so nothing may
+ * be published there" lives in the SYSCALLS and not in the primitives, and
+ * two of the four syscalls that publish were missing it.  The differential
+ * could not see that, because it was never driving those four.
+ *
+ * So `smint`, `smove` and `srotate` go through the door a ring-3 caller uses.
+ * They are restricted to CNode 0 — the syscalls take CPtrs and this CSpace is
+ * one level deep — which is stated rather than hidden, and is why the
+ * primitive-level `mint` stays: it is the one that still reaches across
+ * CNodes.
+ */
+uint64_t sys_cspace_mint(uint64_t a0, uint64_t a1, uint64_t a2);
+uint64_t sys_cspace_move(uint64_t a0, uint64_t a1, uint64_t a2);
+uint64_t sys_cspace_rotate(uint64_t a0, uint64_t a1, uint64_t a2);
 
 /* A seeded object needs SOME type; the trace picks one and nothing here
  * depends on which, because the authority model does not. */
@@ -305,6 +323,18 @@ int main(void) {
                        (uint64_t)ty[b % 4u] | (1ULL << 32),
                        (uint64_t)0u | ((uint64_t)c << 32),
                        0));
+        } else if (!strcmp(op, "smint") &&
+                   sscanf(line, "%*s %u %u %u %u", &a, &b, &c, &d) == 4) {
+            if (a >= SPC || b >= SPC) continue;
+            printf("r %d\n", (int)(long)(int64_t)sys_cspace_mint(
+                       (uint64_t)a,
+                       (uint64_t)0u | ((uint64_t)b << 32),
+                       (uint64_t)c | ((uint64_t)d << 32)));
+        } else if (!strcmp(op, "smove") &&
+                   sscanf(line, "%*s %u %u", &a, &b) == 2) {
+            if (a >= SPC || b >= SPC) continue;
+            printf("r %d\n", (int)(long)(int64_t)sys_cspace_move(
+                       (uint64_t)a, (uint64_t)0u | ((uint64_t)b << 32), 0));
         } else if (!strcmp(op, "revoke") &&
                    sscanf(line, "%*s %u", &a) == 1) {
             uint32_t n = 0;
