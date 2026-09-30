@@ -427,7 +427,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_main.c
 TEST_UNIT_BIN   := $(BUILD_DIR)/test_unit
 
-.PHONY: spec-driver spec-differential smoke-verified all dirs run run-headless clean help check check-abi check-purity smoke smoke-runtime smoke-runtime-selftests smoke-stage10 smoke-net-virtio smoke-persist smoke-screen config-sync test-unit
+.PHONY: spec-driver spec-differential spec-rights smoke-verified all dirs run run-headless clean help check check-abi check-purity smoke smoke-runtime smoke-runtime-selftests smoke-stage10 smoke-net-virtio smoke-persist smoke-screen config-sync test-unit
 
 all: config-sync $(BOOT_APP) $(KERNEL_DST)
 
@@ -1402,11 +1402,23 @@ SPEC_DRIVER_SRCS := spec/spec_driver.c tests/kernel/stubs.c \
 $(SPEC_DRIVER_BIN): $(SPEC_DRIVER_SRCS) | dirs
 	gcc $(TEST_UNIT_CFLAGS) $(SPEC_DRIVER_SRCS) -o $@
 
-.PHONY: spec-driver spec-differential
+.PHONY: spec-driver spec-differential spec-rights
 spec-driver: $(SPEC_DRIVER_BIN)
 
 spec-differential: $(SPEC_DRIVER_BIN)
 	@python3 spec/differential.py $${SPEC_TRACES:-200}
+
+# The rights algebra, over EVERY input rather than over samples.  Seven bits
+# is 16384 pairs plus the SAME_RIGHTS flag, which is small enough to
+# enumerate — so this one says "proved by exhaustion" where the differential
+# says "agreed over N traces".  Closes the part of ledger D-3 that is a
+# definition rather than a catalogue.
+SPEC_RIGHTS_BIN := $(BUILD_DIR)/rights_exhaustive
+$(SPEC_RIGHTS_BIN): spec/rights_exhaustive.c | dirs
+	gcc $(TEST_UNIT_CFLAGS) spec/rights_exhaustive.c -o $@
+
+spec-rights: $(SPEC_RIGHTS_BIN)
+	@python3 spec/rights_model.py
 
 smoke-verified:
 	@echo "== IRIS-V: the verified configuration (uniprocessor, no IOMMU) =="

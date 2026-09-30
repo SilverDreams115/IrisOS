@@ -196,6 +196,9 @@ jobs:
         env:
           SPEC_TRACES: 1500
 
+      - name: The rights algebra, over every input (Stage V phase 2)
+        run: make spec-rights
+
       - name: IRIS-V boots (the verified configuration)
         run: IRIS_QEMU_TIMEOUT_SECS=180 make smoke-verified
 

@@ -3992,3 +3992,41 @@ charter says "mint never amplifies" and means it, so the edge from an Untyped
 to the object carved out of it is outside the invariant.  The first checker
 did not make that distinction and flagged the model the moment retype
 existed.  A checker too strong is as wrong as one too weak.
+
+### D-3 — the rights algebra is now DEFINED, and verified over every input
+
+The D-3 row records IRIS's rights set as its own and says the two models
+"are not translatable one-to-one, so 'IRIS has seL4's rights' is never a
+correct statement".  That is honest and it is not a specification: a verified
+kernel needs the algebra written down, not the observation that it differs
+from somebody else's.
+
+`spec/rights_model.py` is the algebra — `reduce` is an intersection, `check`
+is a superset test — together with the properties that make it one: monotone
+(a derivation never amplifies, which IS charter A7), idempotent, commutative,
+`RIGHT_SAME_RIGHTS` an operation flag that never survives into a stored
+value, and `check` reflexive everywhere except at the empty requirement.
+
+`spec/rights_exhaustive.c` prints the same graph from `rights.h`, and the two
+are compared over **32896 points — every pair in the space**.  Seven bits is
+16384 pairs for each function plus the SAME_RIGHTS flag, which is small
+enough to enumerate, so this lane says *proved by exhaustion* where the rest
+of `spec/` says *agreed over N traces*.  `make spec-rights`.
+
+**What it found**: the model had the set-theoretic answer for
+`check(have, RIGHT_NONE)` — true, because the empty set is a subset of
+everything — and the kernel returns FALSE.  That is deliberate and it is the
+more defensible answer: requiring nothing would let a caller that FORGOT to
+name a right pass every check, so it fails closed.  The callers that mean
+"no right required" guard the call themselves.  128 disagreements, one for
+every possible holder, all at once.
+
+**What remains of D-3**, stated so the row is not read as closed: this
+defines the ALGEBRA.  The catalogue — which right each of the 77 invocation
+labels requires of each of its arguments — is not defined anywhere but in
+the handlers, and extracting it mechanically does not work: a first attempt
+read the first `RIGHT_*` in each handler and reported `TCB_SetPriority` as
+needing only READ, when that was the right required of the AUTHORITY
+argument and the target correctly needs WRITE.  The catalogue needs the
+syscall layer in the differential, which is phase 1 work that has only
+reached the CSpace door.  The row stays open, with half of it answered.
