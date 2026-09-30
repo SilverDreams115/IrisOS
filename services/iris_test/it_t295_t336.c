@@ -2613,6 +2613,10 @@ void test_t344(void) {
  * Invariants: M2. */
 #define T345_FRAME IT_SCRATCH_0
 #define T345_VA    (0x0000600000000000ULL + 0xC00000ULL)
+/* Enough yields that the spinners outlive the attempts, and enough attempts
+ * that catching another core INSIDE this address space is not luck. */
+#define T345_SPIN_ITERS 400u
+#define T345_ATTEMPTS    64u
 
 void test_t345(void) {
     it_quiesce_reaper();
@@ -2668,10 +2672,50 @@ void test_t345(void) {
                 ok = 0; why = "a shootdown IPI was sent with one CPU running";
             }
         } else if (ok) {
-            /* More than one: they must have happened, and the machine is still
-             * here, which is the ack handshake. */
-            if (shoot1 == 0u) {
-                ok = 0; why = "no shootdown was ever sent with several CPUs running";
+            /*
+             * More than one processor: ARRANGE the precondition instead of
+             * hoping for it.
+             *
+             * This used to assert that some shootdown had happened by now,
+             * reasoning that the suite unmaps constantly and threads are
+             * spread across cores.  That is a scheduling coincidence, not a
+             * property: `tlb_shootdown_page` sends an IPI only to cores whose
+             * CURRENT thread is in the address space being unmapped from, so
+             * zero is the CORRECT answer when nobody else is in it.  The
+             * assertion failed about once in fifteen runs at two processors,
+             * for a kernel that had done exactly the right thing.
+             *
+             * So the precondition is built: workers that share this thread's
+             * VSpace (a thread created here runs in the creator's CSpace and
+             * VSpace) are set running, and the map/unmap is repeated until a
+             * shootdown is observed.  Now a zero means the target scan never
+             * finds anybody — which is the real bug, and the one that would
+             * free frames other cores still have translations for.
+             */
+            uint32_t shoot2 = shoot1;
+            g_sh_mode  = SH_MODE_SPIN;
+            g_sh_iters = T345_SPIN_ITERS;
+            if (!sh_start(SH_NWORK)) { ok = 0; why = "spinner create"; }
+            for (uint32_t a = 0; ok && a < T345_ATTEMPTS && shoot2 == shoot0; a++) {
+                if (it_invoke((long)T345_FRAME, INV_FRAME_MAP, IT_VS,
+                              (long)T345_VA, 1) != 0) { ok = 0; why = "map n"; break; }
+                if (it_invoke2((long)T345_FRAME, INV_FRAME_UNMAP, IT_VS,
+                               (long)T345_VA) != 0) { ok = 0; why = "unmap n"; break; }
+                if (it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO,
+                               (long)(uintptr_t)buf, 160) != 0) {
+                    ok = 0; why = "sched info n"; break;
+                }
+                shoot2 = (uint32_t)buf[156] | ((uint32_t)buf[157] << 8) |
+                         ((uint32_t)buf[158] << 16) | ((uint32_t)buf[159] << 24);
+            }
+            /* The spinners are bounded by their own iteration count; this
+             * waits for them so the next test starts from a quiet machine. */
+            if (!sh_wait_all(SH_NWORK) && ok) { ok = 0; why = "spinner stuck"; }
+            it_serial_write("[IRIS][TEST] T345 arranged shootdowns=");
+            it_log_num(shoot2);
+            it_serial_write("\n");
+            if (ok && shoot2 == shoot0) {
+                ok = 0; why = "no shootdown with another core in the address space";
             }
         }
     }

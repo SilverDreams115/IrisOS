@@ -21,8 +21,9 @@ This document separated two kinds of ceiling that were previously conflated.
 
 The kernel object slab is a single contiguous physical region reserved from the
 PMM at boot.  The typed kernel object headers that are still fabricated rather
-than retyped (KVSpace, the root task's KCNode, KFrameMapping, KVMO metadata,
-the boot control capabilities, …) allocate from it, so the rest of the PMM can
+than retyped (KVSpace, the root task's KCNode, KFrameMapping, the boot control
+capabilities, …; KVMO metadata was one of them until the object was DELETED in
+ledger D-5) allocate from it, so the rest of the PMM can
 be handed to userspace as untyped/frame caps.  Which files may do so, and how
 many times, is frozen in `scripts/purity_allowlist.txt` — 14 files, 17
 permitted `kslab_alloc` occurrences — and `make check-purity` fails on the

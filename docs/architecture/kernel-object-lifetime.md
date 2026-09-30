@@ -31,8 +31,8 @@ exactly one charge per charge acquired.
 |--------|-----------------|-----------------|-------|
 | ~~KProcess~~ | — | — | **the object is DELETED (Stage 7-proc)**.  A process is threads configured with the same CSpace and the same VSpace; there is nothing to charge, and nothing to destroy |
 | TCB / VSpace / root CNode | `RETYPE2` from the budget the spawner named | last capability → destroy → the block returns zero-filled to that Untyped | this is what "creating a process" costs now, and all of it is reclaimed by `SYS_UNTYPED_RESET` |
-| KVMO (object) | the header and page array are carved from the `Untyped` named in `SYS_VMO_CREATE` | `kvmo_destroy` returns them | the owner relation and `owned_vmos` are **deleted (Stage 7-mem)**; a VMO's accounting is the budget it came from |
-| KVMO (sparse pages) | first touch of each page carves it from that same budget | `kvmo_destroy`, once per allocated page | charged once regardless of how many VSpaces map it |
+| ~~KVMO (object)~~ | — | — | **the object is DELETED (ledger D-5)**.  Memory is a FRAME; a grant is a run of frame capabilities, one per page, and each has a parent by construction.  Previously: | the owner relation and `owned_vmos` are **deleted (Stage 7-mem)**; a VMO's accounting is the budget it came from |
+| ~~KVMO (sparse pages)~~ | — | — | **deleted with the object (D-5)**.  Previously: | charged once regardless of how many VSpaces map it |
 | KFrameMapping / PTE | `kvspace_map_page` | `kvspace_unmap_page` / VSpace teardown | per-(VSpace, VA) |
 | KNotification / KEndpoint / KCNode / KReply / KSchedContext | `RETYPE2` from a named Untyped (Phases S1–S2) | last-reference destroy returns the block | bounded by the budget, never by a quota.  KNotification had an `owned_notifications` quota until **Phase S1**: it is now paid for in Untyped + a CSpace slot, like every other retyped object |
 

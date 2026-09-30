@@ -177,6 +177,28 @@ void test_t123(void) {
         it_close(&ro_h);
     }
 
+    /*
+     * An UNCONFIGURED context cannot drive a thread — and this test used to
+     * bind one to ITSELF and expect that to work.
+     *
+     * `sc2` is retyped and never configured, so its budget is zero.  Binding
+     * it made the caller's next tick report EXHAUSTED without consuming
+     * anything, which queued no replenishment, which parked the test thread
+     * with nothing able to wake it — and the thread that would have unbound
+     * the context was the one parked.  It survived because the window is one
+     * syscall wide; at four processors it closed about once in thirteen runs
+     * and the suite stopped dead after T122.
+     *
+     * So the refusal is the assertion now, and the rebind path below is
+     * tested with a context that can actually drive a thread.
+     */
+    if (ok && it_invoke0((long)sc2, INV_SC_SET_ON_CALLER) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "unconfigured self-bind not refused";
+    }
+    if (ok && it_invoke((long)sc2, INV_SC_CONFIGURE, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) {
+        ok = 0; why = "configure sc2";
+    }
+
     /* Bind / rebind / unbind on the main thread (S11 — no stale ref). */
     if (ok && it_invoke0((long)sc, INV_SC_SET_ON_CALLER)  != 0) { ok = 0; why = "bind"; }
     if (ok && it_invoke0((long)sc2, INV_SC_SET_ON_CALLER) != 0) { ok = 0; why = "rebind"; }

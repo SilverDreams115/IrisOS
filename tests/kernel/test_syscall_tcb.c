@@ -21,6 +21,7 @@
  * thread's CSpace means, for the life of the thread.
  */
 #include "framework.h"
+#include <iris/nc/kvspace.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kcnode.h>
 #include <iris/nc/cspace.h>
@@ -102,6 +103,54 @@ void test_syscall_tcb(void) {
                   (long)IRIS_ERR_INVALID_ARG);
         ASSERT_EQ(tb_err(sys_tcb_configure(TCB_SLOT, 1, handle_shaped, 0)),
                   (long)IRIS_ERR_INVALID_ARG);
+        test_set_current_task(NULL);
+    }
+
+    /* ── TB-2b: a rights REDUCTION on a CNode must not be launderable ────
+     *
+     * Writing into a named CNode requires RIGHT_WRITE (`CSpace_Mint`,
+     * `CNode_Delete` both resolve the destination with it).  A thread reaches
+     * its OWN root through a structural back-reference that takes no
+     * capability and checks no rights — which is correct, and is what seL4
+     * does.
+     *
+     * Together those two left the reduction unenforceable: a holder of a
+     * WRITE-less CNode capability could not mint into it, and COULD retype a
+     * TCB out of its own Untyped, configure it with that CNode as its root,
+     * and have the new thread mint into it freely.  So the GRANT is gated,
+     * and this is the test that says so — without it the check is a line
+     * nobody would notice going away.
+     */
+    {
+        struct KCNode *root; struct task *target;
+        struct task *t = tb_caller(&root, TCB_SLOT, &target);
+        struct KCNode *victim = kcnode_alloc(16);
+        struct KVSpace *vs;
+        ASSERT_NOT_NULL(t);
+        ASSERT_NOT_NULL(victim);
+
+        /* slot 20: the CNode, READ only.  slot 21: the same CNode with WRITE. */
+        ASSERT_EQ(kcnode_mint(root, 20, &victim->base, RIGHT_READ), IRIS_OK);
+        ASSERT_EQ(kcnode_mint(root, 21, &victim->base,
+                              RIGHT_READ | RIGHT_WRITE), IRIS_OK);
+
+        vs = kvspace_alloc(0x1000u);
+        ASSERT_NOT_NULL(vs);
+        ASSERT_EQ(kcnode_mint(root, 22, &vs->base, RIGHT_READ), IRIS_OK);
+        ASSERT_EQ(kcnode_mint(root, 23, &vs->base,
+                              RIGHT_READ | RIGHT_WRITE), IRIS_OK);
+
+        /* A CNode without WRITE cannot become a thread's CSpace root. */
+        ASSERT_EQ(tb_err(sys_tcb_configure(TCB_SLOT, 20, 23, 0)),
+                  (long)IRIS_ERR_ACCESS_DENIED);
+        /* ...and neither can an address space without it. */
+        ASSERT_EQ(tb_err(sys_tcb_configure(TCB_SLOT, 21, 22, 0)),
+                  (long)IRIS_ERR_ACCESS_DENIED);
+        /* The refusal is about the RIGHT and nothing else: with WRITE on both,
+         * the same call gets past this check. */
+        ASSERT_NE(tb_err(sys_tcb_configure(TCB_SLOT, 21, 23, 0)),
+                  (long)IRIS_ERR_ACCESS_DENIED);
+
         test_set_current_task(NULL);
     }
 

@@ -188,6 +188,16 @@ int kschedctx_charge_tick(struct KSchedContext *sc, uint64_t now) {
     return exhausted;
 }
 
+int kschedctx_has_refill(struct KSchedContext *sc) {
+    int n;
+    uint64_t flags;
+    if (!sc) return 0;
+    flags = irq_spinlock_lock(&sc->lock);
+    n = (sc->refill_count > 0u);
+    irq_spinlock_unlock(&sc->lock, flags);
+    return n;
+}
+
 void kschedctx_flush_run(struct KSchedContext *sc) {
     if (!sc) return;
     uint64_t flags = irq_spinlock_lock(&sc->lock);

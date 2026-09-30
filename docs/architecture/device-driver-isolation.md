@@ -75,8 +75,12 @@ Three device-capability kinds, each resolved through the standard dual resolver
 - `SYS_FRAMEBUFFER_VMO(bootcap, out)` requires `IRIS_BOOTCAP_FRAMEBUFFER`.  It is
   ONE-SHOT: the real fb service consumes it at boot (`fb_params_valid = 0`), so
   every later call — even from a cap that carries FRAMEBUFFER — returns
-  NOT_FOUND.  The returned KVmo wraps exactly `[phys, size]` of the framebuffer,
-  so a mapping of it cannot exceed the framebuffer region (bounded MMIO).
+  NOT_FOUND.  *(Stage 6 / ledger D-5: there is no KVmo any more.  The
+  framebuffer is a DEVICE `Untyped` described in BootInfo and `fb` retypes
+  FRAMES out of it, which bounds a mapping the same way — by the region the
+  Untyped covers — and gives each frame a parent its grantor can revoke.)*
+  The returned KVmo wrapped exactly `[phys, size]` of the framebuffer, so a
+  mapping of it could not exceed the framebuffer region (bounded MMIO).
 
 ## Driver authority manifest
 

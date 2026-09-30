@@ -665,6 +665,27 @@ static void sched_tick_local(void) {
              * a period-boundary reset that would hand back a full budget it
              * did not earn. */
             kschedctx_flush_run(sc);
+            /*
+             * Park only on something that will come back.
+             *
+             * `wake_tick` is cleared here, so the ONLY thing that wakes a
+             * budget-exhausted thread is a replenishment falling due.  If the
+             * flush queued none — which happens when the charge consumed
+             * nothing, because the context had no budget to begin with — then
+             * parking is parking for ever, and the thread cannot even unbind
+             * the context that stranded it.
+             *
+             * Refusing to park leaves a thread running on a budget it does
+             * not have, which is wrong; being unwakeable is worse, and is not
+             * recoverable by anybody.  The case is unreachable now that both
+             * bind paths refuse an unconfigured context — this is the
+             * assertion that it stays unreachable, written as behaviour
+             * rather than as a comment.
+             */
+            if (!kschedctx_has_refill(sc)) {
+                current_task->need_resched = 1;
+                return;
+            }
             current_task->state        = TASK_BUDGET_EXHAUSTED;
             current_task->wake_tick    = 0;
             current_task->need_resched = 1;

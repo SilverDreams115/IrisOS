@@ -1,10 +1,26 @@
 # Hardening invariants
 
+> **SUPERSEDED — this is a historical record, not a contract.**
+>
+> Everything below describes the HANDLE TABLE, a second authority namespace
+> that was **deleted in Stage 4**.  `handle_table.c`, `handle_table_get_object`,
+> `handle_table_close_all`, `kprocess_teardown` and every `SYS_HANDLE_*` number
+> named here are gone; the numbers answer `IRIS_ERR_NOT_SUPPORTED` for ever and
+> `make check-abi` asserts that they do.  It is kept because the invariants it
+> records are why the namespace was removable, and because a contract that
+> quietly stopped being true is worse than one that says so.
+>
+> For what is true now: charter §2.1 (A2, A3, A4 — there is one namespace),
+> `docs/architecture/cspace-capability-model.md` for CSpace resolution, and
+> `docs/contracts/abi.md` for the surface.  The rights model this document
+> opens with is the one part still live, and its source is
+> `kernel/new_core/include/iris/nc/rights.h`.
+
 ## Purpose
 
 Documents the current security and lifecycle invariants around handle rights, transfers, IRQ ownership, and bootstrap capability delivery.
 
-This is an audit summary of the current code paths, not a theoretical design note.
+It was an audit summary of the code paths as they were; see the banner.
 
 ## Handle rights invariants
 

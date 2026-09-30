@@ -186,6 +186,27 @@ uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
          * the resolver) transfers to t->sched_ctx */
         new_sc = (struct KSchedContext *)obj;
 
+        /*
+         * An UNCONFIGURED scheduling context cannot drive a thread.
+         *
+         * `sys_sc_bind` has enforced this since B2/B3 — "SC must be
+         * configured before it can drive a thread" — and this path, which
+         * binds one to the CALLER, did not.  The asymmetry was not academic:
+         * a retyped SC has `budget_ticks == 0`, so the first tick charged to
+         * the caller found `remaining_budget == 0`, reported EXHAUSTED
+         * without consuming anything, and parked the thread with no
+         * replenishment queued and no `wake_tick`.  Nothing could wake it —
+         * and the thread that could have unbound the context was the thread
+         * that was parked.
+         *
+         * Of the two call sites for one rule, the one that was missing it is
+         * the one whose failure is unrecoverable.
+         */
+        if (!new_sc->configured) {
+            kobject_release(&new_sc->base);
+            return syscall_err(IRIS_ERR_INVALID_ARG);
+        }
+
         /* Enforce one-to-one binding — a SC bound to another task
          * cannot be self-bound here (S2.9). */
         iris_error_t berr = kschedctx_bind(new_sc, t);

@@ -141,6 +141,32 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         kobject_release(&target->base);
         return syscall_err(err);
     }
+    /*
+     * Installing a CNode as a thread's ROOT requires RIGHT_WRITE on it.
+     *
+     * Writing into a NAMED CNode already required it — `CSpace_Mint` and
+     * `CNode_Delete` both resolve the destination with RIGHT_WRITE.  But a
+     * thread reaches its OWN root through `cspace_own_root`, a structural
+     * back-reference that takes no capability and therefore checks no rights,
+     * which is right and is what seL4 does: a thread has full use of its own
+     * CSpace.
+     *
+     * Together those two made the reduction unenforceable.  A holder of a
+     * WRITE-less CNode capability could not mint into it directly — and could
+     * retype a TCB out of its own Untyped, configure it with that CNode as
+     * its root, and have the new thread mint into it freely.  A right that
+     * can be laundered is worse than no right at all, because the gate on
+     * MINT promises a property the system does not have.
+     *
+     * The check belongs HERE rather than on the own-root path: restricting a
+     * thread's authority over its own CSpace would be a larger divergence
+     * from seL4, not a smaller one.  What must be gated is the GRANT.
+     */
+    if (!rights_check(cs_rights, RIGHT_WRITE)) {
+        kobject_release(cs_obj);
+        kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
     /* cspace_resolve_only_obj hands back a LIFECYCLE-only reference — it has
      * already dropped the traversal's active ref.  Releasing an active ref
      * here would decrement a count this call never took, and on the root CNode
@@ -156,6 +182,14 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     if (err != IRIS_OK) {
         kobject_release(&target->base);
         return syscall_err(err);
+    }
+    /* The same rule for the address space: `Frame_Map` and `VSpace_MapTable`
+     * both require RIGHT_WRITE on the VSpace, and giving a thread one to
+     * EXECUTE in is not less authority than mapping a page into it. */
+    if (!rights_check(vs_rights, RIGHT_WRITE)) {
+        kobject_release(vs_obj);
+        kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
     struct KVSpace *vspace = (struct KVSpace *)vs_obj;
     kobject_release(vs_obj);

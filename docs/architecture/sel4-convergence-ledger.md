@@ -171,7 +171,7 @@ UT-TOP-1..5 and T298.
 
 ## Structural divergences from seL4
 
-### A-49 — "no POSIX personality" was decided on an objection that was right and a fact that was wrong  ← OPEN (the work it opens is Stage 10-run)
+### A-49 — "no POSIX personality" was decided on an objection that was right and a fact that was wrong  ← CLOSED (Stage 10-run, 8 of 8)
 
 **Decided by the project's owner, reversing a row this charter carried as
 `Permanent, deliberate`.**  Three rows in §6 have been retired before — A-29,
@@ -3631,3 +3631,134 @@ rests on counters carried in the line, not on lines being counted.
 It is recorded here rather than left as "T108 is flaky" because the two bugs
 have nothing to do with each other, the first was masking the second, and only
 one of them was ever in the kernel.
+
+### T123, T345 and T257 — three intermittents, and only one of them was the kernel
+
+Found by soaking the runtime suite during a project-wide audit.  The tree had
+been believed to hold exactly one intermittent (T108, fixed earlier the same
+day).  It held three more, all visible only with several processors, and the
+distinction between them is the point: **one was a kernel defect, one was a
+test asserting a coincidence, and one was a test asserting a promise as though
+it were an answer.**
+
+**T123 — a thread could strand itself, unrecoverably.  KERNEL.**
+
+`sys_sc_bind` has refused an unconfigured scheduling context since B2/B3 — "SC
+must be configured before it can drive a thread".  `sys_thread_set_sc`, which
+binds one to the CALLER, did not.  Of two call sites for one rule, the one
+missing it was the one whose failure cannot be undone.
+
+A retyped `KSchedContext` has `budget_ticks == 0`.  Bound to the caller,
+the next tick found `remaining_budget == 0`, and `kschedctx_charge_tick`
+reported EXHAUSTED **without consuming anything** — its `if (remaining > 0)`
+body, which is what increments `consumed_run`, was skipped.  So
+`kschedctx_flush_run` queued no replenishment, the thread was parked in
+`TASK_BUDGET_EXHAUSTED` with `wake_tick` cleared and `refill_count == 0`, and
+the only path that wakes such a thread is a replenishment falling due.  Nothing
+could wake it, and the thread that would have unbound the context was the
+thread that was parked.
+
+T123 bound exactly such a context to itself, between two adjacent syscalls, to
+test rebinding.  At one processor the window essentially never closed; at four
+it closed about once in thirteen runs and the suite stopped dead after T122
+with the whole system otherwise healthy — `init` idle, the boot report
+complete and green.
+
+Two fixes, because they are independent.  `sys_thread_set_sc` refuses an
+unconfigured context, which is the rule its sibling already had.  And
+`sched_tick_local` no longer parks a thread on a replenishment that does not
+exist: `kschedctx_has_refill` is asked first, and a thread with nothing to wait
+for is left running rather than made unwakeable.  The second is unreachable now
+that the first exists — it is the invariant written as behaviour instead of as
+a comment, because *a thread must never be parked with no way to wake it* is a
+lifecycle-correctness rule and §5 puts lifecycle correctness first.
+
+**T345 — a test asserting a scheduling coincidence.  TEST.**
+
+It required that some TLB shootdown IPI had been sent by the time it ran,
+whenever more than one processor is online.  But `tlb_shootdown_page` targets
+only the cores whose CURRENT thread is in the address space being unmapped
+from, so **zero is the correct answer** when nobody else is in it.  The test
+failed about once in fifteen runs at two processors, for a kernel that had done
+exactly the right thing.  It now ARRANGES the precondition — spinners sharing
+this thread's VSpace, and the map/unmap repeated until a shootdown is observed
+— so a zero means the target scan never finds anybody, which is the real bug.
+
+**T257 — a test treating a promise as an answer.  TEST, and a contract worth
+writing down.**
+
+It killed a thread blocked in a Call and immediately required the reply object
+to answer `NOT_FOUND`.  `TCB_EXIT` on a thread another processor still has
+on-CPU marks it DEAD, kicks that core, hands it to the reaper and **returns**;
+the teardown that takes the caller out of the reply object runs later.  So the
+server's reply can still win the caller — the two contend for `r->caller` under
+the reply's lock, so exactly one does, and there is no double release — and
+succeed, waking a thread that is already terminal, which is a no-op.  Safe, and
+not `NOT_FOUND`.  The window is the switch away after the rendezvous, where
+`on_cpu` is still set; at several processors the killer is on another core and
+reaches it about once in twenty runs.  The test now waits for the death it
+asserts.
+
+**The contract this exposes, stated rather than fixed:** `Suspend` in IRIS is
+an ANSWER — it spins on `on_cpu` because "the caller was told it HAS stopped"
+— and `TCB_EXIT` is a PROMISE.  The asymmetry is deliberate in the sense that
+the deferred teardown is deliberate (D-1, the reap ring), and undocumented in
+the sense that nothing said so.  It is said here.  Making the reply unbind
+synchronous is possible and is not done: it would mean touching a reply object
+belonging to a thread another core may still be inside, which is the hazard the
+deferral exists to avoid, and the observable consequence today is bounded and
+safe.
+
+### A rights reduction that could be laundered, and now cannot
+
+Writing into a NAMED CNode required `RIGHT_WRITE` — `CSpace_Mint` and
+`CNode_Delete` both resolve the destination with it.  A thread reaches its OWN
+root through `cspace_own_root`, a structural back-reference that takes no
+capability and checks no rights, which is correct and is what seL4 does: a
+thread has full use of its own CSpace.
+
+Together those two made the reduction unenforceable.  A holder of a WRITE-less
+CNode capability could not mint into it — and could retype a TCB out of its own
+`Untyped`, configure it with that CNode as its root, and have the new thread
+mint into it freely.  Nothing in the tree relied on it (the only CNode
+capability handed to another party carries `READ|WRITE|DUPLICATE`), so this was
+latent rather than live; what it cost was the truth of the gate on `MINT`,
+which promised a property the system did not have.
+
+`TCB_CONFIGURE` now requires `RIGHT_WRITE` on the CNode it installs as a root,
+and on the VSpace — giving a thread an address space to EXECUTE in is not less
+authority than mapping one page into it, and `Frame_Map` has always required
+the right.  The check is on the GRANT and not on the own-root path, because
+restricting a thread's authority over its own CSpace would be a LARGER
+divergence from seL4, not a smaller one.  `test_syscall_tcb` TB-2b pins both
+refusals and the positive case.
+
+### A residual intermittent in the boot programs, and the instrument that was missing
+
+**Observed, not explained.**  During the 2026-09-29 audit, four runs in one
+14-run soak at four processors ended with `fdprog` never starting and
+`objreg` therefore never running: `SUITE PASS 325/325` every time, the boot
+report complete except for `fd not measured` and `obj no registry`.  The
+`smoke-stage10` lane failed the same way twice, both times at the END of a
+long sequence of runs and never when run on its own.  It did not reproduce in
+**28** consecutive soak runs afterwards, nor in two targeted repeats of the
+exact sequence.
+
+**Why there is nothing more to say about it yet.**  All five of init's spawn
+sites read `if (step != PROC_STEP_RUNNING) goto out;` and logged NOTHING.
+`proc` reports the step it stopped at — that is what `PROC_STEP_*` and
+`PROC_OP_INFO` are for — and init discarded it, so a failed spawn left one
+trace in the whole log: a "not measured" that names neither the program nor
+the reason.  `init_spawn_failed()` now names both, and translates the step.
+The next occurrence will say what it was; until then this row records the
+observation and refuses to guess in the tree's own voice.
+
+**The hypothesis, stated as one.**  `proc` tracks ONE budget and resets it
+with `Untyped_Reset`, which answers `BUSY` while any child object is still
+alive — and a dead thread's teardown is DEFERRED to the reaper (D-1's reap
+ring; see the `TCB_EXIT` note above, which is the same root).  If init spawns
+the next program before the previous child has actually been torn down, the
+reset fails and the next spawn fails at `PROC_STEP_BUDGET`.  At four
+processors the teardown lands on another core, which widens the window.  That
+would explain the shape — intermittent, SMP-only, and worse under load — and
+it is a hypothesis: no run has yet printed the step.

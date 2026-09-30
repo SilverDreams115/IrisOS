@@ -4,14 +4,18 @@ This document defines the minimum testing baseline that IRIS must keep green on 
 
 ## Current test layers
 
-Four gates, and a green tree means all four — on **one processor and on four**.
+Five gates, and a green tree means all five — on **one processor, on two and on
+four**.  Two of the three intermittents found in the audit of 2026-09-29 were
+only ever visible with several processors, so "it passed at one" is not a
+result.
 
 | Layer | Command | Green means |
 |---|---|---|
-| Host unit tests | `make test-unit` | 27429 assertions across 29 suites, 0 failed |
+| Host unit tests | `make test-unit` | 28210 assertions across 35 suites, 0 failed |
 | Purity gate | `make check-purity` | allowlist respected; the kernel-memory-reachable closure is 26 functions and only ever shrinks |
-| Lock-order gate | `make check-locks` | 18 ranked locks, no inversions — it holds SMP roadmap §9.1's hierarchy and follows calls three hops |
-| Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests` | `SUITE PASS 323/323` plus the `[IRIS][SELFTEST]` markers.  The total is what the machine could RUN: a test whose subject is a device it does not have is counted beside it as `(N not applicable here)` rather than as a pass or a failure, because both of those would be untrue.  What keeps the gate's own machine from skipping anything is the runner, which refuses to start unless `-device edu` is attachable and then requires that test's own markers |
+| ABI gate | `make check-abi` | every `SYS_*` number the dispatcher cannot reach declares its retirement; a retired number answers `NOT_SUPPORTED` for ever and is never reused |
+| Lock-order gate | `make check-locks` | 32 ranked locks, no inversions — it holds SMP roadmap §9.1's hierarchy and follows calls three hops |
+| Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests` | `SUITE PASS 325/325` plus the `[IRIS][SELFTEST]` markers.  The total is what the machine could RUN: a test whose subject is a device it does not have is counted beside it as `(N not applicable here)` rather than as a pass or a failure, because both of those would be untrue.  What keeps the gate's own machine from skipping anything is the runner, which refuses to start unless `-device edu` is attachable and then requires that test's own markers |
 | Persistence | `make smoke-persist` | two boots over one image, then the host reads what IRIS wrote |
 
 ### The IOMMU dimension

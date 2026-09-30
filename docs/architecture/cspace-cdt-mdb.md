@@ -77,7 +77,8 @@ Stage 1 of the [roadmap](sel4-convergence-roadmap.md).
     its authority does NOT free its backing (it becomes authority-less →
     terminates → destructor). Authority, functional close, destruction and
     storage release are four distinct events (charter O3-O5).
-16. **Process teardown**: `handle_table_close_all` drops the root CNode; the
+16. **CSpace teardown**: the last reference to a thread's root CNode drops it
+    (`handle_table_close_all` is DELETED with the namespace, Stage 4); the
     CNode close deletes each slot with the DELETE primitive, so descendants
     living in other CNodes survive, reparented to surviving ancestors; no link
     points at the dead CNode (all its slots leave the graph before the storage

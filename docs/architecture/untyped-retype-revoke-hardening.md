@@ -87,7 +87,11 @@ is no path that grants a right the parent lacks, and no fallback after
 
 ## Revoke
 
-`SYS_CAP_REVOKE(h)` validates `h`, then `handle_table_revoke_children` runs a BFS
+*(Phase-18 text.  `SYS_CAP_REVOKE` is RETIRED — Phase S4 / Stage 3 — and
+`SYS_CSPACE_REVOKE` walks the one MDB instead; what follows is the shape it
+replaced.)*
+
+`SYS_CAP_REVOKE(h)` validated `h`, then `handle_table_revoke_children` ran a BFS
 over `derivation_parent[]` and closes **every handle transitively derived from
 `h`** — `h` itself survives.  Each closed slot runs the full
 `handle_entry_reset` (active-release → object `close`; lifetime-release →

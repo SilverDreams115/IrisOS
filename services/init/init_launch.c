@@ -2489,6 +2489,38 @@ static uint32_t init_start_program(const char *path, const char *arg,
     return PROC_STEP_RUNNING;
 }
 
+/*
+ * A spawn that never reached RUNNING, said out loud.
+ *
+ * Every one of these used to be `if (step != PROC_STEP_RUNNING) goto out;`
+ * with no log line at all, so a failed spawn left exactly one trace — a
+ * "not measured" in the boot report, which names neither the program nor the
+ * step.  `proc` reports the step it stopped at precisely so somebody can read
+ * it, and init was throwing it away.  Four runs in fourteen at four
+ * processors ended this way and the log could not say why.
+ */
+static void init_spawn_failed(const char *path, uint32_t step) {
+    struct init_line L;
+    il_reset(&L);
+    il_str(&L, "[USER][INIT] proc: ");
+    il_str(&L, path);
+    il_str(&L, " DID NOT START, step ");
+    il_num(&L, (uint64_t)step);
+    il_str(&L,
+        step == PROC_STEP_PATH    ? " (path unreadable)" :
+        step == PROC_STEP_ELF     ? " (not a loadable ELF)" :
+        step == PROC_STEP_INTERP  ? " (interpreter not found)" :
+        step == PROC_STEP_OBJECTS ? " (object set)" :
+        step == PROC_STEP_BUDGET  ? " (budget could not be cut)" :
+        step == PROC_STEP_CSPACE  ? " (initial CSpace)" :
+        step == PROC_STEP_LOAD    ? " (segment map)" :
+        step == PROC_STEP_STACK   ? " (initial stack)" :
+        step == PROC_STEP_START   ? " (would not resume)" :
+        step == PROC_STEP_NONE    ? " (nothing attempted: the call itself failed)" :
+                                    " (unknown step)");
+    init_log(il_done(&L));
+}
+
 static long init_run_program(const char *path, uint32_t *out_step) {
     long r;
 
@@ -3021,7 +3053,10 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h, iris_cptr_t sm_h) {
         long ec = init_run_program("hello", &step);
 
         g_init_found.prog_step = step;
-        if (step != PROC_STEP_RUNNING) goto out;
+        if (step != PROC_STEP_RUNNING) {
+            init_spawn_failed("hello", step);
+            goto out;
+        }
         /* 42 is `hello`'s "everything the contract promised was there".  Any
          * other number names the piece that was not. */
         hello_ok = (ec == 42);
@@ -3044,7 +3079,10 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h, iris_cptr_t sm_h) {
         uint32_t step = PROC_STEP_NONE;
         long ec = init_run_program("alloc", &step);
 
-        if (step != PROC_STEP_RUNNING) goto out;
+        if (step != PROC_STEP_RUNNING) {
+            init_spawn_failed("alloc", step);
+            goto out;
+        }
         alloc_ok = (ec == 42);
         g_init_found.prog_mem_exit = (uint32_t)((ec < 0) ? 0 : ec);
         il_reset(&L);
@@ -3127,7 +3165,10 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h, iris_cptr_t sm_h) {
         uint32_t step = PROC_STEP_NONE;
         long ec = init_run_program("dynprog", &step);
 
-        if (step != PROC_STEP_RUNNING) goto out;
+        if (step != PROC_STEP_RUNNING) {
+            init_spawn_failed("dynprog", step);
+            goto out;
+        }
         dyn_ok = (ec == 42);
         g_init_found.dyn_exit = (uint32_t)((ec < 0) ? 0 : ec);
         il_reset(&L);
@@ -3145,7 +3186,10 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h, iris_cptr_t sm_h) {
         uint32_t step = PROC_STEP_NONE;
         long ec = init_run_program("cprog", &step);
 
-        if (step != PROC_STEP_RUNNING) goto out;
+        if (step != PROC_STEP_RUNNING) {
+            init_spawn_failed("cprog", step);
+            goto out;
+        }
         c_ok = (ec == 7);
         g_init_found.c_exit = (uint32_t)((ec < 0) ? 0 : ec);
         il_reset(&L);
@@ -3164,7 +3208,10 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h, iris_cptr_t sm_h) {
         uint32_t step = PROC_STEP_NONE;
         long ec = init_run_program("fdprog", &step);
 
-        if (step != PROC_STEP_RUNNING) goto out;
+        if (step != PROC_STEP_RUNNING) {
+            init_spawn_failed("fdprog", step);
+            goto out;
+        }
         fd_ok = (ec == 42);
         g_init_found.fd_exit = (uint32_t)((ec < 0) ? 0 : ec);
         il_reset(&L);

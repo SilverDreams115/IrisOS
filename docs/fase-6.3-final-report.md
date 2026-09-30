@@ -1,5 +1,13 @@
 # Phase 6.3 Final Report — VMO-to-Frame Capability Migration
 
+> **SUPERSEDED — a dated phase record.**
+>
+> `KVmo` was deleted in ledger D-5: memory is a FRAME, and a grant is a run of
+> frame capabilities, one per page.  `struct KProcess` was deleted in Stage
+> 7-proc.  The `kvmo_*` functions, the `vmo_owner` field and the page array
+> this report describes do not exist.  Kept as the record of what was done at
+> the time, which is what a phase report is for.
+
 ## 1. Goal
 
 Migrate `sys_vmo_map` / `sys_vmo_map_into` from raw `paging_map_checked_in` + per-process

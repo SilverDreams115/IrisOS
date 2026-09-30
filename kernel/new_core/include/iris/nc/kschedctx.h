@@ -114,6 +114,15 @@ int  kschedctx_charge_tick(struct KSchedContext *sc, uint64_t now);
  * one period after the consumption began.  Idempotent when nothing was
  * consumed, so it is safe to call on every context switch. */
 void kschedctx_flush_run(struct KSchedContext *sc);
+/*
+ * Is there a replenishment queued that will come due?
+ *
+ * Asked before a thread is PARKED on one.  A budget-exhausted thread is woken
+ * by `kschedctx_apply_refills` and by nothing else — `wake_tick` is cleared on
+ * the way in — so parking one with an empty refill queue is parking it for
+ * ever, and the caller has no other way to know.
+ */
+int  kschedctx_has_refill(struct KSchedContext *sc);
 /* Apply every replenishment now due.  Returns 1 if budget became available
  * that was not available before (caller may wake an exhausted thread). */
 int  kschedctx_apply_refills(struct KSchedContext *sc, uint64_t now);

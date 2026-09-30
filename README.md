@@ -1,14 +1,28 @@
 # IRIS
 
-IRIS is an `x86_64` operating system built around a **capability-based,
-seL4-inspired microkernel**. It runs real user-space services, enforces hardware
-and address-space isolation through an unforgeable capability system, and boots
-to an interactive shell entirely from ring-3 code after the first kernel
-handoff.
+IRIS is an `x86_64` operating system built around a **pure capability-based
+microkernel of its own implementation, in semantic convergence with seL4/MCS**.
+It runs real user-space services, enforces hardware and address-space isolation
+through an unforgeable capability system, and boots to an interactive shell
+entirely from ring-3 code after the first kernel handoff.
+
+**Not "seL4-inspired".**  The authority model *is* seL4's: every typed object is
+born from an `Untyped` somebody named, CSpace is the only authority namespace, a
+CPtr is the only capability identifier, there is one derivation tree with
+recursive cross-process revoke, there is no ambient authority anywhere, and the
+kernel implements mechanism with no product policy in it.  All **37** invariants
+the [purity charter](docs/architecture/iris-sel4-purity-charter.md) sets itself
+are MET — none PARTIAL, none PENDING — and what still differs from seL4 is
+registered there and in the
+[ledger](docs/architecture/sel4-convergence-ledger.md) by name, with a reason,
+rather than left to be discovered.  What IRIS does **not** claim is seL4's code,
+seL4's ABI, or formal verification; the first two it never reused and the third
+is registered as a permanent divergence.
 
 The kernel exposes a small set of typed kernel objects (endpoints, CNodes, reply
-objects, untyped memory, frames, VMOs, VSpaces, notifications, TCBs, scheduling
-contexts, …). Everything above the kernel — service discovery, supervision, the
+objects, untyped memory, frames, page tables, VSpaces, ASID pools, notifications,
+TCBs, scheduling contexts, IRQ and I/O-port capabilities, IOSpaces). Everything
+above the kernel — service discovery, supervision, the
 filesystem, the keyboard driver, the console, a user-space pager, and the shell
 — lives in ring 3 and talks over **synchronous endpoint IPC** with
 kernel-stamped sender identity.
@@ -99,7 +113,7 @@ TCB_WRITE_REGS → TCB_RESUME                   (entry point, then it runs)
 
 Each of those steps names the **budget** it spends: the image copy, the
 child's address space, its root CSpace, its first thread and its segment and
-stack VMOs all come out of an `Untyped` the spawner chose, and the spawner
+stack frames all come out of an `Untyped` the spawner chose, and the spawner
 recycles one budget per live child so cost is bounded by what is running rather
 than by what has run. What the spawner gets back is the child's **first thread**
 — there is no process capability, because there is no process object. The kernel
@@ -302,7 +316,7 @@ used to need a TCB capability the kernel minted into a mailbox.
   segment shapes (RX code / R rodata / RW data / BSS) as ELF-loading groundwork.
   Shared-writable is deliberately unsupported.
 - **Least authority**: the pager's entire authority is a pre-start manifest —
-  a control endpoint, per-target **thread** and address-space grants, VMO
+  a control endpoint, per-target **thread** and address-space grants, FRAME
   grants for its cache and private pool, one shared fault notification, and a
   VFS grant session. It holds no capability over any target beyond the thread
   it resolves faults for, no untyped, no device caps, and no global VFS
@@ -343,10 +357,11 @@ somebody delegated — never a number the kernel invented.
   CSpace and first thread, so a supervisor launching many children accumulates
   nothing against itself — and reclaims a whole child by resetting one Untyped.
 - Frames are paid for when they are retyped, out of that budget;
-  mapping the VMO into more address spaces does not pay again.
+  mapping the same frame into more address spaces does not pay again.
 - Every numeric per-process quota is gone. The notification quota retired in
   the page ceiling, the live-process ceiling and the VMO-count quota all
-  retired with the owner relation they belonged to. Exhaustion is
+  retired with the owner relation they belonged to — and `KVmo` itself was
+  deleted afterwards (ledger D-5), so the last of them names nothing. Exhaustion is
   still atomic — clean `NO_MEMORY`, no partial object, a global failed-charge
   counter advances — but what exhausts is a region, not a counter.
 - **Instrumentation, never authority.** `SYS_UNTYPED_INFO` and
@@ -487,7 +502,7 @@ working:
   generation tracking and explicit policy, and narrows its own `KBootstrapCap`
   after acquiring hardware caps.
 - **`vfs`** — endpoint-only filesystem. Boot files plus initrd-backed
-  VMO-mapped files, served by name (`READ_AT` / `LIST` / `STAT` / `STATUS`) to
+  frame-mapped files, served by name (`READ_AT` / `LIST` / `STAT` / `STATUS`) to
   ordinary clients, and by unforgeable **file grant** to pager sessions. Every
   request observes the caller's badge.
 - **`pager`** — user-space page-fault handler + file-backed memory subsystem
@@ -498,8 +513,9 @@ working:
 - **`console`** — serial UART output service (`0x3F8`) exposed as `console.ep`.
 - **`sh`** — interactive shell, a pure CPtr-first client. Commands include
   `help`, `ls`, `cat <file>`, `clear`, `memory`, `uptime`.
-- **`fb`** — framebuffer painter; claims the framebuffer VMO via
-  `SYS_FRAMEBUFFER_VMO` (one-shot); fire-and-forget.
+- **`fb`** — framebuffer painter. It holds a framebuffer CONTROL capability
+  that REPORTS the geometry (`BOOT_FRAMEBUFFER_INFO` creates nothing), and
+  retypes the frames it paints out of the device `Untyped` BootInfo described.
 
 ## Memory & hardware
 
@@ -509,7 +525,7 @@ working:
   allocates.
 - **Every allocation names its budget.** An address space's page
   tables and PML4, the `KVSpace` header, the child's root CNode, its first
-  thread, a VMO's pages and metadata, per-mapping records and device
+  thread, a frame's pages, per-mapping records and device
   capabilities are all carved from an `Untyped` the caller named at creation,
   and counted as its children. A spawn without a budget is refused rather than
   funded by the kernel; a budget cannot be reset while its objects live; and
@@ -597,7 +613,6 @@ somebody's delegation.
 |----------|-------|
 | `TASK_MAX` | 256 — the scheduler's thread registry, and the last invented ceiling on the execution path |
 | `KCNODE_DEFAULT_SLOTS` | 256 (root CNode) |
-| `KVMO_MAX_PAGES` | 16384 (64 MB per VMO) |
 | kernel object slab | 16 MB (boot path only) |
 | `KPROCESS_MAX_LIVE` | **retired** — memory bounds how many children exist |
 | `KPROCESS_PHYS_PAGES_LIMIT` | **retired** — the Untyped a VMO names is the limit |
@@ -611,7 +626,7 @@ somebody's delegation.
 
 Three independently-gating layers, run on every change:
 
-- **Host unit tests** — `make test-unit`: **27418 assertions** across 27 suites
+- **Host unit tests** — `make test-unit`: **28210 assertions** across 35 suites
   that exercise the kernel objects and pure logic directly (cspace, cnode,
   kendpoint, kreply, knotification, kuntyped including its two-ended carve,
   kschedctx, kframe, the MDB/CDT (structural + model-based fuzzing), rights,
@@ -619,7 +634,7 @@ Three independently-gating layers, run on every change:
   the file-grant layer, …). They cover what a successful boot cannot show:
   buffer bounds on a page about to be mapped into ring 3, a CSpace that names
   itself, and an allocator's two ends meeting exactly once.
-- **Runtime tests** — booted under QEMU headless: **305 tests** covering IPC and
+- **Runtime tests** — booted under QEMU headless: **325 tests** covering IPC and
   syscall basics, CPtr-first slots, badges & sender identity, service lifecycle /
   death-restart / relookup, endpoint cap-transfer, device/driver isolation,
   service supervision, the user pager and fault model, file-backed memory,
@@ -642,17 +657,23 @@ Three independently-gating layers, run on every change:
   the guard belongs to the capability (T312).
 - **Purity gate** — `make check-purity`: the frozen legacy-consumer allowlist.
   Nothing handle-table-shaped is left in it — the namespace is gone;
-  what it holds is the kslab inventory — 14 files, 17 permitted occurrences —
-  which was reduced to the boot path and reduced again when
-  `kfault.c` (then named `kprocess.c`) left it. It can only shrink, and refusing a change that MOVES a
-  use from one file to another is part of how it does that.
+  what it holds is the boot-path inventory of the two kernel-private
+  allocators: **`kslab_alloc`, 12 occurrences across 9 files** (down from 17,
+  as `kvmo.c`, `kinitrdentry.c`, `kioport.c` and `kirqcap.c` left it with their
+  objects), and **`pmm_alloc`, 19 across 7** — a second allocator the guard did
+  not watch at all until it was brought under the same rule. It can only
+  shrink, and refusing a change that MOVES a use from one file to another is
+  part of how it does that.
 
 ```bash
 make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
-make test-unit                                             # host unit suites (27418)
+make check-abi                                             # every retired number declares it
+make check-locks                                           # the lock hierarchy, no inversions
+make test-unit                                             # host unit suites (28210)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (323/323)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (325/325)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-stage10              # the dynamic C runtime slice
 make run                                                   # interactive QEMU
 ```
 
@@ -672,15 +693,30 @@ of every mechanism that is not yet seL4's. Where it stands:
 | 6 — remaining memory and objects | closed: no kernel object and no page of user-visible memory is created from kernel-private storage after boot |
 | 6-pure — the user retypes what the kernel charged | closed: every object that constitutes an address space or a CSpace is retyped by its holder and handed over |
 | **7 — KProcess retirement** | **closed**: `struct KProcess` is deleted, and the user-space process server the roadmap scheduled turned out not to be needed |
-| 8–10 — MCS, SMP, platform | not started, by sequencing |
+| 8-mcs — full MCS scheduling | closed: sporadic replenishment, timeout faults, and an SC **donated** across a Call so a passive server runs on its caller's time |
+| 8-cap — the capability model's last gaps | closed: CNode guards, preemptible revoke, and a per-thread IPC buffer frame (`TCB_SetIPCBuffer`) |
+| 9-evt — the event kernel | closed: one kernel stack per core, no thread blocks in the kernel, `context_switch`/`task_yield`/`kstack_alloc` deleted (ledger D-1) |
+| 9 — SMP | closed, all 5 steps: a ranked lock hierarchy enforced by `make check-locks`, TLB shootdown with an acknowledged handshake, APs discovered and scheduling |
+| 10-mem / 10-dma / 10-abi | closed: `KVmo` deleted (a grant is a run of frame capabilities); device DMA containable through an IOMMU with a device watched being refused; and the ABI frozen to four syscall numbers and 77 invocation labels |
+| 11-life / 12-pol / 13-form | closed: object lifetime measured for every type, the kernel futex and every product ceiling removed, and address-space identity given its own authority (`ASIDControl`/`ASIDPool`) |
+| 10-run — the dynamic C runtime | closed, 8 of 8: an ordinary C program, loaded from the filesystem, linked at launch against an object set its spawner resolved, printing and exiting with a status the shell reads |
+| 10 — general-purpose platform | 8 of 9 settled: PCI, ACPI, AHCI storage, a persistent filesystem, an e1000 driver with an IPv4/UDP stack, and measured performance — all in ring 3. The ninth is real hardware, which has run once and cannot be automated here |
 
-**How close is this to seL4?** Two answers, and they are far apart: the
-authority model is close, the kernel architecture is not. The roadmap's
-[How close is this to seL4](docs/architecture/sel4-convergence-roadmap.md#how-close-is-this-to-sel4)
-grades each dimension against seL4 rather than against the roadmap's own
-progress, and names the two things no further stage closes — threads that block
-inside the kernel (ledger D-1), and an ABI that numbers its syscalls where seL4
-invokes capabilities (charter §6, permanent by decision).
+**How close is this to seL4?**  The two answers this section used to give —
+"the authority model is close, the kernel architecture is not" — have
+converged, and the two things it named as closing in no further stage have both
+closed.  Threads no longer block inside the kernel (ledger D-1, Stage 9-evt:
+one kernel stack per core, and a blocking syscall is re-executed rather than
+parked).  The ABI no longer numbers its syscalls: `SYS_INVOKE(cptr, label, …)`
+is the whole productive surface, three numbers survive because each invokes
+nothing, and 136 retired numbers answer `NOT_SUPPORTED` for ever (ledger A-32).
+
+What is left is registered and small: the **rights set** is IRIS's own and not
+translatable to seL4's one-to-one (D-3, deliberate), object lifetime is
+**reference-counted** where seL4 reads the derivation tree (D-7, deliberate),
+CNode guards exist on capabilities but the CNode's own default is still a pure
+radix walk (D-2, half closed), and CNode teardown is bounded by memory rather
+than by a budget (D-12, open — a latency property, not an authority one).
 
 **Who pays, and who holds.** The budget answered *who pays* for memory: the
 kernel creates the object and charges it to an Untyped the caller named. That
@@ -716,7 +752,8 @@ third object to point at, which is seL4's model exactly.
 Getting there was moving one thing at a time to the object it concerned: the
 CSpace root and address space to the thread, the fault record and handler to
 the thread, death and exit code to the thread, kill and liveness to the thread,
-the VMO owner and its quota to the Untyped a VMO is carved from, the IRQ route
+the VMO owner and its quota to the Untyped its memory was carved from (and
+then `KVmo` itself was deleted, D-5), the IRQ route
 to the notification it is bound to, address-space reclamation to the address
 space's own destructor, and the spawn's handle to the child's first thread.
 
@@ -742,13 +779,30 @@ and nothing PENDING.
 
 ## What does not exist yet
 
-IRIS is not a general-purpose OS yet — by sequencing, not by ambition: the
-platform work lands only on a consolidated
-microkernel (charter §5).  The current tree does not provide a
-global page cache, copy-on-write, full ELF demand paging (the pager has the
-groundwork), a dynamic linker, a POSIX layer (declined on the record, charter
-§6), TCP or sockets above the UDP stack, or hardware support beyond QEMU
-x86-64.
+Two items this section used to list now exist and are gated, so they are named
+here rather than quietly dropped: there **is** a dynamic linker
+(`services/libc` is the C library and the interpreter both — it resolves a
+program's relocations at launch against an object set its spawner chose), and
+there **is** a POSIX-shaped personality (ledger A-49 retired the divergence
+that declined one).
+
+What is genuinely absent, verified rather than assumed:
+
+- **no global page cache, no copy-on-write, no demand paging** — a mapping is
+  a frame capability somebody installed, and nothing faults one in;
+- **no TCP and no sockets** above the UDP stack;
+- **no `fork`** — permanent and on the record (charter §6): copying authority
+  wholesale is the operation this tree refuses everywhere else;
+- **no thread-local storage for a C program** — `PT_TLS` and the whole
+  thread-local relocation family are REFUSED at link time rather than
+  half-applied, because no static TLS block is reserved;
+- **no second shared object** for a C program — the spawner's object table is
+  read and a program handed objects the linker cannot map does not start;
+- **one usable thread per C program** — the heap and the output buffer are
+  locked, but `errno`, the registered IPC buffer and the thread pointer are
+  still per-process (`services/libc/libc_lock.h` lists exactly this);
+- **no thread migration** between processors, deliberately (charter §6);
+- **no hardware support beyond QEMU x86-64** — plus the one real machine below.
 
 IRIS has booted one real x86-64 desktop, on 2026-09-25: the kernel came up, the
 screen carried the log (that machine has no serial port), the bus service
@@ -780,25 +834,32 @@ is recursive across CNodes and processes, and every delegation — IPC transfer,
 device capability, pre-start grant to a child — parented to the slot that
 granted it, so it stays revocable by its grantor. There are no CPtr-to-handle
 fallbacks. What remains transitional is recorded, dated to a stage and gated by
-`make check-purity`, whose allowlist can only shrink — and has, twice:
-**33 of the 36 charter invariants are met**, with A5 (ambient
-authority), O1 (object form) and P2 (mechanism, not policy) PARTIAL and nothing
-PENDING, the remainder scoped to Stage 8 and beyond of the
-[convergence roadmap](docs/architecture/sel4-convergence-roadmap.md). Stages 0
-through 7 are closed: bootstrap is fine-grained, a thread is a retyped object
-configured through capabilities, **no kernel object or page of user memory
-is created from kernel-private storage after boot** — page tables, address
-spaces, CSpaces, threads, VMO pages and device capabilities all come out of an
-Untyped somebody named and can be reclaimed by resetting it — and there is no
-process object at all.
+`make check-purity`, whose allowlist can only shrink — and has:
+**all 37 charter invariants are MET**, none PARTIAL and none PENDING. Every
+numbered stage of the
+[convergence roadmap](docs/architecture/sel4-convergence-roadmap.md) is closed
+except one item of the platform stage, which is real hardware and cannot be
+automated in this environment. Bootstrap is fine-grained, a thread is a
+retyped object configured through capabilities, **no kernel object and no page
+of user memory is created from kernel-private storage after boot** — page
+tables, address spaces, CSpaces, threads, frames and device capabilities all
+come out of an `Untyped` somebody named and can be reclaimed by resetting it —
+and there is no process object at all.
 
-Convergence is measured against seL4's *authority model*, which is where IRIS is
-closest. It is not an architectural replica: the kernel still CHARGES memory
-objects to a budget where seL4 has the user retype them, keeps a `KVMO` where
-seL4 has only Frames, and gives every thread its own kernel stack to block on.
-The first two are recorded as staged debt and the last as an unscheduled
-structural divergence, in the
-[ledger](docs/architecture/sel4-convergence-ledger.md).
+The three things this paragraph used to name as the distance from seL4 are
+gone rather than reduced. The kernel no longer CHARGES memory objects to a
+budget — the holder retypes them (Stage 6-pure). There is no `KVMO` — it was
+deleted, and a grant is a run of frame capabilities, one per page (D-5).
+Threads do not have a kernel stack to block on — there is one per core, and a
+blocking syscall is re-executed (D-1, Stage 9-evt).
+
+What remains is four rows, all in the
+[ledger](docs/architecture/sel4-convergence-ledger.md), and none of them is
+about authority: the rights set (D-3) and reference-counted lifetime (D-7) are
+deliberate and permanent, CNode guards are half done (D-2), and CNode teardown
+is bounded by memory rather than by a budget (D-12). A thread is also homed to
+one processor and never migrated, which is registered in charter §6 as a
+policy IRIS declines to put in the kernel.
 
 Scope is deliberate, not provisional: IRIS targets QEMU x86-64 and grows
 new capability — drivers, storage, networking, an optional POSIX personality —

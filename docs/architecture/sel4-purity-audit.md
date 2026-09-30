@@ -14,6 +14,24 @@ assertions, `check_purity` OK with the kernel-memory-reachable closure at 26
 functions and **zero ring-3 exemptions**, and `check_locks` OK over 18 ranked
 locks.
 
+> **FOURTH PASS — 2026-09-29, a project-wide audit.**  The numbers above are
+> the second pass's and are kept as its record; today's are **325/325 runtime
+> tests** at one, two and four processors, **28210 host assertions** across 35
+> suites, `check_purity` OK with the closure still at 26 functions,
+> `check_abi` OK, and `check_locks` OK over **32** ranked locks.  The third
+> pass's "absent" list below reads *SMP, IOMMU and formal verification*: the
+> first two are now DELIVERED and gated (Stage 9 and Stage 10-dma), so only
+> formal verification remains, and that is registered as permanent.
+>
+> The pass verified the charter against the CODE rather than against its own
+> prose — the handle table, `struct KProcess` and `task_find_by_id` are absent
+> from the kernel except in comments saying they were deleted; the door is
+> four syscall numbers with 136 retired ones answering `NOT_SUPPORTED`; and
+> **all 37 invariants read MET**.  It found three intermittents (one a kernel
+> defect, two tests asserting more than the kernel promises) and one
+> unenforceable rights reduction; all four are fixed and recorded in the
+> ledger.
+>
 > **THIRD PASS — the five gaps are closed.** Every generic seL4 invocation
 > IRIS was missing now exists, and so does the domain scheduler. Part 5's
 > "absent" lists have shrunk to SMP, IOMMU and formal verification. Details

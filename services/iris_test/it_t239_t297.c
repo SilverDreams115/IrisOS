@@ -1007,6 +1007,34 @@ void test_t257(void) {
             if ((m.reply = (long)S1_SLOT_B, iris_msg_recv((long)cmd, &m)) != 0) { ok = 0; why = "recv child call"; }
         }
         if (ok && it_kill((long)proc) != 0) { ok = 0; why = "kill"; }
+        /*
+         * WAIT for the death, rather than assuming the kill was one.
+         *
+         * `TCB_EXIT` on a thread another processor still has on-CPU marks it
+         * DEAD, kicks that core and hands it to the reaper — and RETURNS.  The
+         * teardown that takes the caller out of the reply object runs later,
+         * on the reaper.  So immediately after the kill the binding can still
+         * be there, the server's reply WINS the caller (the two contend for
+         * `r->caller` under the reply's lock, so exactly one does) and
+         * succeeds, waking a thread that is already terminal — which is a
+         * no-op, not a hazard, but it is not NOT_FOUND either.
+         *
+         * A thread blocked in a Call is normally off-CPU, which is why this
+         * passed: the kill was synchronous.  The window is the switch away
+         * after the rendezvous, where `on_cpu` is still set — and at several
+         * processors the tester is on another core and reaches the kill
+         * inside it, about once in twenty runs.
+         *
+         * The property under test is "a dead caller's reply object returns to
+         * FREE", and that is true once the death has happened.  So the test
+         * waits for it.  `TCB_EXIT` being a promise rather than an answer —
+         * unlike `Suspend`, which IRIS deliberately made synchronous — is
+         * recorded in the ledger rather than asserted away here.
+         */
+        if (ok) {
+            IT_AWAIT(it_alive((long)proc) == 0, 4000);
+            if (it_alive((long)proc) != 0) { ok = 0; why = "kill never took"; }
+        }
         if (ok) {
             struct iris_msg rm; iris_msg_zero(&rm);
             if (iris_msg_reply((long)S1_SLOT_B, &rm) != (long)IRIS_ERR_NOT_FOUND) {
