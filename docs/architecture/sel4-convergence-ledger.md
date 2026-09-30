@@ -3753,12 +3753,145 @@ the reason.  `init_spawn_failed()` now names both, and translates the step.
 The next occurrence will say what it was; until then this row records the
 observation and refuses to guess in the tree's own voice.
 
-**The hypothesis, stated as one.**  `proc` tracks ONE budget and resets it
+**FOUND — and the hypothesis below was wrong.**  Three masked errors in a
+row hid it, and each one had to be removed before the next became visible.
+That is the whole story of this entry and it is worth keeping in order:
+
+1. `init` logged nothing at all on a failed spawn.  Fixed: `init_spawn_failed`
+   names the program and translates the step.  It then said
+   **`step 3 (interpreter not found)`, err −16** — `IRIS_ERR_MISSING_TABLE`.
+2. That was a LIE told by `iris_map_frame`.  When the page-table retype
+   failed it returned `r`, the MISSING_TABLE it had been given, instead of
+   the retype's own error — so "your budget is spent" and "the Untyped is
+   busy" and "the slot is occupied" all arrived as "a level of the walk is
+   missing".  Fixed: the retype's error is returned.  It then said **err −7**,
+   `IRIS_ERR_ALREADY_EXISTS`.
+3. And the same function discarded the result of the `CNODE_DELETE` that
+   frees the scratch slot before reusing it.  Fixed for the same reason,
+   which confirmed the delete was succeeding and the slot was occupied
+   BEFORE the helper ever ran.
+
+**The defect.**  `proc_load_interp` clears three of its four scratch slots on
+entry — `ITEXT`, `IDATA`, `IPRIV` — and not `CHILD_PT`, the page-table
+scratch every `iris_map_frame` in it reuses.  The helper deletes that slot
+before each retype, but only on the branch where a level is actually
+missing, so a slot left occupied by an EARLIER spawn survives into the next
+one.  The first map that then needs a level retypes into an occupied slot,
+gets `ALREADY_EXISTS`, and the caller is told its interpreter could not be
+found.  Whether a spawn needs a new level depends on where the load bias
+puts the segments, which is randomised per boot — so it was intermittent,
+and it was never about SMP at all: it reproduced on IRIS-V, uniprocessor,
+on the first run.
+
+**What this says about instruments.**  Three separate places threw away the
+answer they had been given, and each one made the next invisible.  The
+project already knew this pattern — the T108 investigation lost hours to a
+probe that dropped serial output — and it cost a second time here.  A
+return value that is discarded is a diagnostic that will be missing on the
+day it is needed.
+
+**The hypothesis, which was wrong, kept because it was plausible.**  `proc`
+tracks ONE budget and resets it
 with `Untyped_Reset`, which answers `BUSY` while any child object is still
 alive — and a dead thread's teardown is DEFERRED to the reaper (D-1's reap
 ring; see the `TCB_EXIT` note above, which is the same root).  If init spawns
 the next program before the previous child has actually been torn down, the
 reset fails and the next spawn fails at `PROC_STEP_BUDGET`.  At four
 processors the teardown lands on another core, which widens the window.  That
-would explain the shape — intermittent, SMP-only, and worse under load — and
-it is a hypothesis: no run has yet printed the step.
+would have explained the shape, and it explained the wrong shape: the failure
+was not SMP-only and load had nothing to do with it.  A plausible mechanism
+that fits the symptom is not evidence, and this one survived only as long as
+the instrument was broken.
+
+### Stage V phase 0 — the boundary, and the charter amendment that had to precede it
+
+**Change**: charter §1 gains the IRIS-V / IRIS-P split and says formal
+verification is a TARGET; charter §6's "No formal verification" row moves from
+*Permanent, deliberate* to *Amended — a target, not a claim*.
+`kernel/include/iris/verified_config.h`, `make IRIS_VERIFIED=1`,
+`kernel/core/iommu/iommu_excluded.c`, `make smoke-verified`.
+
+**Justification**: a proof is made about one artefact with a declared
+boundary.  Until the boundary is code, "verify IRIS" is not a sentence with a
+meaning, and every later phase is planning on top of planning.  IRIS-V is
+uniprocessor with the IOMMU outside the trusted computing base; IRIS-P is
+everything the tree has.
+
+**What it surrenders, recorded because it is not small**: verified
+multiprocessor seL4 does not exist anywhere, so Stage 9 stays in IRIS-P and
+**for as long as this work runs the better kernel is the unverified one**.
+
+**The rule the amendment keeps**: nothing is verified today and the README
+says so.  The §6 row is amended rather than retired, because retiring it
+would read as a guarantee; it retires when a refinement proof exists.
+
+**Honest about the boundary**: ACPI, the initrd catalogue and `klog` are
+still inside it, because removing them is a boot-path change rather than a
+scoping decision.  Each must leave before phase 4.  A boundary drawn
+generously is not a boundary, so this is owed work and is written down as
+such.
+
+**Measured**: IRIS-V builds, boots and passes `SUITE PASS 325/325`.  The
+excluded IOMMU is not silent about itself — it prints the same "DMA is
+unrestricted on this machine" line the real unit prints when it finds no
+DMAR, because the verified configuration must not be quieter about its own
+weaknesses than the unverified one.
+
+### Stage V phase 1 — an executable specification, and what it found in sixty traces
+
+**Change**: `spec/authority_model.py` (the authority model, written
+independently), `spec/spec_driver.c` (the REAL `kcnode.c`/`cspace.c`/
+`kobject.c` rendering a CSpace), `spec/differential.py`, `spec/shrink.py`,
+`make spec-differential`, and a CI lane.
+
+**Justification**: seL4 built its functional model before the C existed,
+because a kernel not written against a specification cannot be verified.
+IRIS is in the opposite and better position — the implementation works and
+325 tests describe it — so the model can be validated against a running
+oracle from the first day.  That is the only structural advantage this
+project has over the path seL4 took, and phase 1 exists to spend it.
+
+**What it found.**  Three disagreements in the first sixty traces, and **all
+three were the model**.  An independently written reading of this tree's own
+documentation was wrong three times and the kernel was right three times,
+which is a result about the implementation worth recording as much as the
+findings are.
+
+The one that matters is a **specification gap, not a bug on either side**:
+charter A8 says "badges are kernel-sealed identity; a badged cap is never
+re-badged", and the model implemented exactly that sentence.
+`mdb_badge_derive` — the only badge logic in the system — also refuses a
+fresh badge on anything that is not an ENDPOINT or a NOTIFICATION, because a
+badge is sender identity and a CNode has no sender.  **That half of the rule
+is in the code and in no document.**  A8 should be read as three parts: a
+zero request inherits; a badged source asked for a different badge is
+refused; and a fresh badge is for identity types only.
+
+**Measured**: 5300 random traces across two seed spaces, model and kernel
+agreeing exactly, with every charter invariant checked against the model
+after each one.
+
+**What it does not cover yet**: `retype` from an Untyped, and IPC.
+`spec_driver.c` aborts rather than answering plausibly if a CSpace operation
+ever reaches the IPC path, so the gap is loud rather than silent.
+
+### Two configurations sharing one `build/` is a trap, and the guard is at parse time
+
+Found by the gate, an hour after IRIS-V existed.  `make IRIS_VERIFIED=1`
+changes a `-D` and nothing else: the sources did not move, so `make` compares
+timestamps, finds everything current, and rebuilds nothing.  Build IRIS-V and
+then IRIS-P and you get **neither** — a kernel whose objects disagree about
+`MAX_CPUS`, which boots, passes `SUITE PASS 325/325`, and then fails one
+assertion about the processor count with nothing in the log to connect the
+two.
+
+The guard is a `$(shell ...)` that runs when the Makefile is PARSED and wipes
+the objects when the recorded configuration differs from the requested one.
+A target would not do: a target that deletes objects is a target `make -j8`
+is free to run alongside the compiles it was meant to precede.
+
+This is the third time in this project that changing a flag without
+rebuilding has cost real time — the tree already knew that
+`ENABLE_RUNTIME_SELFTESTS=1` silently drops the boot selftest if a plain
+`make` runs in between.  The difference is that this one is now impossible
+rather than documented.

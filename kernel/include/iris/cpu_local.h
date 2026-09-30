@@ -2,6 +2,8 @@
 #ifndef IRIS_CPU_LOCAL_H
 #define IRIS_CPU_LOCAL_H
 
+#include <iris/verified_config.h>
+
 #include <stdint.h>
 
 /*
@@ -37,7 +39,9 @@
  * self before enabling interrupts.
  */
 
-#define MAX_CPUS 8
+/* One in IRIS-V, eight in IRIS-P.  `iris/verified_config.h` says why the
+ * verified configuration is uniprocessor and what that costs. */
+#define MAX_CPUS ((int)IRIS_V_MAX_CPUS)
 
 struct task;
 struct CpuRunQueue; /* defined in scheduler_priv.h; pointer kept here to avoid bloating GS area */

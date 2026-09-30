@@ -204,7 +204,43 @@ COMMON_WARNINGS := -Wall -Wextra -Wshadow -Wundef $(IRIS_WERROR)
 UEFI_DEFINES    := -DEFI_DEBUG=0 -DEFI_DEBUG_CLEAR_MEMORY=0
 
 UEFI_CFLAGS    := -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone -fpic $(COMMON_WARNINGS) $(UEFI_DEFINES) $(UEFI_INCLUDES)
-KERNEL_CFLAGS  := -ffreestanding -fno-stack-protector -fno-pic -fno-pie -mno-red-zone $(COMMON_WARNINGS) -D__KERNEL__ $(KERNEL_INCLUDES) $(KERNEL_DEMO_DEFINES) -MMD -MP
+# ── IRIS-V: the verified configuration ──────────────────────────────────────
+#
+# `make IRIS_VERIFIED=1 ...` builds the artefact a refinement proof would be
+# ABOUT: uniprocessor, no IOMMU in the trusted computing base.  Nothing is
+# verified today — this selects the boundary, which is the first thing that
+# has to exist before "verify IRIS" is a sentence with a meaning.
+# `kernel/include/iris/verified_config.h` says what it gives up and why.
+IRIS_VERIFIED ?= 0
+#
+# ── and the guard that makes switching between them SAFE ────────────────────
+#
+# The two configurations share `build/`, and changing a `-D` does not make
+# anything out of date: `make` compares timestamps, and the source did not
+# move.  Build IRIS-V and then IRIS-P and you get neither — a kernel whose
+# objects disagree about `MAX_CPUS`, which boots, passes the whole suite, and
+# then fails one assertion about the processor count with no hint as to why.
+# That happened, and it cost a gate run to find.
+#
+# The check runs at PARSE time, before any rule, because a target that wipes
+# objects is a target `make -j8` is free to run alongside the compiles it was
+# supposed to precede.
+IRIS_CFG_FILE := $(BUILD_DIR)/.iris-config
+$(shell mkdir -p $(BUILD_DIR); \
+        if [ "$$(cat $(IRIS_CFG_FILE) 2>/dev/null)" != "$(IRIS_VERIFIED)" ]; then \
+          rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/*.d; \
+          echo "$(IRIS_VERIFIED)" > $(IRIS_CFG_FILE); \
+        fi)
+
+ifeq ($(IRIS_VERIFIED),1)
+KERNEL_VERIFIED_DEFINE := -DIRIS_VERIFIED_CONFIG=1
+KERNEL_IOMMU_SRC       := kernel/core/iommu/iommu_excluded.c
+else
+KERNEL_VERIFIED_DEFINE :=
+KERNEL_IOMMU_SRC       := kernel/core/iommu/iommu.c
+endif
+
+KERNEL_CFLAGS  := $(KERNEL_VERIFIED_DEFINE) -ffreestanding -fno-stack-protector -fno-pic -fno-pie -mno-red-zone $(COMMON_WARNINGS) -D__KERNEL__ $(KERNEL_INCLUDES) $(KERNEL_DEMO_DEFINES) -MMD -MP
 KERNEL_ASFLAGS := -ffreestanding -fno-pic -fno-pie -mno-red-zone -D__KERNEL__ $(KERNEL_INCLUDES)
 # Service binaries: freestanding static PIE ELFs; no kernel-internal symbols.
 # -D__KERNEL__ is explicitly absent so headers expose only the userland ABI.
@@ -391,7 +427,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_main.c
 TEST_UNIT_BIN   := $(BUILD_DIR)/test_unit
 
-.PHONY: all dirs run run-headless clean help check check-abi check-purity smoke smoke-runtime smoke-runtime-selftests smoke-stage10 smoke-net-virtio smoke-persist smoke-screen config-sync test-unit
+.PHONY: spec-driver spec-differential smoke-verified all dirs run run-headless clean help check check-abi check-purity smoke smoke-runtime smoke-runtime-selftests smoke-stage10 smoke-net-virtio smoke-persist smoke-screen config-sync test-unit
 
 all: config-sync $(BOOT_APP) $(KERNEL_DST)
 
@@ -535,7 +571,7 @@ $(KERNEL_SYSCALL_EP_OBJ): kernel/core/syscall/syscall_endpoint.c kernel/core/sys
 $(KERNEL_ACPI_OBJ): kernel/core/acpi/acpi.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_IOMMU_OBJ): kernel/core/iommu/iommu.c | dirs
+$(KERNEL_IOMMU_OBJ): $(KERNEL_IOMMU_SRC) | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_SMP_OBJ): kernel/core/smp/smp.c | dirs
@@ -1333,6 +1369,51 @@ $(TEST_UNIT_BIN): $(TEST_UNIT_SRCS) Makefile | dirs
 
 test-unit: $(TEST_UNIT_BIN)
 	@$(TEST_UNIT_BIN)
+
+# ── the IRIS-V lane ─────────────────────────────────────────────────────────
+#
+# Builds the verified CONFIGURATION and boots it.  It is a separate lane and
+# not a flag on an existing one because IRIS-V is a different artefact: one
+# processor, no IOMMU, and a declared subset of the suite.  A green run here
+# says the boundary is real and the kernel inside it still works — not that
+# anything has been proved.
+# ── the executable specification, and the differential against it ───────────
+#
+# Phase 1 of the IRIS-V plan.  `spec/authority_model.py` is the authority
+# model written independently of the kernel; `build/spec_driver` is the REAL
+# kcnode/kobject/cspace linked into a program that renders a CSpace; and
+# `spec/differential.py` drives both with the same random traces and compares.
+# A disagreement is either a wrong model, a wrong kernel, or a specification
+# that reads two ways — and the third is the one prose can never surface.
+SPEC_DRIVER_BIN := $(BUILD_DIR)/spec_driver
+SPEC_DRIVER_SRCS := spec/spec_driver.c tests/kernel/stubs.c \
+    kernel/new_core/src/kobject.c kernel/new_core/src/kcnode.c \
+    kernel/new_core/src/kuntyped.c kernel/new_core/src/cspace.c \
+    kernel/new_core/src/knotification.c kernel/new_core/src/kendpoint.c \
+    kernel/new_core/src/kreply.c kernel/new_core/src/kschedctx.c \
+    kernel/new_core/src/kframe.c kernel/new_core/src/kvspace.c \
+    kernel/new_core/src/kpagetable.c kernel/new_core/src/kasidpool.c \
+    kernel/new_core/src/kbootcap.c kernel/new_core/src/kioport.c \
+    kernel/new_core/src/kirqcap.c kernel/new_core/src/ktcb.c \
+    kernel/new_core/src/kfault.c kernel/new_core/src/kiospace.c \
+    kernel/new_core/src/kiopagetable.c kernel/new_core/src/root_bootinfo.c
+
+$(SPEC_DRIVER_BIN): $(SPEC_DRIVER_SRCS) | dirs
+	gcc $(TEST_UNIT_CFLAGS) $(SPEC_DRIVER_SRCS) -o $@
+
+.PHONY: spec-driver spec-differential
+spec-driver: $(SPEC_DRIVER_BIN)
+
+spec-differential: $(SPEC_DRIVER_BIN)
+	@python3 spec/differential.py $${SPEC_TRACES:-200}
+
+smoke-verified:
+	@echo "== IRIS-V: the verified configuration (uniprocessor, no IOMMU) =="
+	$(MAKE) IRIS_VERIFIED=1 ENABLE_RUNTIME_SELFTESTS=1
+	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-200}" \
+	IRIS_QEMU_SMP=1 IRIS_QEMU_EXPECT_SELFTESTS=1 \
+	IRIS_QEMU_LOG=build/qemu-verified.log \
+	bash scripts/run_qemu_headless.sh
 
 # ── Header dependency tracking ──────────────────────────────────────────────
 # Generated by -MMD -MP in KERNEL_CFLAGS and SERVICE_CFLAGS.

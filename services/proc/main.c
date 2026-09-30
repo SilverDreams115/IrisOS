@@ -440,6 +440,21 @@ static uint32_t proc_load_interp(const char *name, uint32_t child_vs,
     proc_slot_delete(PROC_SLOT_ITEXT);
     proc_slot_delete(PROC_SLOT_IDATA);
     proc_slot_delete(PROC_SLOT_IPRIV);
+    /*
+     * ...and the fourth, which this cleared three of.
+     *
+     * `PROC_SLOT_CHILD_PT` is the page-table scratch every `iris_map_frame`
+     * below reuses.  The helper deletes it before each retype, but only on
+     * the branch where a level is actually missing — so a slot left occupied
+     * by an earlier spawn survives into this one, and the first map that DOES
+     * need a level retypes into an occupied slot and gets ALREADY_EXISTS.
+     * That reached the caller as `PROC_STEP_INTERP`, which reads as "the
+     * interpreter could not be found" and is not what happened.
+     *
+     * Three of four scratch slots were cleared here and the fourth was not,
+     * which is the whole of the bug.
+     */
+    proc_slot_delete(PROC_SLOT_CHILD_PT);
 
     /* ── ask the registry for it, by name ── */
     {

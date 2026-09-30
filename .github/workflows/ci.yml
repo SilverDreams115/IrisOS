@@ -191,6 +191,14 @@ jobs:
       - name: Stage 10-run vertical slice (1 and 4 processors)
         run: IRIS_QEMU_TIMEOUT_SECS=180 make ENABLE_RUNTIME_SELFTESTS=1 smoke-stage10
 
+      - name: The executable specification against the kernel (Stage V phase 1)
+        run: make spec-differential
+        env:
+          SPEC_TRACES: 1500
+
+      - name: IRIS-V boots (the verified configuration)
+        run: IRIS_QEMU_TIMEOUT_SECS=180 make smoke-verified
+
       - name: Upload selftest runtime serial log
         if: always()
         uses: actions/upload-artifact@v4

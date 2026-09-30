@@ -97,6 +97,7 @@ against seL4 turned up, including one A9 defect it fixed.
 | 10-dma — device authority must be containable | ✅ **All 6 steps done**, a device is watched being refused.  The DMAR is parsed and the units probed; translation is ENABLED with every device blocked; `KIOSpace` and `KIOPageTable` are retyped objects and `IOSpaceControl` a BootInfo authority; a frame mapped into an IOSpace is what a device may reach, and unmapping or destroying the space takes it back — from the unit's translation cache as well as the table.  **T351** pins containment, **T352** the whole arc, and **T353** is a ring-3 driver for a real bus master that is refused without a mapping, reaches exactly the frame it is granted, and is refused again when it is revoked — on a machine with no unit the same driver reaches memory nobody granted it.  The driver cost three pre-existing defects: an NX bit riding in every physical address `paging_virt_to_phys` returned, a port ABI with no width above a byte, and no way to map a BAR uncached |
 | 10-abi — freeze the ABI | ✅ **CLOSED.**  The surface is four syscall numbers and 77 contiguous invocation labels, declared in `iris/abi.h` and ASSERTED by `tests/kernel/test_abi.c` over every number the dispatcher can see — a description nothing checks is a description that goes stale, which is the lesson the stage was taught by its own opening paragraph.  BootInfo names the ABI and the root task refuses a major it was not built for.  The naming residue of the retired handle namespace is gone, and removing it found a capability argument being truncated to 32 bits |
 | 10-run — the dynamic C runtime | ✅ **CLOSED — 8 of 8.**  The POSIX personality row of Stage 10, taken up by ledger A-49.  Dynamic from the first commit; a static runtime as a stepping stone was offered, considered and declined.  `TCB_SetTLSBase` (T358) gave ring 3 a thread pointer; `proc` spawns a program by path; `prog_mem` is brk/mmap over the program's own budget; `objreg` shares one library text between two processes; `ldso` loads two objects; `services/libc` is IRIS's own C library AND the interpreter, and an ordinary C program links against it at launch, prints, and exits with a status the shell reads; a descriptor IS a capability, so `dup` derives and a revoke in the grantor kills the holder's descriptor; and `make smoke-stage10` is a lane.  The library was then hardened in a pass of its own — see step 6 |
+| V — IRIS-V, the verified configuration | ◐ **OPEN — phase 1 of 6.**  Formal verification entered scope by amending charter §1.  Phase 0 (the boundary: `make IRIS_VERIFIED=1`, `make smoke-verified`) and phase 1 (the executable specification and the differential against the real kernel) are done; phases 2–5 are the core rewrite, the abstract specification, the refinement proof and what comes after it.  **Nothing is verified today** |
 | 10 — General-purpose platform | ◐ **8 of 9 settled.**  Delivered and gated: `pci` (the bus is a service and the only task that reaches configuration space), ACPI reachable from ring 3, `blk` (an AHCI driver whose controller's DMA is contained, with a write path and FLUSH CACHE), `fs` (a filesystem on a disk IRIS owns, proven by booting twice and reading the image from the host), `net` + `ip` (an e1000 driver and, above it, ARP/IPv4/UDP — gated by a TFTP read against a server that is not this machine), and **T356**, which measures the system and fails on order-of-magnitude regressions.  POSIX is DECLINED on the record (charter §6).  **Real hardware is no longer untried**: IRIS booted a real desktop on 2026-09-25, found its disks and wrote to its own partition — but that is one machine observed once, not support, and every automated gate still runs under QEMU |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
@@ -3954,3 +3955,106 @@ staged transfer; deleting the intermediate; mint with rights↓ and re-badge
 denied; death of the intermediate holder; retype/revoke/reset stress with
 gauge verification and no-UAF; a guard that `legacy_handle_derivation_migrated`
 → 0.
+
+## Stage V — IRIS-V, the verified configuration  ◐ OPEN (1 of 6 phases)
+
+*Opened by amending charter §1, which had said formal verification was out of
+scope.  The amendment does not claim anything: it gives the obligation a
+subject.*
+
+**Why a configuration and not the kernel.**  A proof is made about one
+artefact with a declared boundary.  Until that boundary exists, "verify IRIS"
+is not a sentence with a meaning — there is nothing for a proof obligation to
+be about.  So the first act is not code: it is cutting the system in two.
+
+**What IRIS-V gives up, where it costs something.**  Verified multiprocessor
+seL4 does not exist, anywhere.  IRIS-V is uniprocessor, so Stage 9 stays in
+IRIS-P, and for as long as this work runs **the better kernel is the
+unverified one**.  The IOMMU leaves the trusted computing base.  MCS
+verification is partial even in seL4, so the first proved kernel probably has
+budgets without donation.
+
+**Why C and Isabelle/HOL rather than Rust and a modern prover.**  The core is
+rewritten against a specification in phase 2 either way, so the language is
+genuinely open at that point — and the answer is still C.  The proof
+techniques for exactly this shape of kernel (capability derivation, a CDT,
+recursive revoke, retype from untyped) are published and mature, and seL4's
+proof libraries are the closest prior art that exists to what IRIS is.  A
+Rust rewrite trades a solved proof problem for an open one, plus a full
+reimplementation, plus losing the 325-test reference that validates the
+model.
+
+### The phases, and what each one produces
+
+| phase | produces | closed when |
+|---|---|---|
+| **0 — the boundary** | `IRIS_VERIFIED_CONFIG`, `make IRIS_VERIFIED=1`, `make smoke-verified`, the charter amendment | ✅ **CLOSED.**  IRIS-V builds, boots uniprocessor with no IOMMU, and passes `SUITE PASS 325/325` |
+| **1 — the executable specification** | `spec/authority_model.py`, `spec/spec_driver.c`, `spec/differential.py`, `spec/shrink.py`, `make spec-differential` | ✅ **CLOSED.**  Random traces drive the model and the real `kcnode.c`/`cspace.c`/`kobject.c` and the states are compared exactly; every charter invariant is checked against the model after every trace |
+| **2 — the provable core** | D-7 retired (lifetime by CDT, not by counter), D-3 specified, D-12 closed, zero function pointers, every loop with its bound written, core ≤ 12k lines | — (scoped; see below) |
+| **3 — the abstract specification** | Isabelle/HOL; the 37 invariants as theorems | — |
+| **4 — the refinement** | `abstract ⊑ executable ⊑ C`, in the gate | — |
+| **5 — beyond functional correctness** | integrity, information flow, binary verification | — |
+
+### What phase 1 found in its first sixty traces
+
+Three disagreements, and **all three were the model**, which is a result about
+the implementation worth recording: an independently written reading of this
+tree's own documentation was wrong three times and the kernel was right three
+times.
+
+1. **A badge may only be stamped on an IDENTITY TYPE.**  The charter's A8 row
+   says "badges are kernel-sealed identity; a badged cap is never re-badged",
+   and the model implemented exactly that sentence.  `mdb_badge_derive` — the
+   only badge logic in the system — also refuses a fresh badge on anything
+   that is not an endpoint or a notification, because a badge is sender
+   identity and a CNode has no sender.  **That half of the rule is in the code
+   and in no document.**  It is the clearest case of what this phase is for:
+   not a bug on either side, but a specification that read two ways.
+2. **A badged source asked for a DIFFERENT badge is refused**, not silently
+   inherited.  The model inherited.
+3. **`kcnode_mint` replaces an occupied slot; `kcnode_mint_excl` refuses it.**
+   The model refused.  And the replace is safe for the reason that matters:
+   the old capability is deleted first, with reparenting, so a slot
+   overwritten in the middle of a derivation chain leaves its children
+   attached to its grandparent rather than dangling — which the differential
+   then confirmed directly.
+
+### What phase 1 does NOT cover yet
+
+`retype` from an Untyped, and IPC.  The trace language has `seed`, `mint`,
+`delete` and `revoke`, which reach A7, A8, A9, A10 and object liveness —
+the authority claim.  Untyped needs backing storage and a second lifecycle;
+IPC needs the syscall layer, and `spec_driver.c` aborts rather than answering
+plausibly if a CSpace operation ever reaches it.  Both are extensions of the
+trace language and change nothing in the comparison machinery.
+
+### Phase 2, scoped rather than started
+
+The measurements that decide how it is done, taken so the next person does
+not have to take them again:
+
+- **The function pointers are three dispatch sites, not a pervasive style.**
+  `kobject.c` lines 110 and 127-128 are the whole of it; everything else the
+  grep finds is a comment.  But there are **18 ops tables across 17 files**,
+  and the mapping from type to destructor is **not one-to-one**: `kbootcap`
+  has two, one per storage origin.  So a `switch (obj->type)` — which is what
+  seL4 does — needs a second discriminator, and the object already carries
+  it: `ut_block_bytes`, 0 for the kernel slab and non-zero for an Untyped
+  child.  `boot_selftest.c` has a test-only table that needs a carve-out.
+  Removing them also closes the gap `scripts/check_lock_order.py` §9.1 admits
+  to: it cannot follow `ops->destroy`, so the lock hierarchy is unchecked
+  exactly where a destructor runs.
+- **D-7 is the large one and it is a charter amendment**, not a refactor.
+  Charter §6 records reference-counted lifetime as "deliberate, permanent",
+  and a verified kernel cannot keep it: *an object exists exactly while a
+  capability names it* has to be a theorem about the CDT, not a property of
+  two counters that can disagree — and the ledger records that they did
+  disagree, three times.  `spec/authority_model.py` already decides liveness
+  by SEARCHING the slot space rather than counting, so the specification
+  phase 2 must implement is written and is being checked every run.
+
+### The rule this stage adds to the project
+
+**Nothing in this tree is verified, and the README says so until one exists.**
+Naming a target is not claiming it, and a stage that let the two blur would
+be making exactly the claim §1 spent a paragraph refusing to make.

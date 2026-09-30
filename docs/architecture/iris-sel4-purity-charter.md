@@ -24,8 +24,23 @@ Binding clarifications:
   objects born from Untyped, CSpace/CPtr, CDT, recursive revoke, absence of
   ambient authority, mechanism without policy) — not to seL4's ABI or code,
   which IRIS neither reuses nor promises to reproduce.
-- IRIS does **not** claim to be formally verified. Its invariants are proven
-  by construction plus adversarial tests, and must be stated that way.
+- IRIS does **not** claim to be formally verified, and nothing in this tree is
+  verified today. Its invariants are proven by construction plus adversarial
+  tests, and must be stated that way.
+- **Formal verification is now a TARGET, and the target is a configuration,**
+  not the project. A proof is made about one artefact with a declared
+  boundary, so the system is cut in two and the boundary is code rather than
+  intent (`kernel/include/iris/verified_config.h`, `make IRIS_VERIFIED=1`):
+  - **IRIS-V** — uniprocessor, x86-64, the IOMMU outside the trusted computing
+    base, a frozen object set and the frozen ABI. This is what a refinement
+    proof would be ABOUT.
+  - **IRIS-P** — the platform: SMP, IOMMU, everything the tree has today. It
+    shares its source with IRIS-V wherever it can and it is NOT verified.
+  Until a proof exists, the only honest statement is the one the README makes:
+  **neither of them is verified.** Naming the target is not claiming it.
+  What IRIS-V gives up is stated where it costs something: **verified
+  multiprocessor seL4 does not exist**, so Stage 9 stays in IRIS-P and for as
+  long as this work runs the better kernel is the unverified one.
 - Every IRIS-specific extension must **preserve the capability-based purity**;
   a feature that violates it is not a feature, it is a design defect.
 - The end goal is not an seL4 clone: it is a long-lived platform of its own,
@@ -251,7 +266,7 @@ only way a walk of this kind means anything.  Ledger A-35 records the answers.
 
 | Divergence | Justification | Status |
 |---|---|---|
-| No formal verification | out of the project's scope; offset by adversarial gates | Permanent, deliberate |
+| ~~No formal verification~~ | **SCOPE CHANGED.**  It read *out of the project's scope; offset by adversarial gates*, and the second half is still how every claim in this tree is supported — nothing here is verified, and the gates are what stand in for a proof.  What changed is the first half: verification is a declared target for **IRIS-V**, the configuration §1 now defines, and the kernel has a build for it.  The row is not retired, because retiring it would read as a guarantee: it is amended to say that the obligation now has a subject.  It retires when a refinement proof exists, and not before | Amended — a target, not a claim |
 | ~~IPC capability transfer is a MOVE~~ | **RETIRED — ledger A-29.**  It was written here as "permanent, deliberate" one session after A-26 found it, and that was the wrong call.  The kernel already installed the delivered capability as an MDB **child** of the sender's slot — ancestry that only means something for a copy — and then deleted the parent, so the tree and the operation contradicted each other.  Transfer is now a COPY, as in seL4: the sender keeps what it sent, the receiver's capability is a revocable derivation child of it, and a sender that means to give the capability away derives a copy, sends it, and deletes its own slot.  The staging commit/abort pair collapsed into one release, because there is nothing left for the two paths to disagree about | Closed |
 | ~~Own ABI (not seL4)~~ | **RETIRED — ledger A-32.**  It said: numbered syscalls, each taking CPtrs and checking rights itself, where seL4 has a handful and expresses every other operation as an INVOCATION on a capability carrying a method label.  It also said the conversion would rewrite every caller in the system to gain nothing this charter measures — and the second half was right about the cost and wrong about the gain.  What it undervalued is the difference between a property that HOLDS and a property the shape ENFORCES: "a syscall selects a method and never an object" was a rule the kernel obeyed and nothing checked, and it is now the only thing the ABI can express.  `SYS_INVOKE(cptr, label, …)` is the whole surface; three numbers survive, each because it invokes nothing, which is why seL4 keeps `seL4_Yield`.  Binary compatibility with seL4 was never sought and still is not — this is about form, not about linking.  Not one of the 37 invariants moved | Closed |
 | ~~The message is a struct, not message registers~~ | **RETIRED — ledger A-33.**  It said a message was `struct IrisMsg` — 80 bytes in user memory named by a pointer — where seL4's is a MessageInfo word plus message registers plus the IPC buffer, and it priced the conversion at 339 ring-3 sites and 130 kernel references "for nothing this charter measures beyond what D-4 already bought".  The price was right and the gain was not counted: there is no address on the message path at all now, so there is nothing to validate and nothing for a second thread to unmap between the check and the copy; a short message never touches memory at either end; and the shape of a message is a register map rather than a struct layout, which is why the assembly driver reads one the same way C does.  `buf_uptr` is deleted — a message carries a LENGTH, and the bytes are in the page the thread registered because there is nowhere else they could be | Closed |

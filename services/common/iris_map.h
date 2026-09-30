@@ -46,22 +46,50 @@ static inline long iris_map_frame(uint64_t frame_c, uint64_t vspace_c,
         if (r == 0) return 0;
         if (r != (long)IRIS_ERR_MISSING_TABLE) return r;
 
+        /*
+         * Why this reports the RETYPE's error and not `r`.
+         *
+         * It used to `return r` — `IRIS_ERR_MISSING_TABLE` — whenever the
+         * page table could not be carved, which says "a level of the walk is
+         * missing" to a caller whose actual problem was that the budget was
+         * spent or the Untyped was busy.  Three different failures arrived as
+         * one number, and the one it chose was the least informative of them:
+         * the caller then believed the walk was incomplete and had no reason
+         * to look at its own memory.
+         *
+         * A spawn that died this way reported `PROC_STEP_INTERP` with
+         * err -16, which reads as "the interpreter could not be found" and is
+         * not what happened at all.
+         */
         int installed = 0;
+        long why = r;
         for (uint64_t off = 0; off < (size ? size : 4096u);
              off += 0x200000ULL) {
-            (void)iris_invoke1(0, INV_CNODE_DELETE, (long)pt_slot);
-            if (iris_invoke((long)untyped_c, INV_UNTYPED_RETYPE,
-                            (long)((uint64_t)IRIS_KOBJ_PAGE_TABLE |
-                                   (1ULL << 32)),
-                            (long)((uint64_t)pt_slot << 32), 4096) != 0)
-                return r;
-            if (iris_invoke2((long)pt_slot, INV_PAGE_TABLE_MAP,
-                             (long)vspace_c, (long)(vaddr + off)) == 0) {
-                installed = 1;
-                break;
-            }
+            long rt, mp, del;
+            /*
+             * The slot is freed before it is reused, and the answer is READ.
+             *
+             * This discarded its result, which is the same mistake the
+             * paragraph above is about, one line lower: if the delete fails
+             * the slot stays occupied, the retype below then answers
+             * ALREADY_EXISTS, and the caller is told its page-table
+             * allocation failed for a reason that is not the reason.
+             * Deleting an empty slot is OK by contract, so a non-zero here is
+             * a real refusal and belongs to the caller.
+             */
+            del = iris_invoke1(0, INV_CNODE_DELETE, (long)pt_slot);
+            if (del != 0) return del;
+            rt = iris_invoke((long)untyped_c, INV_UNTYPED_RETYPE,
+                             (long)((uint64_t)IRIS_KOBJ_PAGE_TABLE |
+                                    (1ULL << 32)),
+                             (long)((uint64_t)pt_slot << 32), 4096);
+            if (rt != 0) return rt;         /* the budget, not the walk */
+            mp = iris_invoke2((long)pt_slot, INV_PAGE_TABLE_MAP,
+                              (long)vspace_c, (long)(vaddr + off));
+            if (mp == 0) { installed = 1; break; }
+            why = mp;                       /* the last real refusal */
         }
-        if (!installed) return r;
+        if (!installed) return why;
     }
     return (long)IRIS_ERR_MISSING_TABLE;
 }

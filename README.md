@@ -6,6 +6,16 @@ It runs real user-space services, enforces hardware and address-space isolation
 through an unforgeable capability system, and boots to an interactive shell
 entirely from ring-3 code after the first kernel handoff.
 
+**Is any of it verified? No.**  Neither kernel in this tree carries a proof,
+and the README will say so until one exists.  What does exist is the
+*boundary* a proof would need: `make IRIS_VERIFIED=1` builds **IRIS-V** —
+uniprocessor, x86-64, the IOMMU outside the trusted computing base — which is
+the artefact a refinement proof would be about, and `make smoke-verified`
+boots it.  Everything else is **IRIS-P**, the platform kernel, which has SMP
+and an IOMMU and is the better system in every way except that one.  Naming
+the target is not claiming it; see
+[the charter](docs/architecture/iris-sel4-purity-charter.md) §1.
+
 **Not "seL4-inspired".**  The authority model *is* seL4's: every typed object is
 born from an `Untyped` somebody named, CSpace is the only authority namespace, a
 CPtr is the only capability identifier, there is one derivation tree with
