@@ -3956,7 +3956,7 @@ denied; death of the intermediate holder; retype/revoke/reset stress with
 gauge verification and no-UAF; a guard that `legacy_handle_derivation_migrated`
 → 0.
 
-## Stage V — IRIS-V, the verified configuration  ◐ OPEN (1 of 6 phases)
+## Stage V — IRIS-V, the verified configuration  ◐ OPEN (2 of 6 phases, and part of a third)
 
 *Opened by amending charter §1, which had said formal verification was out of
 scope.  The amendment does not claim anything: it gives the obligation a
@@ -3991,7 +3991,7 @@ model.
 | **0 — the boundary** | `IRIS_VERIFIED_CONFIG`, `make IRIS_VERIFIED=1`, `make smoke-verified`, the charter amendment | ✅ **CLOSED.**  IRIS-V builds, boots uniprocessor with no IOMMU, and passes `SUITE PASS 325/325` |
 | **1 — the executable specification** | `spec/authority_model.py`, `spec/spec_driver.c`, `spec/differential.py`, `spec/shrink.py`, `make spec-differential` | ✅ **CLOSED.**  Random traces drive the model and the real `kcnode.c`/`cspace.c`/`kobject.c` and the states are compared exactly; every charter invariant is checked against the model after every trace |
 | **2 — the provable core** | D-7 retired (lifetime by CDT, not by counter), D-3 specified, D-12 closed, zero function pointers, every loop with its bound written, core ≤ 12k lines | ◐ **D-3's definitional half CLOSED** (`make spec-rights`, exhaustive).  The rest is blocked, and each blocker is measured below rather than estimated |
-| **3 — the abstract specification** | Isabelle/HOL; the 37 invariants as theorems | ◐ **WRITTEN, UNCHECKED.**  `spec/isabelle/IRIS_Authority.thy` states the CSpace half; no Isabelle exists on this machine, so not one lemma has been through a prover, and they end in `oops` rather than `sorry` so nothing can build on them as if they held |
+| **3 — the abstract specification** | Isabelle/HOL; the 37 invariants as theorems | ◐ **WRITTEN; PARTLY PROVED, BY SMT AND NOT BY ISABELLE.**  `spec/isabelle/IRIS_Authority.thy` states the CSpace half and still ends in `oops` — no Isabelle on this machine, so nothing builds on those as if they held.  `make spec-prove` restates the same model for z3 and discharges **18 of 18** reachable obligations over symbolic state: the rights algebra over all 2³² values, and A7/A8/well-formedness preserved by derive and by delete-with-reparent for every state and every legal operation.  Owed: A9's acyclicity and A10's transitive closure (inductions), and O2 (not modelled) |
 | **4 — the refinement** | `abstract ⊑ executable ⊑ C`, in the gate | — |
 | **5 — beyond functional correctness** | integrity, information flow, binary verification | — |
 
@@ -4161,14 +4161,52 @@ are their own piece of work.  IPC needs the rest of the syscall layer, and
 `spec_driver.c` ABORTS rather than answering plausibly if a CSpace operation
 ever reaches it — the gap is loud rather than silent.
 
-### Phase 3, written and not checked
+### Phase 3, written — and now partly proved, by a prover that is not Isabelle
 
 `spec/isabelle/IRIS_Authority.thy` states the state, the rights algebra, the
 four CSpace operations and their order of refusal, and the invariants A7, A8,
 A9, O2 and the D-7 liveness target as definitions — then the preservation
-theorems as obligations.  **Not one is proved**, and the README says so
-twice, because a directory of unchecked theory files next to a charter full
-of MET rows is exactly how "reviewed" and "proved" get blurred.
+theorems as obligations.  **Not one is proved in Isabelle**, and the README
+says so first, because a directory of unchecked theory files next to a charter
+full of MET rows is exactly how "reviewed" and "proved" get blurred.
+
+**`make spec-prove` discharges the reachable ones anyway.**  `spec/prove.py`
+restates the same model for an SMT solver — slots as arrays, rights as 32-bit
+words, the CDT as a parent map — and z3 proves, for EVERY state satisfying
+the invariants and EVERY legal operation on it:
+
+| | |
+|---|---|
+| the rights algebra, 9 properties | over all 2³² values, not the 7-bit space `spec-rights` enumerates |
+| A7 and A8 under derive | all three of `mdb_badge_derive`'s outcomes, not just the inheriting one |
+| A7 and A8 under delete-with-reparent | the step that creates edges between capabilities never directly related |
+| well-formedness under both | no occupied slot ever names an empty one as parent |
+| A10, one step | revoke clears a child and spares its root |
+
+**18 of 18, and the count is the least interesting part.**  "Over every state"
+is the inductive step of a refinement proof, and it is what neither the
+differential (evidence over traces) nor `spec-rights` (exhaustion over a
+finite space) can give.  What it does NOT give is the C: `spec-prove` proves
+the *model*, and the model's tie to `kcnode.c` is still the differential.
+seL4 has *model proved and C-refines-model proved*; IRIS now has *model
+proved and C-matches-model tested*.  That remaining gap is phases 4 and 5.
+
+Three things keep this honest, and one of them was needed immediately:
+
+- every theorem's premises are checked **satisfiable** first, because a
+  theorem over contradictory premises is `unsat` for the wrong reason and
+  prints identically to a real proof.  Such a row fails the lane as `VACUOUS`;
+- the lane asserts it can still **refute** two claims that are false about
+  IRIS's algebra;
+- and the delete theorem came back REFUTED on first run, naming `victim = -1`
+  — the encoding's own sentinel for "no parent", not a slot.  A hole in the
+  model's domain, not in the kernel.  Fixed, and the reason the table above
+  is per-obligation rather than a number.
+
+Still owed, and stated per lemma in the theory rather than left to a reader:
+**A9's acyclicity** and **A10's "reaches every descendant"** are inductions
+over the tree, which the decidable SMT fragment cannot express; **O2** is
+untyped region arithmetic the SMT model does not carry at all.
 
 It is worth having anyway because it is not a guess: the same model exists as
 `spec/authority_model.py`, which is driven through the real C over thousands
@@ -4209,5 +4247,10 @@ not have to take them again:
 ### The rule this stage adds to the project
 
 **Nothing in this tree is verified, and the README says so until one exists.**
+A machine-checked property of the MODEL does not change that sentence: the
+kernel is verified when the C is proved to refine the model, and until then
+`spec-prove`'s 18 rows are 18 facts about `spec/prove.py`'s encoding, tied to
+the C by testing.  Saying which of the two a green lane means is the habit
+this stage exists to build.
 Naming a target is not claiming it, and a stage that let the two blur would
 be making exactly the claim §1 spent a paragraph refusing to make.

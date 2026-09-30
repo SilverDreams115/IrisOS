@@ -234,15 +234,41 @@ section \<open>The theorems phase 4 owes\<close>
 
 text \<open>
   Each of these is the obligation that an operation PRESERVES an invariant.
-  None is proved.  They are written as `oops` rather than `sorry` on purpose:
-  `sorry` would let a later theory build on them as if they held.
+  None is proved IN ISABELLE.  They are written as `oops` rather than `sorry`
+  on purpose: `sorry` would let a later theory build on them as if they held.
+
+  Five of them now have a machine-checked discharge somewhere else.
+  `spec/prove.py` states the same obligations over the same state — slots as
+  arrays, rights as 32-bit words, the derivation tree as a parent map — and
+  an SMT solver discharges them for EVERY state satisfying the invariant and
+  every legal operation.  `make spec-prove` runs it.
+
+  That is a real result and it is not this result, so the `oops` stays:
+
+    * the SMT encoding is a SECOND formalisation, and if it disagrees with
+      this one it proves something about a neighbouring system.  Isabelle
+      proving THIS text is what removes that gap;
+    * it discharges one-step preservation, not the closure properties —
+      `revoke_removes_exactly_the_subtree` needs an induction over the tree
+      and the solver gets only its root-survives half;
+    * and nothing in it touches `retype_preserves_O2`, because the SMT model
+      does not carry the untyped region arithmetic.
+
+  So: A7 and A8 under derive and under delete-with-reparent are MACHINE
+  CHECKED over unbounded state; A9 and O2 and the recursive half of A10 are
+  still owed.  Marked per lemma below.
 \<close>
 
 lemma derive_preserves_A7:
+  \<comment> \<open>SMT-discharged over symbolic state: `make spec-prove`, row
+      "A7 derive preserves it".  All three of `mdb_badge_derive`'s outcomes
+      are in the encoding's precondition, not just the inheriting one.\<close>
   "inv_A7 C \<Longrightarrow> can_derive C src dst req bg = Ok \<Longrightarrow> inv_A7 (derive C src dst req bg)"
   oops
 
 lemma derive_preserves_A8:
+  \<comment> \<open>SMT-discharged over symbolic state: `make spec-prove`, row
+      "A8 derive preserves it".\<close>
   "inv_A8 C \<Longrightarrow> can_derive C src dst req bg = Ok \<Longrightarrow> inv_A8 (derive C src dst req bg)"
   oops
 
@@ -251,6 +277,11 @@ lemma delete_preserves_A9:
       capability loses its ancestry because an intermediate slot went.  That
       is the step where acyclicity is easiest to break.\<close>
   "inv_A9 C \<Longrightarrow> inv_A9 (delete C i)"
+  \<comment> \<open>NOT discharged.  `spec/prove.py` proves that reparenting preserves A7,
+      A8 and well-formedness, which is the part that made the new edges; it
+      does NOT prove acyclicity, because the SMT encoding has no reachability
+      relation and adding one makes the fragment undecidable.  This one wants
+      an induction, so it wants Isabelle.\<close>
   oops
 
 lemma revoke_removes_exactly_the_subtree:
@@ -259,10 +290,14 @@ lemma revoke_removes_exactly_the_subtree:
   "revoke C i = C' \<Longrightarrow>
      (\<forall>d. descendant C i d \<longrightarrow> \<not> occupied C' d) \<and>
      (occupied C i \<longrightarrow> occupied C' i)"
+  \<comment> \<open>HALF discharged: the solver proves the root survives and a child is
+      cleared.  "every descendant" is a transitive closure and is owed.\<close>
   oops
 
 lemma retype_preserves_O2:
   "inv_O2 C \<Longrightarrow> inv_O2 (retype C ut ty dst)"
+  \<comment> \<open>NOT discharged, and not modelled in SMT at all: O2 is about untyped
+      region arithmetic, which `spec/prove.py` does not carry.\<close>
   oops
 
 

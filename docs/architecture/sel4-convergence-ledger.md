@@ -4013,6 +4013,16 @@ are compared over **32896 points — every pair in the space**.  Seven bits is
 enough to enumerate, so this lane says *proved by exhaustion* where the rest
 of `spec/` says *agreed over N traces*.  `make spec-rights`.
 
+**And then over the whole word.**  `make spec-prove` states the same nine
+properties for an SMT solver over a symbolic 32-bit value and z3 discharges
+them — which is what `iris_rights_t` actually is, so a right added in bit 8
+tomorrow does not quietly leave the checked region the way it would leave a
+7-bit enumeration.  Exhaustion checks 32896 points; this checks all 2³² × 2³²
+at once.  The same lane proves A7 and A8 are PRESERVED by derive and by
+delete-with-reparent for every CSpace satisfying them, which is the first
+property in this tree that holds over unbounded state rather than over
+samples.
+
 **What it found**: the model had the set-theoretic answer for
 `check(have, RIGHT_NONE)` — true, because the empty set is a subset of
 everything — and the kernel returns FALSE.  That is deliberate and it is the

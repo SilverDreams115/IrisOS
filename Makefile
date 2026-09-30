@@ -427,7 +427,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_main.c
 TEST_UNIT_BIN   := $(BUILD_DIR)/test_unit
 
-.PHONY: spec-driver spec-differential spec-rights smoke-verified all dirs run run-headless clean help check check-abi check-purity smoke smoke-runtime smoke-runtime-selftests smoke-stage10 smoke-net-virtio smoke-persist smoke-screen config-sync test-unit
+.PHONY: spec-driver spec-differential spec-rights spec-prove smoke-verified all dirs run run-headless clean help check check-abi check-purity smoke smoke-runtime smoke-runtime-selftests smoke-stage10 smoke-net-virtio smoke-persist smoke-screen config-sync test-unit
 
 all: config-sync $(BOOT_APP) $(KERNEL_DST)
 
@@ -1403,7 +1403,7 @@ SPEC_DRIVER_SRCS := spec/spec_driver.c tests/kernel/stubs.c \
 $(SPEC_DRIVER_BIN): $(SPEC_DRIVER_SRCS) | dirs
 	gcc $(TEST_UNIT_CFLAGS) $(SPEC_DRIVER_SRCS) -o $@
 
-.PHONY: spec-driver spec-differential spec-rights
+.PHONY: spec-driver spec-differential spec-rights spec-prove
 spec-driver: $(SPEC_DRIVER_BIN)
 
 spec-differential: $(SPEC_DRIVER_BIN)
@@ -1420,6 +1420,24 @@ $(SPEC_RIGHTS_BIN): spec/rights_exhaustive.c | dirs
 
 spec-rights: $(SPEC_RIGHTS_BIN)
 	@python3 spec/rights_model.py
+
+# The obligations `spec/isabelle/IRIS_Authority.thy` STATES, discharged by an
+# SMT solver over symbolic state.  The three lanes above it are a ladder:
+#
+#   spec-differential  the model agrees with the C over N random traces
+#   spec-rights        the rights algebra, exhaustive over its 7-bit space
+#   spec-prove         the invariants, for EVERY state and every operation
+#
+# The last is the only one that is not a finite check, and it is the shape a
+# refinement proof's inductive step has.  It proves the MODEL; what ties the
+# model to the C is still the differential, and that distinction is written
+# out in spec/prove.py rather than left for a reader to assume either way.
+#
+# Without z3 it prints that it checked nothing and returns 0: a machine
+# missing a prover should report missing evidence, not a failure.
+.PHONY: spec-prove
+spec-prove:
+	@python3 spec/prove.py
 
 smoke-verified:
 	@echo "== IRIS-V: the verified configuration (uniprocessor, no IOMMU) =="
