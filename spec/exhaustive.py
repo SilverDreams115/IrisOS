@@ -104,6 +104,9 @@ ALPHABET = [
 
 CHUNK = 400          # traces per driver process
 
+# D-7 shadow-comparison coverage, accumulated across driver processes.
+SHADOW = {"checks": 0, "mismatch": 0}
+
 
 def run_kernel_batch(traces):
     """Every trace in one process, separated by `reset`."""
@@ -117,6 +120,14 @@ def run_kernel_batch(traces):
     if p.returncode != 0:
         raise RuntimeError("spec_driver exited %d: %s"
                            % (p.returncode, p.stderr[:400]))
+    # D-7's shadow comparison reports its COVERAGE on stderr.  `shadow 0` from
+    # a check that never executed is not evidence, so the count is read and
+    # accumulated rather than assumed to be non-zero.
+    for ln in p.stderr.splitlines():
+        if ln.startswith("shadow-checks "):
+            f = ln.split()
+            SHADOW["checks"] += int(f[1])
+            SHADOW["mismatch"] += int(f[3])
     out = []
     for seg in p.stdout.split("==\n"):
         if not seg.strip():
@@ -177,10 +188,23 @@ def main():
     if bad:
         print("\nexhaustive: %d disagreement(s) over %d traces" % (bad, checked))
         return 1
+    if SHADOW["checks"] == 0:
+        print("exhaustive: the D-7 shadow comparison never RAN — `shadow 0` "
+              "in the dumps means nothing and this lane is not evidence for "
+              "retiring the reference count")
+        return 1
+    if SHADOW["mismatch"]:
+        print("exhaustive: the MDB predicate and the reference count "
+              "disagreed %d time(s) in %d comparisons"
+              % (SHADOW["mismatch"], SHADOW["checks"]))
+        return 1
+
     print("exhaustive: %d traces, EVERY sequence of %d operations over the "
           "alphabet; the model and the real kcnode.c agree on every "
           "intermediate result code and on every final state, and every "
-          "charter invariant held throughout" % (checked, depth))
+          "charter invariant held throughout; D-7's predicate agreed with the "
+          "reference count on all %d finality decisions"
+          % (checked, depth, SHADOW["checks"]))
     return 0
 
 

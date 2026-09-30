@@ -1125,8 +1125,24 @@ CDT, not merely duplicating it.**  Promotion keeps the siblings linked now, and
 of ISOLATED roots, where seL4's is connected — went with it, replaced by a
 STRONGER one: sibling bidirectionality is checked for every node including
 roots, where it had been checked only for nodes with a parent, plus a new check
-that a sibling list never mixes roots with non-roots.  The predicate agrees
-with ground truth on 4084101 traces at depth 5.
+that a sibling list never mixes roots with non-roots.  A SECOND disconnection survived that repair and the
+differential found it six operations later: a root that is itself in a sibling
+list, deleted, left its child promoted into a list of its own while the root's
+siblings carried on in theirs — `seed 39 1 ; mint 39 35 7 42 ; mint 39 20 7 0 ;
+mint 20 59 5 7 ; seed 39 2 ; delete 20`, model `final 1`, kernel `final 3`.
+Promotion now splices the children into the deleted root's PLACE among its
+siblings, which is what the non-root branch had always done one level up.
+Fixing the case that was tested first is not fixing the case.
+
+**The predicate is now checked at the DECISION, not only in totals.** Every
+slot delete in a host or spec build compares `kcnode_slot_is_final_cap` against
+`active_refs == 1` — the two mechanisms answering the same question at the
+moment it is asked — and `spec-exhaustive` fails if they ever differ OR if the
+comparison never ran, because `shadow 0` from a check that did not execute is
+not evidence. **199177 finality decisions at depth 4, 0 disagreements**, and
+the predicate agrees with ground truth on 4084101 traces at depth 5. What
+remains of D-7 is to believe the predicate at those sites and delete the two
+counters.
 
 Four tests, and they were written in the order that made each one answerable.
 

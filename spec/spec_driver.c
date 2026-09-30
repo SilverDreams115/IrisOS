@@ -286,6 +286,11 @@ static void dump(void) {
      * which is the same number if the predicate is right.
      */
     printf("final %u\n", kcnode_count_final_caps(g_cn, NCNODES));
+    /*
+     * D-7's shadow: every slot delete compared the predicate against the
+     * count.  The model prints 0, because the two agreeing is the claim.
+     */
+    printf("shadow %u\n", kcnode_final_shadow_mismatch());
 }
 
 int main(void) {
@@ -484,5 +489,13 @@ int main(void) {
 
     printf("--\n");
     dump();
+    /*
+     * To stderr, so it is not part of the compared dump: how many times the
+     * shadow comparison actually RAN.  `shadow 0` from a check that never
+     * executed is not evidence, and the number is the difference between the
+     * two readings.
+     */
+    fprintf(stderr, "shadow-checks %u mismatches %u\n",
+            kcnode_final_shadow_checks(), kcnode_final_shadow_mismatch());
     return 0;
 }

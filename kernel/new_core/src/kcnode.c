@@ -114,6 +114,19 @@ void kcnode_mdb_stats(uint32_t *nodes_live, uint32_t *nodes_hwm,
 /* Static zero-init is a valid unlocked state (atomic_flag clear). */
 static irq_spinlock_t mdb_lock;
 
+#ifdef IRIS_HOST_TEST
+/* D-7's shadow comparison — see kcnode_slot_delete_locked. */
+static _Atomic uint32_t mdb_final_shadow_mismatch;
+static _Atomic uint32_t mdb_final_shadow_checks;
+
+uint32_t kcnode_final_shadow_mismatch(void) {
+    return atomic_load_explicit(&mdb_final_shadow_mismatch, memory_order_relaxed);
+}
+uint32_t kcnode_final_shadow_checks(void) {
+    return atomic_load_explicit(&mdb_final_shadow_checks, memory_order_relaxed);
+}
+#endif
+
 static void mdb_note_max(_Atomic uint32_t *hwm, uint32_t v) {
     uint32_t cur = atomic_load_explicit(hwm, memory_order_relaxed);
     /*
@@ -262,11 +275,45 @@ static void mdb_detach_reparent(struct KCSlot *s) {
              * BOUND: the child list of one slot — occupied slots, `mdb_lock`
              * held, and the list is not modified while it walks.
              */
+            struct KCSlot *last = 0;
+            /*
+             * BOUND: the child list of one slot — occupied slots, `mdb_lock`
+             * held, and the list is not modified while it walks.  (Repeated
+             * here because `last` sits between the loop and the paragraph
+             * above, and `check-loops` reads the comment block ATTACHED to
+             * the loop — correctly: a note a declaration away from its loop
+             * is a note about whatever used to be there.)
+             */
             for (struct KCSlot *c = child; c; c = c->mdb_next_sib) {
                 c->mdb_parent = 0;
+                last = c;
                 atomic_fetch_add_explicit(&mdb_orphan_promotions, 1u, memory_order_relaxed);
                 atomic_fetch_sub_explicit(&cdt_derived_live, 1u, memory_order_relaxed);
             }
+            /*
+             * And they take `s`'s PLACE among its own siblings, which is
+             * exactly what the parent branch above does one level up.
+             *
+             * Keeping the promoted children linked to each other was half the
+             * repair and the differential found the other half six operations
+             * later: a root that is ITSELF in a sibling list, deleted, left
+             * its child promoted into a list of its own while the root's
+             * siblings carried on in theirs — two groups naming one object,
+             * mutually invisible again.  Splicing in place is what makes
+             * promotion preserve connectivity in general rather than in the
+             * case that was tested first.
+             *
+             * `mdb_unlink_from_parent(s)` runs below and must not undo this,
+             * so `s` leaves the list here and its own links are cleared.
+             */
+            struct KCSlot *psib = s->mdb_prev_sib;
+            struct KCSlot *nsib = s->mdb_next_sib;
+            child->mdb_prev_sib = psib;
+            if (psib) psib->mdb_next_sib = child;
+            last->mdb_next_sib = nsib;
+            if (nsib) nsib->mdb_prev_sib = last;
+            s->mdb_prev_sib = 0;
+            s->mdb_next_sib = 0;
         }
         s->mdb_first_child = 0;
     }
@@ -1004,6 +1051,34 @@ static iris_error_t kcnode_slot_delete_locked(struct KCNode *cn,
 
     struct KCSlot *s = &cn->slots[slot_idx];
     if (s->object) {
+#ifdef IRIS_HOST_TEST
+        /*
+         * D-7 in SHADOW: does the predicate make the same decision the count
+         * is about to make?
+         *
+         * This is the moment the two mechanisms answer the same question.
+         * `active_refs` reaching 1 means this release ends the object;
+         * `kcnode_slot_is_final_cap` says the same thing by reading the tree.
+         * Retiring D-7 means deleting the counter and believing the
+         * predicate, and the evidence for that is the two agreeing here on
+         * every trace rather than agreeing about totals at the end of one.
+         *
+         * Host and spec builds only: the predicate walks a sibling list, and
+         * the kernel is not paying for a measurement on every slot delete.
+         * A self-naming slot takes no active reference (Stage 7-proc), so it
+         * is excluded rather than counted as a disagreement it is not.
+         */
+        if (s->object != &cn->base) {
+            int fin = kcnode_slot_is_final_cap(s);
+            uint32_t ar = atomic_load_explicit(&s->object->active_refs,
+                                               memory_order_relaxed);
+            if (fin != (int)(ar == 1u))
+                atomic_fetch_add_explicit(&mdb_final_shadow_mismatch, 1u,
+                                          memory_order_relaxed);
+            atomic_fetch_add_explicit(&mdb_final_shadow_checks, 1u,
+                                      memory_order_relaxed);
+        }
+#endif
         uint64_t cf = irq_spinlock_lock(&cn->lock);
         *out_old  = s->object;
         s->object = 0;

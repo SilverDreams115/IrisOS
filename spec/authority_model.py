@@ -577,6 +577,11 @@ class AuthorityModel:
         cnt = Counter(self.slots[i].obj for i in self.slots
                       if not self.slots[i].empty)
         out.append("final %d" % sum(1 for o in cnt if cnt[o] == 1))
+        # D-7's shadow comparison, made at every slot delete in the kernel:
+        # the MDB predicate and the reference count decided the same thing.
+        # The model asserts zero disagreements, which is what retiring the
+        # count requires and what the kernel has to demonstrate.
+        out.append("shadow 0")
         return "\n".join(out)
 
 

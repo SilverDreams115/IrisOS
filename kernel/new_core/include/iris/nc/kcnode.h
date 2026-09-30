@@ -338,4 +338,12 @@ int kcnode_slot_is_final_cap(const struct KCSlot *s);
  * `mdb_lock` itself.  For the differential. */
 uint32_t kcnode_count_final_caps(struct KCNode *const *cns, uint32_t ncn);
 
+#ifdef IRIS_HOST_TEST
+/* D-7's shadow comparison: how many slot deletes had the predicate and the
+ * reference count disagree about whether this was the last capability, and
+ * how many were compared.  Zero mismatches is what retiring the count needs. */
+uint32_t kcnode_final_shadow_mismatch(void);
+uint32_t kcnode_final_shadow_checks(void);
+#endif
+
 #endif /* IRIS_NC_KCNODE_H */
