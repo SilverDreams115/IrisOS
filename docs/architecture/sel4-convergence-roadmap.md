@@ -4273,7 +4273,19 @@ not have to take them again:
   Removing them also closes the gap `scripts/check_lock_order.py` §9.1 admits
   to: it cannot follow `ops->destroy`, so the lock hierarchy is unchecked
   exactly where a destructor runs.
-- **D-7 is the large one and it is a charter amendment**, not a refactor.
+- **D-7's blocker is now ONE named design change.**  `active_refs` has 20
+  acquisition sites: 8 are transient resolver borrows that are not ownership,
+  1 is the slot reference the MDB predicate replaces, 1 is a test fixture, and
+  **9 are five TCB relationships** — CSpace root, VSpace, fault-handler
+  endpoint, bound notification, IPC buffer frame.  seL4 holds all five as
+  CAPABILITIES in the TCB's own slots (`tcbCTable`, `tcbVTable`,
+  `tcbFaultHandler`, `tcbBoundNotification`, `tcbIPCBufferFrame`), which is
+  why it needs no counter: every reference is a capability the MDB can see.
+  Giving the TCB capability slots is the work, and `kcnode_slot_is_final_cap`
+  plus the shadow comparison are already in place to validate it.
+
+- **D-7 was also a charter amendment**, which is done (charter §5 withdrew the
+  permanence claim).  The rest is a refactor.
   Charter §5 recorded reference-counted lifetime as "deliberate, permanent"
   and has WITHDRAWN that claim, because this document required the opposite
   and two normative documents cannot both be obeyed,

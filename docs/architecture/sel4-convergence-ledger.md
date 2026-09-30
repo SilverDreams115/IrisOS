@@ -1140,9 +1140,37 @@ slot delete in a host or spec build compares `kcnode_slot_is_final_cap` against
 moment it is asked — and `spec-exhaustive` fails if they ever differ OR if the
 comparison never ran, because `shadow 0` from a check that did not execute is
 not evidence. **199177 finality decisions at depth 4, 0 disagreements**, and
-the predicate agrees with ground truth on 4084101 traces at depth 5. What
-remains of D-7 is to believe the predicate at those sites and delete the two
-counters.
+the predicate agrees with ground truth on 4084101 traces at depth 5. **What remains is enumerated, not estimated.**  `active_refs` has 20
+acquisition sites and they are not one thing:
+
+* **8 are transient resolver borrows** — `cspace.c` (3), `kcnode.c` fetch (2),
+  and the three syscall files that match the `cspace_resolve_cap` contract.
+  They keep a resolved object alive for the duration of one call and are
+  released by the caller.  seL4 needs none of them because an operation does
+  not block; they are not ownership and they do not block D-7.  They only have
+  to stop being counted as "a capability names it".
+* **1 is the slot reference itself** — `kcnode.c:727`, taken by the mint.
+  That is the one `kcnode_slot_is_final_cap` replaces, and the one the shadow
+  comparison has now checked 199177 times.
+* **1 is a test fixture** (`boot_selftest.c`).
+* **9 are the obstacle, and they are FIVE relationships**: a thread's CSpace
+  root and VSpace (`task_lifecycle.c`, 2 sites each), its fault-handler
+  endpoint (`syscall_tcb.c`, 2 sites), its bound notification, and its IPC
+  buffer frame.
+
+Those five are the whole of it.  **IRIS stores them as raw pointers with a
+reference count; seL4 stores them as CAPABILITIES, in the TCB's own capability
+slots** — `tcbCTable`, `tcbVTable`, `tcbFaultHandler`, `tcbBoundNotification`,
+`tcbIPCBufferFrame`.  That is why seL4 needs no counter: there is no reference
+to an object that is not a capability in a slot, so the MDB sees all of them
+and `isFinalCapability` is complete.  While IRIS keeps five references the MDB
+cannot see, the predicate is sound only for objects that have no such
+relationship — which is exactly the scope the shadow comparison covers, and
+the reason its 199177 agreements are evidence about CSpace operations and not
+about the kernel as a whole.
+
+So D-7's remaining work is one named design change — give the TCB capability
+slots — and the ledger says so instead of saying "months".
 
 Four tests, and they were written in the order that made each one answerable.
 
