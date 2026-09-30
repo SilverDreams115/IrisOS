@@ -48,6 +48,7 @@ R_ALL = R_READ | R_WRITE | R_DUPLICATE | R_TRANSFER | R_WAIT | R_ROUTE | R_MANAG
 
 # ── object types, matching kobject_type_t ───────────────────────────────────
 T_ENDPOINT, T_NOTIFICATION, T_CNODE, T_UNTYPED = "ep", "notif", "cnode", "ut"
+T_REPLY, T_SC = "reply", "sc"
 
 OK = 0
 ERR_INVALID_ARG = -1
@@ -55,6 +56,7 @@ ERR_NOT_FOUND = -3
 ERR_ACCESS_DENIED = -5
 ERR_ALREADY_EXISTS = -7
 ERR_BUSY = -8
+ERR_WRONG_TYPE = -9
 
 
 @dataclass
@@ -141,20 +143,75 @@ class AuthorityModel:
             self.objs[oid].alive = False
 
     # ── the operations ─────────────────────────────────────────────────────
+    # The rights a retyped capability is BORN with, per type.  They are not
+    # R_ALL and they are not uniform: a notification carries WAIT and an
+    # endpoint does not, because waiting is what a notification is for.
+    # `syscall_untyped.c` is the source; a model that guessed "everything"
+    # would agree with the kernel on shape and disagree on the one field an
+    # authority model exists to describe.
+    BIRTH_RIGHTS = {
+        T_ENDPOINT:     R_READ | R_WRITE | R_DUPLICATE | R_TRANSFER,
+        T_NOTIFICATION: R_READ | R_WRITE | R_WAIT | R_DUPLICATE | R_TRANSFER,
+        "reply":        R_READ | R_WRITE | R_TRANSFER | R_DUPLICATE,
+        "sc":           R_READ | R_WRITE | R_DUPLICATE | R_TRANSFER,
+    }
+
+    def install_untyped(self, sid: int) -> int:
+        """An Untyped installed as a root — the driver's `ut`, `kcnode_mint`."""
+        return self.seed(sid, T_UNTYPED,
+                         R_READ | R_WRITE | R_DUPLICATE | R_TRANSFER)
+
     def retype(self, ut_sid: int, type_: str, dst_sid: int) -> int:
-        """Create an object from an Untyped; the new slot is its MDB child."""
+        """
+        Create an object from an Untyped; the new slot is its MDB child.
+
+        O1 and O2 of the charter in one operation: every canonical object is
+        born from an Untyped somebody named, and its storage belongs to that
+        Untyped — which is why the capability is installed as a CHILD of the
+        Untyped's slot and not as a root.  Resetting the Untyped while the
+        child lives is then refusable by looking at the tree (O6).
+        """
         ut = self.slots.get(ut_sid)
-        if ut is None or ut.empty:
-            return ERR_NOT_FOUND
-        if self.objs[ut.obj].type != T_UNTYPED:
-            return ERR_INVALID_ARG
         dst = self.slots.get(dst_sid)
-        if dst is None:
+        if ut is None or dst is None:
+            return ERR_INVALID_ARG
+        # CPtr 0 is `IRIS_CPTR_NULL` — the null capability names nothing, so
+        # invoking it is a malformed request rather than a lookup that failed.
+        # The same number means "no capability" at both ends of a retype: as
+        # a source it is INVALID_ARG here, and as a destination it is
+        # INVALID_ARG below, for the two different reasons.
+        if ut_sid == 0:
+            return ERR_INVALID_ARG
+        # The Untyped is resolved FIRST — `syscall_untyped.c` validates the
+        # capability it was invoked on before it looks at where the result is
+        # meant to go, so a retype from a slot that no longer holds an Untyped
+        # is NOT_FOUND even when the destination is also wrong.
+        if ut.empty:
+            return ERR_NOT_FOUND
+        # TYPE before RIGHTS, which is the opposite of what this model first
+        # assumed.  The tree calls it "the type-before-rights fix": a resolver
+        # that has identified the capability exactly should say WRONG_TYPE
+        # rather than flatten it into something vaguer, and it says so before
+        # it considers whether the holder had the right.
+        if self.objs[ut.obj].type != T_UNTYPED:
+            return ERR_WRONG_TYPE
+        # Carving from an Untyped MUTATES it — the bump cursor moves and the
+        # child count rises — so it takes WRITE, not READ.
+        if not (ut.rights & R_WRITE):
+            return ERR_ACCESS_DENIED
+        # THEN the destination.  Slot 0 is `IRIS_CPTR_NULL` when addressing
+        # the root, so a capability published there could never be invoked —
+        # the kernel refuses it "so every published cap is actually
+        # invocable", and until the Stage V work encoded that rule it held in
+        # two of the four ways a capability can be published.
+        if dst_sid == 0:
             return ERR_INVALID_ARG
         if not dst.empty:
             return ERR_ALREADY_EXISTS
         oid = self._new_obj(type_)
-        dst.obj, dst.rights, dst.badge = oid, R_ALL, 0
+        dst.obj = oid
+        dst.rights = self.BIRTH_RIGHTS.get(type_, R_ALL)
+        dst.badge = 0
         dst.parent = ut_sid
         ut.children.append(dst_sid)
         return OK
@@ -356,13 +413,29 @@ class AuthorityModel:
 # they are executable, so a random trace can look for a counterexample.
 
 def chk_rights_monotone(m: AuthorityModel):
-    """A7 — a child's rights are a subset of its parent's."""
+    """
+    A7 — a DERIVED capability's rights are a subset of its parent's.
+
+    "Derived" is the load-bearing word, and the charter has it: the row says
+    *"rights are only kept or reduced; MINT never amplifies"*.  A retyped
+    object's rights are BORN — `syscall_untyped.c` assigns them by type, and a
+    notification is given WAIT by an Untyped that has none.  So an edge whose
+    parent is an Untyped is a creation, not a derivation, and this invariant
+    has nothing to say about it.
+
+    The first version of this checker did not make the distinction and
+    reported the model violating A7 the moment `retype` entered the trace
+    language — a checker too strong is as wrong as one too weak, and it is
+    wrong in the direction that wastes the most time.
+    """
     for sid, s in m.slots.items():
         if s.empty or s.parent is None:
             continue
         p = m.slots[s.parent]
         if p.empty:
             return "slot %d has a parent %d that is empty" % (sid, s.parent)
+        if m.objs[p.obj].type == T_UNTYPED and s.obj != p.obj:
+            continue                       # a creation, not a derivation
         if s.rights & ~p.rights:
             return "slot %d amplified rights over its parent %d" % (sid, s.parent)
     return None
@@ -376,6 +449,8 @@ def chk_badge_sealed(m: AuthorityModel):
         p = m.slots[s.parent]
         if p.empty:
             continue
+        if m.objs[p.obj].type == T_UNTYPED and s.obj != p.obj:
+            continue                       # a creation carries no badge down
         if p.badge != 0 and s.badge != p.badge:
             return "slot %d re-badged a badged parent %d" % (sid, s.parent)
     return None

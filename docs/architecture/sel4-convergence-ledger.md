@@ -3953,3 +3953,42 @@ rebuilding has cost real time — the tree already knew that
 `ENABLE_RUNTIME_SELFTESTS=1` silently drops the boot selftest if a plain
 `make` runs in between.  The difference is that this one is now impossible
 rather than documented.
+
+### Slot 0 was refused by two of the four ways to publish a capability
+
+Found by Stage V phase 1 when `retype` entered the trace language: encoding
+a rule forces the question of where it applies.
+
+`SYS_CSPACE_MINT` and `SYS_UNTYPED_RETYPE2` refuse `dest_slot == 0`, and
+`syscall_untyped.c` says why — *"Slot 0 is `IRIS_CPTR_NULL` when addressing
+the root: refuse it so every published cap is actually invocable."*
+`SYS_CSPACE_MOVE` and `SYS_CSPACE_ROTATE` did not.
+
+A capability moved or rotated into slot 0 of a root CSpace can never be
+invoked, because CPtr 0 is the null capability — and it holds a reference
+that keeps its object alive for as long as it sits there.  Not a hole in
+authority: nothing is granted that should not be.  A hole in the invariant
+the kernel states about itself, which is that a published capability is one
+somebody can use.
+
+Both paths now refuse it, with the reason written where the check is.
+
+**The pattern, for the fourth time in this tree**: a rule that lives in some
+of its call sites and not the others.  `sys_sc_bind` checked `configured`
+and `sys_thread_set_sc` did not.  `proc_load_interp` cleared three of four
+scratch slots.  `mdb_badge_derive` has three parts and the charter recorded
+one.  And now this.  The audit method that keeps working is: **when you find
+a rule, grep for every place it should hold, not just the place it failed.**
+
+### And five rules the specification did not have, which were the model's fault
+
+All found by the differential once `retype` could be driven, all pinned now:
+retype takes WRITE on the Untyped (carving mutates it); type is reported
+before rights (the *type-before-rights* discipline); CPtr 0 as a SOURCE is
+INVALID_ARG where as a DESTINATION it is INVALID_ARG for a different reason;
+birth rights are per type and not uniform (a notification is born with WAIT,
+an endpoint is not); and **A7 is about derivation, not creation** — the
+charter says "mint never amplifies" and means it, so the edge from an Untyped
+to the object carved out of it is outside the invariant.  The first checker
+did not make that distinction and flagged the model the moment retype
+existed.  A checker too strong is as wrong as one too weak.

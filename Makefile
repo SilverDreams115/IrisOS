@@ -1396,7 +1396,8 @@ SPEC_DRIVER_SRCS := spec/spec_driver.c tests/kernel/stubs.c \
     kernel/new_core/src/kbootcap.c kernel/new_core/src/kioport.c \
     kernel/new_core/src/kirqcap.c kernel/new_core/src/ktcb.c \
     kernel/new_core/src/kfault.c kernel/new_core/src/kiospace.c \
-    kernel/new_core/src/kiopagetable.c kernel/new_core/src/root_bootinfo.c
+    kernel/new_core/src/kiopagetable.c kernel/new_core/src/root_bootinfo.c \
+    kernel/core/syscall/syscall_untyped.c kernel/core/syscall/syscall_cspace.c
 
 $(SPEC_DRIVER_BIN): $(SPEC_DRIVER_SRCS) | dirs
 	gcc $(TEST_UNIT_CFLAGS) $(SPEC_DRIVER_SRCS) -o $@

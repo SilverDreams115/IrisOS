@@ -46,6 +46,8 @@
 #include <iris/nc/kobject.h>
 #include <iris/nc/rights.h>
 #include <iris/kpage.h>
+#include <iris/nc/kuntyped.h>
+#include <iris/nc/rights.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -85,16 +87,60 @@ int kendpoint_fault_call(struct task *t, struct KEndpoint *ep,
 
 void irq_routing_unregister_notification(struct KNotification *n) { (void)n; }
 
+/*
+ * The syscall layer's own counters and its restart hook — dispatch, not
+ * authority, and so outside what the model describes.  `retype` reaches none
+ * of them: it neither parks a thread nor counts a numbered call.
+ */
+uint32_t ipc_buffers_registered(void);
+uint32_t ipc_buffers_registered(void) { return 0u; }
+uint32_t syscall_abandon_count(void);
+uint32_t syscall_abandon_count(void) { return 0u; }
+uint32_t syscall_numbered_call_count(void);
+uint32_t syscall_numbered_call_count(void) { return 0u; }
+void syscall_request_restart(struct task *t);
+void syscall_request_restart(struct task *t) {
+    (void)t;
+    fprintf(stderr, "spec_driver: blocking is outside the model's boundary\n");
+    abort();
+}
+
 uint32_t syscall_restart_count(void) { return 0u; }
 
+/*
+ * ── The Untyped, and why `retype` goes through the SYSCALL ─────────────────
+ *
+ * Every other operation in this driver calls a `kcnode_*` primitive, which
+ * is fine because those primitives ARE the authority model.  Retype is not:
+ * `sys_untyped_retype2` validates the type, computes the payload, carves the
+ * block, initialises the object and installs the capability as an MDB child
+ * of the Untyped's slot — and reimplementing that here would mean comparing
+ * the model against a second copy of the kernel's intent rather than against
+ * the kernel.  So the driver builds what the syscall needs: a task with a
+ * CSpace root, and an Untyped with real backing memory installed in a slot.
+ *
+ * The cost is an addressing restriction, stated rather than worked around:
+ * the syscall takes CPtrs, and this CSpace is one level deep, so `retype`
+ * can only name slots in CNode 0 — ids 0..15.  The trace generator knows it.
+ * Two-level addressing would mean guards and depth, which is its own phase.
+ */
+#define UT_BYTES (1u << 20)
+
 static struct KCNode *g_cn[NCNODES];
+static struct task   *g_task;
+
+void test_set_current_task(struct task *t);   /* tests/kernel/stubs.c */
+uint64_t sys_untyped_retype2(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3);
 
 /* A seeded object needs SOME type; the trace picks one and nothing here
  * depends on which, because the authority model does not. */
 static const kobject_type_t g_types[] = {
-    KOBJ_ENDPOINT, KOBJ_NOTIFICATION, KOBJ_CNODE, KOBJ_UNTYPED
+    KOBJ_ENDPOINT, KOBJ_NOTIFICATION, KOBJ_CNODE, KOBJ_UNTYPED,
+    KOBJ_REPLY, KOBJ_SCHED_CONTEXT
 };
-static const char *const g_type_names[] = { "ep", "notif", "cnode", "ut" };
+static const char *const g_type_names[] = {
+    "ep", "notif", "cnode", "ut", "reply", "sc"
+};
 
 static void obj_destroy(struct KObject *o) { (void)o; }
 static const struct KObjectOps g_ops = { .close = NULL, .destroy = obj_destroy };
@@ -175,6 +221,13 @@ int main(void) {
         kobject_active_retain(&g_cn[i]->base);
     }
 
+    /* A caller, so the syscall layer has a CSpace to resolve CPtrs in. */
+    g_task = (struct task *)kpage_alloc((uint32_t)sizeof(struct task));
+    if (!g_task) { fprintf(stderr, "spec_driver: no task\n"); return 2; }
+    memset(g_task, 0, sizeof(*g_task));
+    g_task->cspace_root = g_cn[0];
+    test_set_current_task(g_task);
+
     while (fgets(line, sizeof line, stdin)) {
         char op[16];
         unsigned a, b, c, d;
@@ -194,7 +247,26 @@ int main(void) {
         if (!strcmp(op, "seed") && sscanf(line, "%*s %u %u", &a, &b) == 2) {
             struct KObject *o;
             if (a >= NSLOTS) continue;
-            o = obj_new(g_types[b % 4u]);
+            /*
+             * There is no such thing as a fake Untyped here.
+             *
+             * `seed` used to fabricate a bare KObject carrying the UNTYPED
+             * tag and no region, which the model — reasonably — treated as an
+             * Untyped that works.  A retype from it answered NO_MEMORY, and
+             * the disagreement was the driver's, not either side's.  An
+             * object whose type is a lie is worse than an object that is
+             * missing.
+             */
+            if ((b % 4u) == 3u) {
+                void *mem = kpage_alloc(UT_BYTES);
+                struct KUntyped *u;
+                if (!mem) return 2;
+                u = kuntyped_create((uint64_t)(uintptr_t)mem, UT_BYTES, 0);
+                if (!u) return 2;
+                o = &u->base;
+            } else {
+                o = obj_new(g_types[b % 4u]);
+            }
             if (!o) return 2;
             printf("r %d\n", (int)kcnode_mint(cn_of(a), idx_of(a), o,
                                               RIGHT_READ | RIGHT_WRITE |
@@ -210,6 +282,29 @@ int main(void) {
                    sscanf(line, "%*s %u", &a) == 1) {
             if (a >= NSLOTS) continue;
             printf("r %d\n", (int)kcnode_slot_delete(cn_of(a), idx_of(a)));
+        } else if (!strcmp(op, "ut") && sscanf(line, "%*s %u", &a) == 1) {
+            /* Install an Untyped with real backing memory, so a retype from
+             * it carves something that exists. */
+            void *mem = kpage_alloc(UT_BYTES);
+            struct KUntyped *u;
+            if (a >= SPC) continue;                 /* root CNode only */
+            if (!mem) return 2;
+            u = kuntyped_create((uint64_t)(uintptr_t)mem, UT_BYTES, 0);
+            if (!u) return 2;
+            printf("r %d\n", (int)kcnode_mint(g_cn[0], a, &u->base,
+                                              RIGHT_READ | RIGHT_WRITE |
+                                              RIGHT_DUPLICATE | RIGHT_TRANSFER));
+        } else if (!strcmp(op, "retype") &&
+                   sscanf(line, "%*s %u %u %u", &a, &b, &c) == 3) {
+            static const uint32_t ty[] = {
+                KOBJ_ENDPOINT, KOBJ_NOTIFICATION, KOBJ_REPLY, KOBJ_SCHED_CONTEXT
+            };
+            if (a >= SPC || c >= SPC) continue;     /* root CNode only */
+            printf("r %d\n", (int)(long)(int64_t)sys_untyped_retype2(
+                       (uint64_t)a,
+                       (uint64_t)ty[b % 4u] | (1ULL << 32),
+                       (uint64_t)0u | ((uint64_t)c << 32),
+                       0));
         } else if (!strcmp(op, "revoke") &&
                    sscanf(line, "%*s %u", &a) == 1) {
             uint32_t n = 0;

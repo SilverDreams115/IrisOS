@@ -55,10 +55,25 @@ def gen_trace(rng, nops):
     what puts depth in the derivation tree — and depth is where revoke and
     reparenting are decided.
     """
-    ops, occupied = [], []
+    ops, occupied, uts = [], [], []
     for _ in range(nops):
         r = rng.random()
-        if r < 0.20 or not occupied:
+        # `ut` and `retype` only reach CNode 0 (ids 0..15): the syscall takes
+        # CPtrs and this CSpace is one level deep.  Stated in spec_driver.c.
+        if r < 0.10:
+            s = rng.randrange(SPC)
+            ops.append("ut %d" % s)
+            if s not in occupied:
+                occupied.append(s)
+            if s not in uts:
+                uts.append(s)
+        elif r < 0.25 and uts:
+            u = rng.choice(uts)
+            d = rng.randrange(SPC)
+            ops.append("retype %d %d %d" % (u, rng.randrange(4), d))
+            if d not in occupied:
+                occupied.append(d)
+        elif r < 0.35 or not occupied:
             s = rng.randrange(NSLOTS)
             ops.append("seed %d %d" % (s, rng.randrange(4)))
             if s not in occupied:
@@ -83,7 +98,13 @@ def run_model(ops):
     results = []
     for line in ops:
         f = line.split()
-        if f[0] == "seed":
+        if f[0] == "ut":
+            results.append(m.install_untyped(int(f[1])))
+        elif f[0] == "retype":
+            results.append(m.retype(
+                int(f[1]), ["ep", "notif", "reply", "sc"][int(f[2]) % 4],
+                int(f[3])))
+        elif f[0] == "seed":
             results.append(m.seed(
                 int(f[1]), ["ep", "notif", "cnode", "ut"][int(f[2]) % 4],
                 R_READ | R_WRITE | R_DUPLICATE | R_TRANSFER))

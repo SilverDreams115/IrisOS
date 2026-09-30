@@ -4052,14 +4052,63 @@ derivation is refused.**
 **4500 traces across two seed spaces**, states and return codes agreeing
 exactly.
 
-### What phase 1 does NOT cover yet
+### Then `retype` was added, and it found a real defect in the kernel
 
-`retype` from an Untyped, and IPC.  The trace language has `seed`, `mint`,
-`delete` and `revoke`, which reach A7, A8, A9, A10 and object liveness —
-the authority claim.  Untyped needs backing storage and a second lifecycle;
-IPC needs the syscall layer, and `spec_driver.c` aborts rather than answering
-plausibly if a CSpace operation ever reaches it.  Both are extensions of the
-trace language and change nothing in the comparison machinery.
+`retype` goes through `sys_untyped_retype2` — the SYSCALL, not a
+reimplementation — because the syscall is where the type is validated, the
+payload computed, the block carved and the capability installed as an MDB
+child of the Untyped's slot.  That reaches **O1** (every object born from an
+Untyped), **O2** (its storage belongs to that Untyped) and the ancestry that
+makes **O6** decidable.  The driver builds what the syscall needs: a task
+with a CSpace root and an Untyped with real backing memory.
+
+**The defect.**  `SYS_CSPACE_MINT` and `SYS_UNTYPED_RETYPE2` refuse
+`dest_slot == 0`, and the kernel says why: *"Slot 0 is `IRIS_CPTR_NULL` when
+addressing the root: refuse it so every published cap is actually
+invocable."*  `SYS_CSPACE_MOVE` and `SYS_CSPACE_ROTATE` did not.  A
+capability moved or rotated into slot 0 can never be invoked — CPtr 0 is the
+null capability — and holds a reference that keeps its object alive
+regardless.  The invariant was enforced in **two of the four ways a
+capability can be published**.  Both now refuse it.
+
+That is the fourth time in this tree a rule has been found living in some of
+its call sites and not the others, and the second time the specification
+work found one: encoding a rule forces you to ask where it applies, and the
+answer is sometimes "not everywhere it should".
+
+**Five more rules the model did not have**, all of them the model's fault and
+all now pinned:
+
+- **Retype takes `RIGHT_WRITE` on the Untyped**, not READ.  Carving moves a
+  bump cursor and raises a child count; it mutates.
+- **Type is reported before rights.**  The tree calls it the
+  *type-before-rights fix*: a resolver that has identified the capability
+  exactly says WRONG_TYPE rather than flattening it into something vaguer,
+  and it says so before asking whether the holder had the right.
+- **CPtr 0 as a SOURCE is `INVALID_ARG`.**  The null capability names
+  nothing, so invoking it is malformed rather than a lookup that failed —
+  the same number, two different refusals, at the two ends of one operation.
+- **Birth rights are per type and are not uniform.**  A notification is born
+  with `WAIT` and an endpoint is not, because waiting is what a notification
+  is for.  A model that guessed "everything" would have agreed on shape and
+  disagreed on the one field an authority model exists to describe.
+- **A7 is about DERIVATION, not creation.**  The charter says *"mint never
+  amplifies"* and means it: a retyped object's rights are born, not
+  inherited, so the edge from an Untyped to its child is outside the
+  invariant.  The first checker did not make the distinction and reported the
+  model violating A7 the moment retype existed — a checker too strong is as
+  wrong as one too weak, and wrong in the direction that wastes more time.
+
+**4000 traces across two seed spaces** with `retype` in the language, states
+and return codes agreeing.
+
+### What phase 1 still does NOT cover
+
+IPC, and two-level CSpace addressing.  `retype` reaches only CNode 0, because
+the syscall takes CPtrs and this CSpace is one level deep; guards and depth
+are their own piece of work.  IPC needs the rest of the syscall layer, and
+`spec_driver.c` ABORTS rather than answering plausibly if a CSpace operation
+ever reaches it — the gap is loud rather than silent.
 
 ### Phase 2, scoped rather than started
 

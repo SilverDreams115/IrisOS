@@ -59,6 +59,18 @@ uint64_t sys_cspace_move(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     iris_cptr_t dest_cnode = (iris_cptr_t)(arg1 & 0xFFFFFFFFu);
     uint32_t    dest_slot  = (uint32_t)(arg1 >> 32);
+    /*
+     * Slot 0 is `IRIS_CPTR_NULL` when addressing the root, so a capability
+     * placed there can never be invoked — and it holds a reference that keeps
+     * its object alive regardless.  `SYS_CSPACE_MINT` and
+     * `SYS_UNTYPED_RETYPE2` have refused it for that reason since they were
+     * written; this path and ROTATE did not, so the invariant held in two of
+     * the four ways a capability can be published.  Found by the Stage V
+     * specification work, which had to encode the rule and then noticed it
+     * was not uniform.
+     */
+    if (dest_slot == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
+
 
     /* The SOURCE slot, not the source object: a move is about where a
      * capability lives, and the object never learns it happened. */
@@ -112,6 +124,18 @@ uint64_t sys_cspace_rotate(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     iris_cptr_t dest_cnode = (iris_cptr_t)(arg2 & 0xFFFFFFFFu);
     uint32_t    dest_slot  = (uint32_t)(arg2 >> 32);
+    /*
+     * Slot 0 is `IRIS_CPTR_NULL` when addressing the root, so a capability
+     * placed there can never be invoked — and it holds a reference that keeps
+     * its object alive regardless.  `SYS_CSPACE_MINT` and
+     * `SYS_UNTYPED_RETYPE2` have refused it for that reason since they were
+     * written; MOVE and this path did not, so the invariant held in two of
+     * the four ways a capability can be published.  Found by the Stage V
+     * specification work, which had to encode the rule and then noticed it
+     * was not uniform.
+     */
+    if (dest_slot == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
+
 
     struct KCNode *src_cn = 0;   uint32_t src_idx = 0;
     iris_error_t err = cspace_resolve_slot(t->cspace_root, (iris_cptr_t)arg0,
