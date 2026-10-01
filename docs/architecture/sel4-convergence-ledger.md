@@ -1304,8 +1304,53 @@ spinlock is not recursive, and **`check-locks` cannot see it** — the checker
 reports a lock of strictly LOWER rank taken under a higher one, and this is the
 SAME lock.  That is a real gap in the checker, found by walking into it.
 
-So D-7's remaining work is those seven — six now — and they are a different
-shape from the TCB's six: a TCB relationship had a capability the caller named to derive from,
+**And the remaining six are THREE different problems, not one refactor.**  The
+row said "one named design change" when the subject was the TCB; reading each
+of the seven shows that was true of those six and is not true of these.
+
+**Class 1 — the ordering already holds, so the reference is redundant.**  The
+notification waiter queue, measured above: `D-7 destroyed-while-queued 0` at
+smp 1, 2 and 4, asserted by the gate.  This class is ordinary work: remove the
+reference and keep the measurement.
+
+**Class 2 — the reference protects a real cross-core window and CANNOT go
+while IRIS locks finely.**  `kreply_bind_caller`, and its own comment says why:
+`r->caller` is a raw task pointer `SYS_REPLY` takes out under the reply's lock
+and then walks with the lock DROPPED, so "another core running TCB_EXIT on it
+completes teardown in that window and the storage goes back to its Untyped,
+zero-filled".  That is T350's crash — `kobject_retain: resurrect from refcount
+0` — which §9.3 step 5 fixed in `sys_tcb_exit` and which this path had "the
+identical shape and no reference" for.  The reference was ADDED to fix it.
+seL4 does not need one because one core is in its kernel at a time; IRIS gave
+that up deliberately (D-1 closed, fine-grained locks).  **So this class is not
+blocked on capability bookkeeping at all — it is blocked on the concurrency
+model**, and removing the reference without replacing the protection
+reintroduces a crash the tree has a test for.
+
+**Class 3 — the kernel deliberately keeps an object alive that NO capability
+names, which is the direct negation of D-7's target.**  `kvspace_assign_asid`:
+*"the space now holds the pool: the identifier is only meaningful as an index
+into the pool that issued it, so the pool must outlive every space it named,
+**whatever happens to the capabilities pointing at it**."*  That sentence and
+*an object exists exactly while a capability names it* cannot both be true.
+seL4 answers it differently — an ASID pool is a capability and deleting it
+revokes the assignments — so closing this one is a change to the ASID model and
+a decision about what an ASID means, not a refactor.  `kvspace_map_table`,
+`kvspace_set_pt_pool` and `kframe_map_page` are the same family: a VSpace or a
+mapping owning what it was built from.
+
+`knotification_bind` is a fourth and milder case, already reasoned on its own
+terms: lifecycle-only, "`close` still fires when the last capability goes, and
+`close` breaks the binding" — so the binding never keeps an object ACTIVE and
+only keeps its storage valid.
+
+**So D-7's target property is false by design today, in one named place, and
+the row has to say that.**  What remains is one piece of ordinary work (class
+1), one that waits on the concurrency model (class 2), and one that waits on a
+decision about ASIDs (class 3).  The six TCB relationships were the part that
+was a refactor, and they are done.
+
+The seven, with the shapes above, are different from the TCB's six: a TCB relationship had a capability the caller named to derive from,
 while a waiter queue and a page-table list do not — the holder is a kernel data
 structure, not a principal, and seL4 answers each one differently (its waiter
 queues are in the TCB, its page tables are capabilities in the VSpace's own
