@@ -468,6 +468,21 @@ struct task {
 
     uint32_t          fault_seq_counter;
     struct KNotification *exit_notif;
+    /*
+     * How many notification waiter queues this task is on (D-7).
+     *
+     * Exact and LOCK-FREE, which both matter: the check that reads it runs
+     * inside `ktcb_obj_destroy`, and the first version WALKED the registry
+     * taking each notification's lock — which self-deadlocks, because
+     * `knotif_waiters_wake_all` holds that very lock while it releases the
+     * waiter whose destruction runs the walk.  A spinlock is not recursive and
+     * `check-locks` did not see it: the checker reports a lock of strictly
+     * LOWER rank taken under a higher one, and this is the SAME lock.
+     *
+     * Maintained at the four places `notif_next` is written, which are the
+     * enqueue and the three dequeues.
+     */
+    uint32_t              notif_queued;
     uint64_t          exit_bits;
     uint32_t          exit_code;
     uint8_t           exit_reported;   /* 1 once the watch has fired */

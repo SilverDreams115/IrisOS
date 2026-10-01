@@ -61,4 +61,8 @@ void     ktcb_stats(uint32_t *live, uint32_t *hwm,
  */
 void ktcb_caps_init(struct task *t);
 
+/* Threads destroyed while still on a notification waiter queue.  Zero is the
+ * claim that D-7's queue reference is redundant; see ktcb.c. */
+uint32_t ktcb_destroyed_while_queued_count(void);
+
 #endif /* IRIS_NC_KTCB_H */

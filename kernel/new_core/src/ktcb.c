@@ -2,6 +2,7 @@
 #include <iris/nc/ktcb.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kobject_dispatch.h>
+#include <iris/nc/knotification.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/task.h>
 #include <stdatomic.h>
@@ -63,8 +64,29 @@ void task_backing_free_on_destroy(struct task *t);
  * a sched_ctx (SC_BIND refuses unconfigured targets precisely so no reference
  * can leak here).
  */
+/*
+ * How many threads reached their own destruction while still on a
+ * notification's waiter queue.  Must stay zero (D-7).
+ *
+ * The queue holds a REFERENCE today, so this cannot happen — the count is
+ * measuring whether the reference is REDUNDANT, which is what removing it
+ * needs.  The argument for redundancy: a thread that could be queued holds an
+ * execution reference on itself, only teardown releases it, and teardown calls
+ * `task_cancel_blocked_waits` before that.  An argument is not a measurement,
+ * and this tree has been wrong about an ordering it had argued before.
+ */
+static _Atomic uint32_t ktcb_destroyed_while_queued;
+
+uint32_t ktcb_destroyed_while_queued_count(void) {
+    return atomic_load_explicit(&ktcb_destroyed_while_queued,
+                                memory_order_relaxed);
+}
+
 void ktcb_obj_destroy(struct KObject *obj) {
     struct task *t = (struct task *)obj;   /* KObject at offset 0 */
+    if (t->notif_queued)
+        atomic_fetch_add_explicit(&ktcb_destroyed_while_queued, 1u,
+                                  memory_order_relaxed);
     atomic_fetch_sub_explicit(&ktcb_live, 1u, memory_order_relaxed);
     atomic_fetch_add_explicit(&ktcb_destroyed, 1u, memory_order_relaxed);
     if (obj->ut_block_bytes) kobject_storage_free(obj, 0u, 0);

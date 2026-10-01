@@ -435,6 +435,32 @@ void iris_test_main(iris_cptr_t rbx_unused) {
      * quietly becoming inapplicable is visible here instead of as a
      * denominator nobody was watching.
      */
+    /*
+     * D-7's ordering check, printed beside the verdict rather than as a test.
+     *
+     * `knotif_waiters_enqueue` takes a reference on a waiting TCB — one of the
+     * seven places a non-capability holder owns an object — and removing it
+     * depends on no thread ever reaching its own destruction while still
+     * queued.  The kernel counts the times that happened; the number has to be
+     * 0, and `run_qemu_headless.sh` fails the lane if it is not.
+     *
+     * Printed, not asserted as a test, so the suite's denominator keeps
+     * meaning "tests this machine could run".  A property of the whole run is
+     * not a test of one thing.
+     */
+    {
+        uint8_t dbuf[136];
+        long dr = it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL,
+                             INV_BOOT_SCHED_INFO, (long)(uintptr_t)dbuf, 136);
+        it_serial_write("[IRIS][TEST] D-7 destroyed-while-queued ");
+        if (dr != 0) it_serial_write("?\n");
+        else {
+            it_log_num((uint32_t)dbuf[132] | ((uint32_t)dbuf[133] << 8) |
+                       ((uint32_t)dbuf[134] << 16) | ((uint32_t)dbuf[135] << 24));
+            it_serial_write("\n");
+        }
+    }
+
     it_serial_write((g_pass == g_total) ? "[IRIS][TEST] SUITE PASS "
                                         : "[IRIS][TEST] SUITE FAIL ");
     it_log_num(g_pass);

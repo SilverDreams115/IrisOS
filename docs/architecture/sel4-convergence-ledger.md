@@ -1281,8 +1281,31 @@ Three groups, and only one of them is D-7:
   holding page tables and an ASID pool), `kframe_map_page` (a mapping holding a
   frame).
 
-So D-7's remaining work is those seven, and they are a different shape from the
-TCB's six: a TCB relationship had a capability the caller named to derive from,
+**The first of the seven is now MEASURED rather than argued.**
+`knotif_waiters_enqueue`'s reference can go only if no thread ever reaches its
+own destruction while a queue still names it.  IRIS gets that ordering from a
+direction seL4 does not: a thread that could be queued holds an EXECUTION
+reference on itself (`ktcb_configure`), only teardown releases it, and teardown
+calls `task_cancel_blocked_waits` first.  That is an argument, and the reference
+is what makes it not need to be true.
+
+So the kernel counts the times it was wrong — `notif_queued`, an exact
+lock-free membership count on the task, read in `ktcb_obj_destroy` — the suite
+prints `D-7 destroyed-while-queued N` beside its verdict, and
+`run_qemu_headless.sh` fails the lane if N is not 0.  **0 at smp 1, 2 and 4.**
+Printed rather than made a test, so the suite's denominator keeps meaning
+"tests this machine could run": a property of the whole run is not a test of one
+thing.
+
+The first implementation of that check WALKED the notification registry taking
+each notification's lock, and self-deadlocked: `knotif_waiters_wake_all` holds
+that very lock while releasing the waiter whose destruction runs the walk.  A
+spinlock is not recursive, and **`check-locks` cannot see it** — the checker
+reports a lock of strictly LOWER rank taken under a higher one, and this is the
+SAME lock.  That is a real gap in the checker, found by walking into it.
+
+So D-7's remaining work is those seven — six now — and they are a different
+shape from the TCB's six: a TCB relationship had a capability the caller named to derive from,
 while a waiter queue and a page-table list do not — the holder is a kernel data
 structure, not a principal, and seL4 answers each one differently (its waiter
 queues are in the TCB, its page tables are capabilities in the VSpace's own

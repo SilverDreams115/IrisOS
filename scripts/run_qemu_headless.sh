@@ -198,8 +198,26 @@ set +e
 # is still there, fail with the reason instead of producing an empty log for
 # somebody to misread as a boot failure.
 #
+#
+# `pgrep -f "^qemu-system-x86_64 "`, and both halves of that are
+# load-bearing.
+#
+# `-x qemu-system-x86_64` — which is what this guard was written with — can
+# NEVER match: the name is 21 characters and Linux truncates `comm` to 15, and
+# pgrep says so when asked interactively.  The guard was a no-op from the
+# moment it was added: it never printed, never fired, and a collision still
+# took a lane down afterwards with "Failed to get \"write\" lock" in the
+# output.  A guard that cannot match is worse than no guard, because the
+# absence of its message reads as evidence there was nothing to catch.
+#
+# `-f` alone is too broad the other way: it matches any shell whose command
+# line CONTAINS the string, including the one running this script and the
+# `pgrep` itself — measured, not guessed, by running it and watching it match
+# its own shell.  Anchoring with `^` fixes that: a shell's command line starts
+# with its interpreter, so only a process that IS qemu matches.
+#
 waited=0
-while pgrep -x qemu-system-x86_64 >/dev/null 2>&1; do
+while pgrep -f "^qemu-system-x86_64 " >/dev/null 2>&1; do
   if [ "$waited" -ge 30 ]; then
     echo "[headless] another qemu-system-x86_64 is STILL running after 30 s."
     echo "[headless] They share build/iris-disk.img; the second gets no write"
@@ -369,6 +387,22 @@ if [ "$EXPECT_SELFTESTS" = "1" ]; then
   # ...and ring 3 read a real root pointer out of firmware memory, not merely
   # a region that was published.  The revision is whatever the firmware wrote;
   # what is asserted is that something checksummed.
+  #
+  # D-7: no thread reached its own destruction while still on a notification
+  # waiter queue.  The queue holds a REFERENCE today, so this cannot happen —
+  # the check is whether that reference is REDUNDANT, which is what removing it
+  # needs, and an argument about teardown order is not a measurement.
+  #
+  d7=$(grep -oE "^\[IRIS\]\[TEST\] D-7 destroyed-while-queued [0-9]+" "$LOG_FILE" \
+       | tail -1 | awk '{print $NF}')
+  if [ -n "$d7" ] && [ "$d7" != "0" ]; then
+    echo "[headless] D-7: $d7 thread(s) destroyed while still queued on a notification"
+    echo "           The waiter queue's reference is NOT redundant: a thread"
+    echo "           reached destruction while a queue still named it, so"
+    echo "           removing that reference would be a use-after-free."
+    exit 1
+  fi
+
   if ! grep -Eq "^\[IRIS\]\[TEST\] T354 RSDP at 0x[0-9a-f]+ revision " "$LOG_FILE"; then
     echo "[headless] ring 3 did not read the ACPI root pointer"
     #

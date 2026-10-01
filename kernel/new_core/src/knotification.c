@@ -45,6 +45,7 @@ static iris_error_t knotif_waiters_enqueue(struct KNotification *n, struct task 
     for (struct task *w = n->queue_head; w; w = w->notif_next)
         if (w == t) return IRIS_OK;
     t->notif_next = 0;
+    t->notif_queued++;        /* D-7: exact, lock-free queue membership */
     if (n->queue_tail) n->queue_tail->notif_next = t;
     else               n->queue_head = t;
     n->queue_tail = t;
@@ -75,6 +76,7 @@ static void knotif_waiters_remove(struct KNotification *n, struct task *t) {
         else      n->queue_head    = w->notif_next;
         if (n->queue_tail == w) n->queue_tail = prev;
         w->notif_next = 0;
+        if (w->notif_queued) w->notif_queued--;
         if (n->waiter_count) n->waiter_count--;
         kobject_release(&w->base);   /* The queue's */
         return;
@@ -100,6 +102,7 @@ static int knotif_waiters_wake_one(struct KNotification *n) {
         else      n->queue_head    = next;
         if (n->queue_tail == w) n->queue_tail = prev;
         w->notif_next = 0;
+        if (w->notif_queued) w->notif_queued--;
         if (n->waiter_count) n->waiter_count--;
         task_wakeup(w);
         kobject_release(&w->base);   /* The queue's */
@@ -122,6 +125,7 @@ static void knotif_waiters_wake_all(struct KNotification *n) {
     while (w) {
         struct task *next = w->notif_next;
         w->notif_next = 0;
+        if (w->notif_queued) w->notif_queued--;
         if (w->state == TASK_BLOCKED_IRQ) {
             /*
              * Tell the waiter WHY it woke.

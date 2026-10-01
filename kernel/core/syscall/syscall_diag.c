@@ -246,11 +246,20 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         uint32_t a2 = kendpoint_live_count();
         uint32_t a3 = knotification_live_count();
         uint32_t a4 = kcnode_live_count();
-        /* Offset 132 was kvmo_live, and is a pad again: the
-         * object it counted is gone, and the question it answered — how much
-         * memory does the kernel hold for somebody — is kframe_live_count at
-         * offset 116, which counts the object that holds it now. */
-        uint32_t a5 = 0u;
+        /*
+         * Offset 132 was kvmo_live, then a pad: the object it counted is gone,
+         * and the question it answered — how much memory does the kernel hold
+         * for somebody — is kframe_live_count at offset 116.
+         *
+         * It carries D-7's ordering check now.  `knotif_waiters_enqueue` takes
+         * a reference on a waiting TCB, which is one of the seven places a
+         * non-capability holder owns an object, and removing it depends on a
+         * thread never reaching its own destruction while still queued.  That
+         * is an argument about teardown order; this is the count of times it
+         * was wrong.  It must stay zero, and a reserved word that already
+         * reaches ring 3 is the cheapest place to let a test say so.
+         */
+        uint32_t a5 = ktcb_destroyed_while_queued_count();
         buf[14] = (uint64_t)a0 | ((uint64_t)a1 << 32);
         buf[15] = (uint64_t)a2 | ((uint64_t)a3 << 32);
         buf[16] = (uint64_t)a4 | ((uint64_t)a5 << 32);
