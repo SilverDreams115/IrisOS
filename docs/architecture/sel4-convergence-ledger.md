@@ -1248,14 +1248,45 @@ address space.  The installs also ignored their return value, which is what
 made it silent — they panic now, and `ktcb_caps_init` is called on every path
 that produces a usable task.
 
-**What is left of D-7 is the transient resolver borrows and nothing else.**
-Eleven `kobject_active_retain` call sites remain: one test fixture, one per
-syscall file matching the `cspace_resolve_cap` contract, three in `cspace.c`
-and three in `kcnode.c`.  None is ownership — each keeps a resolved object
-alive for the duration of one call and is released by the caller, and seL4
-needs none of them because an operation does not block.  Retiring the counter
-means retiring those, which is a question about how a resolution holds its
-result, not about who owns an object.
+**And the enumeration above counted the WRONG COUNTER.**  It is corrected here
+rather than quietly, because it was written today and the number was used to
+say how much of D-7 was left.
+
+`kobject_active_release` reaching zero runs `close`, which is about a CSpace's
+SLOTS being reachable.  **`kobject_release` reaching zero runs `destroy`** —
+that is lifetime, and that is what D-7 is about.  The count of nine was over
+`active_refs`; the counter that decides whether an object exists is `refcount`,
+and it has **42 acquisition sites across 17 files**.
+
+The six migrations still did what they claimed: each of those relationships
+took BOTH retains, and a slot install takes both, so the thread holds neither
+counter for any of them now.  What the wrong count got wrong is how much
+remains.
+
+Measured over the tree, by whether a retain is matched by a release in the same
+function: **19 are scoped borrows** and **24 functions hand a reference on**.
+Three groups, and only one of them is D-7:
+
+* **Returned borrows** — `kcnode_fetch_badged`, `kcnode_fetch_guarded`,
+  `cspace_own_root`, `retype_frame`, `retype_sub_untyped`.  The caller
+  releases.  Not ownership; seL4 needs none because an operation does not
+  block.
+* **Transient structural holds** — `kcnode_cascade` (the teardown list holds a
+  CNode until the drain reaches it), `kuntyped_alloc_child*` (a child holds its
+  parent Untyped, which IS the MDB relationship).
+* **A NON-CAPABILITY HOLDER OWNING AN OBJECT, which is D-7's actual subject**
+  and is not the TCB: `knotif_waiters_enqueue` and `kreply_bind_caller` (a
+  queue and a reply object holding a TCB), `knotification_bind`,
+  `kvspace_map_table`, `kvspace_set_pt_pool`, `kvspace_assign_asid` (a VSpace
+  holding page tables and an ASID pool), `kframe_map_page` (a mapping holding a
+  frame).
+
+So D-7's remaining work is those seven, and they are a different shape from the
+TCB's six: a TCB relationship had a capability the caller named to derive from,
+while a waiter queue and a page-table list do not — the holder is a kernel data
+structure, not a principal, and seL4 answers each one differently (its waiter
+queues are in the TCB, its page tables are capabilities in the VSpace's own
+slots).  Naming them is where this row stops guessing.
 
 **The gap is a test, not a paragraph.**  `test_final_cap` builds the exact
 shape: one slot names a notification, a thread then takes the reference
