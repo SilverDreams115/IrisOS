@@ -20,7 +20,8 @@ reading" are different claims and only one of them is true here.
 | A8 preserved by the same four | **PROVED** over symbolic state | `spec/prove.py` |
 | O2 preserved by the same four | **PROVED** over symbolic state | `spec/prove.py` |
 | move needs **A9 as a hypothesis** — the invariants are not independent | **PROVED**, and refuted without it | `spec/prove.py` |
-| `rotate` | **not modelled**, so not claimed | — |
+| A7, A8, O2, wf under **rotate** (non-swap branch) | **PROVED** over symbolic state | `spec/prove.py` |
+| rotate's dest==src SWAP branch | **not proved**; driven by 279841 traces | `make spec-exhaustive` |
 | a revoke slice makes PROGRESS — so D-8's re-execution terminates | **PROVED** | `spec/prove.py` |
 | a cascade pass makes progress — so D-12's does | **PROVED** | `spec/prove.py` |
 | no child ever names an empty slot, or a non-slot | **PROVED** over symbolic state | `spec/prove.py` |
@@ -32,7 +33,7 @@ reading" are different claims and only one of them is true here.
 | the C agrees with the model on every trace of length ≤ 4 | **TOTAL** over that bound — 194481 traces (4.1M at depth 5) | `make spec-exhaustive` |
 | the C refines the model, unbounded | **owed**; tested, not proved | `make spec-differential` |
 
-37 obligations, 37 discharged. "Over symbolic state" means: for every CSpace
+42 obligations, 42 discharged. "Over symbolic state" means: for every CSpace
 satisfying the invariant and every legal operation on it, not for every CSpace
 a generator built. That is the inductive step of a refinement proof, and it is
 the thing neither testing nor exhaustion can give.

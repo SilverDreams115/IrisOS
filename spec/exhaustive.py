@@ -97,6 +97,8 @@ ALPHABET = [
     "mint 0 2 15 42",        # everything, and a badge
     "smint 0 1 5 0",         # the syscall path, which refuses differently
     "smove 0 2",
+    "rotate 2 0 1",          # dest, pivot, src — two relocations
+    "rotate 0 1 0",          # dest == src: the three-way SWAP branch
     "delete 0", "delete 1",
     "revoke 0", "revoke 1",
     "sdelete 1", "srevoke 0",

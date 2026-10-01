@@ -59,7 +59,7 @@ results = []
 _PREMISE_CACHE = {}
 
 
-def premises_satisfiable(extra):
+def premises_satisfiable(extra, witness=None):
     """
     Are these premises satisfiable, and is the answer worth caching?
 
@@ -76,6 +76,25 @@ def premises_satisfiable(extra):
     key = "\u0000".join(a.sexpr() for a in extra)
     if key in _PREMISE_CACHE:
         return _PREMISE_CACHE[key]
+    #
+    # A WITNESS turns the question around.
+    #
+    # "Are these premises satisfiable" is a search, and for `rotate` — two
+    # quantifiers over arrays plus three distinct slots — the solver does not
+    # finish it, so all five of its theorems came back PREMISE? and failed the
+    # lane.  Exhibiting a state that satisfies them is a GROUND check instead,
+    # and it is also better evidence: a model the reader can look at beats
+    # "the solver said yes".
+    #
+    if witness is not None:
+        _, r = decide(list(extra) + list(witness), timeout=180000)
+        if r == z3.sat:
+            _PREMISE_CACHE[key] = z3.sat
+            return z3.sat
+        # A witness that does not satisfy the premises is a bug in the
+        # WITNESS, and saying "unknown" would hide it behind the hard query.
+        if r == z3.unsat:
+            print("  (witness rejected — it does not satisfy the premises)")
     _, r = decide(extra, timeout=180000)
     _PREMISE_CACHE[key] = r
     return r
@@ -108,7 +127,7 @@ def decide(assertions, timeout=60000):
     return s, z3.unknown
 
 
-def prove(name, claim, extra=None):
+def prove(name, claim, extra=None, witness=None):
     """
     A claim holds when its NEGATION is unsatisfiable.
 
@@ -124,7 +143,7 @@ def prove(name, claim, extra=None):
     as what it is — the solver gave up — rather than folded into either.
     """
     if extra:
-        r = premises_satisfiable(extra)
+        r = premises_satisfiable(extra, witness)
         if r == z3.unsat:
             results.append((name, "VACUOUS", None))
             return
@@ -700,6 +719,105 @@ def prove_revoke_clears_the_subtree():
                                     obj2[d] != -1)), extra=pre)
 
 
+def prove_rotate_preserves():
+    """
+    ROTATE, which the previous commit said was not modelled and so not
+    claimed.  It is modelled now, so it is claimed.
+
+    Two relocations — pivot to dest, src to pivot — each carrying the
+    capability's object, rights, badge and place in the tree.  Nothing is
+    derived and no rights change, which is what makes it provable at all:
+    A7 and A8 are about DERIVATION edges, and rotate creates none.
+
+    A9 is a hypothesis for the same reason `move` needs it: a self-parented
+    slot satisfies `wf` and breaks it the moment its capability moves and its
+    old slot empties.  Two operations now need A9 where three do not, which
+    is the shape of that dependency rather than a one-off.
+
+    The dest == src branch — the three-way SWAP through a temporary — is NOT
+    proved here.  It is a different post-state and stating it as this one
+    would be the overclaim this file keeps catching; `spec-exhaustive` drives
+    it 279841 traces' worth, which is evidence and not a proof.
+    """
+    obj, rgt, par, bdg, oty = new_state("rot")
+    dest, pivot, src = z3.Int("dest_r"), z3.Int("pivot_r"), z3.Int("src_r")
+    i = z3.Int("i")
+    st = invariants.State(obj, rgt, par, bdg, oty, slot)
+
+    pre = [
+        z3.ForAll([i], z3.Implies(slot(i),
+                                  z3.And(wf(st, i), inv_A7_at(st, i),
+                                         inv_A8_at(st, i), inv_O2_at(st, i)))),
+        z3.ForAll([i], z3.Implies(slot(i), acyclic_within(par, i))),
+        slot(dest), slot(pivot), slot(src),
+        src != pivot, dest != pivot, dest != src,   # the non-swap branch
+        obj[src] != -1, obj[pivot] != -1,           # both occupied
+        obj[dest] == -1,                            # destination empty
+    ]
+
+    #
+    # pivot -> dest, then src -> pivot, written as ONE substitution instead of
+    # nested special cases.
+    #
+    # The first version took `par[pivot]` raw for the destination's new
+    # parent, which is wrong exactly when pivot's parent IS src: src's
+    # capability has moved to the pivot slot, so the child must name `pivot`,
+    # not the slot src just vacated.  The nested form applied the remap in its
+    # fallthrough branch and not to the two capabilities that moved — a bug in
+    # the encoding, and one that reads as correct until the case is named.
+    #
+    # `origin(k)` is the slot the capability now at k came from, and `remap`
+    # is where a parent link has to point now.  Every field uses both, so
+    # there is no branch left for one of them to be missing from.
+    #
+    def origin(x):
+        return z3.If(x == dest, pivot, z3.If(x == pivot, src, x))
+
+    def remap(x):
+        return z3.If(x == pivot, dest, z3.If(x == src, pivot, x))
+
+    k = z3.Int("k")
+    obj2 = z3.Lambda([k], z3.If(k == src, -1, obj[origin(k)]))
+    rgt2 = z3.Lambda([k], rgt[origin(k)])
+    bdg2 = z3.Lambda([k], bdg[origin(k)])
+    par2 = z3.Lambda([k], z3.If(k == src, -1, remap(par[origin(k)])))
+    post = invariants.State(obj2, rgt2, par2, bdg2, oty, slot)
+
+    #
+    # A concrete state satisfying every premise above: three roots, two of
+    # them occupied, nothing derived from anything.  Every invariant holds
+    # vacuously (no parent links) and the three slots are distinct, which is
+    # all the premises ask for.  Exhibited rather than searched for, because
+    # the search does not terminate here.
+    #
+    wit = [
+        obj == z3.Lambda([k], z3.If(k == 1, 10, z3.If(k == 2, 11, -1))),
+        rgt == z3.Lambda([k], z3.BitVecVal(7, W)),
+        bdg == z3.Lambda([k], z3.BitVecVal(0, W)),
+        par == z3.Lambda([k], z3.IntVal(-1)),
+        oty == z3.Lambda([k], z3.IntVal(8)),
+        src == 1, pivot == 2, dest == 3,
+    ]
+
+    j = z3.Int("j")
+    prove("A7  rotate preserves it — two relocations, no derivation",
+          z3.ForAll([j], z3.Implies(slot(j), inv_A7_at(post, j))),
+          extra=pre, witness=wit)
+    prove("A8  rotate preserves it — badges TRAVEL, they are not arguments",
+          z3.ForAll([j], z3.Implies(slot(j), inv_A8_at(post, j))),
+          extra=pre, witness=wit)
+    prove("O2  rotate preserves it",
+          z3.ForAll([j], z3.Implies(slot(j), inv_O2_at(post, j))),
+          extra=pre, witness=wit)
+    prove("    rotate preserves well-formedness",
+          z3.ForAll([j], z3.Implies(slot(j), wf(post, j))),
+          extra=pre, witness=wit)
+    prove("    rotate changes no capability's rights or badge",
+          z3.And(rgt2[dest] == rgt[pivot], bdg2[dest] == bdg[pivot],
+                 rgt2[pivot] == rgt[src], bdg2[pivot] == bdg[src]),
+          extra=pre, witness=wit)
+
+
 def prove_slices_make_progress():
     """
     The two SLICED operations terminate, which is the property their designs
@@ -785,6 +903,7 @@ def main():
     prove_retype_preserves_O2()
     prove_move_preserves()
     prove_revoke_clears_the_subtree()
+    prove_rotate_preserves()
     prove_slices_make_progress()
     prove_revoke_root_survives()
 

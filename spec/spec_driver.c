@@ -422,6 +422,18 @@ int main(void) {
                                                      cn_of(b), idx_of(b),
                                                      (iris_rights_t)c,
                                                      (uint64_t)d));
+        } else if (!strcmp(op, "rotate") &&
+                   sscanf(line, "%*s %u %u %u", &a, &b, &c) == 3) {
+            /*
+             * `kcnode_slot_rotate` — the primitive, not the syscall.  The
+             * syscall's CPtr resolution is the same code `mint` and `move`
+             * already drive; what nothing reached was the rotate itself, and
+             * it is inside the boundary (`syscall_cspace.c` is linked here).
+             */
+            if (a >= NSLOTS || b >= NSLOTS || c >= NSLOTS) continue;
+            printf("r %d\n", (int)kcnode_slot_rotate(
+                       cn_of(a), idx_of(a), cn_of(b), idx_of(b),
+                       cn_of(c), idx_of(c)));
         } else if (!strcmp(op, "delete") &&
                    sscanf(line, "%*s %u", &a) == 1) {
             if (a >= NSLOTS) continue;

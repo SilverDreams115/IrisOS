@@ -371,6 +371,31 @@ if [ "$EXPECT_SELFTESTS" = "1" ]; then
   # what is asserted is that something checksummed.
   if ! grep -Eq "^\[IRIS\]\[TEST\] T354 RSDP at 0x[0-9a-f]+ revision " "$LOG_FILE"; then
     echo "[headless] ring 3 did not read the ACPI root pointer"
+    #
+    # Say WHICH of the two this is, because they want opposite responses and
+    # the message above does not distinguish them.
+    #
+    # A missing line can mean the test did not run or failed — a kernel
+    # problem — or it can mean the serial log lost it.  This tree has already
+    # caught the second: a probe that reported 47 closes was measured at 243
+    # by a counter, because raw `serial_write` drops output under load.  So
+    # the suite's own verdict is the discriminator: 325/325 with this line
+    # absent is a LOST LINE, and anything else is the kernel.
+    #
+    # Written because this fired once in a gate run and the one-line message
+    # sent me after a QEMU disk-lock collision that was not happening.
+    #
+    suite_line=$(grep -E "^\[IRIS\]\[TEST\] SUITE (PASS|FAIL)" "$LOG_FILE" | tail -1)
+    echo "           suite verdict: ${suite_line:-<none — the suite did not finish>}"
+    echo "           log is $(wc -l < "$LOG_FILE") lines"
+    if echo "$suite_line" | grep -q "SUITE PASS"; then
+      echo "           => the suite PASSED, so T354 ran and its line was"
+      echo "              DROPPED from the serial log, not failed.  That is a"
+      echo "              logging defect, not a kernel one, and this check is"
+      echo "              reporting the log rather than the kernel."
+    else
+      echo "           => the suite did not pass, so this is the kernel."
+    fi
     grep -F "[IRIS][TEST] T354" "$LOG_FILE" | sed 's/^/           /'
     cat "$LOG_FILE"
     exit 1

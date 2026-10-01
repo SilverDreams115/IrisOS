@@ -483,6 +483,67 @@ class AuthorityModel:
         self._clear(sid)
         return OK
 
+    def rotate(self, dest_sid: int, pivot_sid: int, src_sid: int) -> int:
+        """
+        `kcnode_slot_rotate` — two relocations, or a swap when dest IS src.
+
+        Nothing is derived and no reference changes: each capability keeps its
+        object, its rights, its badge and its place in the derivation tree,
+        and only the slot it sits in changes.  Badges TRAVEL rather than being
+        arguments, because A8 says a badged capability is never re-badged and
+        a badge argument here would exist to be refused.
+
+        Modelled because nothing exercised it.  `sys_cspace_rotate` is inside
+        the verification boundary — `syscall_cspace.c` is one of the files
+        `spec_driver.c` links — and no trace in `spec-differential`, none of
+        the 194481 in `spec-exhaustive`, and no obligation in `spec-prove`
+        reached `kcnode_slot_rotate`.  A boundary with an operation nobody
+        drives is a boundary that is smaller than it claims.
+        """
+        dest = self.slots.get(dest_sid)
+        pivot = self.slots.get(pivot_sid)
+        src = self.slots.get(src_sid)
+        if dest is None or pivot is None or src is None:
+            return ERR_INVALID_ARG
+        # Distinctness is about the SLOT.  A rotate that moved a capability
+        # onto itself would clear the node it had just written.
+        if src_sid == pivot_sid or dest_sid == pivot_sid:
+            return ERR_INVALID_ARG
+        if src.empty or pivot.empty:
+            return ERR_NOT_FOUND
+        if dest_sid != src_sid and not dest.empty:
+            return ERR_ALREADY_EXISTS
+
+        def relocate(frm_sid: int, to_sid: int):
+            """Move a capability and its place in the tree, slot to slot."""
+            frm = self.slots[frm_sid]
+            to = self.slots[to_sid]
+            to.obj, to.rights, to.badge = frm.obj, frm.rights, frm.badge
+            to.parent = frm.parent
+            if frm.parent is not None:
+                ch = self.slots[frm.parent].children
+                ch[ch.index(frm_sid)] = to_sid
+            to.children = list(frm.children)
+            for c in to.children:
+                self.slots[c].parent = to_sid
+            frm.obj, frm.rights, frm.badge, frm.parent = None, 0, 0, None
+            frm.children = []
+
+        if dest_sid == src_sid:
+            # The swap: both are occupied, so one stands aside.  The kernel
+            # keeps that temporary on its stack and no reader can observe it;
+            # the model gives it a slot id no trace can name.
+            TMP = -1
+            self.slots[TMP] = Slot()
+            relocate(src_sid, TMP)
+            relocate(pivot_sid, dest_sid)
+            relocate(TMP, pivot_sid)
+            del self.slots[TMP]
+        else:
+            relocate(pivot_sid, dest_sid)
+            relocate(src_sid, pivot_sid)
+        return OK
+
     def revoke(self, sid: int) -> int:
         """
         Destroy the SUBTREE and not its root (A10). Returns OK; the count is

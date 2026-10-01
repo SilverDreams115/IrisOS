@@ -110,6 +110,17 @@ def gen_trace(rng, nops):
                 ops.append("srevoke %d" % (rng.choice(occupied) % SPC))
             else:
                 ops.append("sdelete %d" % (rng.choice(occupied) % SPC))
+        elif r < 0.72 and len(occupied) >= 2:
+            # rotate: dest, pivot, src.  Half the draws aim dest AT src,
+            # which is the three-way SWAP branch and the only one that needs
+            # a temporary — the branch a generator that never repeats an
+            # argument would never reach.
+            pv = rng.choice(occupied)
+            sr = rng.choice([o for o in occupied if o != pv] or [pv])
+            ds = sr if rng.random() < 0.5 else rng.randrange(NSLOTS)
+            ops.append("rotate %d %d %d" % (ds, pv, sr))
+            if ds not in occupied:
+                occupied.append(ds)
         elif r < 0.85:
             ops.append("delete %d" % rng.choice(occupied))
         else:
@@ -148,6 +159,8 @@ def run_model(ops):
             results.append(m.identify(int(f[1])))
         elif f[0] == "same":
             results.append(m.same_object(int(f[1]), int(f[2])))
+        elif f[0] == "rotate":
+            results.append(m.rotate(int(f[1]), int(f[2]), int(f[3])))
         elif f[0] == "delete":
             results.append(m.delete(int(f[1])))
         elif f[0] == "revoke":
