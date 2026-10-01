@@ -1380,10 +1380,35 @@ storage IS the slot — the old code released after the free and got away with i
 only by reading the pointer into a local first.
 
 What remains of class 3 is one shape: `kvspace_map_table` and `kframe_map_page`
-— a VSpace or a mapping owning a page table or a frame.  Those are LISTS, so
-they want a slot per entry rather than a named slot, which is a sizing decision
-about how many capabilities an address space may hold and the first thing here
-that is a question about the ABI rather than about bookkeeping.
+— a VSpace or a mapping owning a page table or a frame.  **One of the two
+candidate designs for it is now REFUTED, with the error, and that is worth more
+than the attempt.**
+
+The appealing one was to need no reference at all: let a table die with its last
+capability, and have `kcnode_slot_delete` REFUSE to drop the last capability to
+a MAPPED table — `IRIS_ERR_BUSY`, the way O6 refuses an Untyped RESET while
+children live.  It is seL4-adjacent (seL4 unmaps on finalise instead), it needs
+no new storage, and `kcnode_slot_is_final_cap` is exactly the predicate for the
+question.  Implemented, it passed the host suite — including a new assertion
+that the refusal fires and that unmapping lifts it — and then:
+
+    [USERBOOT] FATAL: init load failed (err 8)
+
+`err 8` is `IRIS_ERR_BUSY`.  **`userboot` builds init's address space, maps its
+page tables, and then drops its own capabilities** — the spawner pattern: hand
+the space over and let go.  A refusal makes that impossible, so the VSpace MUST
+own its tables after the builder lets go, which is precisely why the reference
+exists.  The design is coherent and the refusal contradicts it.
+
+So the remaining answer is the other one: the VSpace holds each table as a
+CAPABILITY in a CNode of its own, carved from the `pt_pool` it already has, at
+first map.  That gives the map path a new `NO_MEMORY` failure and makes a
+VSpace's capacity for tables a property of the budget it was given — the
+charter's own rule, which is the right shape.  It is the first thing in this
+class that adds storage rather than moving a reference, and it is sized by
+something real rather than invented.
+
+`kframe_map_page` is the same shape over mappings rather than tables.
 
 The original wording, kept because it is what the code said:
 `kvspace_assign_asid`:
