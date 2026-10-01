@@ -1013,8 +1013,13 @@ static void task_execution_teardown_off_cpu(struct task *t) {
         t->timeout_pending = 0;
         irq_spinlock_unlock(&t->obj_lock, irqfl);
         if (had_fault) kfault_stat_cleanup();
-        if (fe) { kobject_active_release(&fe->base); kobject_release(&fe->base); }
-        if (te) { kobject_active_release(&te->base); kobject_release(&te->base); }
+        /*
+         * Both handlers are CAPABILITIES in the thread's own slots now (D-7),
+         * so the release is a slot delete and the MDB is what lets go.  The
+         * raw pointers were caches for the fault-delivery path.
+         */
+        if (fe) (void)kcnode_slot_delete(&t->caps_hdr, TCB_CAP_FAULT_EP);
+        if (te) (void)kcnode_slot_delete(&t->caps_hdr, TCB_CAP_TIMEOUT_EP);
     }
 
     /* The BOUND notification.  Broken from the thread's side, because a

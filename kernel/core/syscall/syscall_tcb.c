@@ -370,6 +370,18 @@ static uint64_t tcb_register_handler(uint64_t arg0, uint64_t arg1, int timeout) 
         return syscall_err(err);
     }
 
+    /* The SLOT as well as the object: the capability the thread keeps has to
+     * be DERIVED from the one the caller named, so the MDB connects them. */
+    struct KCNode *ep_cn = 0;
+    uint32_t       ep_idx = 0;
+    err = cspace_resolve_slot(caller->cspace_root, (iris_cptr_t)arg1,
+                              &ep_cn, &ep_idx);
+    if (err != IRIS_OK) {
+        kobject_release(&ep->base);
+        kobject_release(&target->base);
+        return syscall_err(err);
+    }
+
     struct KEndpoint *old = 0;
     uint64_t irqfl = irq_spinlock_lock(&target->obj_lock);
     /* Under the lock, not before it: thread teardown empties these fields under
@@ -377,30 +389,55 @@ static uint64_t tcb_register_handler(uint64_t arg0, uint64_t arg1, int timeout) 
      * and leave the reference installed below with nobody to release it. */
     if (target->terminal) {
         irq_spinlock_unlock(&target->obj_lock, irqfl);
+        kobject_active_release(&ep_cn->base);
+        kobject_release(&ep_cn->base);
         kobject_release(&ep->base);
         kobject_release(&target->base);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }
-    if (timeout) {
-        old = (target->timeout_ep == ep) ? 0 : target->timeout_ep;
-        if (target->timeout_ep != ep) {
-            kobject_retain(&ep->base);
-            kobject_active_retain(&ep->base);
-            target->timeout_ep = ep;
-        }
-        target->timeout_ep_badge = badge;
-    } else {
-        old = (target->fault_ep == ep) ? 0 : target->fault_ep;
-        if (target->fault_ep != ep) {
-            kobject_retain(&ep->base);
-            kobject_active_retain(&ep->base);
-            target->fault_ep = ep;
-        }
-        target->fault_ep_badge = badge;
-    }
+    /*
+     * D-7, the third and fourth of SIX.  seL4 holds a thread's fault handler
+     * as a capability in `tcbFaultHandler`; IRIS held two — the fault endpoint
+     * and the timeout endpoint, which a supervisor aims separately — as raw
+     * pointers with `kobject_retain` + `kobject_active_retain`.  The ledger's
+     * enumeration called these "2 sites" of one relationship; counting them to
+     * migrate them showed they are two relationships, so the row said five
+     * where it should have said six.
+     *
+     * Re-aiming at the SAME endpoint takes no new reference and must not: the
+     * slot already holds one, and a derive into an occupied slot would be
+     * refused.  Only the badge changes in that case, which is why the
+     * comparison stays.
+     */
+    uint32_t cap_idx = timeout ? TCB_CAP_TIMEOUT_EP : TCB_CAP_FAULT_EP;
+    struct KEndpoint **field = timeout ? &target->timeout_ep
+                                       : &target->fault_ep;
+    int same = (*field == ep);
+    old = same ? 0 : *field;
+    if (!same) *field = 0;               /* cleared here; installed below */
+    if (timeout) target->timeout_ep_badge = badge;
+    else         target->fault_ep_badge   = badge;
     irq_spinlock_unlock(&target->obj_lock, irqfl);
 
-    if (old) { kobject_active_release(&old->base); kobject_release(&old->base); }
+    if (!same) {
+        /* Outside the thread's lock: releasing the last reference to an
+         * endpoint runs `kendpoint_obj_close`, which drains its queue. */
+        if (old) (void)kcnode_slot_delete(&target->caps_hdr, cap_idx);
+        err = kcnode_slot_install_for_thread(ep_cn, ep_idx,
+                                             &target->caps_hdr, cap_idx);
+        if (err != IRIS_OK) {
+            kobject_active_release(&ep_cn->base);
+            kobject_release(&ep_cn->base);
+            kobject_release(&ep->base);
+            kobject_release(&target->base);
+            return syscall_err(err);
+        }
+        irqfl = irq_spinlock_lock(&target->obj_lock);
+        *field = ep;                     /* a cache; the slot holds the ref */
+        irq_spinlock_unlock(&target->obj_lock, irqfl);
+    }
+    kobject_active_release(&ep_cn->base);
+    kobject_release(&ep_cn->base);
 
     /*
      * An outstanding fault does NOT move with a re-aimed endpoint.
@@ -568,9 +605,8 @@ uint64_t sys_tcb_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
          * and `knotification_close` wakes every waiter. */
         if (had_old)
             (void)kcnode_slot_delete(&target->caps_hdr, TCB_CAP_BOUND_NOTIF);
-        err = kcnode_slot_derive(n_cn, n_idx,
-                                 &target->caps_hdr, TCB_CAP_BOUND_NOTIF,
-                                 RIGHT_SAME_RIGHTS, 0u);
+        err = kcnode_slot_install_for_thread(n_cn, n_idx,
+                                             &target->caps_hdr, TCB_CAP_BOUND_NOTIF);
         if (err != IRIS_OK) {
             kobject_active_release(&n_cn->base);
             kobject_release(&n_cn->base);
@@ -1145,9 +1181,8 @@ uint64_t sys_tcb_set_ipc_buffer(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)kcnode_slot_delete(&target->caps_hdr, TCB_CAP_IPC_BUFFER);
 
     if (fr) {
-        err = kcnode_slot_derive(src_cn, src_idx,
-                                 &target->caps_hdr, TCB_CAP_IPC_BUFFER,
-                                 RIGHT_SAME_RIGHTS, 0u);
+        err = kcnode_slot_install_for_thread(src_cn, src_idx,
+                                             &target->caps_hdr, TCB_CAP_IPC_BUFFER);
         if (err != IRIS_OK) {
             if (had_old) atomic_fetch_sub_explicit(&ipc_buffers_live, 1u,
                                                    memory_order_relaxed);

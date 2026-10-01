@@ -830,6 +830,58 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
     return IRIS_OK;
 }
 
+/*
+ * Install a capability the KERNEL is giving a thread, as an MDB child of the
+ * slot the caller named.  D-7's installer.
+ *
+ * It is `kcnode_slot_derive` without the `RIGHT_DUPLICATE` gate, and the
+ * difference is which principal is acting.  A derive is a CALLER asking to
+ * copy a capability, and D-3 gates that on DUPLICATE because a grantor must be
+ * able to hand out something non-re-delegable.  This is not that: the syscall
+ * has already checked the authority it requires — WRITE on the endpoint,
+ * WRITE on the TCB — and the capability it installs is the one it was told to
+ * install.  Demanding DUPLICATE on top would add an authority requirement the
+ * ABI never had.
+ *
+ * Found by making exactly that mistake: migrating the fault handler through
+ * `kcnode_slot_derive` broke 57 runtime tests at once, because the fixture
+ * arms a thread through a BADGED, deliberately non-copyable capability and
+ * then drops its own — which is the delegation pattern D-3 exists to make
+ * expressible.  The test was right and the installer was wrong.
+ *
+ * Rights and badge travel unchanged: the thread holds what the supervisor
+ * aimed, which is what makes a fault carry the badge that says whose it is.
+ */
+iris_error_t kcnode_slot_install_for_thread(struct KCNode *src_cn,
+                                           uint32_t src_idx,
+                                           struct KCNode *dst_cn,
+                                           uint32_t dst_idx) {
+    if (!src_cn || !dst_cn) return IRIS_ERR_INVALID_ARG;
+    if (src_idx >= src_cn->slot_count || dst_idx >= dst_cn->slot_count)
+        return IRIS_ERR_INVALID_ARG;
+
+    struct KObject *obj;
+    iris_rights_t   rights;
+    uint64_t        badge;
+    {
+        uint64_t cf = irq_spinlock_lock(&src_cn->lock);
+        struct KCSlot *src = &src_cn->slots[src_idx];
+        if (!src->object) {
+            irq_spinlock_unlock(&src_cn->lock, cf);
+            return IRIS_ERR_NOT_FOUND;
+        }
+        obj    = src->object;
+        rights = src->rights;
+        badge  = src->badge;
+        irq_spinlock_unlock(&src_cn->lock, cf);
+    }
+
+    return kcnode_slot_install_linked(dst_cn, dst_idx, obj, rights, badge,
+                                      src_cn, src_idx,
+                                      /*parent_expect=*/obj,
+                                      /*exclusive=*/1, /*unparented=*/0);
+}
+
 iris_error_t kcnode_slot_derive(struct KCNode *src_cn, uint32_t src_idx,
                                 struct KCNode *dst_cn, uint32_t dst_idx,
                                 iris_rights_t requested, uint64_t req_badge) {

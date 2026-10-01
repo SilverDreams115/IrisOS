@@ -346,4 +346,17 @@ uint32_t kcnode_final_shadow_mismatch(void);
 uint32_t kcnode_final_shadow_checks(void);
 #endif
 
+/*
+ * Install a capability the kernel is giving a thread (D-7), as an MDB child of
+ * the slot the caller named, carrying its rights and badge unchanged.
+ *
+ * `kcnode_slot_derive` without the RIGHT_DUPLICATE gate, because the caller is
+ * not asking to copy anything: the syscall has already checked the authority
+ * it requires.  See the definition for what demanding DUPLICATE here broke.
+ */
+iris_error_t kcnode_slot_install_for_thread(struct KCNode *src_cn,
+                                           uint32_t src_idx,
+                                           struct KCNode *dst_cn,
+                                           uint32_t dst_idx);
+
 #endif /* IRIS_NC_KCNODE_H */

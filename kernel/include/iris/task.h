@@ -15,12 +15,13 @@
  * convention); the rest are named below.  Sized for the five relationships
  * D-7 has to move here, so adding the next one is not a layout change.
  */
-#define TCB_CAP_SLOTS      6u
+#define TCB_CAP_SLOTS      7u
 #define TCB_CAP_IPC_BUFFER 1u
 #define TCB_CAP_BOUND_NOTIF 2u
 #define TCB_CAP_FAULT_EP   3u
 #define TCB_CAP_CSPACE     4u
 #define TCB_CAP_VSPACE     5u
+#define TCB_CAP_TIMEOUT_EP 6u
 #include <iris/nc/error.h>
 #include <iris/nc/spinlock.h>
 

@@ -1205,11 +1205,28 @@ its comment names a site that still has the defect rather than the one it used
 to name: pinning a bug at an address that has been fixed pins nothing and
 reads as though it does.
 
-**Three relationships left**: the fault-handler endpoint (`syscall_tcb.c`), the
-CSpace root and the VSpace (`task_lifecycle.c`).  The last two are the hard
-ones — they are on the resolution and context-switch paths and are read before
-a thread has a CSpace to resolve them through, which is the bootstrap order
-problem seL4 answers by having `tcbCTable` be where the root lives rather than
+**The fault and timeout endpoints are migrated, and there were SIX
+relationships, not five.**  This row said `syscall_tcb.c` had "2 sites" of one
+relationship; migrating them showed they are two — `fault_ep` and
+`timeout_ep`, which a supervisor aims separately — so the enumeration undercounted
+by one.  Both now live in `TCB_CAP_FAULT_EP` / `TCB_CAP_TIMEOUT_EP`.
+
+**And the installer was wrong for all three, which 57 runtime tests said at
+once.**  They used `kcnode_slot_derive`, which gates on `RIGHT_DUPLICATE`
+because D-3 makes that the right to hand out a copy.  A kernel install on
+behalf of a syscall that has already checked WRITE on the endpoint and WRITE on
+the TCB is not a caller asking to copy anything, and demanding DUPLICATE added
+an authority requirement the ABI never had — which broke exactly the pattern
+D-3 exists to make expressible: the fault fixture arms a thread through a
+BADGED, deliberately non-copyable capability and then drops its own.  The test
+was right and the installer was wrong.  `kcnode_slot_install_for_thread` is
+`derive` without that gate, rights and badge travelling unchanged, and all
+three sites use it.
+
+**Two relationships left**, and they are the hard ones: the CSpace root and the
+VSpace.  Both are on the resolution and context-switch paths and are read
+before a thread has a CSpace to resolve them through — the bootstrap order
+problem seL4 answers by making `tcbCTable` the place the root LIVES rather than
 something reached through it.
 
 **The gap is a test, not a paragraph.**  `test_final_cap` builds the exact
