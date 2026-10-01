@@ -50,4 +50,15 @@ void     ktcb_stats(uint32_t *live, uint32_t *hwm,
                     uint32_t *retyped, uint32_t *destroyed);
 
 #endif /* __KERNEL__ */
+/*
+ * Build the thread's own capability slots (ledger D-7).
+ *
+ * Called from EVERY path that produces a usable `struct task`, not just the
+ * two canonical births: a task whose `caps_hdr` is unbuilt has `slot_count`
+ * 0, so every install into it is refused — and the first version of this
+ * migration left `task_create_user_impl` out, which took the root task's
+ * VSpace reference to zero and page-faulted the first user instruction.
+ */
+void ktcb_caps_init(struct task *t);
+
 #endif /* IRIS_NC_KTCB_H */

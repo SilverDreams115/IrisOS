@@ -199,7 +199,31 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
      * CALLER holds it in a CSpace slot for the whole of this syscall — that is
      * how it was resolved — so nothing can drop the last reference before
      * ktcb_configure takes its own pair. */
-    err = ktcb_configure(target, cspace, vspace);
+    /* The SLOTS the caller named, so the thread's capabilities are DERIVED
+     * from them (D-7) rather than installed as unrelated roots. */
+    struct KCNode *cs_cn = 0, *vs_cn = 0;
+    uint32_t cs_idx = 0, vs_idx = 0;
+    err = cspace_resolve_slot(caller->cspace_root, (iris_cptr_t)arg1,
+                              &cs_cn, &cs_idx);
+    if (err != IRIS_OK) {
+        kobject_release(&target->base);
+        return syscall_err(err);
+    }
+    err = cspace_resolve_slot(caller->cspace_root, (iris_cptr_t)arg2,
+                              &vs_cn, &vs_idx);
+    if (err != IRIS_OK) {
+        kobject_active_release(&cs_cn->base);
+        kobject_release(&cs_cn->base);
+        kobject_release(&target->base);
+        return syscall_err(err);
+    }
+
+    err = ktcb_configure(target, cspace, vspace,
+                         cs_cn, cs_idx, vs_cn, vs_idx);
+    kobject_active_release(&vs_cn->base);
+    kobject_release(&vs_cn->base);
+    kobject_active_release(&cs_cn->base);
+    kobject_release(&cs_cn->base);
     if (err == IRIS_OK) {
         /* The guard belongs to the CSpace capability just
          * installed, so it is written with it and only when the install

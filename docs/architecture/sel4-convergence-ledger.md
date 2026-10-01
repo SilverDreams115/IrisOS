@@ -1223,11 +1223,39 @@ was right and the installer was wrong.  `kcnode_slot_install_for_thread` is
 `derive` without that gate, rights and badge travelling unchanged, and all
 three sites use it.
 
-**Two relationships left**, and they are the hard ones: the CSpace root and the
-VSpace.  Both are on the resolution and context-switch paths and are read
-before a thread has a CSpace to resolve them through — the bootstrap order
-problem seL4 answers by making `tcbCTable` the place the root LIVES rather than
-something reached through it.
+**All SIX are migrated.**  The CSpace root and the VSpace were called the hard
+ones here, on the grounds that they are read before a thread has a CSpace to
+resolve them through.  **That circularity does not exist**, and seeing why is
+the point: `t->caps` is reached STRUCTURALLY from the task, so reading the root
+out of `TCB_CAP_CSPACE` needs no CPtr resolution at all.  That is precisely why
+seL4 puts the root in `tcbCTable` rather than somewhere reached through it —
+the arrangement answers the bootstrap problem by construction, and the reason
+it looked hard was that this row had the dependency backwards.
+
+`ktcb_configure` installs both from the slots the caller named, so they are
+derivations.  The one genuinely different case is the ROOT task, whose CSpace
+the kernel fabricated "before anything existed that could name it": it has no
+source slot, so its install is UNPARENTED, which charter §2.1 already registers
+as the boot path's permanent and seL4-matching shape — seL4's BootInfo
+capabilities are roots too.
+
+It cost one real regression, caught by the suite rather than by review: the
+first attempt page-faulted the FIRST user instruction.
+`task_create_user_impl` does not go through `ktcb_object_init`, so that task's
+`caps_hdr` was unbuilt, every install into it was refused, the VSpace lost both
+references the old code gave it, and `kvspace_obj_close` invalidated the
+address space.  The installs also ignored their return value, which is what
+made it silent — they panic now, and `ktcb_caps_init` is called on every path
+that produces a usable task.
+
+**What is left of D-7 is the transient resolver borrows and nothing else.**
+Eleven `kobject_active_retain` call sites remain: one test fixture, one per
+syscall file matching the `cspace_resolve_cap` contract, three in `cspace.c`
+and three in `kcnode.c`.  None is ownership — each keeps a resolved object
+alive for the duration of one call and is released by the caller, and seL4
+needs none of them because an operation does not block.  Retiring the counter
+means retiring those, which is a question about how a resolution holds its
+result, not about who owns an object.
 
 **The gap is a test, not a paragraph.**  `test_final_cap` builds the exact
 shape: one slot names a notification, a thread then takes the reference

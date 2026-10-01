@@ -411,8 +411,14 @@ void     task_registry_stats(uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d)
  * here is reached by a passing test; a stub is the honest way to say "this
  * subsystem is not what is under test" rather than linking the scheduler.
  */
-iris_error_t ktcb_configure(struct task *t, struct KCNode *cs, struct KVSpace *vs) {
-    (void)t; (void)cs; (void)vs; return IRIS_ERR_NOT_SUPPORTED;
+iris_error_t ktcb_configure(struct task *t, struct KCNode *cs, struct KVSpace *vs,
+                            struct KCNode *cs_cn, uint32_t cs_idx,
+                            struct KCNode *vs_cn, uint32_t vs_idx) {
+    (void)t; (void)cs; (void)vs;
+    /* The SLOTS the capabilities came from (D-7): the thread derives its
+     * CSpace and VSpace from them instead of holding counted pointers. */
+    (void)cs_cn; (void)cs_idx; (void)vs_cn; (void)vs_idx;
+    return IRIS_ERR_NOT_SUPPORTED;
 }
 iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t rsp,
                              uint64_t arg) {

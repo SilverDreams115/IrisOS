@@ -82,7 +82,7 @@ void ktcb_obj_destroy(struct KObject *obj) {
  * is never released and `kcnode_obj_close`/`destroy` never run on it — the
  * storage goes back when the thread's does.
  */
-static void ktcb_caps_init(struct task *t) {
+void ktcb_caps_init(struct task *t) {
     kobject_init(&t->caps_hdr.base, KOBJ_CNODE);
     irq_spinlock_init(&t->caps_hdr.lock);
     t->caps_hdr.slot_count = TCB_CAP_SLOTS;

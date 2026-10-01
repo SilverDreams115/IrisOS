@@ -816,7 +816,9 @@ struct task *task_spawn_user(uint64_t arg0);
  * stack it is standing on.
  */
 iris_error_t ktcb_configure(struct task *t,
-                            struct KCNode *cspace, struct KVSpace *vspace);
+                            struct KCNode *cspace, struct KVSpace *vspace,
+                            struct KCNode *cs_cn, uint32_t cs_idx,
+                            struct KCNode *vs_cn, uint32_t vs_idx);
 iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
                              uint64_t arg);
 

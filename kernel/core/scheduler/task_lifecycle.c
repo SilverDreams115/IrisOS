@@ -6,6 +6,7 @@
 #include <iris/tss.h>
 #include <iris/paging.h>
 #include <iris/syscall.h>
+#include <iris/panic.h>
 #include <iris/nc/knotification.h>
 #include <iris/nc/kfault.h>
 #include <iris/nc/kcnode.h>
@@ -966,20 +967,23 @@ static void task_execution_teardown_off_cpu(struct task *t) {
      * execution.  Dropped BEFORE the TCB release below, so a process whose last
      * thread is exiting still has its root emptied by thread teardown and
      * not by this release racing it. */
+    /*
+     * Both are CAPABILITIES in the thread's own slots now (D-7), so the
+     * release is a slot delete.  The active reference the comment above talks
+     * about — the one whose last drop empties a CSpace — is the SLOT's, which
+     * is what an install takes, so the semantics are unchanged and the MDB is
+     * what holds it.
+     */
     if (t->cspace_root) {
-        struct KCNode *cs = t->cspace_root;
         t->cspace_root = 0;
-        kobject_active_release(&cs->base);
-        kobject_release(&cs->base);
+        (void)kcnode_slot_delete(&t->caps_hdr, TCB_CAP_CSPACE);
     }
     /* ...and its address space, after the address-space reap above has
      * torn the walk down.  Releasing here is dropping a reference, not
      * reaping: the object survives while any capability to it does. */
     if (t->vspace) {
-        struct KVSpace *vs = t->vspace;
         t->vspace = 0;
-        kobject_active_release(&vs->base);
-        kobject_release(&vs->base);
+        (void)kcnode_slot_delete(&t->caps_hdr, TCB_CAP_VSPACE);
     }
     /*
      * A dead thread has no pending fault, and its handler
@@ -1411,16 +1415,30 @@ static struct task *task_create_user_impl(uint64_t arg0) {
      * read off the process here because there is no capability to pass — this
      * is the one thread whose CSpace the KERNEL fabricated, before anything
      * existed that could name it. */
+    /* This path does not go through `ktcb_object_init`, so the thread's own
+     * capability slots are built here.  Leaving it out is what made the first
+     * attempt page-fault the first user instruction: an unbuilt `caps_hdr`
+     * refuses every install, so the VSpace lost both references the old code
+     * gave it and `kvspace_obj_close` invalidated the address space. */
+    ktcb_caps_init(t);
     t->cspace_root = root_cn;
-    if (t->cspace_root) {
-        kobject_retain(&t->cspace_root->base);
-        kobject_active_retain(&t->cspace_root->base);
-    }
+    if (t->cspace_root &&
+        kcnode_mint(&t->caps_hdr, TCB_CAP_CSPACE, &t->cspace_root->base,
+                    RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE) != IRIS_OK)
+        iris_panic("root task: cannot hold its own CSpace");
     t->vspace = root_vs;
-    if (t->vspace) {
-        kobject_retain(&t->vspace->base);
-        kobject_active_retain(&t->vspace->base);
-    }
+    if (t->vspace &&
+        kcnode_mint(&t->caps_hdr, TCB_CAP_VSPACE, &t->vspace->base,
+                    RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE) != IRIS_OK)
+        iris_panic("root task: cannot hold its own VSpace");
+    /*
+     * An UNPARENTED install, which `kcnode_mint` is, and the one place in this
+     * migration where that is right: the comment above says it — this is the
+     * thread whose CSpace the kernel fabricated "before anything existed that
+     * could name it", so there is no slot to derive from.  Charter §2.1 already
+     * registers the boot path's unparented roots as permanent and as something
+     * seL4 has too, its BootInfo capabilities being roots.
+     */
 
     task_set_first_user_entry(t, USER_TEXT_BASE, t->user_rsp, 0);
     task_set_bootstrap_arg0(t, arg0);
@@ -1513,7 +1531,9 @@ void task_abort_spawned_user(struct task *t) {
  * VSpace to a thread and knows about no third object.
  */
 iris_error_t ktcb_configure(struct task *t,
-                            struct KCNode *cspace, struct KVSpace *vspace) {
+                            struct KCNode *cspace, struct KVSpace *vspace,
+                            struct KCNode *cs_cn, uint32_t cs_idx,
+                            struct KCNode *vs_cn, uint32_t vs_idx) {
     if (!t || !vspace || !vspace->cr3) return IRIS_ERR_INVALID_ARG;
     if (t->configured || t->terminal) return IRIS_ERR_ALREADY_EXISTS;
 
@@ -1574,10 +1594,28 @@ iris_error_t ktcb_configure(struct task *t,
      * its SLOTS reachable, and dropping the active ref to zero is what empties
      * a CSpace.  Released in task_execution_teardown_off_cpu.
      */
+    /*
+     * D-7: the thread holds its CSpace as a CAPABILITY in its own slot, which
+     * is seL4's `tcbCTable`.  `cs_cn`/`cs_idx` is the slot the caller named,
+     * so the install is a DERIVATION and the MDB connects the two.
+     *
+     * The pair the old comment describes — lifecycle keeps the object, ACTIVE
+     * keeps its slots reachable, and the last active drop is what empties a
+     * CSpace — is exactly what an install takes, so the semantics are
+     * unchanged.  What moved is who holds it.
+     *
+     * There is no circularity, which is the thing that made this look hard:
+     * `t->caps` is reached STRUCTURALLY from the task, not by resolving a
+     * CPtr, so reading the root out of slot TCB_CAP_CSPACE needs no CSpace
+     * walk.  That is why seL4 puts the root in `tcbCTable` rather than
+     * somewhere reached through it.
+     */
     t->cspace_root = cspace;
     if (t->cspace_root) {
-        kobject_retain(&t->cspace_root->base);
-        kobject_active_retain(&t->cspace_root->base);
+        iris_error_t ie = kcnode_slot_install_for_thread(cs_cn, cs_idx,
+                                                        &t->caps_hdr,
+                                                        TCB_CAP_CSPACE);
+        if (ie != IRIS_OK) { t->cspace_root = 0; return ie; }
     }
     /*
      * Lifecycle AND active, the same pair as the CSpace above.
@@ -1591,8 +1629,15 @@ iris_error_t ktcb_configure(struct task *t,
      */
     t->vspace = vspace;
     if (t->vspace) {
-        kobject_retain(&t->vspace->base);
-        kobject_active_retain(&t->vspace->base);
+        iris_error_t ie = kcnode_slot_install_for_thread(vs_cn, vs_idx,
+                                                        &t->caps_hdr,
+                                                        TCB_CAP_VSPACE);
+        if (ie != IRIS_OK) {
+            t->vspace = 0;
+            (void)kcnode_slot_delete(&t->caps_hdr, TCB_CAP_CSPACE);
+            t->cspace_root = 0;
+            return ie;
+        }
     }
 
     task_init_fpu_state(t);
