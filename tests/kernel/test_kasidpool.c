@@ -119,7 +119,12 @@ void test_kasidpool(void) {
         ASSERT_NOT_NULL(p);
         struct KVSpace *vs = kvspace_alloc((uint64_t)(uintptr_t)mem);
         ASSERT_NOT_NULL(vs);
-        if (p && vs) {
+        /* A CNode to hold the pool capability the space will be given: the
+         * install derives from a slot, because an unrelated root naming the
+         * same object is the disconnection that breaks the MDB predicate. */
+        struct KCNode *cn = kcnode_alloc(8);
+        ASSERT_NOT_NULL(cn);
+        if (p && vs && cn) {
             /* [AP-7] retyped is not named. */
             ASSERT_EQ(kvspace_has_asid(vs), 0);
             ASSERT_EQ(vs->pcid, (uint16_t)0);
@@ -144,8 +149,34 @@ void test_kasidpool(void) {
             ASSERT_EQ((int)kvspace_assign_asid(vs, p), (int)IRIS_ERR_ALREADY_EXISTS);
             ASSERT_EQ(vs->pcid, mine);
 
-            /* The space holds the pool: it must outlive every name it issued. */
-            ASSERT_TRUE(atomic_load(&p->base.refcount) >= 2u);
+            /*
+             * The space holds the pool as a CAPABILITY, not as a count
+             * (ledger D-7, class 3).
+             *
+             * This asserted `refcount >= 2` with the note "the space holds the
+             * pool: it must outlive every name it issued", which was the old
+             * contract — and the thing D-7 objected to, because it kept an
+             * object alive while no capability named it.  `kvspace_assign_asid`
+             * takes NO reference now; the caller installs the pool capability
+             * into the space's own slot, which is where the reference lives and
+             * what makes the MDB able to see it.
+             *
+             * Asserted in both directions, because "it moved" is the claim:
+             * assign alone adds nothing, and the install is what adds it.
+             */
+            uint32_t rc_before = atomic_load(&p->base.refcount);
+            ASSERT_EQ(kcnode_mint(cn, 2, &p->base,
+                                  RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE),
+                      IRIS_OK);
+            uint32_t rc_slot = atomic_load(&p->base.refcount);
+            ASSERT_TRUE(rc_slot > rc_before);          /* the slot's own */
+            ASSERT_EQ(kcnode_slot_install_for_thread(cn, 2, &vs->caps_hdr,
+                                                     VSPACE_CAP_ASID_POOL),
+                      IRIS_OK);
+            ASSERT_TRUE(atomic_load(&p->base.refcount) > rc_slot);
+            /* And the MDB sees it: the owner's slot is no longer the last. */
+            ASSERT_EQ(kcnode_slot_is_final_cap(&cn->slots[2]), 0);
+            ASSERT_EQ(kcnode_slot_delete(cn, 2), IRIS_OK);
 
             /* [AP-10] destroying the space returns the name. */
             kobject_release(&vs->base);
@@ -153,6 +184,7 @@ void test_kasidpool(void) {
             ASSERT_EQ(reissued, mine);
             kasidpool_put(p, reissued);
 
+            kobject_release(&cn->base);
             kobject_release(&p->base);   /* our own reference, last one */
         }
     }

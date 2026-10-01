@@ -1331,8 +1331,46 @@ blocked on capability bookkeeping at all — it is blocked on the concurrency
 model**, and removing the reference without replacing the protection
 reintroduces a crash the tree has a test for.
 
-**Class 3 — the kernel deliberately keeps an object alive that NO capability
-names, which is the direct negation of D-7's target.**  `kvspace_assign_asid`:
+**Class 3 — the kernel deliberately kept an object alive that NO capability
+names, which is the direct negation of D-7's target.  THE ASID POOL IS DONE.**
+
+A VSpace carries its own capability slots now, the way the TCB does and the way
+seL4's VSpace does — its page tables are capabilities in the space's own slots.
+`sys_asid_pool_assign` installs the pool capability into
+`VSPACE_CAP_ASID_POOL` from the slot the caller named, so the reference the
+space keeps is one the MDB can see.
+
+The reference itself could not simply go, and that is why this needed a
+decision rather than a deletion: the space DEREFERENCES the pool to give its
+identifier back (`kasidpool_put`).  What changed is not whether a reference
+exists but what kind — a capability instead of a count — which is the only
+answer that keeps the identifier returnable AND makes the pool's lifetime
+capability-governed.  `kvspace_unassign_asid` is new, for the case where the id
+is taken and the install then fails: without it a space would hold an id whose
+pool it does not name and the pool would be short one for ever.
+
+Teardown gives the identifier back BEFORE deleting the slot, because the slot
+delete is what can run the pool's destructor and returning an id to a destroyed
+pool is the use-after-free that ordering exists to avoid.
+
+`test_kasidpool` asserted `refcount >= 2` with the note *"the space holds the
+pool: it must outlive every name it issued"* — the old contract, and the thing
+this row objected to.  It now asserts the claim in both directions, because "it
+moved" is what is being said: assign alone adds no reference, the install is
+what adds it, and the owner's slot stops being final.
+
+`kvspace_alloc` needed the same fix `task_create_user_impl` needed one commit
+earlier — a second creation path whose capability slots were never built, which
+is a hole worth expecting now rather than discovering twice.
+
+What remains of class 3 is the same family and not the same problem:
+`kvspace_map_table`, `kvspace_set_pt_pool` and `kframe_map_page` — a VSpace or
+a mapping owning what it was built from.  The slots exist for the pt_pool
+(`VSPACE_CAP_PT_POOL`); the page tables are a list, so they need a slot per
+table rather than a named slot, which is a sizing decision and not a new idea.
+
+The original wording, kept because it is what the code said:
+`kvspace_assign_asid`:
 *"the space now holds the pool: the identifier is only meaningful as an index
 into the pool that issued it, so the pool must outlive every space it named,
 **whatever happens to the capabilities pointing at it**."*  That sentence and

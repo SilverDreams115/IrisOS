@@ -4,6 +4,7 @@
 
 #ifdef __KERNEL__
 #include <iris/nc/kobject.h>
+#include <iris/nc/kcnode.h>
 #include <iris/nc/spinlock.h>
 #include <iris/nc/error.h>
 #include <stdint.h>
@@ -56,6 +57,14 @@ struct KUntyped;
 
 struct KAsidPool;
 
+/*
+ * The address space's own capability slots.  Slot 0 is unused, by the null-slot
+ * convention every other CNode follows.
+ */
+#define VSPACE_CAP_SLOTS     3u
+#define VSPACE_CAP_ASID_POOL 1u
+#define VSPACE_CAP_PT_POOL   2u
+
 struct KVSpace {
     struct KObject        base;          /* must be first */
     spinlock_t            lock;          /* guards all fields below */
@@ -68,6 +77,29 @@ struct KVSpace {
     uint16_t              pcid;          /* 0 = no identifier assigned yet */
     /* The pool the identifier came from, so it can be given back. */
     struct KAsidPool     *asid_pool;
+    /*
+     * ── The address space's own capability slots (ledger D-7, class 3) ──────
+     *
+     * seL4 holds a VSpace's page tables as CAPABILITIES in slots belonging to
+     * the space, and an ASID assignment is recorded in the pool.  IRIS held the
+     * pool with `kobject_retain` and a raw pointer, documented as *"the pool
+     * must outlive every space it named, whatever happens to the capabilities
+     * pointing at it"* — which is an object deliberately alive while NO
+     * capability names it, the direct negation of D-7's target.
+     *
+     * The reference is load-bearing and could not simply go: the space
+     * dereferences the pool to give its identifier back (`kasidpool_put`).
+     * What makes it a capability instead of a counted pointer is the same
+     * arrangement the TCB got — slots the object owns, reached structurally,
+     * so the MDB sees the reference and `kcnode_slot_is_final_cap` is complete
+     * over it.
+     *
+     * Embedded for the TCB's reason: a VSpace's storage is already carved from
+     * the principal's own Untyped, and a separate CNode would need an argument
+     * `SYS_ASID_POOL_ASSIGN` does not have.
+     */
+    struct KCNode         caps_hdr;
+    struct KCSlot         caps[VSPACE_CAP_SLOTS];
     int                   valid;         /* 1 = live, 0 = reaped */
     uint32_t              mapping_count; /* number of live KFrameMapping nodes */
     struct KFrameMapping *mappings;      /* singly-linked list head; NULL = empty */
@@ -247,6 +279,11 @@ void kvspace_free(struct KVSpace *vs);
 /* An address space is given its hardware identifier by a holder of an
  * ASIDPool, and cannot be bound to a thread until it has one. */
 iris_error_t kvspace_assign_asid(struct KVSpace *vs, struct KAsidPool *pool);
+
+/* Give the identifier back, for an assignment whose capability install failed.
+ * Without it a space keeps an id whose pool it does not name, and the pool is
+ * short one for the rest of its life. */
+void kvspace_unassign_asid(struct KVSpace *vs);
 void         kvspace_tag_bootstrap(struct KVSpace *vs);
 int          kvspace_has_asid(const struct KVSpace *vs);
 

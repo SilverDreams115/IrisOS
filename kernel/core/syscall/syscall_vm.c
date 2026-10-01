@@ -445,7 +445,30 @@ uint64_t sys_asid_pool_assign(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                      RIGHT_WRITE, &vs, &vr);
     if (err != IRIS_OK) { kobject_release(pool_obj); return syscall_err(err); }
 
+    /*
+     * The SLOT the caller named, so the space's reference to the pool is a
+     * CAPABILITY the MDB can see (D-7, class 3) rather than a counted pointer
+     * that kept the pool alive after every capability to it was gone.
+     */
+    struct KCNode *p_cn = 0;
+    uint32_t       p_idx = 0;
+    err = cspace_resolve_slot(t->cspace_root, (iris_cptr_t)arg0,
+                              &p_cn, &p_idx);
+    if (err != IRIS_OK) {
+        kobject_active_release(&vs->base);
+        kobject_release(&vs->base);
+        kobject_release(pool_obj);
+        return syscall_err(err);
+    }
+
     err = kvspace_assign_asid(vs, (struct KAsidPool *)pool_obj);
+    if (err == IRIS_OK) {
+        err = kcnode_slot_install_for_thread(p_cn, p_idx, &vs->caps_hdr,
+                                            VSPACE_CAP_ASID_POOL);
+        if (err != IRIS_OK) kvspace_unassign_asid(vs);
+    }
+    kobject_active_release(&p_cn->base);
+    kobject_release(&p_cn->base);
 
     kobject_active_release(&vs->base);
     kobject_release(&vs->base);

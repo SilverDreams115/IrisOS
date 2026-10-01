@@ -54,6 +54,28 @@ static void kvspace_tag(struct KVSpace *vs) {
 }
 
 /*
+ * Give an identifier back, for an assignment that did not complete.
+ *
+ * `sys_asid_pool_assign` does two things that can each fail — take an id, then
+ * install the pool capability into the space's own slot — and the second
+ * failing must not leave a space holding an id whose pool it does not name.
+ * Without this the id would be held by a space that never became runnable, and
+ * the pool would be short one for the rest of its life.
+ */
+void kvspace_unassign_asid(struct KVSpace *vs) {
+    if (!vs) return;
+    spinlock_lock(&vs->lock);
+    struct KAsidPool *issuer = vs->asid_pool;
+    uint16_t id = vs->pcid;
+    vs->asid_pool = 0;
+    vs->pcid      = 0;
+    vs->user_cr3  = 0;
+    spinlock_unlock(&vs->lock);
+    if (issuer && id) kasidpool_put(issuer, id);
+}
+
+
+/*
  * Assign one identifier from a pool.  Idempotent per address space: a VSpace
  * takes its tag once and keeps it until it is destroyed, because the tag is
  * what the hardware has cached translations under and re-tagging a live walk
@@ -72,11 +94,22 @@ iris_error_t kvspace_assign_asid(struct KVSpace *vs, struct KAsidPool *pool) {
             r = IRIS_ERR_NO_MEMORY;
         } else {
             vs->pcid     = id;
-            /* The space now holds the pool: the identifier is only meaningful
-             * as an index into the pool that issued it, so the pool must
-             * outlive every space it named, whatever happens to the
-             * capabilities pointing at it. */
-            kobject_retain(&pool->base);
+            /*
+             * The space holds the pool as a CAPABILITY in its own slot
+             * (D-7, class 3), installed by the caller from the slot it named.
+             *
+             * This was `kobject_retain(&pool->base)` with the note that "the
+             * pool must outlive every space it named, whatever happens to the
+             * capabilities pointing at it" — an object deliberately alive while
+             * NO capability named it, which is the negation of D-7's target.
+             * The reference itself was load-bearing and still is: the space
+             * dereferences the pool to give its identifier back
+             * (`kasidpool_put`).  What changed is that the reference is a
+             * capability the MDB can see, which is seL4's arrangement — its
+             * page tables are capabilities in the space's own slots — and the
+             * install happens in `sys_asid_pool_assign`, which is the only
+             * place that has the caller's slot to derive from.
+             */
             vs->asid_pool = pool;
             vs->user_cr3 = paging_make_user_cr3(vs->cr3, id);
         }
@@ -235,8 +268,12 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
     if (vs->asid_pool) {
         struct KAsidPool *issuer = vs->asid_pool;
         vs->asid_pool = 0;
+        /* The identifier goes back BEFORE the capability does: the slot delete
+         * is what can run the pool's destructor, and giving an id back to a
+         * destroyed pool is the use-after-free this ordering exists to avoid.
+         * `vs->asid_pool` is a cache; the slot held the reference (D-7). */
         kasidpool_put(issuer, vs->pcid);
-        kobject_release(&issuer->base);
+        (void)kcnode_slot_delete(&vs->caps_hdr, VSPACE_CAP_ASID_POOL);
     }
     vs->pcid     = 0;
     vs->user_cr3 = 0;
@@ -283,6 +320,35 @@ iris_error_t kvspace_bind(struct KVSpace *vs) {
     return r;
 }
 
+
+/*
+ * Build the address space's own capability slots (D-7, class 3).
+ *
+ * Same arrangement as the TCB's: a well-formed CNode whose storage is the
+ * VSpace's, never named by any capability, so nothing can retype, delete or
+ * revoke it and its one reference is never released.
+ */
+static void kvspace_caps_init(struct KVSpace *vs) {
+    kobject_init(&vs->caps_hdr.base, KOBJ_CNODE);
+    irq_spinlock_init(&vs->caps_hdr.lock);
+    vs->caps_hdr.slot_count = VSPACE_CAP_SLOTS;
+    vs->caps_hdr.slots      = vs->caps;
+    for (uint32_t i = 0; i < VSPACE_CAP_SLOTS; i++) {
+        vs->caps[i].object = 0;
+        vs->caps[i].rights = RIGHT_NONE;
+        vs->caps[i].badge  = 0;
+        vs->caps[i].mdb_parent = 0;
+        vs->caps[i].mdb_first_child = 0;
+        vs->caps[i].mdb_next_sib = 0;
+        vs->caps[i].mdb_prev_sib = 0;
+        vs->caps[i].mdb_cnode = 0;
+        vs->caps[i].mdb_flags = 0;
+        vs->caps[i].guard = 0;
+        vs->caps[i].guard_bits = 0;
+    }
+}
+
+
 /*
  * Give the claim back, for a composition that did not happen.
  *
@@ -312,6 +378,7 @@ struct KVSpace *kvspace_alloc_at(void *mem, uint64_t cr3) {
     kobject_init_in_untyped(&vs->base, KOBJ_VSPACE,
                             (uint32_t)sizeof(struct KVSpace));
     spinlock_init(&vs->lock);
+    kvspace_caps_init(vs);
     vs->cr3           = cr3;
     vs->valid         = 1;
     vs->mapping_count = 0;
@@ -329,6 +396,10 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
     if (!vs) return 0;
     kobject_init(&vs->base, KOBJ_VSPACE);
     spinlock_init(&vs->lock);
+    /* The slab-born path needs its capability slots built too (D-7, class 3).
+     * Leaving a second creation path out is exactly what made the TCB
+     * migration page-fault the first user instruction, one commit ago. */
+    kvspace_caps_init(vs);
     vs->cr3           = cr3;
     vs->valid         = 1;
     vs->mapping_count = 0;
