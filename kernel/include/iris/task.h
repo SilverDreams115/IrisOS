@@ -8,6 +8,19 @@
 #include <iris/ipc_stage.h>
 #include <iris/user_ctx.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kcnode.h>
+
+/*
+ * The thread's own capability slots.  Slot 0 is unused (the null-slot
+ * convention); the rest are named below.  Sized for the five relationships
+ * D-7 has to move here, so adding the next one is not a layout change.
+ */
+#define TCB_CAP_SLOTS      6u
+#define TCB_CAP_IPC_BUFFER 1u
+#define TCB_CAP_BOUND_NOTIF 2u
+#define TCB_CAP_FAULT_EP   3u
+#define TCB_CAP_CSPACE     4u
+#define TCB_CAP_VSPACE     5u
 #include <iris/nc/error.h>
 #include <iris/nc/spinlock.h>
 
@@ -564,6 +577,37 @@ struct task {
      */
     struct KFrame      *ipc_buffer;
     uint64_t            ipc_buffer_uvaddr;
+    /*
+     * ── The thread's own capability slots (ledger D-7) ──────────────────────
+     *
+     * seL4 holds a thread's CSpace root, VSpace, fault handler, bound
+     * notification and IPC buffer as CAPABILITIES, in slots belonging to the
+     * TCB — `tcbCTable`, `tcbVTable`, `tcbFaultHandler`,
+     * `tcbBoundNotification`, `tcbIPCBufferFrame`.  That is why it needs no
+     * reference count: there is no reference to an object that is not a
+     * capability in a slot, so the MDB sees every one and
+     * `isFinalCapability` is complete.
+     *
+     * IRIS held all five as raw pointers with `active_refs`, which is the nine
+     * acquisition sites the D-7 row enumerates and the reason
+     * `kcnode_slot_is_final_cap` is sound only for objects no thread holds —
+     * `test_final_cap` pins that gap.
+     *
+     * The header is embedded rather than allocated because a TCB's storage is
+     * already carved from the principal's own Untyped: growing `struct task`
+     * spends the budget it was given, where allocating a separate CNode would
+     * need an argument `SYS_TCB_CONFIGURE` does not have.  A slot needs an
+     * owning CNode for a real reason and not for bookkeeping — revoke reads
+     * `mdb_cnode` to take that lock before clearing a victim — so the header
+     * has to exist.
+     *
+     * Its `base` is never named by any capability, so nothing can retype,
+     * delete or revoke it: it is born with one reference that is never
+     * released and dies with the thread's storage.  Slot 0 is unused, by the
+     * same convention every other CNode follows.
+     */
+    struct KCNode       caps_hdr;
+    struct KCSlot       caps[TCB_CAP_SLOTS];
     /*
      * The event kernel — the thread's ring-3 register state, saved on every kernel
      * entry from user mode and restored on every return to it.

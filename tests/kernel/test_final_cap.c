@@ -37,6 +37,8 @@
 #include <iris/nc/knotification.h>
 #include <iris/kpage.h>
 #include <iris/nc/rights.h>
+#include <iris/task.h>
+#include <iris/nc/ktcb.h>
 #include <stdatomic.h>
 
 static int g_destroyed;
@@ -99,6 +101,72 @@ void test_final_cap(void) {
 
     kobject_active_release(o);          /* the thread lets go... */
     kobject_release(o);                 /* ...both of them, and now it dies */
+    ASSERT_EQ(g_destroyed, 1);
+
+    kobject_release(&cn->base);
+}
+
+
+/*
+ * The other half: a relationship that HAS been migrated.
+ *
+ * `SYS_TCB_SET_IPC_BUFFER` used to take `kobject_retain` +
+ * `kobject_active_retain` and keep a raw pointer, which is the shape the test
+ * above pins.  It now DERIVES the frame capability into the thread's own slot
+ * (`TCB_CAP_IPC_BUFFER`), which is what seL4's `tcbIPCBufferFrame` is.
+ *
+ * So the MDB sees it, and the predicate stops calling the owner's slot final —
+ * which is the whole point of the migration and the thing that has to be
+ * asserted, because "the reference is now a capability" is invisible from the
+ * outside until somebody asks the tree.
+ */
+void test_tcb_cap_slot(void) {
+    TEST_SUITE("a TCB relationship held as a CAPABILITY (D-7, migrated)");
+
+    struct KCNode *cn = kcnode_alloc(8);
+    struct task   *t  = (struct task *)kpage_alloc((uint32_t)sizeof(struct task));
+    ASSERT_NOT_NULL(cn);
+    ASSERT_NOT_NULL(t);
+    if (!cn || !t) return;
+    for (uint32_t i = 0; i < sizeof(*t); i++) ((uint8_t *)t)[i] = 0;
+    ktcb_object_init(t);               /* builds t->caps_hdr / t->caps */
+
+    struct KObject *o =
+        (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
+    ASSERT_NOT_NULL(o);
+    if (!o) return;
+    kobject_init_test(o, KOBJ_FRAME, &fc_ops);
+
+    ASSERT_EQ(kcnode_mint(cn, 1, o, RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE),
+              IRIS_OK);
+    kobject_release(o);                /* the birth reference */
+
+    /* One capability: the owner's slot is the last one. */
+    ASSERT_EQ(kcnode_slot_is_final_cap(&cn->slots[1]), 1);
+
+    /* The thread takes it the way the migrated syscall does: a DERIVATION
+     * into its own slot, not a counted pointer. */
+    ASSERT_EQ(kcnode_slot_derive(cn, 1, &t->caps_hdr, TCB_CAP_IPC_BUFFER,
+                                 RIGHT_SAME_RIGHTS, 0u), IRIS_OK);
+
+    /*
+     * THE GAP, CLOSED.  The owner's slot is no longer final — the MDB can see
+     * the thread's capability, because it IS one.  Compare `test_final_cap`
+     * above, where the same question about an unmigrated relationship still
+     * answers "final" and is wrong.
+     */
+    ASSERT_EQ(kcnode_slot_is_final_cap(&cn->slots[1]), 0);
+    ASSERT_EQ(kcnode_slot_is_final_cap(&t->caps[TCB_CAP_IPC_BUFFER]), 0);
+
+    /* And the object survives the owner dropping it, with no counted
+     * reference anywhere: the thread's capability is what keeps it. */
+    g_destroyed = 0;
+    ASSERT_EQ(kcnode_slot_delete(cn, 1), IRIS_OK);
+    ASSERT_EQ(g_destroyed, 0);
+    ASSERT_EQ(kcnode_slot_is_final_cap(&t->caps[TCB_CAP_IPC_BUFFER]), 1);
+
+    /* The thread lets go and it dies — decided by the TREE, not a count. */
+    ASSERT_EQ(kcnode_slot_delete(&t->caps_hdr, TCB_CAP_IPC_BUFFER), IRIS_OK);
     ASSERT_EQ(g_destroyed, 1);
 
     kobject_release(&cn->base);

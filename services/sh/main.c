@@ -315,14 +315,43 @@ static uint64_t sh_uptime_ns(void) {
  */
 static int sh_proc_ep(iris_cptr_t con) {
     uint64_t t0 = sh_uptime_ns();
+    uint32_t tries = 0;
 
     for (;;) {
         uint64_t now, mark;
         if (sh_proc_ep_try()) return 1;
         now = sh_uptime_ns();
-        /* No clock: fall back to a count, because a shell with no timer must
-         * still give up rather than wait for ever. */
-        if (now == 0u || t0 == 0u) { if (++t0 > 200000u) break; continue; }
+        /*
+         * No clock: fall back to a count, because a shell with no timer must
+         * still give up rather than wait for ever — and it must WAIT between
+         * attempts exactly as the timed path does.
+         *
+         * This branch used `if (++t0 > 200000u) break; continue;`, and the
+         * `continue` skipped the pause written immediately below it.  The
+         * paragraph there says what that costs: "an impatient shell writes
+         * tens of thousands of them into the boot log of a machine that is
+         * working correctly — which is how a real failure becomes
+         * unfindable."  The mitigation was written and this path went around
+         * it, which is the same shape as the lock rule kendpoint.c applied
+         * twice and broke once.
+         *
+         * Measured, not reasoned: a `-smp 2` selftest run produced a
+         * 200092-line boot log, 200001 of them `[SVCMGR] WARN: lookup
+         * failed`, with no SUITE line anywhere — the suite's own output was
+         * buried and the lane reported a boot that produced nothing.  Three
+         * earlier `rc=2` failures in the same session were attributed first to
+         * a QEMU disk-lock collision and then to a dropped serial line, and
+         * both guesses were wrong.  This is the cause.
+         *
+         * 2000 attempts is the same order of patience as the timed path's 400
+         * and it yields between each, so a boot that is merely slow still
+         * finds the spawner and a boot without one still gives up.
+         */
+        if (now == 0u || t0 == 0u) {
+            if (++tries > 2000u) break;
+            for (uint32_t i = 0; i < 256u; i++) (void)sh_sys0(SYS_YIELD);
+            continue;
+        }
         if (now - t0 > 15000000000ULL) break;
         /*
          * And WAIT between attempts, rather than asking as fast as the CPU

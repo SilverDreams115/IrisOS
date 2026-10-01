@@ -72,10 +72,41 @@ void ktcb_obj_destroy(struct KObject *obj) {
 }
 
 
+
+/*
+ * Wire up the thread's own capability slots (ledger D-7).
+ *
+ * The header is embedded in the task, so this only has to make it a
+ * well-formed CNode: a KObject the MDB can take a lock on, a slot count, and
+ * the inline array.  It is never named by a capability, so its one reference
+ * is never released and `kcnode_obj_close`/`destroy` never run on it — the
+ * storage goes back when the thread's does.
+ */
+static void ktcb_caps_init(struct task *t) {
+    kobject_init(&t->caps_hdr.base, KOBJ_CNODE);
+    irq_spinlock_init(&t->caps_hdr.lock);
+    t->caps_hdr.slot_count = TCB_CAP_SLOTS;
+    t->caps_hdr.slots      = t->caps;
+    for (uint32_t i = 0; i < TCB_CAP_SLOTS; i++) {
+        t->caps[i].object = 0;
+        t->caps[i].rights = RIGHT_NONE;
+        t->caps[i].badge  = 0;
+        t->caps[i].mdb_parent = 0;
+        t->caps[i].mdb_first_child = 0;
+        t->caps[i].mdb_next_sib = 0;
+        t->caps[i].mdb_prev_sib = 0;
+        t->caps[i].mdb_cnode = 0;
+        t->caps[i].mdb_flags = 0;
+        t->caps[i].guard = 0;
+        t->caps[i].guard_bits = 0;
+    }
+}
+
 void ktcb_object_init(struct task *t) {
     if (!t) return;
     kobject_init(&t->base, KOBJ_TCB);  /* refcount = 1 (execution ref) */
     irq_spinlock_init(&t->obj_lock);
+    ktcb_caps_init(t);
     t->configured = 1;   /* pool birth: execution state built by the creator */
     t->started    = 1;   /* ...and already runnable: its entry frame is set */
     ktcb_live_inc();
@@ -92,6 +123,7 @@ struct task *ktcb_alloc_at(void *mem) {
     kobject_init_in_untyped(&t->base, KOBJ_TCB,
                             (uint32_t)sizeof(struct task));  /* refcount = 1 (creator) */
     irq_spinlock_init(&t->obj_lock);
+    ktcb_caps_init(t);
     t->state      = TASK_SUSPENDED;         /* inactive until TCB_CONFIGURE */
     t->ring       = TASK_RING3;
     t->priority   = TASK_PRIORITY_DEFAULT;

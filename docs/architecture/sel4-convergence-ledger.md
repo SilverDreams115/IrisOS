@@ -1170,7 +1170,34 @@ the reason its 199177 agreements are evidence about CSpace operations and not
 about the kernel as a whole.
 
 So D-7's remaining work is one named design change — give the TCB capability
-slots — and the ledger says so instead of saying "months".
+slots — **and the first of the five is done.**
+
+`struct task` carries its own CNode now: an embedded `caps_hdr` plus
+`TCB_CAP_SLOTS` slots, named for the five relationships so adding the next is
+not a layout change.  Embedded rather than allocated because a TCB's storage is
+already carved from the principal's own Untyped, where a separate CNode would
+need an argument `SYS_TCB_CONFIGURE` does not have; the header exists because a
+slot needs an owning CNode for a real reason — revoke reads `mdb_cnode` to take
+that lock before clearing a victim.  Nothing names `caps_hdr` with a
+capability, so it cannot be retyped, deleted or revoked.
+
+**The IPC buffer frame is migrated.**  `SYS_TCB_SET_IPC_BUFFER` DERIVES the
+frame capability into `TCB_CAP_IPC_BUFFER` instead of taking
+`kobject_retain` + `kobject_active_retain` on a raw pointer.  Derived and not
+installed as a root, because two unrelated roots naming one object is exactly
+the disconnection that made the predicate wrong for promoted children.  That
+makes `RIGHT_DUPLICATE` a requirement on the frame where only READ|WRITE were
+checked before — a retyped frame is born with it, so no ordinary caller
+notices, and a deliberately non-copyable frame is now refused, which is seL4's
+rule.  `t->ipc_buffer` survives as a CACHE for the IPC fast path: what had to
+go is the reference, not the pointer.
+
+`test_tcb_cap_slot` asserts the gap CLOSED for it, beside `test_final_cap`
+asserting it open for the four that remain: the owner's slot stops being final
+the moment the thread derives, the object survives the owner dropping it, and
+it dies when the thread lets go — decided by the tree, with no counted
+reference anywhere.  **Four relationships left**: bound notification, fault
+endpoint, CSpace root, VSpace.
 
 **The gap is a test, not a paragraph.**  `test_final_cap` builds the exact
 shape: one slot names a notification, a thread then takes the reference

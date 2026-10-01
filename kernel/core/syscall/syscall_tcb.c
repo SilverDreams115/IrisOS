@@ -1055,23 +1055,80 @@ uint64_t sys_tcb_set_ipc_buffer(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    struct KFrame *old;
-    uint64_t irqfl = irq_spinlock_lock(&target->obj_lock);
-    old = target->ipc_buffer;
+    /*
+     * ── D-7: the TCB holds this as a CAPABILITY, not as a counted pointer ───
+     *
+     * It used to take `kobject_retain` + `kobject_active_retain` and keep a
+     * raw pointer — one of the nine acquisition sites the D-7 row enumerates,
+     * and one of the five relationships that make
+     * `kcnode_slot_is_final_cap` incomplete: the MDB cannot see a reference
+     * that is not a capability in a slot, so the predicate would call the
+     * owner's slot final while a thread still pointed at the object.
+     *
+     * Now it is DERIVED into the thread's own slot, which is what seL4's
+     * `tcbIPCBufferFrame` is.  Derived and not installed as a root, because
+     * two unrelated roots naming one object is exactly the disconnection that
+     * made the predicate wrong for promoted children — the capability has to
+     * be a CHILD of the one the caller named for the tree to connect them.
+     *
+     * That makes `RIGHT_DUPLICATE` on the frame capability a requirement
+     * where before only READ|WRITE were checked.  A retyped frame is born
+     * with it, so no ordinary caller notices; a caller holding a deliberately
+     * non-copyable frame is now refused, which is seL4's rule and the
+     * stricter reading.
+     *
+     * `target->ipc_buffer` survives as a CACHE for the IPC fast path.  What
+     * had to go is the REFERENCE, not the pointer: the slot holds it now.
+     */
+    struct KCNode *src_cn = 0;
+    uint32_t       src_idx = 0;
     if (fr) {
-        kobject_retain(&fr->base);
-        kobject_active_retain(&fr->base);
+        err = cspace_resolve_slot(caller->cspace_root, (iris_cptr_t)arg1,
+                                  &src_cn, &src_idx);
+        if (err != IRIS_OK) {
+            kobject_release(&fr->base);
+            kobject_release(&target->base);
+            return syscall_err(err);
+        }
     }
-    target->ipc_buffer        = fr;
-    target->ipc_buffer_uvaddr = fr ? arg2 : 0u;
+
+    int had_old = 0;
+    uint64_t irqfl = irq_spinlock_lock(&target->obj_lock);
+    had_old = (target->ipc_buffer != 0);
+    target->ipc_buffer        = 0;
+    target->ipc_buffer_uvaddr = 0u;
     irq_spinlock_unlock(&target->obj_lock, irqfl);
 
-    if (fr && !old)  atomic_fetch_add_explicit(&ipc_buffers_live, 1u,
-                                               memory_order_relaxed);
-    if (!fr && old)  atomic_fetch_sub_explicit(&ipc_buffers_live, 1u,
-                                               memory_order_relaxed);
+    /* The old capability goes through the MDB, outside the thread's lock —
+     * releasing the last reference to a frame runs its destructor. */
+    (void)kcnode_slot_delete(&target->caps_hdr, TCB_CAP_IPC_BUFFER);
 
-    if (old) { kobject_active_release(&old->base); kobject_release(&old->base); }
+    if (fr) {
+        err = kcnode_slot_derive(src_cn, src_idx,
+                                 &target->caps_hdr, TCB_CAP_IPC_BUFFER,
+                                 RIGHT_SAME_RIGHTS, 0u);
+        if (err != IRIS_OK) {
+            if (had_old) atomic_fetch_sub_explicit(&ipc_buffers_live, 1u,
+                                                   memory_order_relaxed);
+            kobject_active_release(&src_cn->base);
+            kobject_release(&src_cn->base);
+            kobject_release(&fr->base);
+            kobject_release(&target->base);
+            return syscall_err(err);
+        }
+        irqfl = irq_spinlock_lock(&target->obj_lock);
+        target->ipc_buffer        = fr;
+        target->ipc_buffer_uvaddr = arg2;
+        irq_spinlock_unlock(&target->obj_lock, irqfl);
+        kobject_active_release(&src_cn->base);
+        kobject_release(&src_cn->base);
+    }
+
+    if (fr && !had_old)  atomic_fetch_add_explicit(&ipc_buffers_live, 1u,
+                                                   memory_order_relaxed);
+    if (!fr && had_old)  atomic_fetch_sub_explicit(&ipc_buffers_live, 1u,
+                                                   memory_order_relaxed);
+
     if (fr)  kobject_release(&fr->base);   /* the resolve's ref */
     kobject_release(&target->base);
     return syscall_ok_u64(0);

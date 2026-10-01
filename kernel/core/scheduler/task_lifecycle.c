@@ -1022,15 +1022,19 @@ static void task_execution_teardown_off_cpu(struct task *t) {
      * pointer that is about to be freed. */
     knotification_unbind_task(t);
 
-    /* The registered IPC buffer.  Held with active+lifecycle refs, so a
-     * thread that dies still owning its buffer gives the frame back and its
-     * Untyped can be reset — the page was the user's, not the kernel's. */
+    /*
+     * The registered IPC buffer, which is a CAPABILITY in the thread's own
+     * slot now (D-7) and not a counted pointer.
+     *
+     * So the release is a slot delete: the MDB drops the reference, the
+     * frame's Untyped can be reset, and the page goes back to the user it
+     * belonged to.  The raw pointer is only a cache for the IPC fast path and
+     * is cleared with it.
+     */
     if (t->ipc_buffer) {
-        struct KFrame *b = t->ipc_buffer;
         t->ipc_buffer = 0;
         t->ipc_buffer_uvaddr = 0u;
-        kobject_active_release(&b->base);
-        kobject_release(&b->base);
+        (void)kcnode_slot_delete(&t->caps_hdr, TCB_CAP_IPC_BUFFER);
         ipc_buffer_gauge_drop();
     }
 

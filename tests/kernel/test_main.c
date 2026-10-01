@@ -69,6 +69,7 @@ void test_libc_fmt(void);
 void test_libc_malloc(void);
 
 void test_final_cap(void);
+void test_tcb_cap_slot(void);
 
 int main(void) {
     host_back_fake_physmem();
@@ -96,6 +97,7 @@ int main(void) {
     test_pagetable();
     test_cnode_guard();
     test_final_cap();
+    test_tcb_cap_slot();
     test_schedctx_refill();
     test_syscall_cspace();
     test_syscall_retype();
