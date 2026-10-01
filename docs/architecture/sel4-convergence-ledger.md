@@ -1192,12 +1192,25 @@ notices, and a deliberately non-copyable frame is now refused, which is seL4's
 rule.  `t->ipc_buffer` survives as a CACHE for the IPC fast path: what had to
 go is the reference, not the pointer.
 
-`test_tcb_cap_slot` asserts the gap CLOSED for it, beside `test_final_cap`
-asserting it open for the four that remain: the owner's slot stops being final
+**The bound notification is migrated too.**  `SYS_TCB_WATCH` derives into
+`TCB_CAP_BOUND_NOTIF`, which is seL4's `tcbBoundNotification`, and both
+teardown sites release through the slot.  `t->exit_notif` stays as the cache
+the exit signal reads.
+
+`test_tcb_cap_slot` asserts the gap CLOSED: the owner's slot stops being final
 the moment the thread derives, the object survives the owner dropping it, and
 it dies when the thread lets go — decided by the tree, with no counted
-reference anywhere.  **Four relationships left**: bound notification, fault
-endpoint, CSpace root, VSpace.
+reference anywhere.  `test_final_cap` asserts it still OPEN for the rest, and
+its comment names a site that still has the defect rather than the one it used
+to name: pinning a bug at an address that has been fixed pins nothing and
+reads as though it does.
+
+**Three relationships left**: the fault-handler endpoint (`syscall_tcb.c`), the
+CSpace root and the VSpace (`task_lifecycle.c`).  The last two are the hard
+ones — they are on the resolution and context-switch paths and are read before
+a thread has a CSpace to resolve them through, which is the bootstrap order
+problem seL4 answers by having `tcbCTable` be where the root lives rather than
+something reached through it.
 
 **The gap is a test, not a paragraph.**  `test_final_cap` builds the exact
 shape: one slot names a notification, a thread then takes the reference

@@ -16,9 +16,11 @@
  * somebody deletes.
  *
  * The gap: IRIS lets a THREAD hold a reference to an object that no slot
- * names — its CSpace root, its VSpace, its fault-handler endpoint, its bound
- * notification, its IPC buffer frame.  Five relationships, nine `active_refs`
- * acquisition sites.  seL4 has none of them, because all five are capabilities
+ * names.  There were five such relationships; **two are migrated** — the IPC
+ * buffer frame and the bound notification are capabilities in the thread's own
+ * slots now, and `test_tcb_cap_slot` below asserts that for one of them.
+ * **Three remain**: the fault-handler endpoint, the CSpace root and the
+ * VSpace.  seL4 has none of them, because all five are capabilities
  * in the TCB's own slots (`tcbCTable`, `tcbVTable`, `tcbFaultHandler`,
  * `tcbBoundNotification`, `tcbIPCBufferFrame`) and the MDB therefore sees
  * every reference that exists.
@@ -70,13 +72,20 @@ void test_final_cap(void) {
     ASSERT_EQ(atomic_load(&o->active_refs), 1u);
 
     /*
-     * Now a THREAD takes a reference, the way SYS_TCB_BIND_NOTIFICATION does
-     * for `target->exit_notif` — from outside the CSpace, on an object no
-     * extra slot names.  BOTH retains, because that is what the kernel takes
-     * there and taking only the active one models a relationship that does
-     * not exist: the object would still be destroyed when the slot went, and
-     * the test would be asserting something about my simplification rather
-     * than about IRIS.
+     * Now a THREAD takes a reference the way the three UNMIGRATED
+     * relationships still do — `task_lifecycle.c` for `t->cspace_root` and
+     * `t->vspace`, `syscall_tcb.c` for the fault-handler endpoint: from
+     * outside the CSpace, on an object no extra slot names.
+     *
+     * This comment used to cite `SYS_TCB_WATCH`/`target->exit_notif`, which is
+     * no longer true of it — that one now derives into
+     * `TCB_CAP_BOUND_NOTIF`.  A test that pins a defect has to name a site
+     * that still has it, or it pins nothing and reads as though it does.
+     *
+     * BOTH retains, because that is what those sites take, and taking only
+     * the active one models a relationship that does not exist: the object
+     * would still be destroyed when the slot went, and the test would be
+     * asserting something about my simplification rather than about IRIS.
      */
     kobject_retain(o);
     kobject_active_retain(o);

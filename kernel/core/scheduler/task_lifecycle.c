@@ -1038,12 +1038,14 @@ static void task_execution_teardown_off_cpu(struct task *t) {
         ipc_buffer_gauge_drop();
     }
 
-    /* The watch's own reference, dropped after it has fired. */
+    /*
+     * The watch, dropped after it has fired — and it is a CAPABILITY in the
+     * thread's own slot now (D-7), so the release is a slot delete and the MDB
+     * is what lets go.  The raw pointer was only a cache for the signal above.
+     */
     if (t->exit_notif) {
-        struct KNotification *n = t->exit_notif;
         t->exit_notif = 0;
-        kobject_active_release(&n->base);
-        kobject_release(&n->base);
+        (void)kcnode_slot_delete(&t->caps_hdr, TCB_CAP_BOUND_NOTIF);
     }
 
     /* The kernel stack was freed above, with the registry slot it is keyed

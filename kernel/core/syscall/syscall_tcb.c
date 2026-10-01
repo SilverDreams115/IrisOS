@@ -526,25 +526,66 @@ uint64_t sys_tcb_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     struct KNotification *notif = (struct KNotification *)n_obj;
-    struct KNotification *old   = 0;
     int fire_now = 0;
+    int had_old  = 0;
+
+    /*
+     * D-7: the watch is a CAPABILITY in the thread's own slot, which is what
+     * seL4's `tcbBoundNotification` is — the second of the five relationships
+     * to move (after `tcbIPCBufferFrame`).  It used to take `kobject_retain` +
+     * `kobject_active_retain` on a raw pointer, which the MDB cannot see, so
+     * `kcnode_slot_is_final_cap` called the watcher's own slot final while
+     * this thread still pointed at the notification.  `test_final_cap` pins
+     * exactly that shape, with exactly this call named in its comment.
+     *
+     * Resolved as a SLOT as well as an object, because the capability has to
+     * be DERIVED from the one the caller named: a root in the TCB's slot would
+     * be a second root naming one object with no link to the first, which is
+     * the disconnection promotion used to create.
+     */
+    struct KCNode *n_cn = 0;
+    uint32_t       n_idx = 0;
+    err = cspace_resolve_slot(caller->cspace_root, (iris_cptr_t)arg1,
+                              &n_cn, &n_idx);
+    if (err != IRIS_OK) {
+        kobject_release(n_obj);
+        kobject_release(&target->base);
+        return syscall_err(err);
+    }
 
     uint64_t irqfl = irq_spinlock_lock(&target->obj_lock);
     if (target->terminal) {
         fire_now = 1;                    /* already over: answer, do not arm */
     } else {
-        old = target->exit_notif;
-        kobject_retain(&notif->base);
-        kobject_active_retain(&notif->base);
-        target->exit_notif = notif;
-        target->exit_bits  = arg2;
+        had_old = (target->exit_notif != 0);
+        target->exit_notif = 0;
     }
     irq_spinlock_unlock(&target->obj_lock, irqfl);
 
-    if (old) {
-        kobject_active_release(&old->base);
-        kobject_release(&old->base);
+    if (!fire_now) {
+        /* The old capability goes through the MDB, outside the thread's lock:
+         * releasing the last reference to a notification runs its destructor,
+         * and `knotification_close` wakes every waiter. */
+        if (had_old)
+            (void)kcnode_slot_delete(&target->caps_hdr, TCB_CAP_BOUND_NOTIF);
+        err = kcnode_slot_derive(n_cn, n_idx,
+                                 &target->caps_hdr, TCB_CAP_BOUND_NOTIF,
+                                 RIGHT_SAME_RIGHTS, 0u);
+        if (err != IRIS_OK) {
+            kobject_active_release(&n_cn->base);
+            kobject_release(&n_cn->base);
+            kobject_release(n_obj);
+            kobject_release(&target->base);
+            return syscall_err(err);
+        }
+        irqfl = irq_spinlock_lock(&target->obj_lock);
+        target->exit_notif = notif;      /* a cache; the slot holds the ref */
+        target->exit_bits  = arg2;
+        irq_spinlock_unlock(&target->obj_lock, irqfl);
     }
+    kobject_active_release(&n_cn->base);
+    kobject_release(&n_cn->base);
+
     if (fire_now) knotification_signal(notif, arg2);
 
     kobject_release(n_obj);
