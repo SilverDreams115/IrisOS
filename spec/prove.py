@@ -818,6 +818,77 @@ def prove_rotate_preserves():
           extra=pre, witness=wit)
 
 
+def prove_rotate_swap_preserves():
+    """
+    ROTATE's other branch: dest == src, which is a SWAP of src and pivot.
+
+    Named as unproved one commit ago — "a different post-state, and stating it
+    as the other one would be the overclaim this file keeps catching".  It is a
+    different post-state and it is not a harder one: the swap is an INVOLUTION,
+    and the same uniform substitution that fixed the non-swap branch states it
+    in four lines.  Declining to prove something because the first encoding of
+    its neighbour was wrong is not caution, it is leaving the easy half of a
+    row red.
+
+    The kernel routes this through a temporary slot on its stack
+    (`kcnode_slot_rotate`'s `tmp`), which is an implementation detail of doing
+    a swap without a third name — no reader can observe it, `mdb_lock` is held
+    across all three relocations, so the specification is the swap itself.
+    """
+    obj, rgt, par, bdg, oty = new_state("swp")
+    pivot, src = z3.Int("pivot_w"), z3.Int("src_w")
+    i = z3.Int("i")
+    st = invariants.State(obj, rgt, par, bdg, oty, slot)
+
+    pre = [
+        z3.ForAll([i], z3.Implies(slot(i),
+                                  z3.And(wf(st, i), inv_A7_at(st, i),
+                                         inv_A8_at(st, i), inv_O2_at(st, i)))),
+        z3.ForAll([i], z3.Implies(slot(i), acyclic_within(par, i))),
+        slot(pivot), slot(src), src != pivot,
+        obj[src] != -1, obj[pivot] != -1,     # both occupied: it is a swap
+    ]
+
+    # An involution: each of the two slots takes the other's capability, and
+    # every parent link naming either one follows it.
+    def swap(x):
+        return z3.If(x == src, pivot, z3.If(x == pivot, src, x))
+
+    k = z3.Int("k")
+    obj2 = z3.Lambda([k], obj[swap(k)])
+    rgt2 = z3.Lambda([k], rgt[swap(k)])
+    bdg2 = z3.Lambda([k], bdg[swap(k)])
+    par2 = z3.Lambda([k], swap(par[swap(k)]))
+    post = invariants.State(obj2, rgt2, par2, bdg2, oty, slot)
+
+    wit = [
+        obj == z3.Lambda([k], z3.If(k == 1, 10, z3.If(k == 2, 11, -1))),
+        rgt == z3.Lambda([k], z3.BitVecVal(7, W)),
+        bdg == z3.Lambda([k], z3.BitVecVal(0, W)),
+        par == z3.Lambda([k], z3.IntVal(-1)),
+        oty == z3.Lambda([k], z3.IntVal(8)),
+        src == 1, pivot == 2,
+    ]
+
+    j = z3.Int("j")
+    prove("A7  rotate's SWAP branch preserves it",
+          z3.ForAll([j], z3.Implies(slot(j), inv_A7_at(post, j))),
+          extra=pre, witness=wit)
+    prove("A8  rotate's SWAP branch preserves it",
+          z3.ForAll([j], z3.Implies(slot(j), inv_A8_at(post, j))),
+          extra=pre, witness=wit)
+    prove("O2  rotate's SWAP branch preserves it",
+          z3.ForAll([j], z3.Implies(slot(j), inv_O2_at(post, j))),
+          extra=pre, witness=wit)
+    prove("    rotate's SWAP branch preserves well-formedness",
+          z3.ForAll([j], z3.Implies(slot(j), wf(post, j))),
+          extra=pre, witness=wit)
+    prove("    the swap is an involution — doing it twice is the identity",
+          z3.ForAll([j], z3.And(obj2[swap(j)] == obj[j],
+                                par2[swap(j)] == swap(par[j]))),
+          extra=pre, witness=wit)
+
+
 def prove_slices_make_progress():
     """
     The two SLICED operations terminate, which is the property their designs
@@ -904,6 +975,7 @@ def main():
     prove_move_preserves()
     prove_revoke_clears_the_subtree()
     prove_rotate_preserves()
+    prove_rotate_swap_preserves()
     prove_slices_make_progress()
     prove_revoke_root_survives()
 
