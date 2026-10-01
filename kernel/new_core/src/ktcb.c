@@ -3,6 +3,7 @@
 #include <iris/nc/kobject.h>
 #include <iris/nc/kobject_dispatch.h>
 #include <iris/nc/knotification.h>
+#include <iris/panic.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/task.h>
 #include <stdatomic.h>
@@ -84,9 +85,25 @@ uint32_t ktcb_destroyed_while_queued_count(void) {
 
 void ktcb_obj_destroy(struct KObject *obj) {
     struct task *t = (struct task *)obj;   /* KObject at offset 0 */
-    if (t->notif_queued)
+    /*
+     * A thread must not reach here while a notification queue still names it.
+     *
+     * This COUNTED while the queue held a reference, because the reference made
+     * the case impossible and the count was measuring whether it was
+     * redundant.  The reference is gone (D-7, class 1), so the count would be
+     * a report filed after a dangling pointer: the queue would be holding
+     * storage this function is about to hand back to its Untyped.  A panic
+     * before that happens is the only honest replacement.
+     *
+     * It stays zero for the reason the enqueue comment gives: a queued thread
+     * holds an execution reference on itself, and teardown cancels its queue
+     * membership before releasing it.
+     */
+    if (t->notif_queued) {
         atomic_fetch_add_explicit(&ktcb_destroyed_while_queued, 1u,
                                   memory_order_relaxed);
+        iris_panic("ktcb_obj_destroy: thread still on a notification queue");
+    }
     atomic_fetch_sub_explicit(&ktcb_live, 1u, memory_order_relaxed);
     atomic_fetch_add_explicit(&ktcb_destroyed, 1u, memory_order_relaxed);
     if (obj->ut_block_bytes) kobject_storage_free(obj, 0u, 0);

@@ -1308,10 +1308,14 @@ SAME lock.  That is a real gap in the checker, found by walking into it.
 row said "one named design change" when the subject was the TCB; reading each
 of the seven shows that was true of those six and is not true of these.
 
-**Class 1 — the ordering already holds, so the reference is redundant.**  The
-notification waiter queue, measured above: `D-7 destroyed-while-queued 0` at
-smp 1, 2 and 4, asserted by the gate.  This class is ordinary work: remove the
-reference and keep the measurement.
+**Class 1 — the ordering already holds, so the reference is redundant.  DONE.**
+The notification waiter queue holds a BARE POINTER now, as seL4's does.  The
+measurement came first — `D-7 destroyed-while-queued 0` at smp 1, 2 and 4 —
+and the check changed shape with the reference: it COUNTED while the reference
+made the case impossible, and it PANICS now, because with the reference gone a
+count would be a report filed after a dangling pointer, over storage
+`ktcb_obj_destroy` is about to hand back to its Untyped.  Still 0 at smp 1, 2
+and 4 after the removal, and the gate asserts it.
 
 **Class 2 — the reference protects a real cross-core window and CANNOT go
 while IRIS locks finely.**  `kreply_bind_caller`, and its own comment says why:
@@ -1345,9 +1349,8 @@ terms: lifecycle-only, "`close` still fires when the last capability goes, and
 only keeps its storage valid.
 
 **So D-7's target property is false by design today, in one named place, and
-the row has to say that.**  What remains is one piece of ordinary work (class
-1), one that waits on the concurrency model (class 2), and one that waits on a
-decision about ASIDs (class 3).  The six TCB relationships were the part that
+the row has to say that.**  Class 1 is done; what remains waits on the
+concurrency model (class 2) and on a decision about what an ASID is (class 3).  The six TCB relationships were the part that
 was a refactor, and they are done.
 
 The seven, with the shapes above, are different from the TCB's six: a TCB relationship had a capability the caller named to derive from,

@@ -51,13 +51,28 @@ static iris_error_t knotif_waiters_enqueue(struct KNotification *n, struct task 
     n->queue_tail = t;
     n->waiter_count++;
     /*
-     * A wait queue holds what it names, here as on the endpoint.
+     * ── The queue holds a BARE POINTER now (ledger D-7, class 1) ────────────
      *
-     * The two early returns above are deliberately NOT counted: a task already
-     * on this queue is already held, and a second reference would never be
-     * given back.
+     * It used to take `kobject_retain(&t->base)` — "a wait queue holds what it
+     * names" — which is one of the places a NON-CAPABILITY holder owned an
+     * object, and the thing D-7 is actually about.  seL4's queues hold bare
+     * TCB pointers because destroying a TCB removes it from every queue first
+     * (`finaliseCap` -> `suspend`).
+     *
+     * IRIS gets the same ordering from the other end: a thread that can be
+     * queued holds an EXECUTION reference on itself (`ktcb_configure`), only
+     * teardown releases it, and teardown calls `task_cancel_blocked_waits`
+     * before that.  So a queued thread cannot reach destruction, and the
+     * reference was insuring an argument rather than a risk.
+     *
+     * The argument is CHECKED, not trusted: `t->notif_queued` is an exact
+     * lock-free membership count, `ktcb_obj_destroy` reads it, and a thread
+     * that gets there while still queued now PANICS.  It counted before, while
+     * the reference made the case impossible; with the reference gone the
+     * count would be a report filed after a dangling pointer, and a loud stop
+     * before the storage is freed is the only honest replacement.  Measured 0
+     * at smp 1, 2 and 4 before the reference was removed.
      */
-    kobject_retain(&t->base);
     return IRIS_OK;
 }
 
@@ -78,7 +93,7 @@ static void knotif_waiters_remove(struct KNotification *n, struct task *t) {
         w->notif_next = 0;
         if (w->notif_queued) w->notif_queued--;
         if (n->waiter_count) n->waiter_count--;
-        kobject_release(&w->base);   /* The queue's */
+        /* No release: the queue holds a bare pointer (D-7, class 1). */
         return;
     }
 }
@@ -105,7 +120,7 @@ static int knotif_waiters_wake_one(struct KNotification *n) {
         if (w->notif_queued) w->notif_queued--;
         if (n->waiter_count) n->waiter_count--;
         task_wakeup(w);
-        kobject_release(&w->base);   /* The queue's */
+        /* No release: the queue holds a bare pointer (D-7, class 1). */
         return 1;
     }
     return 0;
@@ -142,8 +157,8 @@ static void knotif_waiters_wake_all(struct KNotification *n) {
             w->ipc_ep_closed = 1u;
             task_wakeup(w);
         }
-        /* Every waiter left the queue above, woken or not. */
-        kobject_release(&w->base);
+        /* Every waiter left the queue above, woken or not — and the queue
+         * holds no reference to give back (D-7, class 1). */
         w = next;
     }
 }
