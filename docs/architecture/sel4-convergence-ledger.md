@@ -1363,11 +1363,27 @@ what adds it, and the owner's slot stops being final.
 earlier — a second creation path whose capability slots were never built, which
 is a hole worth expecting now rather than discovering twice.
 
-What remains of class 3 is the same family and not the same problem:
-`kvspace_map_table`, `kvspace_set_pt_pool` and `kframe_map_page` — a VSpace or
-a mapping owning what it was built from.  The slots exist for the pt_pool
-(`VSPACE_CAP_PT_POOL`); the page tables are a list, so they need a slot per
-table rather than a named slot, which is a sizing decision and not a new idea.
+**The page-table pool is done too, and it turned out not to need a reference at
+all on the path that matters.**  `kvspace_retype_at` carves the space out of
+that very Untyped, and `kuntyped_alloc_child` retains the parent once per child
+— released when the storage goes back — so the space's STORAGE already kept the
+pool alive for exactly the space's lifetime.  `kvspace_set_pt_pool`'s retain was
+a second reference to the same object for the same duration, invisible beside
+the one the MDB already records.
+
+The boot path is the exception that made this a split rather than a deletion:
+the root task's address space is slab-born, so no storage reference exists and
+something must hold the pool.  It holds it as a capability in
+`VSPACE_CAP_PT_POOL`, unparented for the reason charter §2.1 registers.
+`kvspace_obj_destroy` deletes that slot BEFORE freeing the storage, because the
+storage IS the slot — the old code released after the free and got away with it
+only by reading the pointer into a local first.
+
+What remains of class 3 is one shape: `kvspace_map_table` and `kframe_map_page`
+— a VSpace or a mapping owning a page table or a frame.  Those are LISTS, so
+they want a slot per entry rather than a named slot, which is a sizing decision
+about how many capabilities an address space may hold and the first thing here
+that is a question about the ABI rather than about bookkeeping.
 
 The original wording, kept because it is what the code said:
 `kvspace_assign_asid`:

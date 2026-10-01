@@ -284,6 +284,13 @@ iris_error_t kvspace_assign_asid(struct KVSpace *vs, struct KAsidPool *pool);
  * Without it a space keeps an id whose pool it does not name, and the pool is
  * short one for the rest of its life. */
 void kvspace_unassign_asid(struct KVSpace *vs);
+
+/* Hold the page-table pool as a capability in the space's own slot, for a
+ * space whose STORAGE did not come from that pool — the boot path, where
+ * nothing else keeps it alive.  Unparented: at boot there is no slot to derive
+ * from (charter §2.1). */
+iris_error_t kvspace_hold_pt_pool_cap(struct KVSpace *vs,
+                                      struct KUntyped *pool);
 void         kvspace_tag_bootstrap(struct KVSpace *vs);
 int          kvspace_has_asid(const struct KVSpace *vs);
 

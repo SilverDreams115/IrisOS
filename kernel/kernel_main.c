@@ -922,8 +922,14 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                      * while anybody is running.
                      */
                     if (ut->vspace) {
-                        if (root_budget)
+                        if (root_budget) {
                             kvspace_set_pt_pool(ut->vspace, root_budget);
+                            /* The root space is slab-born, so nothing else
+                             * holds the pool: it holds it as a capability in
+                             * its own slot (D-7, class 3). */
+                            (void)kvspace_hold_pt_pool_cap(ut->vspace,
+                                                           root_budget);
+                        }
                     }
                     klog_write("[IRIS][USER] boot info page mapped, untypeds: ");
                     klog_write_dec(ut_count);

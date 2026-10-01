@@ -288,8 +288,18 @@ void kvspace_obj_destroy(struct KObject *obj) {
     struct KUntyped *pool = vs->pt_pool;
 
     kvspace_settle(vs, pool);
+    /*
+     * The pool capability goes BEFORE the storage, because the storage IS the
+     * slot: `kobject_storage_free` hands the whole KVSpace back and
+     * `vs->caps` goes with it.
+     *
+     * This was `kobject_release(&pool->base)` AFTER the storage free, which
+     * worked only because it had read `pool` into a local first.  There is no
+     * release here now: a space carved from the pool is covered by its storage
+     * reference, and a boot space holds a capability this delete drops.
+     */
+    (void)kcnode_slot_delete(&vs->caps_hdr, VSPACE_CAP_PT_POOL);
     kobject_storage_free(obj, (uint32_t)sizeof(struct KVSpace), 0);
-    if (pool) kobject_release(&pool->base);
 }
 
 
@@ -740,10 +750,41 @@ iris_error_t kvspace_unmap_table(struct KVSpace *vs, struct KPageTable *pt) {
     return IRIS_OK;
 }
 
+/*
+ * ── The page-table pool, and why this takes NO reference (D-7, class 3) ──────
+ *
+ * It did: `kobject_retain(&pool->base)`.  On the canonical path that was a
+ * SECOND reference to an object the space already held — `kvspace_retype_at`
+ * carves the space out of that very Untyped, and `kuntyped_alloc_child` retains
+ * the parent once per child, released by `kuntyped_release_child` when the
+ * storage goes back.  So the space's STORAGE already kept the pool alive for
+ * exactly the space's lifetime, and the extra retain duplicated it invisibly.
+ *
+ * The boot path is the exception and the reason this is a split rather than a
+ * deletion: the root task's address space is slab-born (`kvspace_alloc`), so no
+ * storage reference exists and something has to hold the pool.  That one holds
+ * it as a CAPABILITY in `VSPACE_CAP_PT_POOL` — see
+ * `kvspace_hold_pt_pool_cap` — which is unparented for the reason charter §2.1
+ * registers: at boot there is no slot to derive from.
+ */
 void kvspace_set_pt_pool(struct KVSpace *vs, struct KUntyped *pool) {
     if (!vs || !pool || vs->pt_pool) return;
-    kobject_retain(&pool->base);
     vs->pt_pool = pool;
+}
+
+/*
+ * Hold the pool as a capability in the space's own slot.
+ *
+ * For a space whose storage did NOT come from that pool — the boot path — where
+ * nothing else keeps it alive.  Unparented, because at boot there is no slot to
+ * derive from, which is the shape charter §2.1 registers as permanent and as
+ * something seL4 has too.
+ */
+iris_error_t kvspace_hold_pt_pool_cap(struct KVSpace *vs,
+                                      struct KUntyped *pool) {
+    if (!vs || !pool) return IRIS_ERR_INVALID_ARG;
+    return kcnode_mint(&vs->caps_hdr, VSPACE_CAP_PT_POOL, &pool->base,
+                       RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE);
 }
 
 /* kvspace_end_bootstrap is GONE.  It cleared `kernel_funded`, the flag that
