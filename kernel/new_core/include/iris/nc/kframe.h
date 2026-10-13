@@ -48,6 +48,15 @@ struct KFrame {
     uint64_t         size;          /* byte size (PAGE_SIZE multiple, >= 4096) */
     struct KUntyped *alloc_parent;  /* parent for child_count bookkeeping; NULL for bootstrap frames */
     _Atomic uint32_t mapped_count;  /* PTEs referencing this frame; must be 0 at destroy */
+    /*
+     * Every mapping of this frame, in any address space (ledger D-7).
+     *
+     * `mapped_count` says HOW MANY and this says WHICH, which is the
+     * difference between knowing a frame is mapped and being able to unmap it
+     * — seL4's `finaliseCap` needs the second.  Guarded by `base.lock`, which
+     * is rank 6 and so may be taken under a space's rank-3 lock.
+     */
+    struct KFrameMapping *mappings;
 };
 
 /* Forward declaration — full definition in iris/nc/kvspace.h. */
@@ -176,4 +185,8 @@ void     kframe_stat_unmap(void);
 void     kframe_stat_cleanup(void);
 
 #endif /* __KERNEL__ */
+/* Times a frame's list of mappings disagreed with its `mapped_count`.  Must be
+ * 0 before unmap-on-destroy can be built on the back-links (D-7). */
+uint32_t kframe_backlink_mismatch_count(void);
+
 #endif /* IRIS_NC_KFRAME_H */

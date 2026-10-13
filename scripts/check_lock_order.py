@@ -39,6 +39,11 @@ RANK = {
     'cn->lock': 6, 'to_cn->lock': 6, 'from_cn->lock': 6,
     'src_cn->lock': 6, 'v_cn->lock': 6,
     'n->base.lock': 6,
+    # A KFrame's own object lock, guarding the list of its mappings (D-7's
+    # back-links).  Rank 6 is the per-object tier §9.1 already names
+    # `KObject.lock` in; the SPELLING is what this table matches on, which is
+    # why a new variable name for an already-ranked lock still has to be added.
+    'f->base.lock': 6,
     't->obj_lock': 6, 'target->obj_lock': 6, 'ft->obj_lock': 6,
     'sc->lock': 6, 't->sched_ctx->lock': 6,
     'r->lock': 6, 'rp->lock': 6,

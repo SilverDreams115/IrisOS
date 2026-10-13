@@ -515,7 +515,8 @@ static struct KFrameMapping *kvspace_boot_node_alloc(void) {
         m = &kvspace_boot_nodes[kvspace_boot_next++];
     }
     irq_spinlock_unlock(&kvspace_boot_lock, f);
-    if (m) { m->next = 0; m->frame = 0; m->user_va = 0; }
+    if (m) { m->next = 0; m->frame = 0; m->user_va = 0;
+             m->vs = 0; m->frame_next = 0; }
     return m;
 }
 
@@ -537,6 +538,7 @@ struct KFrameMapping *kvspace_node_alloc(struct KVSpace *vs) {
         vs->free_nodes = m->next;
         spinlock_unlock(&vs->lock);
         m->next = 0; m->frame = 0; m->user_va = 0;
+        m->vs = 0; m->frame_next = 0;
         return m;
     }
     struct KUntyped *pool = vs->pt_pool;
@@ -545,8 +547,35 @@ struct KFrameMapping *kvspace_node_alloc(struct KVSpace *vs) {
     return kuntyped_alloc_child_top(pool, sizeof(struct KFrameMapping));
 }
 
+/*
+ * Take a mapping record off the FRAME's list (ledger D-7).
+ *
+ * Every release path reaches `kvspace_node_free`, so the unlink lives there
+ * rather than at each of the three sweeps — one place that cannot be missed,
+ * which is what the three-sweep bug in the frame-ownership attempt argued for.
+ *
+ * Under the frame's own lock (rank 6, takeable under a space's rank 3).
+ */
+static void kvspace_frame_unlink(struct KFrameMapping *m) {
+    struct KFrame *f = m->frame;
+    if (!f) return;
+    spinlock_lock(&f->base.lock);
+    struct KFrameMapping **link = &f->mappings;
+    /* BOUND: the mappings of ONE frame — one entry per space that mapped it,
+     * each costing that space a record from its own Untyped; the frame's lock
+     * is held, so nothing is inserted while it walks. */
+    while (*link) {
+        if (*link == m) { *link = m->frame_next; break; }
+        link = &(*link)->frame_next;
+    }
+    m->frame_next = 0;
+    m->vs         = 0;
+    spinlock_unlock(&f->base.lock);
+}
+
 void kvspace_node_free(struct KVSpace *vs, struct KFrameMapping *m) {
     if (!m) return;
+    kvspace_frame_unlink(m);
     if (kvspace_node_is_boot(m)) { kvspace_boot_node_free(m); return; }
     spinlock_lock(&vs->lock);
     m->frame = 0;

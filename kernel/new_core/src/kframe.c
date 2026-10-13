@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include <iris/nc/kframe.h>
+#include <iris/serial.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kobject_dispatch.h>
 #include <iris/nc/kvspace.h>
@@ -61,6 +62,66 @@ void kframe_stat_cleanup(void) {
 void kframe_obj_close(struct KObject *obj) {
     (void)obj;
     /* No tasks to wake — KFrame has no blocked waiters. */
+}
+
+/* Decimal, for the mismatch line below: the kernel's log takes strings. */
+static void kframe_u32(char *out, uint32_t v) {
+    char t[12]; int n = 0;
+    if (!v) { out[0] = '0'; out[1] = 0; return; }
+    /* BOUND: 10 digits, which is every uint32_t. */
+    while (v && n < 10) { t[n++] = (char)('0' + (v % 10u)); v /= 10u; }
+    int k = 0;
+    /* BOUND: `n` from above, at most 10, decremented each pass. */
+    while (n) out[k++] = t[--n];
+    out[k] = 0;
+}
+
+/*
+ * Does the frame's list of mappings agree with its count?
+ *
+ * The back-links are only worth having if they are complete, and "complete" is
+ * exactly `mapped_count` — the number the kernel has always kept.  Two records
+ * of one fact, written by different code at different moments, is the shape
+ * that drifts; this is the check that says it has not.
+ *
+ * Asked after every MAP and every UNMAP, not at destruction — which is where
+ * it was first put, and there it could not fail: `mapped_count` must be 0 at
+ * destroy (the panic below says so), so the list is necessarily empty too and
+ * the check compared 0 with 0.  A check that cannot fail reads exactly like
+ * evidence, which is the one thing it must not do.
+ *
+ * Counted rather than panicked while the back-links carry no responsibility
+ * yet: the mapping reference is still what keeps a frame alive, so a wrong
+ * list cannot corrupt anything today.  Zero here is what must hold before
+ * unmap-on-destroy can be built on them.
+ */
+static _Atomic uint32_t kframe_backlink_mismatch;
+
+uint32_t kframe_backlink_mismatch_count(void) {
+    return atomic_load_explicit(&kframe_backlink_mismatch, memory_order_relaxed);
+}
+
+static void kframe_backlinks_check(struct KFrame *f) {
+    uint32_t n = 0;
+    spinlock_lock(&f->base.lock);
+    /* BOUND: the mappings of ONE frame — one per space that mapped it, each
+     * costing that space a record from its own Untyped; the frame's lock is
+     * held, so nothing is inserted while it walks. */
+    for (struct KFrameMapping *m = f->mappings; m; m = m->frame_next) n++;
+    spinlock_unlock(&f->base.lock);
+    uint32_t c = atomic_load_explicit(&f->mapped_count, memory_order_relaxed);
+    if (n != c) {
+        atomic_fetch_add_explicit(&kframe_backlink_mismatch, 1u,
+                                  memory_order_relaxed);
+        /* Printed, not counted silently: it must be zero, so every occurrence
+         * is news and there is no volume to rate-limit. */
+        char b[12];
+        serial_write("[IRIS][D7] frame backlinks ");
+        kframe_u32(b, n); serial_write(b);
+        serial_write(" != mapped_count ");
+        kframe_u32(b, c); serial_write(b);
+        serial_write("\n");
+    }
 }
 
 void kframe_obj_destroy(struct KObject *obj) {
@@ -247,10 +308,28 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
     m->next    = vs->mappings;
     vs->mappings = m;
     vs->mapping_count++;
+    /*
+     * And onto the FRAME's list, so the frame can name this mapping (D-7).
+     *
+     * Under the frame's own lock, which is rank 6 and so may be taken under
+     * the space's rank 3.  `mapped_count` is incremented after the space lock
+     * drops, as before; the list and the count are both written while this
+     * path owns the record, so a walker holding the frame's lock sees them
+     * agree.
+     */
+    m->vs = vs;
+    {
+        spinlock_lock(&f->base.lock);
+        m->frame_next = f->mappings;
+        f->mappings   = m;
+        spinlock_unlock(&f->base.lock);
+    }
 
     spinlock_unlock(&vs->lock);
 
     atomic_fetch_add_explicit(&f->mapped_count, 1u, memory_order_relaxed);
+    /* Both records have just moved; this is where they can disagree. */
+    kframe_backlinks_check(f);
     kframe_stat_map();
     return IRIS_OK;
 }
@@ -385,6 +464,9 @@ iris_error_t kframe_unmap_page(struct KFrame *f, struct KVSpace *vs,
     /* Decrement mapped_count BEFORE kobject_release so that kframe_obj_destroy
      * always observes mapped_count == 0 when the mapping retain is the last one. */
     atomic_fetch_sub_explicit(&f->mapped_count, 1u, memory_order_relaxed);
+    /* The unlink happened in `kvspace_node_free`; check before the release,
+     * because after it the frame may be gone. */
+    kframe_backlinks_check(f);
     kframe_stat_unmap();
     kobject_release(&f->base);
     return IRIS_OK;

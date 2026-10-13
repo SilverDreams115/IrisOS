@@ -1484,8 +1484,32 @@ what destruction DOES**, and it is the one change in this class that §9.4 says
 this tree cannot validate: unmapping from a live address space on another core's
 behalf is reordering-sensitive, and the rig interleaves without reordering.
 
-Reverted.  The page-table work stands; `kframe_map_page` keeps its reference,
-and what it is waiting for is now named with the error that names it.
+Reverted.  The page-table work stands and `kframe_map_page` keeps its reference.
+
+**And the reason given above for why it waits was WRONG, which matters more
+than the attempt.**  §9.4 and the concurrency model are not what blocks it.
+`struct KFrame` carried `mapped_count` — a NUMBER — and `struct KFrameMapping`
+did not record its address space, so a frame could not name one of its
+mappings, let alone undo it.  `finaliseCap` is impossible for a reason about
+data structures, which is a thing that can be built, and attributing it to a
+reordering hazard the rig cannot see made it sound like a thing that cannot.
+
+**So the back-links are built.**  `KFrameMapping` gains `vs` and
+`frame_next`; `KFrame` gains `mappings`, guarded by its own object lock —
+rank 6, so it may be taken under a space's rank 3, and `check-locks` demanded
+the new SPELLING be ranked before it would pass, which is the table doing its
+job.  The unlink lives in `kvspace_node_free`, the one place every release path
+reaches: the three-sweep bug above is the argument for not putting it at each
+sweep.
+
+The invariant that makes them trustworthy is checked: a frame's list length
+equals its `mapped_count`, asked after every map and every unmap.  **0 across
+the suite at smp 1, 2 and 4** — and the first version asked it at DESTRUCTION,
+where it could not fail, because `mapped_count` must be 0 there so the list is
+necessarily empty and the check compared 0 with 0.  Moved, then sabotaged:
+skipping the unlink produces **24** mismatches, so the zero means something.
+
+What remains is the unmap itself, and it now has the structure it needs.
 
 The original wording, kept because it is what the code said:
 `kvspace_assign_asid`:

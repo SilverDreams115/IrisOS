@@ -2178,7 +2178,7 @@ true.
 | 3 | `KVSpace.lock` | per object |
 | 4 | `live_lock` (knotification registry) | global |
 | 5 | `sched_list_lock` | global — the scheduler's list of live threads |
-| 6 | `KCNode.lock`, `KObject.lock`, `KAsidPool.lock`, `KSchedContext.lock`, `task.obj_lock` | per object |
+| 6 | `KCNode.lock`, `KObject.lock` (incl. a `KFrame`'s own, guarding the list of its mappings), `KAsidPool.lock`, `KSchedContext.lock`, `task.obj_lock` | per object |
 | 7 | `dom_lock` | global — the domain schedule's cursor |
 | 8 | `CpuRunQueue.lock` | per CPU — **leaf, nothing may be taken under it** |
 

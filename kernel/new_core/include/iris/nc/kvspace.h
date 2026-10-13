@@ -46,6 +46,23 @@ struct KFrameMapping {
     struct KFrame        *frame;   /* non-NULL = slot live */
     uint64_t              user_va;
     struct KFrameMapping *next;    /* next node in singly-linked list; NULL = end */
+    /*
+     * ── Back-links, so a FRAME can find where it is mapped (ledger D-7) ─────
+     *
+     * seL4 can unmap a frame when its last capability goes (`finaliseCap`)
+     * because the mapping lives IN the capability.  IRIS records mappings in
+     * the address space's list, and a `KFrame` carried only `mapped_count` — a
+     * number — so a frame could not name one of its mappings, let alone undo
+     * it.  That, and not the concurrency model, is what made unmap-on-destroy
+     * impossible; the previous reading of this blamed §9.4 and was wrong.
+     *
+     * `vs` is which space this mapping is in; `frame_next` threads every
+     * mapping of ONE frame, across all spaces.  Two pointers in a record the
+     * space already carves, and the invariant that makes them trustworthy is
+     * checkable: the length of a frame's list equals its `mapped_count`.
+     */
+    struct KVSpace       *vs;
+    struct KFrameMapping *frame_next;
 };
 
 struct KUntyped;
