@@ -1411,18 +1411,38 @@ install path and reported beside the suite's verdict as
 `tables-hwm`.  Identical at smp 1, 2 and 4, which says it is a property of what
 the system builds and not of how it is scheduled.
 
-39 is the input, not the answer: ring 3 can map as many levels as its pt_pool
-affords, so a fixed 39 — or 64 — would eventually refuse a legitimate map.  The
-number's use is the opposite: it says a slot count derived from the pool's
-capacity is not going to be absurdly larger than what anything actually needs,
-so the design is affordable.  Sizing it from the budget is the charter's rule;
-knowing the real figure is what makes that rule cheap rather than theoretical.  That gives the map path a new `NO_MEMORY` failure and makes a
+39 is the input, not the answer — and paired with one more measurement it
+DECIDED the design.  `sizeof(struct KCSlot)` is 88 and `sizeof(struct KVSpace)`
+is 712, so inline table slots fit `(4096 - 712) / 88 = 38` in a one-page
+VSpace.  **38 available against 39 needed: the inline option misses by one
+slot**, and growing the VSpace to two pages would double what every address
+space costs, including the ones that map nothing.  Two numbers, one slot apart,
+chose the separate CNode.
+
+**DONE.**  `kvspace.c` has zero `kobject_retain` left.  A VSpace carves a
+`VSPACE_TABLE_CAP_SLOTS` (64) CNode from its `pt_pool` on FIRST map — a space
+that maps nothing pays nothing — and `sys_vspace_map_table` installs the
+table's capability into it from the slot the caller named.  Unmap deletes that
+slot under the same lock that unlinked the table; teardown empties the whole
+CNode in one act, before `pt_pool` is cleared, because the CNode was carved
+from that pool and its own release is what returns the block.  Exceeding 64
+answers `NO_MEMORY`, which is what a CNode answers when its slots run out, so a
+space's capacity for tables is the budget it was given.
+
+It cost one bug the host suite caught at once: the CNode needs an ACTIVE
+reference as well as a lifecycle one, because it is the active count reaching
+zero that runs `kcnode_obj_close` and `close` is what empties the slots.
+Without it the teardown's `kobject_active_release` underflowed — loudly, which
+is the right way to find out.
+
+`tables-hwm` reads 39 or 40 depending on the run, so 64 has real headroom.  That gives the map path a new `NO_MEMORY` failure and makes a
 VSpace's capacity for tables a property of the budget it was given — the
 charter's own rule, which is the right shape.  It is the first thing in this
 class that adds storage rather than moving a reference, and it is sized by
 something real rather than invented.
 
-`kframe_map_page` is the same shape over mappings rather than tables.
+`kframe_map_page` is the same shape over mappings rather than tables, and it is
+what remains of class 3 — one case, with the design now demonstrated next door.
 
 The original wording, kept because it is what the code said:
 `kvspace_assign_asid`:

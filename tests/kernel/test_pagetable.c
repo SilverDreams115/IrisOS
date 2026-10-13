@@ -37,10 +37,37 @@
 #include <iris/nc/kvspace.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kcnode.h>
+#include <iris/nc/rights.h>
 #include <iris/paging.h>
 #include <stdlib.h>
 
 #define PT_VA   (USER_PRIVATE_BASE + 0x40000000ULL)   /* a fresh 1 GiB window */
+
+/*
+ * The space holds a mapped table as a CAPABILITY now (ledger D-7, class 3), so
+ * mapping takes the SLOT the caller named rather than a bare pointer.  This
+ * test drove the pointer form directly; `pt_map` stands in for what a principal
+ * does — mint the table into a slot it holds, then map from there — and keeps
+ * the assertions below about paging rather than about plumbing.
+ *
+ * One scratch CNode for the whole test, a slot per table, never reused: a
+ * reused slot would make a refused map indistinguishable from a successful one
+ * that was later unmapped.
+ */
+static struct KCNode *g_pt_cn;
+static uint32_t       g_pt_next = 1u;
+
+static iris_error_t pt_map(struct KVSpace *vs, struct KPageTable *pt,
+                           uint64_t va) {
+    if (!g_pt_cn) return IRIS_ERR_NO_MEMORY;
+    uint32_t idx = g_pt_next++;
+    if (idx >= 32u) return IRIS_ERR_NO_MEMORY;
+    if (kcnode_mint(g_pt_cn, idx, &pt->base,
+                    RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE) != IRIS_OK)
+        return IRIS_ERR_NO_MEMORY;
+    return kvspace_map_table(vs, pt, g_pt_cn, idx, va);
+}
 
 static struct KPageTable *pt_make(struct KUntyped *ut) {
     void *hdr = kuntyped_alloc_child_top(ut, sizeof(struct KPageTable));
@@ -53,6 +80,11 @@ static struct KPageTable *pt_make(struct KUntyped *ut) {
 void test_pagetable(void) {
     TEST_SUITE("page table as a capability");
     paging_stub_strict_levels(1);
+
+    /* The scratch CSpace `pt_map` installs from — see its comment. */
+    g_pt_cn   = kcnode_alloc(32);
+    g_pt_next = 1u;
+    ASSERT_NOT_NULL(g_pt_cn);
 
     void *mem = aligned_alloc(4096u, 512u * 1024u);
     ASSERT_NOT_NULL(mem);
@@ -78,47 +110,47 @@ void test_pagetable(void) {
     /* [PT-5] the address decides which PML4 slot is written, so it is checked
      * BEFORE anything is consumed — the table survives a refused install. */
     if (a && vs) {
-        ASSERT_EQ((int)kvspace_map_table(vs, a, 0xFFFF800000000000ULL),
+        ASSERT_EQ((int)pt_map(vs, a, 0xFFFF800000000000ULL),
                   (int)IRIS_ERR_INVALID_ARG);
-        ASSERT_EQ((int)kvspace_map_table(vs, a, 0x1000ULL),
+        ASSERT_EQ((int)pt_map(vs, a, 0x1000ULL),
                   (int)IRIS_ERR_INVALID_ARG);
         ASSERT_EQ(a->level, (uint32_t)KPT_LEVEL_UNMAPPED);
     }
 
     /* [PT-2] top down: PDPT, then PD, then PT — one invocation each. */
     if (a && vs) {
-        ASSERT_EQ((int)kvspace_map_table(vs, a, PT_VA), (int)IRIS_OK);
+        ASSERT_EQ((int)pt_map(vs, a, PT_VA), (int)IRIS_OK);
         ASSERT_EQ(a->level, (uint32_t)KPT_LEVEL_PDPT);
         ASSERT_TRUE(a->mapped_vs == vs);
     }
     struct KPageTable *b = pt_make(ut);
     ASSERT_NOT_NULL(b);
     if (b && vs) {
-        ASSERT_EQ((int)kvspace_map_table(vs, b, PT_VA), (int)IRIS_OK);
+        ASSERT_EQ((int)pt_map(vs, b, PT_VA), (int)IRIS_OK);
         ASSERT_EQ(b->level, (uint32_t)KPT_LEVEL_PD);
     }
     struct KPageTable *c = pt_make(ut);
     ASSERT_NOT_NULL(c);
     if (c && vs) {
-        ASSERT_EQ((int)kvspace_map_table(vs, c, PT_VA), (int)IRIS_OK);
+        ASSERT_EQ((int)pt_map(vs, c, PT_VA), (int)IRIS_OK);
         ASSERT_EQ(c->level, (uint32_t)KPT_LEVEL_PT);
     }
 
     /* [PT-3] a spent table is BUSY wherever it is offered. */
     if (a && vs)
-        ASSERT_EQ((int)kvspace_map_table(vs, a, PT_VA + 0x40000000ULL),
+        ASSERT_EQ((int)pt_map(vs, a, PT_VA + 0x40000000ULL),
                   (int)IRIS_ERR_BUSY);
 
     /* [PT-4] a complete walk consumes nothing. */
     struct KPageTable *d = pt_make(ut);
     ASSERT_NOT_NULL(d);
     if (d && vs) {
-        ASSERT_EQ((int)kvspace_map_table(vs, d, PT_VA),
+        ASSERT_EQ((int)pt_map(vs, d, PT_VA),
                   (int)IRIS_ERR_ALREADY_EXISTS);
         ASSERT_EQ(d->level, (uint32_t)KPT_LEVEL_UNMAPPED);
         ASSERT_TRUE(d->mapped_vs == NULL);
         /* ...so it still installs somewhere the walk is not complete. */
-        ASSERT_EQ((int)kvspace_map_table(vs, d, PT_VA + 0x8000000000ULL),
+        ASSERT_EQ((int)pt_map(vs, d, PT_VA + 0x8000000000ULL),
                   (int)IRIS_OK);
     }
 
@@ -127,7 +159,7 @@ void test_pagetable(void) {
     ASSERT_NOT_NULL(e);
     if (e && vs) {
         kvspace_invalidate(vs);
-        ASSERT_EQ((int)kvspace_map_table(vs, e, PT_VA + 0x10000000000ULL),
+        ASSERT_EQ((int)pt_map(vs, e, PT_VA + 0x10000000000ULL),
                   (int)IRIS_ERR_BAD_HANDLE);
     }
 
@@ -210,8 +242,7 @@ void test_pagetable(void) {
             ASSERT_NOT_NULL(fresh);
             if (fresh) {
                 kvspace_set_pt_pool(fresh, ut);
-                ASSERT_EQ((int)kvspace_map_table(fresh, dirty,
-                                                 PT_VA + 0x20000000000ULL),
+                ASSERT_EQ((int)pt_map(fresh, dirty, PT_VA + 0x20000000000ULL),
                           (int)IRIS_OK);
                 int clean = 1;
                 for (uint32_t i = 0; i < 512u; i++)
@@ -246,7 +277,7 @@ void test_pagetable(void) {
                 lv[i] = pt_make(ut);
                 ASSERT_NOT_NULL(lv[i]);
                 if (lv[i])
-                    ASSERT_EQ((int)kvspace_map_table(dvs, lv[i], dva), (int)IRIS_OK);
+                    ASSERT_EQ((int)pt_map(dvs, lv[i], dva), (int)IRIS_OK);
             }
             /* The walk is complete: a fourth table has nothing to fill. */
             ASSERT_EQ(paging_missing_level_in(dcr3, dva), 0);

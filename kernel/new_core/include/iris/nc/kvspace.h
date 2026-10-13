@@ -65,6 +65,29 @@ struct KAsidPool;
 #define VSPACE_CAP_ASID_POOL 1u
 #define VSPACE_CAP_PT_POOL   2u
 
+/*
+ * How many page-table capabilities one address space can hold (D-7, class 3).
+ *
+ * 64, and both the number and the fact that it is a SEPARATE CNode rather than
+ * more inline slots were decided by measurement:
+ *
+ *   - the most tables any one space held at once, across the whole suite at
+ *     smp 1, 2 and 4, is 39 (`tables-hwm`);
+ *   - `sizeof(struct KCSlot)` is 88 and `sizeof(struct KVSpace)` is 712, so
+ *     inline slots fit (4096 - 712) / 88 = 38 in a one-page VSpace.
+ *
+ * 38 available against 39 needed: the inline design misses by ONE slot, and
+ * growing the VSpace to two pages would double what every address space costs
+ * — including the ones that map nothing.  A separate CNode, carved from the
+ * `pt_pool` the space already has and only for a space that maps a table, is
+ * what those two numbers chose.
+ *
+ * Exceeding it answers NO_MEMORY, which is what a CNode answers when its slots
+ * run out, and makes a space's capacity for tables a property of the budget it
+ * was given.
+ */
+#define VSPACE_TABLE_CAP_SLOTS 64u
+
 struct KVSpace {
     struct KObject        base;          /* must be first */
     spinlock_t            lock;          /* guards all fields below */
@@ -100,6 +123,12 @@ struct KVSpace {
      */
     struct KCNode         caps_hdr;
     struct KCSlot         caps[VSPACE_CAP_SLOTS];
+    /*
+     * The CNode holding one capability per MAPPED page table, carved from
+     * `pt_pool` on first map and NULL until then — a space that maps nothing
+     * pays nothing.  See `VSPACE_TABLE_CAP_SLOTS` for why it is separate.
+     */
+    struct KCNode        *table_caps;
     int                   valid;         /* 1 = live, 0 = reaped */
     uint32_t              mapping_count; /* number of live KFrameMapping nodes */
     struct KFrameMapping *mappings;      /* singly-linked list head; NULL = empty */
@@ -180,7 +209,10 @@ struct KPageTable;
 /* Take one installed level back out of a LIVE walk; BUSY while anything is
  * mapped under it.  seL4's seL4_X86_PageTable_Unmap — see kvspace.c. */
 iris_error_t kvspace_unmap_table(struct KVSpace *vs, struct KPageTable *pt);
+/* `src_cn`/`src_idx` is the SLOT the caller named: the space holds the table
+ * as a capability derived from it (D-7, class 3), not as a counted pointer. */
 iris_error_t kvspace_map_table(struct KVSpace *vs, struct KPageTable *pt,
+                               struct KCNode *src_cn, uint32_t src_idx,
                                uint64_t vaddr);
 
 /*

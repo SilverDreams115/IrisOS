@@ -76,7 +76,24 @@ uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(err);
     }
 
-    err = kvspace_map_table(vs, (struct KPageTable *)pt_obj, arg2);
+    /* The SLOT the caller named: the space holds the table as a capability
+     * derived from it (D-7, class 3) rather than as a counted pointer that
+     * kept a mapped table alive after every capability to it was gone. */
+    struct KCNode *pt_cn = 0;
+    uint32_t       pt_idx = 0;
+    err = cspace_resolve_slot(t->cspace_root, (iris_cptr_t)arg0,
+                              &pt_cn, &pt_idx);
+    if (err != IRIS_OK) {
+        kobject_active_release(&vs->base);
+        kobject_release(&vs->base);
+        kobject_release(pt_obj);
+        return syscall_err(err);
+    }
+
+    err = kvspace_map_table(vs, (struct KPageTable *)pt_obj,
+                            pt_cn, pt_idx, arg2);
+    kobject_active_release(&pt_cn->base);
+    kobject_release(&pt_cn->base);
     kobject_active_release(&vs->base);
     kobject_release(&vs->base);
     kobject_release(pt_obj);

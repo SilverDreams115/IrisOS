@@ -246,7 +246,8 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
             t->next      = 0;
             t->mapped_vs = 0;
             t->level     = KPT_LEVEL_UNMAPPED;
-            kobject_release(&t->base);
+            /* No release here: the space's capabilities to its tables are in
+             * `table_caps`, emptied below in one act (D-7, class 3). */
             t = next;
         }
     }
@@ -275,6 +276,21 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
     if (pool && vs->pml4_from_pool) {
         kuntyped_release_page_child(pool);
         vs->pml4_from_pool = 0;
+    }
+    /*
+     * The table capabilities go as one act (D-7, class 3), BEFORE `pt_pool` is
+     * cleared: the CNode was carved from that pool, and releasing its own
+     * reference is what returns the block.
+     *
+     * Emptying the CNode is what frees the tables — each slot was the space's
+     * capability to one, and the holder's own capability (if it kept one) is
+     * untouched, which is the whole point of it being a capability.
+     */
+    if (vs->table_caps) {
+        struct KCNode *tc = vs->table_caps;
+        vs->table_caps = 0;
+        kobject_active_release(&tc->base);   /* empties its slots */
+        kobject_release(&tc->base);          /* returns the block to pt_pool */
     }
     vs->pt_pool = 0;
     /* The identifier goes back to the POOL it came from, not to a kernel
@@ -558,6 +574,56 @@ static void kvspace_release_nodes(struct KVSpace *vs) {
     }
 }
 
+
+/*
+ * The CNode that holds one capability per MAPPED page table (D-7, class 3).
+ *
+ * Carved from `pt_pool` on first map, so a space that maps nothing pays
+ * nothing, and NULL until then.  See `VSPACE_TABLE_CAP_SLOTS` for why it is a
+ * separate CNode rather than more inline slots: 39 tables measured against 38
+ * that fit in a one-page VSpace.
+ *
+ * `vs->lock` held by the caller.
+ */
+static iris_error_t kvspace_table_caps_ensure(struct KVSpace *vs) {
+    if (vs->table_caps) return IRIS_OK;
+    if (!vs->pt_pool)   return IRIS_ERR_NO_MEMORY;
+    void *mem = kuntyped_alloc_child(
+        vs->pt_pool, KCNODE_ALLOC_SIZE(VSPACE_TABLE_CAP_SLOTS));
+    if (!mem) return IRIS_ERR_NO_MEMORY;
+    struct KCNode *cn = kcnode_alloc_at(mem, VSPACE_TABLE_CAP_SLOTS);
+    if (!cn) {
+        kuntyped_release_child(mem, KCNODE_ALLOC_SIZE(VSPACE_TABLE_CAP_SLOTS));
+        return IRIS_ERR_NO_MEMORY;
+    }
+    /*
+     * An ACTIVE reference as well as the lifecycle one.
+     *
+     * `kobject_init` leaves `active_refs` at 0, and it is the active count
+     * reaching zero that runs `kcnode_obj_close` — which is what empties the
+     * slots.  Without this the teardown's `kobject_active_release` underflows
+     * (it did, loudly, in the host suite) and nothing would empty the CNode
+     * even if it did not.
+     *
+     * Nothing names this CNode with a capability, so it is never retyped,
+     * deleted or revoked; both references go when the space tears down.
+     */
+    kobject_active_retain(&cn->base);
+    vs->table_caps = cn;
+    return IRIS_OK;
+}
+
+/* The slot a mapped table's capability sits in, or VSPACE_TABLE_CAP_SLOTS when
+ * it is not there.  `vs->lock` held. */
+static uint32_t kvspace_table_cap_slot(const struct KVSpace *vs,
+                                       const struct KPageTable *pt) {
+    if (!vs->table_caps) return VSPACE_TABLE_CAP_SLOTS;
+    for (uint32_t i = 1u; i < VSPACE_TABLE_CAP_SLOTS; i++)
+        if (vs->table_caps->slots[i].object == &pt->base) return i;
+    return VSPACE_TABLE_CAP_SLOTS;
+}
+
+
 /*
  * See kvspace.h.  Three passes, one per level, deepest first: `tables` is a
  * newest-first list and a table's parent may be anywhere in it, so ordering by
@@ -582,6 +648,7 @@ void kvspace_detach_tables(struct KVSpace *vs, uint64_t cr3) {
 }
 
 iris_error_t kvspace_map_table(struct KVSpace *vs, struct KPageTable *pt,
+                               struct KCNode *src_cn, uint32_t src_idx,
                                uint64_t vaddr) {
     if (!vs || !pt) return IRIS_ERR_INVALID_ARG;
     /*
@@ -648,7 +715,37 @@ iris_error_t kvspace_map_table(struct KVSpace *vs, struct KPageTable *pt,
         return IRIS_ERR_ALREADY_EXISTS;   /* the walk was already complete */
     }
 
-    kobject_retain(&pt->base);            /* the VSpace holds it while installed */
+    /*
+     * The space holds the table as a CAPABILITY in its own CNode (D-7,
+     * class 3), derived from the slot the caller named.
+     *
+     * This was `kobject_retain(&pt->base)` — "the VSpace holds it while
+     * installed" — which kept a mapped table alive after every capability to it
+     * was gone: the thing D-7 objects to.  The reference is still needed (the
+     * hardware walks through that block, and the holder may legitimately drop
+     * its own capability — `userboot` does exactly that when it builds init's
+     * address space and lets go), so what changed is its KIND.  The earlier
+     * attempt to need no reference at all, by refusing the holder's delete, is
+     * what `userboot` refuted.
+     */
+    {
+        iris_error_t ie = kvspace_table_caps_ensure(vs);
+        if (ie != IRIS_OK) { spinlock_unlock(&vs->lock); return ie; }
+        uint32_t free_idx = VSPACE_TABLE_CAP_SLOTS;
+        /* BOUND: VSPACE_TABLE_CAP_SLOTS, a constant; `vs->lock` held.  Slot 0
+         * is the null slot, by the convention every CNode follows. */
+        for (uint32_t i = 1u; i < VSPACE_TABLE_CAP_SLOTS; i++)
+            if (!vs->table_caps->slots[i].object) { free_idx = i; break; }
+        if (free_idx == VSPACE_TABLE_CAP_SLOTS) {
+            /* Out of table slots: the same answer a CNode gives when its slots
+             * run out, and the space's capacity is the budget it was given. */
+            spinlock_unlock(&vs->lock);
+            return IRIS_ERR_NO_MEMORY;
+        }
+        ie = kcnode_slot_install_for_thread(src_cn, src_idx,
+                                            vs->table_caps, free_idx);
+        if (ie != IRIS_OK) { spinlock_unlock(&vs->lock); return ie; }
+    }
     pt->mapped_vs = vs;
     pt->mapped_va = vaddr;
     pt->level     = (uint32_t)level;
@@ -775,12 +872,17 @@ iris_error_t kvspace_unmap_table(struct KVSpace *vs, struct KPageTable *pt) {
     pt->mapped_va = 0;
     pt->level     = KPT_LEVEL_UNMAPPED;
 
+    /* The space's CAPABILITY to the table goes (D-7, class 3), under the same
+     * lock that unlinked it so no map can race the slot going empty.  The
+     * holder keeps its own; what it gets back is a table it can install
+     * elsewhere — and `kvspace_map_table` zeroes on install, so what it held
+     * before cannot follow it (PT-9). */
+    {
+        uint32_t idx = kvspace_table_cap_slot(vs, pt);
+        if (idx < VSPACE_TABLE_CAP_SLOTS)
+            (void)kcnode_slot_delete(vs->table_caps, idx);
+    }
     spinlock_unlock(&vs->lock);
-    /* The VSpace's retain, taken at install.  The holder keeps its own
-     * capability; what it gets back is a table it can install elsewhere — and
-     * `kvspace_map_table` zeroes on install, so what it held before cannot
-     * follow it (PT-9). */
-    kobject_release(&pt->base);
     return IRIS_OK;
 }
 
