@@ -291,6 +291,10 @@ void kvspace_unassign_asid(struct KVSpace *vs);
  * from (charter §2.1). */
 iris_error_t kvspace_hold_pt_pool_cap(struct KVSpace *vs,
                                       struct KUntyped *pool);
+
+/* The most page tables any one address space has held at once.  The sizing
+ * input for giving a VSpace a CNode for its tables (D-7, class 3). */
+uint32_t kvspace_tables_hwm_count(void);
 void         kvspace_tag_bootstrap(struct KVSpace *vs);
 int          kvspace_has_asid(const struct KVSpace *vs);
 

@@ -455,8 +455,13 @@ void iris_test_main(iris_cptr_t rbx_unused) {
         it_serial_write("[IRIS][TEST] D-7 destroyed-while-queued ");
         if (dr != 0) it_serial_write("?\n");
         else {
-            it_log_num((uint32_t)dbuf[132] | ((uint32_t)dbuf[133] << 8) |
-                       ((uint32_t)dbuf[134] << 16) | ((uint32_t)dbuf[135] << 24));
+            uint32_t w = (uint32_t)dbuf[132] | ((uint32_t)dbuf[133] << 8) |
+                         ((uint32_t)dbuf[134] << 16) | ((uint32_t)dbuf[135] << 24);
+            it_log_num(w & 0xFFFFu);            /* must be 0 */
+            /* And the sizing input for class 3's remaining design: the most
+             * page tables any ONE address space held at once. */
+            it_serial_write(" tables-hwm ");
+            it_log_num(w >> 16);
             it_serial_write("\n");
         }
     }

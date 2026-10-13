@@ -16,6 +16,21 @@
  * death (V16) and that the count returns to baseline after churn. */
 static _Atomic uint32_t kvspace_live;
 
+/*
+ * The most page tables any ONE address space has held at once (D-7, class 3).
+ *
+ * The remaining design gives a VSpace a CNode for its tables, and how many
+ * slots that CNode needs is the only open question in it.  A number invented
+ * here would be a number somebody hits; this is the number this tree actually
+ * produces, measured across the whole suite and surfaced beside the other
+ * authority gauges.
+ */
+static _Atomic uint32_t kvspace_tables_hwm;
+
+uint32_t kvspace_tables_hwm_count(void) {
+    return atomic_load_explicit(&kvspace_tables_hwm, memory_order_relaxed);
+}
+
 static void kvspace_release_nodes(struct KVSpace *vs);
 
 /*
@@ -637,6 +652,25 @@ iris_error_t kvspace_map_table(struct KVSpace *vs, struct KPageTable *pt,
     pt->mapped_vs = vs;
     pt->mapped_va = vaddr;
     pt->level     = (uint32_t)level;
+    /* Count the list as it grows, for the sizing question above.  Under
+     * `vs->lock`, which this path holds, so the walk is not racing an install. */
+    {
+        uint32_t n = 1u;
+        /* BOUND: the page-table list of one VSpace — one entry per level the
+         * user retyped and mapped; `vs->lock` held. */
+        for (struct KPageTable *q = vs->tables; q; q = q->next) n++;
+        uint32_t hw = atomic_load_explicit(&kvspace_tables_hwm,
+                                           memory_order_relaxed);
+        /*
+         * BOUND: monotonicity, not a count.  The high-water mark only rises,
+         * `n` is fixed, and a failed compare-exchange reloads `hw`, so every
+         * retry either raises `hw` or makes `n > hw` false.
+         */
+        while (n > hw &&
+               !atomic_compare_exchange_weak_explicit(&kvspace_tables_hwm, &hw,
+                                                      n, memory_order_relaxed,
+                                                      memory_order_relaxed)) { }
+    }
     pt->next      = vs->tables;
     vs->tables    = pt;
     spinlock_unlock(&vs->lock);

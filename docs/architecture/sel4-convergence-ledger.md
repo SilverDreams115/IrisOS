@@ -1402,7 +1402,21 @@ exists.  The design is coherent and the refusal contradicts it.
 
 So the remaining answer is the other one: the VSpace holds each table as a
 CAPABILITY in a CNode of its own, carved from the `pt_pool` it already has, at
-first map.  That gives the map path a new `NO_MEMORY` failure and makes a
+first map.
+
+**Its one open question — how many slots — now has a MEASURED answer rather
+than a guessed one: 39.**  That is the most page tables any ONE address space
+has held at once across the whole suite, counted by `kvspace_tables_hwm` on the
+install path and reported beside the suite's verdict as
+`tables-hwm`.  Identical at smp 1, 2 and 4, which says it is a property of what
+the system builds and not of how it is scheduled.
+
+39 is the input, not the answer: ring 3 can map as many levels as its pt_pool
+affords, so a fixed 39 — or 64 — would eventually refuse a legitimate map.  The
+number's use is the opposite: it says a slot count derived from the pool's
+capacity is not going to be absurdly larger than what anything actually needs,
+so the design is affordable.  Sizing it from the budget is the charter's rule;
+knowing the real figure is what makes that rule cheap rather than theoretical.  That gives the map path a new `NO_MEMORY` failure and makes a
 VSpace's capacity for tables a property of the budget it was given — the
 charter's own rule, which is the right shape.  It is the first thing in this
 class that adds storage rather than moving a reference, and it is sized by

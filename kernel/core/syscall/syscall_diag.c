@@ -259,7 +259,17 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
          * was wrong.  It must stay zero, and a reserved word that already
          * reaches ring 3 is the cheapest place to let a test say so.
          */
-        uint32_t a5 = ktcb_destroyed_while_queued_count();
+        uint32_t a5 = ktcb_destroyed_while_queued_count()
+                      | (kvspace_tables_hwm_count() << 16);
+        /*
+         * Two 16-bit gauges in the word, because both are D-7 measurements and
+         * the word is the last reserved one: the low half is the ordering check
+         * that must stay zero, the high half is the most page tables any ONE
+         * address space has held at once — the sizing input for giving a VSpace
+         * a CNode for its tables, which is the only open question left in
+         * class 3.  Packed rather than taking a new offset, so the ABI surface
+         * does not grow for a measurement.
+         */
         buf[14] = (uint64_t)a0 | ((uint64_t)a1 << 32);
         buf[15] = (uint64_t)a2 | ((uint64_t)a3 << 32);
         buf[16] = (uint64_t)a4 | ((uint64_t)a5 << 32);
