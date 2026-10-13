@@ -1441,8 +1441,51 @@ charter's own rule, which is the right shape.  It is the first thing in this
 class that adds storage rather than moving a reference, and it is sized by
 something real rather than invented.
 
-`kframe_map_page` is the same shape over mappings rather than tables, and it is
-what remains of class 3 — one case, with the design now demonstrated next door.
+`kframe_map_page` looked like the same shape over mappings rather than tables,
+with the design demonstrated next door.  **It is not, and three failures said
+so — the last of them names the real obstacle.**
+
+The sizing measured fine: 35 mappings over 35 DISTINCT frames, identical in
+every sample, so nothing here maps one frame twice and 128 slots covers tables
+and frames together.  Implemented, and then:
+
+1. **A capability store needs a budget, and boot has none yet.**
+   `bootstrap_kframe_map` maps the root task's text and data from
+   `task_lifecycle.c` and `kernel_main.c` BEFORE `kvspace_set_pt_pool` runs, so
+   at that moment the space cannot hold a capability anywhere.  Answered the way
+   charter §2.1 answers the rest of the boot path: no source slot means no
+   principal, and that mapping keeps a counted reference.
+2. **One capability covers however many times a space maps one frame**, so
+   "did the drop find a slot?" is not the same question as "was this held by a
+   capability?".  Conflating them released a count nobody took on the second
+   unmap of a twice-mapped frame — `active_refs underflow type=0 refcount=0`,
+   a release of an already-destroyed object.
+3. **There are THREE sweep paths over a space's mapping list**, not two:
+   `kvspace_settle`, `kframe_unmap_page`, and the invalidate sweep.  Missing the
+   third dropped a capability-held frame's lifecycle count without its slot.
+
+And then the one that is not a bug in the attempt:
+
+    [IRIS][PANIC] kframe: destroy with active mappings — caller must unmap
+                  before release
+
+**A derived capability is revocable by its holder.**  The space's capability is
+a CHILD of the slot the caller named — it has to be, because an unparented root
+would be a second root naming one object with no link to the first, which is
+the disconnection that makes `kcnode_slot_is_final_cap` wrong.  But a child
+dies when its parent is revoked, so revoking a frame capability would destroy a
+frame that is still mapped.  The page tables have the same exposure and the
+suite does not revoke one; something revokes a frame capability on every boot.
+
+seL4 answers this in `finaliseCap`: destroying a frame capability UNMAPS it.
+IRIS's contract is the opposite and says so in that panic — "caller must unmap
+before release".  So this case is not a reference to move; **it is a change to
+what destruction DOES**, and it is the one change in this class that §9.4 says
+this tree cannot validate: unmapping from a live address space on another core's
+behalf is reordering-sensitive, and the rig interleaves without reordering.
+
+Reverted.  The page-table work stands; `kframe_map_page` keeps its reference,
+and what it is waiting for is now named with the error that names it.
 
 The original wording, kept because it is what the code said:
 `kvspace_assign_asid`:
