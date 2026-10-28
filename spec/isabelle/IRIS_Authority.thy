@@ -217,6 +217,92 @@ definition badge_of_derive :: "cspace \<Rightarrow> sid \<Rightarrow> badge \<Ri
      (if bg = 0 then s_badge (slots C src) else bg)"
 
 
+text \<open>
+  ── The operations, DEFINED ─────────────────────────────────────────────────
+
+  They were not, and five lemmas below invoked them.
+
+  `derive`, `delete`, `revoke` and `retype` appeared only inside the obligation
+  statements — `inv_A7 (derive C src dst req bg)` and four more — and nowhere
+  as definitions.  Isabelle rejects an undefined constant in a statement, so
+  this theory could not be loaded at all, and the `oops` markers did not hide
+  that: a parse error happens before a proof is attempted.  The file documented
+  the markers as a deliberate choice ("`oops` rather than `sorry`, so a later
+  theory cannot build on them as if they held"), which reads as though the file
+  had been processed.  It had not.  Found by counting uses against definitions
+  while auditing the theory; it is the kind of thing a prover says in one
+  second and a reader can miss for a long time.
+
+  The definitions follow `spec/authority_model.py`, because that is the model
+  `spec-differential` and `spec-exhaustive` validate against the real C — so
+  the chain stays `this text == that model == the kernel` rather than acquiring
+  a third reading of its own.
+\<close>
+
+abbreviation empty_slot :: slot where
+  "empty_slot \<equiv> \<lparr> s_obj = None, s_rights = 0, s_badge = 0,
+                   s_parent = None, s_children = [] \<rparr>"
+
+definition derive :: "cspace \<Rightarrow> sid \<Rightarrow> sid \<Rightarrow> rights \<Rightarrow> badge \<Rightarrow> cspace" where
+  \<comment> \<open>The destination becomes a CHILD of the source, carrying reduced rights
+      and the badge the central rule chose.  The source's child list gains it,
+      because `inv_links_symmetric` is what makes A9 and A10 mean anything.\<close>
+  "derive C src dst req bg =
+     (let s = slots C;
+          kid = \<lparr> s_obj = s_obj (s src),
+                  s_rights = rights_reduce (s_rights (s src)) req,
+                  s_badge = badge_of_derive C src bg,
+                  s_parent = Some src,
+                  s_children = [] \<rparr>;
+          par = (s src)\<lparr> s_children := s_children (s src) @ [dst] \<rparr>
+      in C\<lparr> slots := ((s(src := par))(dst := kid)) \<rparr>)"
+
+definition delete :: "cspace \<Rightarrow> sid \<Rightarrow> cspace" where
+  \<comment> \<open>Delete REPARENTS: the slot's children become children of its parent, so
+      a capability is never orphaned and the forest stays a forest.  A root's
+      children become roots.  This is `mdb_detach_reparent`.\<close>
+  "delete C i =
+     (let s = slots C; p = s_parent (s i); ch = s_children (s i)
+      in C\<lparr> slots :=
+         (\<lambda>t. if t = i then empty_slot
+              else if t \<in> set ch then (s t)\<lparr> s_parent := p \<rparr>
+              else if Some t = p
+                   then (s t)\<lparr> s_children := removeAll i (s_children (s t)) @ ch \<rparr>
+              else s t) \<rparr>)"
+
+definition desc :: "cspace \<Rightarrow> sid \<Rightarrow> sid set" where
+  \<comment> \<open>The DESCENDANTS of a slot, as the transitive closure of "is a child of".
+      Isabelle can say this and a decidable fragment cannot, which is exactly
+      why `revoke_removes_exactly_the_subtree` is owed here and only unrolled
+      to a bounded depth by `make spec-prove`.\<close>
+  "desc C i = {j. (j, i) \<in> {(a, b). s_parent (slots C a) = Some b}\<^sup>+}"
+
+definition revoke :: "cspace \<Rightarrow> sid \<Rightarrow> cspace" where
+  \<comment> \<open>A10: the subtree goes and the ROOT stays — it keeps its capability and
+      loses its children.\<close>
+  "revoke C i =
+     (let s = slots C
+      in C\<lparr> slots :=
+         (\<lambda>t. if t \<in> desc C i then empty_slot
+              else if t = i then (s i)\<lparr> s_children := [] \<rparr>
+              else s t) \<rparr>)"
+
+definition fresh_oid :: "cspace \<Rightarrow> oid" where
+  "fresh_oid C = (SOME x. objs C x = None)"
+
+definition retype :: "cspace \<Rightarrow> sid \<Rightarrow> otype \<Rightarrow> sid \<Rightarrow> cspace" where
+  \<comment> \<open>A new object is BORN from the Untyped, and its capability is installed as
+      a child of the Untyped's slot — which is what `inv_O2` reads as "the
+      storage belongs to the Untyped that produced it", and what lets a reset
+      be refused while children live.\<close>
+  "retype C ut ty dst =
+     (let s = slots C; x = fresh_oid C;
+          kid = \<lparr> s_obj = Some x, s_rights = 0, s_badge = 0,
+                  s_parent = Some ut, s_children = [] \<rparr>;
+          par = (s ut)\<lparr> s_children := s_children (s ut) @ [dst] \<rparr>
+      in C\<lparr> slots := ((s(ut := par))(dst := kid)),
+            objs := (objs C)(x := Some \<lparr> o_type = ty \<rparr>) \<rparr>)"
+
 section \<open>The invariants of the charter, as obligations\<close>
 
 text \<open>
