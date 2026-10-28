@@ -1497,6 +1497,22 @@ spec-bridge:
 # not a third reading on purpose: where it had to choose it chose what the
 # text says and not what the model does, because agreeing by construction is
 # the failure mode this directory exists to avoid.
+# ── what one subject can learn about another's actions ──────────────────────
+#
+# Confinement says a disjoint subject's SLOTS do not change.  That leaves the
+# channel a capability system gives every subject whether or not IPC is
+# modelled: the RESULT CODES of its own operations.  If what B does changes
+# what A is told, A learns about B through the kernel — and A's slots can be
+# untouched while A's answers differ, so confinement does not cover it.
+#
+# The property is the standard one over observations: A's sequence of result
+# codes is the same whether or not B ran.  Flows through message CONTENTS are
+# outside it, because nothing in `spec/` models what is sent, and the lane
+# says so in its own output rather than leaving it to be discovered.
+.PHONY: spec-noninterference
+spec-noninterference:
+	@python3 spec/noninterference.py $${SPEC_NI_STATES:-300}
+
 .PHONY: spec-theory
 spec-theory:
 	@python3 spec/theory_check.py $${SPEC_THEORY_STATES:-500}
