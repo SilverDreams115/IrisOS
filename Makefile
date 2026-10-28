@@ -1481,6 +1481,26 @@ spec-bridge:
 # proof.  It does not prove refinement: a disagreement needing five operations
 # is outside it, which is why the random lane keeps running.  Depth 4 is
 # 194481 traces in ~13 s; SPEC_DEPTH=5 is 4.1M and takes minutes.
+# ── the ABSTRACT specification against the EXECUTABLE one ───────────────────
+#
+# `spec-bridge` links the two for the INVARIANTS: the predicates live once and
+# both sides read them.  Nothing linked them for the OPERATIONS — the Isabelle
+# text states `can_derive`, `derive`, `delete` and `revoke`, the model
+# implements them, and the two were compared by eye by whoever wrote the
+# second.  The theory says what is wrong with that in its own words: "if it
+# disagrees with this one it proves something about a neighbouring system".
+#
+# `spec/theory_check.py` TRANSLITERATES the theory's definitions clause by
+# clause, with the Isabelle in each docstring so a reader can diff them, and
+# runs them against the model over random states — comparing result codes and
+# resulting states, child-list order included.  It is a transliteration and
+# not a third reading on purpose: where it had to choose it chose what the
+# text says and not what the model does, because agreeing by construction is
+# the failure mode this directory exists to avoid.
+.PHONY: spec-theory
+spec-theory:
+	@python3 spec/theory_check.py $${SPEC_THEORY_STATES:-500}
+
 .PHONY: spec-exhaustive
 spec-exhaustive: $(SPEC_DRIVER_BIN)
 	@python3 spec/exhaustive.py $${SPEC_DEPTH:-4}

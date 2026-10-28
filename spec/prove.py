@@ -1159,6 +1159,84 @@ def prove_integrity_no_fabrication():
                     "PROVED" if r == z3.sat else "REFUTED", None))
 
 
+def prove_authority_confinement():
+    """
+    Phase 5's information-flow property, in the form this model can carry:
+    AUTHORITY CONFINEMENT.
+
+    seL4 proves two things beyond functional correctness.  Integrity — nothing
+    is granted — is `prove_integrity_no_fabrication` above.  The other is about
+    SUBJECTS: what one subject does cannot reach another's authority.  That
+    needs a notion of subject, and this model has one that is not invented:
+    a subject is a SUBTREE of the derivation forest, which is what "the
+    authority reachable from a capability" means in a capability system.
+
+    The claim: a revoke invoked inside one subtree changes no slot in a
+    DISJOINT subtree.  Stated at a bounded depth, like the other revoke rows,
+    because the unbounded descendant relation is a transitive closure the
+    decidable fragment cannot express — `desc` in the Isabelle text can, and
+    that asymmetry is recorded there.
+
+    What this is NOT: non-interference in the confidentiality sense.  That
+    needs a notion of OBSERVATION — what a subject can see, not what it can
+    reach — and nothing in `spec/` models reading a message or timing an
+    operation.  Saying so is the point: a confinement theorem presented as
+    non-interference would be the strongest-sounding wrong claim in this file.
+    """
+    obj, rgt, par, bdg, oty = new_state("cf")
+    a, b, victim, j = (z3.Int("subj_a"), z3.Int("subj_b"),
+                       z3.Int("vic_cf"), z3.Int("j_cf"))
+    st = invariants.State(obj, rgt, par, bdg, oty, slot)
+
+    def anc(x, y, k):
+        """`y` is within `k` parent links of `x` — the bounded ancestor walk,
+        guarded by liveness so it never strolls through the -1 sentinel."""
+        out, cur = [], x
+        for _ in range(k):
+            out.append(z3.And(slot(cur), obj[cur] != -1, par[cur] == y))
+            cur = z3.If(z3.And(slot(cur), obj[cur] != -1), par[cur], -1)
+        return z3.Or(*out)
+
+    pre = [
+        z3.ForAll([z3.Int("i_cf")],
+                  z3.Implies(slot(z3.Int("i_cf")), wf(st, z3.Int("i_cf")))),
+        slot(a), slot(b), slot(victim), slot(j),
+        obj[a] != -1, obj[b] != -1,
+        a != b,
+        # Two SUBJECTS: neither subtree contains the other's root.
+        z3.Not(anc(a, b, 4)), z3.Not(anc(b, a, 4)),
+        # The revoke happens inside A: the victim descends from `a`.
+        anc(victim, a, 4),
+        # `j` is in B's subtree.
+        z3.Or(j == b, anc(j, b, 4)),
+    ]
+    # The revoke clears the victim and nothing else — the one-step shape the
+    # other revoke rows use.
+    obj2 = z3.Store(obj, victim, -1)
+    rgt2 = z3.Store(rgt, victim, z3.BitVecVal(0, W))
+
+    prove("CF  a revoke inside one subject leaves a disjoint subject's slot alone",
+          z3.And(obj2[j] == obj[j], rgt2[j] == rgt[j]),
+          extra=pre + [j != victim])
+
+    #
+    # And the premise that makes it a confinement claim rather than a tautology
+    # must be NECESSARY: drop "the subtrees are disjoint" and the conclusion
+    # must stop following, or the theorem is about any two slots and says
+    # nothing about subjects.
+    #
+    loose = z3.Solver()
+    loose.add(slot(a), slot(b), slot(victim), slot(j),
+              obj[a] != -1, obj[b] != -1, a != b,
+              anc(victim, a, 4),
+              z3.Or(j == b, anc(j, b, 4)))
+    loose.add(j == victim, obj[victim] != -1)
+    r = loose.check()
+    results.append(("--  CF without disjointness the victim CAN be the "
+                    "other subject's slot",
+                    "PROVED" if r == z3.sat else "REFUTED", None))
+
+
 def main():
     prove_the_harness_can_fail()
     prove_rights()
@@ -1174,6 +1252,7 @@ def main():
     prove_revoke_root_survives()
     prove_d13_mapping_authority()
     prove_integrity_no_fabrication()
+    prove_authority_confinement()
 
     bad = 0
     for name, verdict, model in results:

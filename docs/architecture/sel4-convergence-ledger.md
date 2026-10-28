@@ -1896,6 +1896,52 @@ reasonable boundary for a downloaded toolchain and not one to work around.  So
 phase 3's proofs need that permission, and until then replacing an `oops` with
 a proof nobody has checked would leave this file worse than it is.
 
+### the abstract specification, checked by a tool at last — `make spec-theory`
+
+`spec-bridge` links the abstract and executable specifications for the
+INVARIANTS: the predicates live once and both sides read them.  Nothing linked
+them for the OPERATIONS.  The Isabelle text states `can_derive`, `derive`,
+`delete` and `revoke`; `authority_model.py` implements them; and the two were
+compared by eye, by whoever wrote the second one.  The theory says what is
+wrong with that in its own words — *"if it disagrees with this one it proves
+something about a neighbouring system."*
+
+`spec/theory_check.py` TRANSLITERATES the theory's definitions clause by
+clause, with the Isabelle kept in each docstring so a reader who does not know
+Isabelle can diff them, and runs them against the model over random states,
+comparing result codes AND resulting states with child-list order included.
+**1461 applications over 500 states agree.**  It is a transliteration and not a
+third reading on purpose: where it had to choose it chose what the TEXT says
+and not what the model does, because agreeing by construction is the failure
+mode this directory exists to avoid.  Sabotage-tested: a transliteration whose
+`delete` stops reparenting disagrees within sixty states.
+
+It is the fifteenth lane, and `AGENTS.md` says fifteen now.
+
+### authority confinement — information flow's integrity half
+
+`spec-prove` is 60 of 60, and the last two rows are phase 5's second property:
+a revoke invoked inside one SUBJECT leaves a disjoint subject's slots alone.
+
+A subject is a SUBTREE of the derivation forest.  That is not an invented
+notion for the occasion — it is what "the authority reachable from a
+capability" means in a capability system, and it is the only notion of subject
+this model can carry honestly.  Bounded depth, like the other revoke rows,
+because the unbounded descendant relation is a transitive closure the decidable
+fragment cannot express.
+
+The disjointness premise is checked NECESSARY rather than assumed to be: drop
+it and the victim can be the other subject's own slot, and the lane asserts
+that stays satisfiable.  Without that row the theorem would be about any two
+slots and would say nothing about subjects at all.
+
+**What is NOT here is non-interference in the confidentiality sense.**  That
+needs a notion of OBSERVATION — what a subject can SEE, not what it can reach —
+and nothing in `spec/` models reading a message or timing an operation.  A
+confinement theorem presented as non-interference would be the
+strongest-sounding wrong claim in this directory, which is why it is named for
+what it is.
+
 **Still open, and registered rather than argued away:** `VSPACE_MAP_CAP_CHUNKS`
 is a kernel-chosen ceiling (8 chunks, 256 capabilities per space).  Exceeding it
 answers `NO_MEMORY`, which is what a CNode answers when its slots run out, but
