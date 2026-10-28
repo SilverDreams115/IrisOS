@@ -104,6 +104,32 @@ text \<open>
   closed rather than passing every check.
 \<close>
 
+text \<open>
+  `rights_reduce` here is the SAME_RIGHTS-FREE branch of the kernel's function,
+  and that restriction is load-bearing rather than cosmetic.
+
+  `kcnode`'s `rights_reduce` is two branches, not one: a request carrying
+  `RIGHT_SAME_RIGHTS` (bit 31) COPIES the base with that sentinel bit cleared,
+  and anything else intersects.  `rights` is `nat` used as a 7-bit set in this
+  theory, so the sentinel is outside the type and only the intersecting branch
+  is modelled.
+
+  Why it is written down instead of left implicit: the next lemma is
+  commutativity, which is TRUE of intersection and **FALSE of the kernel's
+  function**.  `spec/prove.py` proves these over the whole 32-bit word, where
+  the sentinel lives, and guards its commutativity row with
+  `r AND SAME_RIGHTS = 0` for exactly this reason.  Decided by z3 against the
+  real two-branch definition, the general claim is refuted with
+  `b = 0xed2f9fff`, `r = 0x84506000`: `r` carries the sentinel, so
+  `reduce b r = b AND NOT SAME` while `reduce r b = r AND b`.
+
+  An unproved lemma is a bill somebody will pay later.  A lemma that is
+  provable HERE and false of the kernel is worse, because paying it produces a
+  certificate for a property IRIS does not have — and a certificate is the one
+  artifact nobody re-reads.  So the scope is stated at the definition, where a
+  reader meets it before the lemma.
+\<close>
+
 definition rights_reduce :: "rights \<Rightarrow> rights \<Rightarrow> rights" where
   "rights_reduce b r = (b AND r)"
 
@@ -119,6 +145,11 @@ lemma rights_reduce_idempotent:
   oops
 
 lemma rights_reduce_commutative: "rights_reduce b r = rights_reduce r b"
+  \<comment> \<open>TRUE of intersection, and so of this theory's restricted
+      `rights_reduce`; FALSE of the kernel's two-branch function, which is why
+      `spec/prove.py` guards its row with `r AND SAME_RIGHTS = 0`.  Do not
+      restate it without that guard: see the note at the definition for the
+      z3 counterexample.  SMT-discharged in the guarded form.\<close>
   oops
 
 lemma rights_check_empty_fails: "\<not> rights_check h 0"

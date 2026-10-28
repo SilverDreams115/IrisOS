@@ -217,12 +217,31 @@ def prove_rights():
     # A7 itself: a derivation never amplifies.
     prove("A7  reduce never amplifies",
           rights_reduce(b, r) & b == rights_reduce(b, r))
-    prove("    reduce is idempotent",
-          rights_reduce(rights_reduce(b, r), r) == rights_reduce(b, r),
-          extra=[r & SAME_RIGHTS == 0])
-    prove("    reduce is commutative",
+    # Unguarded, and it was guarded with `r AND SAME_RIGHTS = 0` for no reason:
+    # if `r` carries the sentinel then reduce gives `b AND NOT SAME`, and
+    # reducing THAT by `r` again clears a bit already clear.  z3 decides the
+    # general claim, so the guard only narrowed what was being proved.
+    prove("    reduce is idempotent, sentinel or not",
+          rights_reduce(rights_reduce(b, r), r) == rights_reduce(b, r))
+    # This one's guard is load-bearing and stays: see the obligation below.
+    prove("    reduce is commutative where neither side is the sentinel",
           rights_reduce(b, r) == rights_reduce(r, b),
           extra=[b & SAME_RIGHTS == 0, r & SAME_RIGHTS == 0])
+    #
+    # And commutativity WITHOUT that guard must stay refutable.
+    #
+    # `spec/isabelle/IRIS_Authority.thy` defines `rights_reduce` as plain
+    # intersection — the sentinel is outside its 7-bit `rights` type — and
+    # states `rights_reduce_commutative` unguarded.  That lemma is provable in
+    # that theory and FALSE of the kernel, so proving it there would produce a
+    # certificate for a property IRIS does not have.  The theory now says so at
+    # the definition; this is the row that NOTICES if the guard is ever dropped
+    # here, or if `rights_reduce` is ever "simplified" into intersection.
+    _c = z3.Solver()
+    _c.add(z3.Not(rights_reduce(b, r) == rights_reduce(r, b)))
+    results.append(("--  unguarded commutativity is still refutable "
+                    "(the Isabelle lemma's scope)",
+                    "PROVED" if _c.check() == z3.sat else "REFUTED", None))
     prove("    SAME_RIGHTS never survives into a stored value",
           rights_reduce(b, z3.BitVecVal(SAME_RIGHTS, W)) & SAME_RIGHTS == 0)
     prove("    a copy keeps exactly what the source had",
