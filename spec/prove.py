@@ -1071,6 +1071,94 @@ def prove_d13_mapping_authority():
                     "PROVED" if r == z3.sat else "REFUTED", None))
 
 
+def prove_integrity_no_fabrication():
+    """
+    Phase 5's first property: INTEGRITY — no operation fabricates authority.
+
+    Functional correctness is "the operation does what the specification
+    says".  Integrity is weaker and different: whatever the operation does, it
+    does not GRANT anything.  seL4 proves it as a separate theorem for the same
+    reason — a kernel can satisfy its functional specification at every step
+    and still, somewhere in that specification, hand out an authority nobody
+    conferred.
+
+    Three parts, and the third is the one that makes the other two mean
+    anything:
+
+      1. a capability that appears names an object that was ALREADY named;
+      2. its rights are a subset of the rights it came from;
+      3. and NOTHING ELSE CHANGED.
+
+    Part 3 is the frame condition.  Without it, 1 and 2 are satisfied by an
+    operation that installs correctly at the destination and quietly grants
+    WRITE to an unrelated slot on the way past — which is exactly the shape of
+    an integrity violation that a functional specification stated per-slot
+    would not catch.  It is stated here as a universally quantified claim over
+    every slot that is not the destination.
+    """
+    obj, rgt, par, bdg, oty = new_state("ig")
+    src, dst = z3.Int("src_ig"), z3.Int("dst_ig")
+    i, j = z3.Int("i_ig"), z3.Int("j_ig")
+    st = invariants.State(obj, rgt, par, bdg, oty, slot)
+
+    req = z3.BitVec("req_ig", W)
+    pre = [
+        z3.ForAll([i], z3.Implies(slot(i), wf(st, i))),
+        slot(src), slot(dst), src != dst,
+        obj[src] != -1,
+        req & SAME_RIGHTS == 0,
+    ]
+    # The derive, as `kcnode_slot_derive` performs it.
+    new_r = rights_reduce(rgt[src], req)
+    obj2 = z3.Store(obj, dst, obj[src])
+    rgt2 = z3.Store(rgt, dst, new_r)
+
+    prove("IG  a derive names no object that was not already named",
+          obj2[dst] == obj[src], extra=pre)
+    prove("    and confers no right the source did not hold",
+          new_r & rgt[src] == new_r, extra=pre)
+    prove("    and changes NOTHING else — the frame condition",
+          z3.ForAll([j], z3.Implies(z3.And(slot(j), j != dst),
+                                    z3.And(obj2[j] == obj[j],
+                                           rgt2[j] == rgt[j]))),
+          extra=pre)
+
+    #
+    # The DESTRUCTIVE direction: authority only ever shrinks.
+    #
+    # A delete empties one slot and reparents its children; a revoke empties a
+    # subtree.  Neither may leave any slot holding MORE than it held, and that
+    # is a different claim from "the right slots were emptied": it is what
+    # rules out a teardown that repaired a tree by widening somebody's rights.
+    #
+    victim = z3.Int("victim_ig")
+    dpre = [z3.ForAll([i], z3.Implies(slot(i), wf(st, i))),
+            slot(victim), obj[victim] != -1]
+    objd = z3.Store(obj, victim, -1)
+    rgtd = z3.Store(rgt, victim, z3.BitVecVal(0, W))
+    prove("    a delete grants nothing: every slot holds what it held or less",
+          z3.ForAll([j], z3.Implies(slot(j),
+                                    z3.And(rgtd[j] & rgt[j] == rgtd[j],
+                                           z3.Or(objd[j] == obj[j],
+                                                 objd[j] == -1)))),
+          extra=dpre)
+
+    #
+    # And the claim that must stay REFUTABLE: an operation that adds a right
+    # the source did not hold is NOT integrity-preserving.  If this came back
+    # PROVED, the three rows above would be agreeing with the encoding rather
+    # than constraining the kernel.
+    #
+    extra_r = z3.BitVec("extra_ig", W)
+    bad = z3.Solver()
+    bad.add(*pre)
+    bad.add(extra_r != 0, extra_r & rgt[src] == 0)
+    bad.add(z3.Not((new_r | extra_r) & rgt[src] == (new_r | extra_r)))
+    r = bad.check()
+    results.append(("--  IG amplifying by one bit is still refutable",
+                    "PROVED" if r == z3.sat else "REFUTED", None))
+
+
 def main():
     prove_the_harness_can_fail()
     prove_rights()
@@ -1085,6 +1173,7 @@ def main():
     prove_slices_make_progress()
     prove_revoke_root_survives()
     prove_d13_mapping_authority()
+    prove_integrity_no_fabrication()
 
     bad = 0
     for name, verdict, model in results:

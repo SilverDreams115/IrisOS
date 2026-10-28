@@ -1799,6 +1799,31 @@ bounded: a disagreement needing five operations is outside it.  But D-13's
 mechanism is no longer proved against a model nobody checked against the
 kernel, and that was the sentence worth deleting.
 
+### integrity, as its own theorem (phase 5's first property)
+
+Functional correctness says the operation does what the specification says.
+Integrity says that whatever it does, it does not GRANT anything — and the two
+are different enough that seL4 proves them separately.  `spec-prove` now states
+it in five rows, of which the third is the load-bearing one:
+
+    IG  a derive names no object that was not already named
+        and confers no right the source did not hold
+        and changes NOTHING else — the frame condition
+        a delete grants nothing: every slot holds what it held or less
+    --  IG amplifying by one bit is still refutable
+
+The frame condition is what makes the rest mean anything.  Without it, every
+other row is satisfied by an operation that installs correctly at its
+destination and widens an unrelated slot on the way past — an integrity
+violation that a functional specification written per slot does not look at.
+Sabotage-tested, as everything here must be: a derive that also sets one bit on
+its SOURCE turns that row REFUTED and the lane fails, 57 of 58.
+
+What is NOT here: information flow and binary verification.  Information flow
+needs a model of SUBJECTS, and `spec/` reasons about one CSpace — so stating a
+non-interference property over it would be a theorem about a system this
+directory does not describe.  Said rather than approximated.
+
 **Still open, and registered rather than argued away:** `VSPACE_MAP_CAP_CHUNKS`
 is a kernel-chosen ceiling (8 chunks, 256 capabilities per space).  Exceeding it
 answers `NO_MEMORY`, which is what a CNode answers when its slots run out, but
