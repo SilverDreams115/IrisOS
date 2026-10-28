@@ -168,6 +168,26 @@ text \<open>
 datatype err = Ok | InvalidArg | NotFound | AccessDenied | AlreadyExists
              | WrongType
 
+text \<open>
+  `can_derive` is the PRIMITIVE's order — `kcnode_slot_derive` — and IRIS has
+  two.
+
+  The refusal order below puts `src = dst` before occupancy, which is what the
+  primitive does: it rejects a slot named twice before it reads either one.
+  `SYS_CSPACE_MINT` is the other way round, because a syscall RESOLVES its
+  arguments first, so the same arguments through the syscall answer NotFound
+  where the primitive answers InvalidArg.
+
+  Both are reachable from ring 3 — the primitive through the paths that take a
+  CNode and an index directly — so neither order is an implementation detail,
+  and this theory specifies ONE of them.  `spec/authority_model.py` carries
+  both, in `mint` and in `syscall_mint`, and `spec-differential` disagreed with
+  the kernel on each of them in turn while they were conflated: `mint 0 0 7 7`
+  wants InvalidArg and `smint 13 13 2 7` wants NotFound, on the same empty
+  slot.  The scope is written here so that proving the lemmas below is not
+  mistaken for having specified both.
+\<close>
+
 definition can_derive :: "cspace \<Rightarrow> sid \<Rightarrow> sid \<Rightarrow> rights \<Rightarrow> badge \<Rightarrow> err" where
   "can_derive C src dst req bg =
      (if src = dst then InvalidArg

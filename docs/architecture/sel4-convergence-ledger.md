@@ -1831,6 +1831,34 @@ needs a model of SUBJECTS, and `spec/` reasons about one CSpace — so stating a
 non-interference property over it would be a theorem about a system this
 directory does not describe.  Said rather than approximated.
 
+### the Isabelle theory, audited against the kernel without Isabelle
+
+Isabelle is not installed here, so the `oops` lemmas cannot be discharged.  What
+could be done instead was to ask whether they are TRUE — the theory itself names
+this gap: *"the SMT encoding is a SECOND formalisation, and if it disagrees with
+this one it proves something about a neighbouring system."*  Two findings and
+five confirmations:
+
+| checked | result |
+|---|---|
+| the seven `R_*` bit values | match `rights.h` exactly |
+| `inv_A7`, `inv_A8`, `inv_O2` | match `spec/invariants.py` (the theory states `occupied p` where `wf` supplies it) |
+| `inv_A9` | well-foundedness of the parent relation over a finite domain is acyclicity — the claim intended |
+| `inv_links_symmetric`, `inv_liveness` | match the model's checkers |
+| `can_derive`'s refusal ORDER | matches the primitive, and the primitive is what it should match |
+| **`rights_reduce_commutative`** | **provable in the theory and FALSE of the kernel** — see the phase 3 section |
+| **`can_derive` as THE mint specification** | the kernel has TWO refusal orders and the theory specifies one |
+
+The second finding is narrower than the first and worth the same treatment.
+`kcnode_slot_derive` rejects `src = dst` before reading either slot; the SYSCALL
+resolves its arguments first, so the same arguments answer NotFound where the
+primitive answers InvalidArg.  Both are reachable from ring 3, so neither order
+is an implementation detail — and `spec-differential` disagreed with the kernel
+on each in turn while the model conflated them (`mint 0 0 7 7` wants InvalidArg,
+`smint 13 13 2 7` wants NotFound, on the same empty slot).  The theory now says
+which order it specifies, so proving its lemmas is not mistaken for having
+specified both.
+
 **Still open, and registered rather than argued away:** `VSPACE_MAP_CAP_CHUNKS`
 is a kernel-chosen ceiling (8 chunks, 256 capabilities per space).  Exceeding it
 answers `NO_MEMORY`, which is what a CNode answers when its slots run out, but
