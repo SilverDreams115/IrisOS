@@ -1794,10 +1794,17 @@ every CSpace invariant gets:
 
 `make spec-exhaustive` is now **531441 traces — every sequence of 4 operations
 over an alphabet of 27** — and the model and the real C agree on every
-intermediate result code and every final state.  The bounded claim is still
-bounded: a disagreement needing five operations is outside it.  But D-13's
-mechanism is no longer proved against a model nobody checked against the
-kernel, and that was the sentence worth deleting.
+intermediate result code and every final state.  `SPEC_DEPTH=5` is
+**14348907 traces** and has been run clean on this tree, with D-7's predicate
+agreeing with the reference count on all 17056258 finality decisions; it is a
+soak rather than one of the fourteen, because it is minutes and not seconds.
+
+The bounded claim is still bounded, and the bound moved rather than went: a
+disagreement needing SIX operations is outside it, and so is one needing a
+fourth slot or a second address space — the driver has one space, which is
+enough to state D-13 and not enough to state anything about two.  What changed
+is that D-13's mechanism is no longer proved against a model nobody checked
+against the kernel, and that was the sentence worth deleting.
 
 ### integrity, as its own theorem (phase 5's first property)
 
