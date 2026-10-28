@@ -1738,6 +1738,42 @@ each seen once and not reproduced: `T259 FAIL: final reset` and `T146 FAIL:
 kreply drift`.  With the dominant mode explained and pre-existing, one-off
 failures at two processors are not evidence about this change.
 
+### D-13 is on the PROVED side now, and one link short of the other four
+
+`spec/invariants.py` carries `inv_D13` — *a space that maps an object holds a
+capability naming it* — and `make spec-prove` discharges five new obligations
+over symbolic state, 52 of 52:
+
+| obligation | what it rules out |
+|---|---|
+| a map installs the capability with the mapping | a map that creates an orphan |
+| revoke then finalise preserves it, for EVERY weakening of authority | the sweep working only for the revokes somebody imagined |
+| the sweep keeps every mapping the space still has authority for | over-unmapping — the half a boot refuted |
+| the sweep changes no object but the one it was given | collateral damage |
+| revoke WITHOUT the sweep is still refutable | this file agreeing with itself |
+
+`hascap` is PRIMITIVE in the model and deliberately not an existential over
+slots: it is what `kvspace_map_cap_has` computes, so the theorems are about the
+mechanism rather than about how many chunks of what size hold it — a number
+this tree has already changed twice in one day.  Authority is quantified as
+ANY weakening, because which spaces lose it depends on the derivation tree,
+and proving it for every weakening is stronger than proving it for the one
+case that was in mind.
+
+Sabotage-tested, as every gate here must be: replacing the sweep with "unmap
+nothing" turns the second row REFUTED and the lane fails, 51 of 52.
+
+**And it is NOT in `invariants.ALL`, which is the honest part.**  `ALL` is
+walked by both lanes — `spec-prove` symbolically and `spec-bridge` concretely,
+on states real traces built.  Those traces drive `spec_driver.c`, which is
+CSpace: there is no VSpace and no mapping state on the concrete side at all.
+Adding it to `ALL` would break `spec-bridge` or, far worse, make it pass
+VACUOUSLY on a component every state leaves empty — the failure mode this
+directory exists to prevent.  So D-13 is proved over the MODEL and nothing yet
+ties a mapping in that model to `kvspace.c`.  That missing link is phase 4's
+subject, and counting this as equal to A7, A8, O2 and `wf` would be the kind of
+arithmetic this ledger is for refusing.
+
 **Still open, and registered rather than argued away:** `VSPACE_MAP_CAP_CHUNKS`
 is a kernel-chosen ceiling (8 chunks, 256 capabilities per space).  Exceeding it
 answers `NO_MEMORY`, which is what a CNode answers when its slots run out, but

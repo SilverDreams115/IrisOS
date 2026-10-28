@@ -965,6 +965,93 @@ def prove_revoke_root_survives():
           z3.And(obj2[victim] == -1, obj2[root] != -1), extra=pre)
 
 
+def prove_d13_mapping_authority():
+    """
+    D-13 — the mechanism that makes a revoke reach a MAPPING, over every state.
+
+    The invariant is `invariants.inv_D13`: a space that maps an object holds a
+    capability naming it.  What is proved here is that the three operations
+    compose to keep it — and, because this is the part that cost a boot, that
+    the sweep does not take a mapping the space is still entitled to.
+
+    `maps` and `hascap` are arrays of arrays indexed by (space, object).
+    `hascap` is what `kvspace_map_cap_has` computes; `maps` is the frame's
+    mapping list as seen from one space.
+    """
+    SP = z3.ArraySort(I, z3.BoolSort())
+    maps   = z3.Array("maps", I, SP)
+    hascap = z3.Array("hascap", I, SP)
+    s_, o_ = z3.Int("space"), z3.Int("obj_d13")
+    sp, ob = z3.Int("sp"), z3.Int("ob")
+
+    def M(a, b):   return maps[a][b]
+    def H(a, b):   return hascap[a][b]
+    inv = lambda a, b: invariants.inv_D13(L, M, H, a, b)
+
+    held = z3.ForAll([sp, ob], inv(sp, ob))
+
+    # ── 1. a map sets both, so it cannot be what breaks the invariant ──────
+    maps_m = z3.Store(maps, s_, z3.Store(maps[s_], o_, True))
+    hcap_m = z3.Store(hascap, s_, z3.Store(hascap[s_], o_, True))
+    prove("D13 a map installs the capability with the mapping",
+          z3.ForAll([sp, ob],
+                    z3.Implies(maps_m[sp][ob], hcap_m[sp][ob])),
+          extra=[held])
+
+    # ── 2. revoke may clear authority; finalise is what restores it ────────
+    #
+    # `hascap2` is ANY weakening of `hascap` on the revoked object: revoke only
+    # ever removes authority, and which spaces lose it depends on the
+    # derivation tree, which this theorem deliberately does not model.  Proving
+    # it for every weakening is stronger than proving it for one.
+    hascap2 = z3.Array("hascap2", I, SP)
+    weakened = z3.ForAll([sp, ob],
+                         z3.Implies(hascap2[sp][ob], hascap[sp][ob]))
+    only_o = z3.ForAll([sp, ob],
+                       z3.Implies(ob != o_, hascap2[sp][ob] == hascap[sp][ob]))
+
+    # finalise(o): a mapping of `o` survives exactly where the authority does.
+    maps_f = z3.Lambda([sp],
+                z3.Lambda([ob], z3.If(ob == o_,
+                                      z3.And(maps[sp][ob], hascap2[sp][ob]),
+                                      maps[sp][ob])))
+
+    prove("D13 revoke then finalise preserves it, for EVERY weakening",
+          z3.ForAll([sp, ob], z3.Implies(maps_f[sp][ob], hascap2[sp][ob])),
+          extra=[held, weakened, only_o])
+
+    # ── 3. the sweep must not take a mapping that is still authorised ──────
+    #
+    # This is the half a boot refuted when the space's capability was a CHILD
+    # of the slot mapped through: `Revoke(S)` destroyed the MAPPER's own
+    # authority and the sweep then correctly unmapped the mapper's own page.
+    # The bug was in `hascap`, not here — and this says what "not here" means.
+    prove("D13 the sweep keeps every mapping the space still has authority for",
+          z3.ForAll([sp, ob],
+                    z3.Implies(z3.And(maps[sp][ob], hascap2[sp][ob]),
+                               maps_f[sp][ob])),
+          extra=[held, weakened, only_o])
+
+    # ── 4. and it touches nothing else ─────────────────────────────────────
+    prove("D13 the sweep changes no object but the one it was given",
+          z3.ForAll([sp, ob],
+                    z3.Implies(ob != o_, maps_f[sp][ob] == maps[sp][ob])),
+          extra=[held, weakened, only_o])
+
+    # ── 5. the claim that must stay REFUTABLE ──────────────────────────────
+    #
+    # Without the sweep, a revoke alone leaves a mapping with no authority.
+    # That is the whole of D-13, so if the solver ever "proves" it this file is
+    # agreeing with itself rather than checking anything.
+    neg = z3.Solver()
+    neg.add(held, weakened, only_o)
+    neg.add(z3.Not(z3.ForAll([sp, ob],
+                             z3.Implies(maps[sp][ob], hascap2[sp][ob]))))
+    r = neg.check()
+    results.append(("--  D13 revoke WITHOUT the sweep is still refutable",
+                    "PROVED" if r == z3.sat else "REFUTED", None))
+
+
 def main():
     prove_the_harness_can_fail()
     prove_rights()
@@ -978,6 +1065,7 @@ def main():
     prove_rotate_swap_preserves()
     prove_slices_make_progress()
     prove_revoke_root_survives()
+    prove_d13_mapping_authority()
 
     bad = 0
     for name, verdict, model in results:

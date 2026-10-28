@@ -177,4 +177,44 @@ def inv_O2(L, st, i):
                           L.EQ(oty[obj[par[i]]], T_UNTYPED)))
 
 
+def inv_D13(L, maps, hascap, s, o):
+    """
+    D-13 — a space that MAPS an object holds a capability naming it.
+
+    One line, and it is what charter A10 asks of an address space: *revoke
+    recursively removes all descendant authority*, so a mapping that outlives
+    every capability its space held is access without authority — the holder
+    reads and writes a page nothing names.  IRIS answered the opposite until
+    `kvspace_finalise_orphans`, and the old answer was asserted by a service's
+    own probe, by a supervisor's counter and by a REQUIRED claim in the gate.
+
+    `maps` and `hascap` are passed as two-argument CALLABLES rather than being
+    folded into `State`, because `State` is five arrays over SLOTS and this
+    predicate is over (space, object) pairs.  Keeping them out leaves the four
+    predicates `ALL` carries exactly as they were.
+
+    `hascap` is PRIMITIVE here, and deliberately not an existential over
+    slots.  It is precisely what `kvspace_map_cap_has` computes — a walk of the
+    space's `map_caps` chunks — so abstracting it keeps the theorems about the
+    MECHANISM rather than about how many chunks of what size hold it, which is
+    a number this tree has already changed twice.
+
+    ── Why this is NOT in `ALL` ─────────────────────────────────────────────
+
+    `ALL` is walked by BOTH lanes: `spec-prove` instantiates it symbolically
+    and `spec-bridge` instantiates the same definitions concretely on states
+    that real traces built.  Those traces drive `spec_driver.c`, which is
+    CSpace — there is no VSpace and no mapping state on the concrete side at
+    all.  Adding this to `ALL` would either break `spec-bridge` or, far worse,
+    make it pass VACUOUSLY on a component every state leaves empty, which is
+    the failure mode this whole directory exists to prevent.
+
+    So it is proved over the model and it is one link SHORT of the other four,
+    and that is said here rather than counted as equal.  The missing link is
+    the same one phase 4 is about: nothing yet ties a mapping in this model to
+    `kvspace.c`.
+    """
+    return L.IMPLIES(maps(s, o), hascap(s, o))
+
+
 ALL = (("wf", wf), ("A7", inv_A7), ("A8", inv_A8), ("O2", inv_O2))
