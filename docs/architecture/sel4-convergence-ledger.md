@@ -1859,6 +1859,43 @@ on each in turn while the model conflated them (`mint 0 0 7 7` wants InvalidArg,
 which order it specifies, so proving its lemmas is not mistaken for having
 specified both.
 
+### three findings in the theory, and why the prover is still not run
+
+The audit above found two.  Defining the operations found a third, and together
+they say something about the artifact: **`IRIS_Authority.thy` has never been
+processed by any tool.**
+
+1. **`rights_reduce_commutative`** is provable in the theory and FALSE of the
+   kernel, because the theory's `rights_reduce` is plain intersection and the
+   kernel's has a second branch for the `RIGHT_SAME_RIGHTS` sentinel.  z3
+   refutes the general claim with `b = 0xed2f9fff`, `r = 0x84506000`.
+2. **`can_derive` is presented as the mint specification** and IRIS has two
+   refusal orders; the theory specifies the primitive's.
+3. **`derive`, `delete`, `revoke` and `retype` were never DEFINED** — five uses,
+   zero definitions.  Isabelle rejects an undefined constant in a statement, so
+   the file could not load, and `oops` does not hide a parse error.
+4. And with them defined, **`retype_preserves_O2` is FALSE as it was stated**:
+   nothing said the source holds an Untyped, while `inv_O2` is exactly the claim
+   that a non-derivation edge comes from one.  `authority_model.py` answers
+   WRONG_TYPE there and `syscall_untyped.c` is where that comes from; the theory
+   never said it.  It has a `can_retype` guard now, stated as a guard rather
+   than as an extra premise, because the ORDER of refusals is part of this
+   specification and an unnamed premise would record the condition without
+   recording that the kernel reports it.
+
+The operations are defined following `spec/authority_model.py` rather than
+re-invented, so the chain stays *this text == that model == the kernel* instead
+of acquiring a third independent reading.
+
+**The `oops` markers stay, and not by choice.**  Isabelle2026 downloaded
+cleanly once the mirror was taken over HTTPS — the published link redirects to
+plain HTTP, which this environment blocks, and the first attempt sat at zero
+bytes for two and a half minutes before that was diagnosed.  Extracting and
+RUNNING it was then refused by the sandbox as external code, which is a
+reasonable boundary for a downloaded toolchain and not one to work around.  So
+phase 3's proofs need that permission, and until then replacing an `oops` with
+a proof nobody has checked would leave this file worse than it is.
+
 **Still open, and registered rather than argued away:** `VSPACE_MAP_CAP_CHUNKS`
 is a kernel-chosen ceiling (8 chunks, 256 capabilities per space).  Exceeding it
 answers `NO_MEMORY`, which is what a CNode answers when its slots run out, but

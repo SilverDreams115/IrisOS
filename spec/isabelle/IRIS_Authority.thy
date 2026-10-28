@@ -287,6 +287,28 @@ definition revoke :: "cspace \<Rightarrow> sid \<Rightarrow> cspace" where
               else if t = i then (s i)\<lparr> s_children := [] \<rparr>
               else s t) \<rparr>)"
 
+definition can_retype :: "cspace \<Rightarrow> sid \<Rightarrow> sid \<Rightarrow> err" where
+  \<comment> \<open>The guard `retype_preserves_O2` was missing, and without it that
+      obligation is FALSE rather than unproved.
+
+      `inv_O2` says every edge is a derivation or a CREATION FROM AN UNTYPED,
+      so a retype that parents a fresh object under a slot holding an endpoint
+      produces a state violating it — and the lemma as written had no premise
+      saying the source holds an Untyped at all.  `authority_model.py`'s
+      `retype` answers WRONG_TYPE there, and `syscall_untyped.c` is where that
+      comes from; the theory simply never said it.
+
+      Stated as its own guard rather than as an extra premise on the lemma,
+      because the ORDER of refusals is part of this specification — the
+      comment above `can_derive` says so — and an unnamed premise would record
+      the condition without recording that the kernel reports it.\<close>
+  "can_retype C ut dst =
+     (if \<not> occupied C ut then NotFound
+      else if o_type (the (objs C (the (s_obj (slots C ut))))) \<noteq> Untyped
+           then WrongType
+      else if occupied C dst then AlreadyExists
+      else Ok)"
+
 definition fresh_oid :: "cspace \<Rightarrow> oid" where
   "fresh_oid C = (SOME x. objs C x = None)"
 
@@ -448,7 +470,10 @@ lemma revoke_removes_exactly_the_subtree:
   oops
 
 lemma retype_preserves_O2:
-  "inv_O2 C \<Longrightarrow> inv_O2 (retype C ut ty dst)"
+  \<comment> \<open>The `can_retype` premise is NEW and the obligation was false without
+      it: nothing said the source holds an Untyped, and `inv_O2` is exactly
+      the claim that a non-derivation edge comes from one.\<close>
+  "inv_O2 C \<Longrightarrow> can_retype C ut dst = Ok \<Longrightarrow> inv_O2 (retype C ut ty dst)"
   \<comment> \<open>SMT-discharged over symbolic state: `make spec-prove`, row
       "O2 retype preserves it".
 
