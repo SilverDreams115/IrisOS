@@ -1918,6 +1918,33 @@ mode this directory exists to avoid.  Sabotage-tested: a transliteration whose
 
 It is the fifteenth lane, and `AGENTS.md` says fifteen now.
 
+### the two OWED inductions, checked unbounded in depth
+
+`revoke_removes_exactly_the_subtree` and `delete_preserves_A9` are the two
+lemmas this project has always described as owing an induction, and the reason
+is recorded: a transitive closure is outside the decidable fragment, and a
+depth-bounded acyclicity invariant is not inductive under reparenting — the
+solver refuted the naive statement, which is the sharpest argument in the
+theory for proving the unbounded one.
+
+`make spec-theory` now checks both for their FULL content, because over a
+concrete state neither question is hard:
+
+* `desc` is a transitive closure, computed as the fixed point it is, so the
+  revoke check is unbounded in DEPTH — every descendant cleared however deep,
+  the root's capability kept, its children emptied, no non-descendant touched.
+* acyclicity is decidable by walking parents and seeing whether you return, so
+  the delete check is the real property and not the relative one.
+
+487 states each per run.  Sabotage-tested: a revoke that spares one descendant,
+and a delete that parents a child to itself, are each caught within 120 states.
+
+**This is not the induction and does not replace it.**  It is the difference
+between "every descendant within four links" and "every descendant, on these
+states" — finite in states, unbounded in depth — and the second is strictly
+more than the first was.  What remains is a statement about ALL states, which
+is what Isabelle is for.
+
 ### authority confinement — information flow's integrity half
 
 `spec-prove` is 60 of 60, and the last two rows are phase 5's second property:

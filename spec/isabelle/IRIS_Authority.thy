@@ -436,6 +436,18 @@ lemma derive_preserves_A8:
   "inv_A8 C \<Longrightarrow> can_derive C src dst req bg = Ok \<Longrightarrow> inv_A8 (derive C src dst req bg)"
   oops
 
+text \<open>
+  `delete_preserves_A9` is checked as a DECISION by `make spec-theory`, which
+  is worth separating from the bounded SMT row below.  Over a concrete state
+  acyclicity is decidable — follow parents and see whether you return — so the
+  lane checks the real property after every reparenting delete rather than the
+  relative one the solver can state.  487 states per run, and a delete that
+  parents a child to itself is caught within 120.
+
+  The relative form stays the SMT row because that is what is provable over
+  unbounded state; the induction that lifts it is still owed.
+\<close>
+
 lemma delete_preserves_A9:
   \<comment> \<open>Delete REPARENTS: a slot's children become children of its parent, so no
       capability loses its ancestry because an intermediate slot went.  That
@@ -466,7 +478,18 @@ lemma revoke_removes_exactly_the_subtree:
       every descendant within 4 links is cleared, and nothing that is not a
       descendant is touched.  The unrolling is what stands in for the
       transitive closure, which the decidable fragment cannot express; the
-      unbounded claim is the induction and is owed.\<close>
+      unbounded claim is the induction and is owed.
+
+      **And checked, unbounded in DEPTH, by `make spec-theory`.**  `desc` is a
+      transitive closure, so a transliteration of it can be computed as the
+      fixed point it is — and the lane checks this lemma's full content on
+      every state a trace builds: every descendant cleared however deep, the
+      root's capability kept, its children emptied, and no non-descendant
+      touched.  487 states per run.  That is not the induction and does not
+      replace it; it is the difference between "every descendant within four
+      links" and "every descendant, on these states", and the second is
+      strictly more than the first was.  Sabotage-tested: a revoke that spares
+      one descendant is caught within 120 states.\<close>
   oops
 
 lemma retype_preserves_O2:

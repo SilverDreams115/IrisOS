@@ -166,6 +166,63 @@ def revoke(C, i):
     return C
 
 
+def post_revoke_exact(C0, C1, i):
+    """
+    `revoke_removes_exactly_the_subtree`, checked against the TRUE closure.
+
+    The lemma is one of the two the theory owes an induction for, and
+    `spec/prove.py` can only unroll it to depth 4 because a transitive closure
+    is outside the decidable fragment.  `desc` here IS the closure, computed as
+    the fixed point it is — so this checks the lemma's full content on every
+    state a trace builds: unbounded in DEPTH, finite in states.
+
+    That is not the induction and does not replace it.  It is the difference
+    between "true for every descendant within four links" and "true for every
+    descendant, on these states", and the second is strictly more than the
+    first was.
+    """
+    D = desc(C0, i)
+    for j in sorted(C0["dom_s"]):
+        if j in D:
+            if C1["slots"][j]["obj"] is not None:
+                return "descendant %d survived the revoke" % j
+        elif j == i:
+            if C1["slots"][j]["obj"] != C0["slots"][j]["obj"]:
+                return "the revoke took its own root %d" % j
+            if C1["slots"][j]["children"] != []:
+                return "root %d kept children" % j
+        else:
+            a, b = C0["slots"][j], C1["slots"][j]
+            for f in ("obj", "rights", "badge", "parent"):
+                if a[f] != b[f]:
+                    return ("non-descendant %d changed its %s" % (j, f))
+    return None
+
+
+def acyclic(C):
+    """
+    `inv_A9` as a DECISION, not a depth bound.
+
+    `delete_preserves_A9` is the other owed induction, and the reason it is
+    owed is recorded in the theory: a DEPTH-BOUNDED acyclicity invariant is not
+    inductive under reparenting, and the solver refuted the naive statement.
+    Over a concrete state the question is simply decidable — follow parents and
+    see whether you return — so `delete` can be checked for the real property
+    rather than for a relative one.
+    """
+    for start in C["dom_s"]:
+        seen, cur = set(), start
+        # BOUND: the slot space; a repeat is a cycle and ends the walk.
+        while cur is not None:
+            if cur in seen:
+                return "cycle through slot %d" % start
+            seen.add(cur)
+            if cur not in C["dom_s"]:
+                return "parent %d outside dom_s" % cur
+            cur = C["slots"][cur]["parent"]
+    return None
+
+
 def to_theory_state(m):
     """`AuthorityModel` -> the theory's `cspace` record.
 
@@ -257,8 +314,25 @@ def main():
         i = rng.choice(occ)
         m4 = copy.deepcopy(m)
         m4.revoke(i)
+        C0 = to_theory_state(m)
         C4 = revoke(to_theory_state(m), i)
         checked["revoke"] += 1
+        # The owed lemma's own content, over the TRUE closure.
+        why = post_revoke_exact(C0, C4, i)
+        if why:
+            bad += 1
+            if bad <= 6:
+                print("theory_check: revoke(%d) EXACTNESS — %s" % (i, why))
+                print("  trace: " + " ; ".join(ops))
+        checked["revoke_exact"] = checked.get("revoke_exact", 0) + 1
+        # and A9 decided rather than bounded, after the reparenting delete
+        why = acyclic(C3)
+        if why:
+            bad += 1
+            if bad <= 6:
+                print("theory_check: delete(%d) broke A9 — %s" % (i, why))
+                print("  trace: " + " ; ".join(ops))
+        checked["a9"] = checked.get("a9", 0) + 1
         why = state_eq(C4, to_theory_state(m4))
         if why:
             bad += 1
@@ -277,8 +351,12 @@ def main():
         return 1
     print("theory_check: %d applications over %d states — the Isabelle text "
           "and the executable model agree on every result code and every "
-          "resulting state (derive %d, delete %d, revoke %d)"
-          % (tot, n, checked["derive"], checked["delete"], checked["revoke"]))
+          "resulting state (derive %d, delete %d, revoke %d); and the two OWED "
+          "lemmas hold over the TRUE transitive closure on every one: revoke "
+          "removed exactly the subtree %d times and a reparenting delete left "
+          "the forest acyclic %d times"
+          % (tot, n, checked["derive"], checked["delete"], checked["revoke"],
+             checked.get("revoke_exact", 0), checked.get("a9", 0)))
     return 0
 
 
