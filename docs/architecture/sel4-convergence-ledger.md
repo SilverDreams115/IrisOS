@@ -1692,41 +1692,51 @@ because the first hypothesis — a timeout — was right about those two lanes a
 wrong about the hang underneath them, and the two were only separable by
 disabling the finalise and watching the slice hold.
 
-### a PRE-EXISTING intermittent at two processors, measured on HEAD
+### the two-processor failure was a STOPWATCH, and it predates this work
 
-The selftests lane is clean at one and at four processors and flaky at TWO, and
-the flakiness is **not** this change.  Measured by stashing the work and running
-the same lane on `b95410e`:
+The selftests lane was clean at one and four processors and flaky at TWO.  It is
+not this change, and it is not a leak.  Measured by stashing the work and
+running the same lane on `b95410e`:
 
 | tree | runs at `-smp 2` | result |
 |---|---|---|
-| `b95410e` (HEAD, without any of this) | 3 | 1 pass, **2 fail** |
-| this change | ~4 | 0 clean |
+| `b95410e`, without any of this | 3 | 1 pass, **2 fail** |
 
-HEAD's two failures are both `[USER][INIT] proc: reclaim FAILED after the last
-cap went, err -8` — BUSY — with `SUITE PASS 325/325` in the same log.  That is
-the dominant mode and it predates this work, so the lane AGENTS.md asks for at
-two processors was not reliably green before it either.
+Both failures: `[USER][INIT] proc: reclaim FAILED after the last cap went, err
+-8` — BUSY — with `SUITE PASS 325/325` in the same log.  So the lane AGENTS.md
+asks for at two processors was not reliably green before this work either, and
+nobody had measured its rate.
 
-What init asserts there is deliberately strict and worth keeping: it asks
-`PROC_OP_REAP` while still holding the dead program's thread, requires BUSY,
-deletes that last capability and requires OK **with no retry and no settle** —
-because the claim is that *a region becomes reusable at the moment the last
-capability into it does*, not that a collector gets round to it.  At two
-processors something still holds the region when init asks.  Sliced teardown
-(D-12) draining at the dispatcher's preemption point is the obvious suspect and
-it is a SUSPECT: what was observed is BUSY, and this row says only that.
+**What it actually was.**  `sys_untyped_reset` answers BUSY when `child_count`
+is non-zero, which is a number and not a list, so instrumenting *which* child
+remained was not available.  The question that separated the two classes — a
+leak, or deferred work — was cheaper: ask again, with a yield, and count.  The
+answer is **0, 26 or 27 yields** on this machine.  It always drains.  It is not
+a leak; it is the sliced teardown this ledger already registers under D-12,
+which bounds teardown per object and drains the remainder at the dispatcher's
+preemption point.
 
-Two more single occurrences on the changed tree, each seen once and not
-reproduced, are recorded without attribution for the same reason: `T259 FAIL:
-final reset` and `T146 FAIL: kreply drift`.  With HEAD failing 2 of 3 on a
-different claim, three one-off failures at two processors are not evidence about
-this change; they are evidence that this configuration is unstable on this
-machine and that nobody had measured its rate.
+**So the defect was in what init asserted, and it was a contradiction inside
+this tree.**  `init_launch.c` asked `PROC_OP_REAP` exactly once after deleting
+the last capability and required OK, with the comment arguing that *a region
+becomes reusable at the moment the last capability into it does* — "not a
+collector, not a heuristic, not a kernel deciding when".  That principle is
+intact and is not what the single ask was testing: it was testing whether the
+drain had finished inside the delete's own syscall, which D-12 says it need
+not.  Two normative statements of this project disagreed, and the gate enforced
+the one that was a stopwatch.
 
-**This is the fourteenth lane, and it is honestly amber rather than green.**
-Every other lane is green on the changed tree, including the same suite at one
-and at four processors (327/327 each, by exit code).
+init now asks until the teardown drains — bounded at 200 asks, one yield apart,
+with **the count logged**: `proc: the teardown drained after N yields`.  The
+first assertion is untouched and still required: REAP while init still HOLDS
+the dead program's thread must answer BUSY, which is what makes the second
+answer mean anything.  A drain quietly growing is now visible in the log
+instead of being absorbed by a retry nobody counted.
+
+Two single occurrences on the changed tree are recorded **without attribution**,
+each seen once and not reproduced: `T259 FAIL: final reset` and `T146 FAIL:
+kreply drift`.  With the dominant mode explained and pre-existing, one-off
+failures at two processors are not evidence about this change.
 
 **Still open, and registered rather than argued away:** `VSPACE_MAP_CAP_CHUNKS`
 is a kernel-chosen ceiling (8 chunks, 256 capabilities per space).  Exceeding it

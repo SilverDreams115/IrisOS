@@ -3139,10 +3139,53 @@ int init_spawn_proc(iris_cptr_t vfs_ep_h, iris_cptr_t sm_h) {
 
         (void)iris_invoke1(0, INV_CNODE_DELETE, (long)INIT_SLOT_PROC_CHILD);
 
-        iris_msg_zero(&m);
-        m.label = PROC_OP_REAP;
-        if (iris_msg_call((long)INIT_SLOT_PROC_EP, &m) != 0 ||
-            m.label != PROC_REP_OK) {
+        /*
+         * The second question, and it is asked until the teardown the DELETE
+         * started has drained — not once.
+         *
+         * It was asked once, and that is what this lane kept failing on at two
+         * processors: `b95410e` failed 2 of 3 runs with `reclaim FAILED ...
+         * err -8`, BUSY, and `SUITE PASS` in the same log.  Measured with a
+         * counter, the drain takes 0, 26 or 27 yields on this machine — so a
+         * single ask was a stopwatch dressed as an invariant, and which side
+         * of it a boot landed on was luck.
+         *
+         * Asking repeatedly does NOT weaken the claim above.  The claim is that
+         * nothing decides when a region comes back except the last capability
+         * going: no collector, no heuristic, no kernel policy.  That is still
+         * exactly what happens here — the delete is the only event, and the
+         * refusal while init still HELD the thread is still required, which is
+         * what proves the answer means something.  What this loop admits is
+         * that the work the delete triggers is SLICED (ledger D-12: teardown
+         * is bounded per object and the remainder drains at the dispatcher's
+         * preemption point), so "reusable at the moment the last capability
+         * goes" is reached after a bounded drain rather than inside the
+         * delete's own syscall.  A supervisor that cannot wait for that cannot
+         * run on a kernel with preemptible teardown.
+         *
+         * BOUND: 200 asks, each separated by one yield.  The drain is bounded
+         * per object by D-12 and the longest seen here is 27; 200 is wide
+         * enough to be a bug report rather than a limit, and the count is
+         * LOGGED so a drain quietly growing is visible instead of being
+         * absorbed.
+         */
+        uint32_t reap_waits = 0;
+        for (;;) {
+            iris_msg_zero(&m);
+            m.label = PROC_OP_REAP;
+            if (iris_msg_call((long)INIT_SLOT_PROC_EP, &m) == 0 &&
+                m.label == PROC_REP_OK) break;
+            if (++reap_waits >= 200u) break;
+            (void)iris_syscall4(SYS_YIELD, 0, 0, 0, 0);
+        }
+        {
+            struct init_line L; il_reset(&L);
+            il_str(&L, "[USER][INIT] proc: the teardown drained after ");
+            il_num(&L, (uint64_t)reap_waits);
+            il_str(&L, " yields");
+            init_log(il_done(&L));
+        }
+        if (m.label != PROC_REP_OK) {
             struct init_line L; il_reset(&L);
             il_str(&L, "[USER][INIT] proc: reclaim FAILED after the last cap went, err ");
             il_err(&L, (long)m.words[0]);
