@@ -102,6 +102,16 @@ ALPHABET = [
     "delete 0", "delete 1",
     "revoke 0", "revoke 1",
     "sdelete 1", "srevoke 0",
+    #
+    # D-13, against the real `kvspace.c`.  Four symbols are enough to reach
+    # the case the charter names: `vframe 0` puts a frame in slot 0,
+    # `mint 0 1 5 0` derives slot 1 from it, `vmap 1 0` maps THROUGH the
+    # derived slot — so the space's capability is a sibling of slot 1 — and
+    # `revoke 0` then takes the mapping with the authority it descended from.
+    # Every sequence of four over this alphabet includes that one, and also
+    # every way of getting it wrong.
+    #
+    "vframe 0", "vmap 0 0", "vmap 1 0", "vunmap 0 0",
 ]
 
 CHUNK = 400          # traces per driver process

@@ -879,9 +879,25 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
  * missing before any of this: the service believed revoking withdrew access
  * and the client could still read the page.
  *
- * A source that is a ROOT has no parent to share, so the capability is
- * unparented — the disconnection the ledger registers under D-7.  In practice
- * a ring-3 frame is a child of the Untyped slot it was retyped from.
+ * A source that is a ROOT has no parent to share, and then the capability is
+ * installed as its CHILD rather than as a second root.
+ *
+ * Unparented was the first answer and `spec-differential` refuted it within
+ * minutes of the mapping ops being wired into the generator: two unrelated
+ * roots naming one frame is exactly the disconnection the ledger registers as
+ * option (2)'s cost, and it makes `kcnode_slot_is_final_cap` — the predicate
+ * D-7 has to replace `active_refs` with — answer "final" for a slot whose
+ * object another root still names.  The shadow comparison in
+ * `kcnode_slot_delete_locked` caught it as a mismatch against `active_refs`.
+ *
+ * Parenting under the root costs what the sibling form was built to avoid —
+ * revoking that slot unmaps the mapper's own page — and for a ROOT that is the
+ * right answer rather than a compromise: there is no ancestor to revoke
+ * instead, so if revoking the only capability did not unmap, nothing ever
+ * would, and the mapping would outlive every capability naming it.  Ring 3
+ * does not meet this case in the services that provoked the sibling form:
+ * their frames are retyped, so the capability is a child of the Untyped's slot
+ * and has a parent to share.
  */
 iris_error_t kcnode_slot_install_sibling(struct KCNode *src_cn,
                                          uint32_t src_idx,
@@ -922,10 +938,13 @@ iris_error_t kcnode_slot_install_sibling(struct KCNode *src_cn,
      * IDENTITY, and `kcnode_slot_install_linked` checks it under the same hold
      * that installs the link, so a slot that changed in between is refused
      * rather than linked under an ancestor that never authorised it (A9). */
+    if (!par_cn) {
+        /* The source IS the root: parent under it, not beside it. */
+        par_cn = src_cn; par_idx = src_idx; par_expect = obj;
+    }
     return kcnode_slot_install_linked(dst_cn, dst_idx, obj, rights, badge,
                                       par_cn, par_idx, par_expect,
-                                      /*exclusive=*/1,
-                                      /*unparented=*/par_cn ? 0 : 1);
+                                      /*exclusive=*/1, /*unparented=*/0);
 }
 
 iris_error_t kcnode_slot_install_for_thread(struct KCNode *src_cn,

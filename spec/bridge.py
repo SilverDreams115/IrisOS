@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import invariants                                            # noqa: E402
 from authority_model import (AuthorityModel, ALL_CHECKS,      # noqa: E402
+                             chk_mapping_authority, MAPCAP_BASE,
                              chk_rights_monotone, chk_badge_sealed,
                              chk_derivation_same_object)
 from differential import gen_trace, run_model, NCNODES, SPC   # noqa: E402
@@ -179,6 +180,37 @@ def main():
                 continue
             if s.obj != p.obj and m.objs[p.obj].type != "ut":
                 unreachable_seen += 1
+
+        # 4b. D-13, the two formulations against each other.
+        #
+        #     `inv_D13` reads the pseudo-slot's occupancy; `chk_mapping_
+        #     authority` starts from what is MAPPED and searches the slot space
+        #     for a capability naming it.  Same invariant, opposite directions,
+        #     and the states are the ones real traces built — which now include
+        #     mappings, because the generator's mapping ops are reachable.
+        #
+        CON = invariants.CON()
+        def _maps(sp, ob):
+            return ob in m.maps and bool(m.maps[ob])
+        def _hascap(sp, ob):
+            mc = MAPCAP_BASE + ob
+            return mc in m.slots and not m.slots[mc].empty
+        pred_bad = None
+        for fi in range(len(m.frames)):
+            if not invariants.inv_D13(CON, _maps, _hascap, 0, fi):
+                pred_bad = fi
+                break
+        checker_bad = chk_mapping_authority(m)
+        if (pred_bad is None) != (checker_bad is None):
+            disagreements += 1
+            if disagreements <= 5:
+                print("bridge: trace %d — D13: predicate says %s, model "
+                      "checker says %s"
+                      % (t,
+                         "violated for frame %s" % pred_bad
+                         if pred_bad is not None else "holds",
+                         checker_bad or "holds"))
+                print("  trace: " + " ; ".join(ops))
 
         # 4. and every charter check the model carries must hold, because a
         #    state that already violates one makes the comparison above

@@ -55,6 +55,21 @@ def gen_trace(rng, nops):
     what puts depth in the derivation tree — and depth is where revoke and
     reparenting are decided.
     """
+    #
+    # The thresholds ASCEND, and they did not.
+    #
+    # `mint` tested `r < 0.65` from the third position, so every draw between
+    # 0.35 and 0.65 landed there and the next three branches — the syscall
+    # publication paths, the read-only queries, and later D-13's mapping ops —
+    # were unreachable.  Measured, not reasoned: counting the operations in 300
+    # generated traces produced no `smint`, no `smove`, no `ident` and no
+    # `same` at all.  The lane still said "200 traces, model and kernel agree",
+    # which is true of a smaller alphabet than it reads as, and `ident`/`same`
+    # are in NEITHER lane's alphabet so nothing exercised them.
+    #
+    # A generator with dead branches is the same defect as a check that cannot
+    # fail: the output is indistinguishable from coverage.
+    #
     ops, occupied, uts = [], [], []
     for _ in range(nops):
         r = rng.random()
@@ -78,14 +93,14 @@ def gen_trace(rng, nops):
             ops.append("seed %d %d" % (s, rng.randrange(4)))
             if s not in occupied:
                 occupied.append(s)
-        elif r < 0.65:
+        elif r < 0.48:
             src = rng.choice(occupied)
             dst = rng.randrange(NSLOTS)
             ops.append("mint %d %d %d %d" % (
                 src, dst, rng.choice(RIGHTS_POOL), rng.choice([0, 0, 0, 7, 42])))
             if dst not in occupied:
                 occupied.append(dst)
-        elif r < 0.55:
+        elif r < 0.56:
             # the SYSCALL publication paths, CNode 0 only
             src = rng.choice(occupied)
             dst = rng.randrange(SPC)
@@ -97,7 +112,23 @@ def gen_trace(rng, nops):
                 ops.append("smove %d %d" % (src % SPC, dst))
             if dst not in occupied:
                 occupied.append(dst)
-        elif r < 0.62:
+        elif r < 0.64:
+            # D-13: a frame, a map through a slot, an unmap.  Mapping through
+            # a DERIVED slot is the case that matters, so the source is drawn
+            # from whatever is occupied rather than from slot 0.
+            k = rng.random()
+            if k < 0.34:
+                dst = rng.randrange(SPC)
+                ops.append("vframe %d" % dst)
+                if dst not in occupied:
+                    occupied.append(dst)
+            elif k < 0.75:
+                ops.append("vmap %d %d" % (rng.choice(occupied),
+                                           rng.randrange(3)))
+            else:
+                ops.append("vunmap %d %d" % (rng.randrange(3),
+                                             rng.randrange(3)))
+        elif r < 0.70:
             # the read-only queries: what a slot holds, and whether two
             # capabilities name one object
             if rng.random() < 0.5:
@@ -105,12 +136,12 @@ def gen_trace(rng, nops):
             else:
                 ops.append("same %d %d" % (rng.randrange(SPC),
                                            rng.randrange(SPC)))
-        elif r < 0.70:
+        elif r < 0.76:
             if rng.random() < 0.5:
                 ops.append("srevoke %d" % (rng.choice(occupied) % SPC))
             else:
                 ops.append("sdelete %d" % (rng.choice(occupied) % SPC))
-        elif r < 0.72 and len(occupied) >= 2:
+        elif r < 0.79 and len(occupied) >= 2:
             # rotate: dest, pivot, src.  Half the draws aim dest AT src,
             # which is the three-way SWAP branch and the only one that needs
             # a temporary — the branch a generator that never repeats an
@@ -121,7 +152,7 @@ def gen_trace(rng, nops):
             ops.append("rotate %d %d %d" % (ds, pv, sr))
             if ds not in occupied:
                 occupied.append(ds)
-        elif r < 0.85:
+        elif r < 0.90:
             ops.append("delete %d" % rng.choice(occupied))
         else:
             ops.append("revoke %d" % rng.choice(occupied))
@@ -165,6 +196,24 @@ def run_model(ops):
             results.append(m.delete(int(f[1])))
         elif f[0] == "revoke":
             results.append(m.revoke(int(f[1])))
+        #
+        # D-13's operations.  `None` means the driver took its `continue` and
+        # printed NOTHING, which is a different observable from any error code
+        # — so the model says so and no result is recorded, or the two sides
+        # would compare a result against the next operation's.
+        #
+        elif f[0] == "vframe":
+            r = m.vframe(int(f[1]))
+            if r is not None:
+                results.append(r)
+        elif f[0] == "vmap":
+            r = m.vmap(int(f[1]), int(f[2]))
+            if r is not None:
+                results.append(r)
+        elif f[0] == "vunmap":
+            r = m.vunmap(int(f[1]), int(f[2]))
+            if r is not None:
+                results.append(r)
     return m, results
 
 

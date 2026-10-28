@@ -47,6 +47,10 @@
 #include <iris/nc/rights.h>
 #include <iris/kpage.h>
 #include <iris/nc/kuntyped.h>
+#include <iris/nc/kvspace.h>
+#include <iris/nc/kframe.h>
+#include <iris/paging.h>
+#include <stdatomic.h>
 #include <iris/nc/rights.h>
 #include <stdio.h>
 #include <string.h>
@@ -55,6 +59,54 @@
 #define NCNODES 4u
 #define SPC     16u
 #define NSLOTS  (NCNODES * SPC)
+
+/*
+ * ── The VSpace side, so D-13 is checked against `kvspace.c` and not only
+ *    against a model of it ────────────────────────────────────────────────
+ *
+ * `inv_D13` — a space that maps an object holds a capability naming it — is
+ * proved over symbolic state by `spec/prove.py`.  Nothing tied it to the C,
+ * which is the gap the ledger registers: the proved side is the one no
+ * hardware executes, so it is the worse of the two to have wrong.
+ *
+ * One space, a few frames, and two operations are enough to close that for
+ * the mechanism: a map installs a capability as a SIBLING of the slot mapped
+ * through, and any path that removes a capability runs the sweep.  The dump
+ * then carries, per frame, how many mappings the space has and whether it
+ * still holds authority — the two sides of the invariant, read out of the real
+ * kernel and compared with the model on every trace.
+ */
+#define NVFRAMES  3u
+#define VS_POOL_BYTES  (256u * 1024u)
+#define VA_OF(i)  (USER_PRIVATE_BASE + ((uint64_t)(i) << 12))
+
+static struct KVSpace *g_vs;
+static struct KFrame   *g_fr[NVFRAMES];
+static unsigned         g_nfr;
+static uint64_t         g_fr_pa = 0x62000000ULL;
+
+/* Lazily, so a trace that never maps pays nothing — the same reason the
+ * kernel carves `map_caps` on first map. */
+static struct KVSpace *vs_ensure(void) {
+    if (g_vs) return g_vs;
+    void *mem = kpage_alloc(VS_POOL_BYTES);
+    struct KUntyped *pool;
+    if (!mem) return 0;
+    g_vs = kvspace_alloc(0x5EC0000ULL);
+    if (!g_vs) return 0;
+    pool = kuntyped_create((uint64_t)(uintptr_t)mem, VS_POOL_BYTES, 0);
+    if (!pool) return 0;
+    kvspace_set_pt_pool(g_vs, pool);
+    return g_vs;
+}
+
+static void vs_teardown(void) {
+    if (!g_vs) return;
+    kvspace_invalidate(g_vs);
+    for (unsigned i = 0; i < g_nfr; i++) g_fr[i] = 0;
+    g_nfr = 0;
+    g_vs = 0;          /* the pool's pages are the harness's to leak per trace */
+}
 
 /*
  * ── Four symbols that are outside the authority model's boundary ───────────
@@ -158,10 +210,10 @@ uint64_t sys_cap_same_object(uint64_t a0, uint64_t a1, uint64_t a2);
  * depends on which, because the authority model does not. */
 static const kobject_type_t g_types[] = {
     KOBJ_ENDPOINT, KOBJ_NOTIFICATION, KOBJ_CNODE, KOBJ_UNTYPED,
-    KOBJ_REPLY, KOBJ_SCHED_CONTEXT
+    KOBJ_REPLY, KOBJ_SCHED_CONTEXT, KOBJ_FRAME
 };
 static const char *const g_type_names[] = {
-    "ep", "notif", "cnode", "ut", "reply", "sc"
+    "ep", "notif", "cnode", "ut", "reply", "sc", "frame"
 };
 
 /*
@@ -287,6 +339,24 @@ static void dump(void) {
      */
     printf("final %u\n", kcnode_count_final_caps(g_cn, NCNODES));
     /*
+     * D-13, both sides of it, per frame this trace created.
+     *
+     * `mapped` is the kernel's own `mapped_count`; `cap` is what
+     * `kvspace_map_cap_has` answers, which is the walk of the space's
+     * capability chunks.  The invariant is `mapped > 0 -> cap`, and it is NOT
+     * asserted here: both numbers are printed and the model computes them
+     * independently, so a disagreement names which side is wrong instead of
+     * stopping at "something is".
+     */
+    for (unsigned i = 0; i < g_nfr; i++) {
+        unsigned m = g_fr[i] ? (unsigned)atomic_load_explicit(
+                                   &g_fr[i]->mapped_count, memory_order_relaxed)
+                             : 0u;
+        int hc = (g_fr[i] && g_vs) ? kvspace_map_cap_has(g_vs, &g_fr[i]->base)
+                                   : 0;
+        printf("frame %u mapped %u cap %d\n", i, m, hc);
+    }
+    /*
      * D-7's shadow: every slot delete compared the predicate against the
      * count.  The model prints 0, because the two agreeing is the claim.
      */
@@ -351,6 +421,7 @@ int main(void) {
                 printf("LEAK %u objects alive with no slot naming them\n",
                        g_alive);
             printf("==\n");
+            vs_teardown();
             for (unsigned oi = 0; oi < g_nobjs; oi++)
                 kpage_free(g_objs[oi], (uint32_t)sizeof(struct KObject));
             g_nobjs = 0;
@@ -480,6 +551,44 @@ int main(void) {
             if (a >= SPC) continue;
             /* cptr 0 addresses the caller's own root; arg1 is the slot. */
             printf("r %d\n", (int)(long)(int64_t)sys_cnode_delete(0, (uint64_t)a, 0));
+        } else if (!strcmp(op, "vframe") &&
+                   sscanf(line, "%*s %u", &a) == 1) {
+            /* A frame with real backing, named by a capability in the root
+             * CNode — the source a map derives the space's capability FROM. */
+            struct KFrame *f;
+            if (a >= SPC || g_nfr >= NVFRAMES) continue;
+            if (!vs_ensure()) return 2;
+            f = kframe_alloc(g_fr_pa, 4096, 0);
+            if (!f) return 2;
+            g_fr_pa += 0x1000ULL;
+            g_fr[g_nfr++] = f;
+            printf("r %d\n", (int)kcnode_mint(g_cn[0], a, &f->base,
+                                               RIGHT_READ | RIGHT_WRITE |
+                                               RIGHT_DUPLICATE));
+        } else if (!strcmp(op, "vmap") &&
+                   sscanf(line, "%*s %u %u", &a, &b) == 2) {
+            /* Through the SLOT, which is what makes the space's capability a
+             * sibling of it and what a revoke of an ancestor then reaches. */
+            const struct KCSlot *sl;
+            if (a >= NSLOTS) continue;
+            if (!vs_ensure()) return 2;
+            sl = &cn_of(a)->slots[idx_of(a)];
+            if (!sl->object || sl->object->type != KOBJ_FRAME) {
+                printf("r %d\n", (int)IRIS_ERR_WRONG_TYPE);
+            } else {
+                printf("r %d\n", (int)kframe_map_page_from(
+                           (struct KFrame *)sl->object, g_vs, VA_OF(b), 0u,
+                           cn_of(a), idx_of(a)));
+            }
+        } else if (!strcmp(op, "vunmap") &&
+                   sscanf(line, "%*s %u %u", &a, &b) == 2) {
+            if (a >= NVFRAMES) continue;
+            if (!g_vs || a >= g_nfr || !g_fr[a]) {
+                printf("r %d\n", (int)IRIS_ERR_NOT_FOUND);
+            } else {
+                printf("r %d\n", (int)kframe_unmap_page(g_fr[a], g_vs,
+                                                         VA_OF(b)));
+            }
         } else if (!strcmp(op, "ident") && sscanf(line, "%*s %u", &a) == 1) {
             /* A QUERY, and it is in the trace for the same reason the return
              * codes are: "what does this slot hold" is a fact both sides must

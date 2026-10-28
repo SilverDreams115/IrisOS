@@ -1763,16 +1763,41 @@ case that was in mind.
 Sabotage-tested, as every gate here must be: replacing the sweep with "unmap
 nothing" turns the second row REFUTED and the lane fails, 51 of 52.
 
-**And it is NOT in `invariants.ALL`, which is the honest part.**  `ALL` is
-walked by both lanes — `spec-prove` symbolically and `spec-bridge` concretely,
-on states real traces built.  Those traces drive `spec_driver.c`, which is
-CSpace: there is no VSpace and no mapping state on the concrete side at all.
-Adding it to `ALL` would break `spec-bridge` or, far worse, make it pass
-VACUOUSLY on a component every state leaves empty — the failure mode this
-directory exists to prevent.  So D-13 is proved over the MODEL and nothing yet
-ties a mapping in that model to `kvspace.c`.  That missing link is phase 4's
-subject, and counting this as equal to A7, A8, O2 and `wf` would be the kind of
-arithmetic this ledger is for refusing.
+**It is not in `invariants.ALL`**, because `ALL`'s predicates are read over
+five arrays indexed by SLOT and this one is over (space, object) pairs — a
+signature difference, not a coverage gap.  What WAS a coverage gap is closed:
+
+### and then the missing link was closed — D-13 against the real `kvspace.c`
+
+The paragraph above used to end "nothing yet ties a mapping in that model to
+`kvspace.c`".  Something does now, and it is the same three-layer treatment
+every CSpace invariant gets:
+
+* **`spec_driver.c` grew the VSpace side** — one space with a pool, frames, and
+  `vframe` / `vmap` / `vunmap`.  `kframe.c` and `kvspace.c` were already in the
+  driver's link line, so the mechanism is exercised as the kernel, not as a
+  stand-in: a map goes through `kframe_map_page_from` with the slot it was
+  invoked on, and the dump carries the real `mapped_count` beside what the real
+  `kvspace_map_cap_has` answers.
+* **`authority_model.py` models the space's capability as a pseudo-slot** above
+  every real slot id, so it is in the MDB exactly as the kernel's is: a revoke
+  reaches it, a delete reparents around it, and it keeps the frame alive while
+  it names it.  It is excluded from the dump's slot lines and from `final`'s
+  numerator, because `kcnode_count_final_caps` walks the four CNodes — but the
+  finality QUESTION is asked over every capability including it, because
+  `kcnode_slot_is_final_cap` reads the MDB and does see one.
+* **`chk_mapping_authority` is a SECOND formulation**, written from the mapping
+  side: it starts from what is mapped and searches the slot space for a
+  capability naming it, where `inv_D13` reads the pseudo-slot's occupancy.
+  `spec-bridge` compares the two on states real traces built, and it is in
+  `ALL_CHECKS`, so every state every lane constructs must satisfy it.
+
+`make spec-exhaustive` is now **531441 traces — every sequence of 4 operations
+over an alphabet of 27** — and the model and the real C agree on every
+intermediate result code and every final state.  The bounded claim is still
+bounded: a disagreement needing five operations is outside it.  But D-13's
+mechanism is no longer proved against a model nobody checked against the
+kernel, and that was the sentence worth deleting.
 
 **Still open, and registered rather than argued away:** `VSPACE_MAP_CAP_CHUNKS`
 is a kernel-chosen ceiling (8 chunks, 256 capabilities per space).  Exceeding it

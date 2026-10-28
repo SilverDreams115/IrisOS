@@ -49,6 +49,26 @@ R_ALL = R_READ | R_WRITE | R_DUPLICATE | R_TRANSFER | R_WAIT | R_ROUTE | R_MANAG
 # ── object types, matching kobject_type_t ───────────────────────────────────
 T_ENDPOINT, T_NOTIFICATION, T_CNODE, T_UNTYPED = "ep", "notif", "cnode", "ut"
 T_REPLY, T_SC = "reply", "sc"
+T_FRAME = "frame"
+
+#
+# ── The VSpace side, so D-13 is CHECKED and not only proved ────────────────
+#
+# `inv_D13` — a space that maps an object holds a capability naming it — is
+# proved over symbolic state in `spec/prove.py`.  Until these ops existed
+# nothing tied it to `kvspace.c`, and the proved side is the one no hardware
+# executes: the worse of the two to have wrong, because it looks strongest.
+#
+# The space's capability does NOT live in the CSpace slots a trace addresses —
+# the kernel keeps it in the space's own `map_caps` chunks.  It is modelled as
+# a pseudo-slot above every real slot id so that it participates in the MDB
+# exactly as it does in the kernel: a revoke reaches it, a delete reparents
+# around it, and it keeps the frame alive while it names it.  It is excluded
+# from the dump's slot lines and from `final`, because `kcnode_count_final_caps`
+# walks the four CNodes and never sees it.
+#
+MAPCAP_BASE = 10000
+NVFRAMES = 3
 
 OK = 0
 ERR_INVALID_ARG = -1
@@ -105,6 +125,9 @@ class AuthorityModel:
         self.seeded: set = set()
         self._next_oid = 1
         self.last_revoked = 0
+        # D-13: the one address space, its frames and what it maps.
+        self.frames: list = []            # frame index -> oid
+        self.maps: dict = {}              # frame index -> set of VA indices
 
     # ── helpers ────────────────────────────────────────────────────────────
     def _new_obj(self, type_: str, seeded: bool = False) -> int:
@@ -159,6 +182,28 @@ class AuthorityModel:
         if oid is not None and not any(
                 t.obj == oid for t in self.slots.values()):
             self.objs[oid].alive = False
+        # D-13's sweep, run from the SAME choke point the kernel runs it from:
+        # `kcnode_slot_drop_old` is every path that removes a capability, and
+        # putting it anywhere else is how the kernel's own revoke was missed.
+        self._finalise_orphans()
+
+    def _finalise_orphans(self):
+        """
+        Unmap wherever the space no longer holds a capability for what it
+        mapped — `kvspace_finalise_orphans`, which is the mechanism D-13 asked
+        for.  One space here, so "wherever" is one question per frame.
+        """
+        for fi in list(self.maps):
+            mc = MAPCAP_BASE + fi
+            held = mc in self.slots and not self.slots[mc].empty
+            if not held:
+                self.maps[fi] = set()
+
+    def _frame_index(self, oid: int):
+        for i, o in enumerate(self.frames):
+            if o == oid:
+                return i
+        return None
 
     # ── the operations ─────────────────────────────────────────────────────
     # The rights a retyped capability is BORN with, per type.  They are not
@@ -261,7 +306,10 @@ class AuthorityModel:
         # the kernel's own and cannot be hooked to count.  Excluded on both
         # sides, and named here so the exclusion is a decision rather than a
         # coincidence of which branch calls `obj_new`.
-        oid = self._new_obj(type_, seeded=(type_ != T_UNTYPED))
+        # A FRAME joins the Untyped in the untracked population for the same
+        # reason: the driver builds one with `kframe_alloc` over real backing,
+        # so its destructor is the kernel's own and cannot be hooked to count.
+        oid = self._new_obj(type_, seeded=(type_ not in (T_UNTYPED, T_FRAME)))
         s.obj, s.rights, s.badge = oid, rights, 0
         s.parent = None
         return OK
@@ -279,6 +327,17 @@ class AuthorityModel:
         # Deriving a slot into ITSELF is a malformed request, not a conflict
         # with what is already there — and the kernel says so before it looks
         # at the slot at all, empty or not.
+        #
+        # The PRIMITIVE's order: the self case first, then emptiness.
+        #
+        # `kcnode_slot_derive` is reached directly and rejects `src == dst`
+        # before it reads the slot, so `mint 0 0 7 7` on an empty slot is
+        # INVALID_ARG.  The SYSCALL is the other way round — it resolves the
+        # source, so the same arguments through `SYS_CSPACE_MINT` answer
+        # NOT_FOUND — and `syscall_mint` states that rather than sharing this
+        # order.  Making both agree with one order is what the lane refuted
+        # twice: once in each direction.
+        #
         if src_sid == dst_sid:
             return ERR_INVALID_ARG
         if src.empty:
@@ -365,10 +424,23 @@ class AuthorityModel:
             return ERR_INVALID_ARG
         if src_sid == 0 or dst_sid == 0:
             return ERR_INVALID_ARG           # CPtr 0 names nothing, either end
-        if src_sid == dst_sid:
-            return ERR_INVALID_ARG
+        #
+        # Emptiness FIRST, then the self case.  The model asked about
+        # `src == dst` before resolving the source and answered INVALID_ARG
+        # where the kernel answers NOT_FOUND; removing the self case
+        # altogether was then wrong in the other direction, because an
+        # OCCUPIED self-move is INVALID_ARG and not ALREADY_EXISTS.  Two
+        # guesses, both refuted by the lane in consecutive runs.
+        #
+        # Found only when the generator's dead branches were fixed — `smove`
+        # was unreachable in the random lane, so `smove 3 3` had never been
+        # generated in any run.  A disagreement that waits for a generator bug
+        # to be fixed is a disagreement nobody was looking for.
+        #
         if src.empty:
             return ERR_NOT_FOUND
+        if src_sid == dst_sid:
+            return ERR_INVALID_ARG
         if not dst.empty:
             return ERR_ALREADY_EXISTS
 
@@ -396,14 +468,29 @@ class AuthorityModel:
         """
         if src_sid == 0 or dst_sid == 0:
             return ERR_INVALID_ARG
+        #
+        # The syscall RESOLVES the source before anything else, so an empty
+        # source is NOT_FOUND even when the arguments would also have been
+        # refused for naming one slot twice.  The primitive answers the other
+        # way; see `mint`.
+        #
+        src = self.slots.get(src_sid)
+        if src is None:
+            return ERR_INVALID_ARG
+        if src.empty:
+            return ERR_NOT_FOUND
         return self.mint(src_sid, dst_sid, rights, badge)
 
     # The wire values `CAP_IDENTIFY` answers: the enumerator's VALUE is the
     # ABI, which is why `kobject.h` keeps KOBJ_PROCESS and KOBJ_VMO reserved
     # after deleting the objects — renumbering would change what every other
     # capability calls itself.
+    # Read off `kobject_type_t`'s enumerators, not guessed: the enum reserves
+    # retired values (KOBJ_PROCESS, KOBJ_VMO, KOBJ_INITRD_ENTRY) precisely
+    # because the VALUE is the wire type, so the positions are not contiguous
+    # and a frame is 15.
     TYPE_WIRE = {T_NOTIFICATION: 2, T_ENDPOINT: 8, T_CNODE: 9,
-                 T_SC: 10, T_UNTYPED: 11, T_REPLY: 12}
+                 T_SC: 10, T_UNTYPED: 11, T_REPLY: 12, T_FRAME: 15}
 
     def identify(self, sid: int) -> int:
         """
@@ -584,6 +671,93 @@ class AuthorityModel:
             return ERR_BUSY
         return OK
 
+    def vframe(self, sid: int):
+        """
+        A frame with real backing, named by a capability in the root CNode —
+        the driver's `vframe`.  `None` means the driver printed nothing
+        (`continue`), which is a distinct observable from any error code.
+        """
+        if sid >= self.spc or len(self.frames) >= NVFRAMES:
+            return None
+        r = self.seed(sid, T_FRAME, R_READ | R_WRITE | R_DUPLICATE)
+        if r == OK:
+            self.frames.append(self.slots[sid].obj)
+            self.maps[len(self.frames) - 1] = set()
+        return r
+
+    def vmap(self, sid: int, va: int):
+        """
+        Map through the SLOT, which is what makes the space's capability a
+        SIBLING of it (`kcnode_slot_install_sibling`).  A child is what
+        `Revoke(S)` would destroy, and then a revoke of the slot a holder
+        mapped through would unmap the holder's own page — which is what it
+        did, for thirteen pages of a boot.
+        """
+        if sid not in self.slots or sid >= self.ncnodes * self.spc:
+            return None
+        s = self.slots[sid]
+        if s.empty or self.objs[s.obj].type != T_FRAME:
+            return ERR_WRONG_TYPE
+        fi = self._frame_index(s.obj)
+        if fi is None:
+            return ERR_WRONG_TYPE
+        # The address, not the frame: a VA already carrying a PTE is BUSY
+        # whichever frame put it there, because the kernel checks the walk.
+        if any(va in m for m in self.maps.values()):
+            return ERR_BUSY
+        mc = MAPCAP_BASE + fi
+        if mc not in self.slots:
+            self.slots[mc] = Slot()
+        if self.slots[mc].empty:
+            # ONE capability covers however many times the space maps the
+            # frame, so a second map installs nothing new.
+            self.slots[mc].obj = s.obj
+            # The SOURCE's rights and badge, unchanged — what
+            # `kcnode_slot_install_sibling` copies.  They were hardcoded to
+            # READ|WRITE|DUPLICATE here, and `spec-exhaustive` caught it as an
+            # A7 violation in the model: a map through a slot reduced to READ
+            # produced a capability with WRITE, amplifying over the parent it
+            # was installed beside.  531441 traces, found at depth 4.
+            self.slots[mc].rights = s.rights
+            self.slots[mc].badge = s.badge
+            # A source that is a ROOT has no parent to share, so the
+            # capability becomes its CHILD rather than a second root: two
+            # unrelated roots naming one frame is what made
+            # `kcnode_slot_is_final_cap` wrong, and this lane is what caught
+            # it.  For a root, revoke-unmaps is also the only answer that
+            # leaves no mapping outliving every capability.
+            par = s.parent if s.parent is not None else sid
+            self.slots[mc].parent = par
+            self.slots[par].children.append(mc)
+        self.maps[fi].add(va)
+        return OK
+
+    def vunmap(self, fi: int, va: int):
+        """The driver's `vunmap`: by frame index, since it holds the pointer."""
+        if fi >= NVFRAMES:
+            return None
+        if fi >= len(self.frames) or fi not in self.maps:
+            return ERR_NOT_FOUND
+        if va not in self.maps[fi]:
+            #
+            # Two different answers, and the kernel distinguishes them:
+            # `kframe_unmap_page` searches the space's list by VA, and a VA
+            # that matches while naming a DIFFERENT frame is INVALID_ARG —
+            # "the VA is occupied by somebody else" — while a VA with no PTE
+            # at all is NOT_FOUND.  The model answered NOT_FOUND for both and
+            # `vunmap 1 1` disagreed.
+            #
+            if any(va in self.maps[o] for o in self.maps if o != fi):
+                return ERR_INVALID_ARG
+            return ERR_NOT_FOUND
+        self.maps[fi].discard(va)
+        # The space's capability goes with its LAST mapping of this frame.
+        if not self.maps[fi]:
+            mc = MAPCAP_BASE + fi
+            if mc in self.slots and not self.slots[mc].empty:
+                self._clear(mc)
+        return OK
+
     # ── the state, canonically ─────────────────────────────────────────────
     def dump(self) -> str:
         """
@@ -591,14 +765,15 @@ class AuthorityModel:
         Objects are renumbered in slot order so the two sides can agree
         without sharing pointers.
         """
+        real = [i for i in sorted(self.slots) if i < MAPCAP_BASE]
         canon, nxt = {}, 1
-        for sid in sorted(self.slots):
+        for sid in real:
             o = self.slots[sid].obj
             if o is not None and o not in canon:
                 canon[o] = nxt
                 nxt += 1
         out = []
-        for sid in sorted(self.slots):
+        for sid in real:
             s = self.slots[sid]
             if s.empty:
                 continue
@@ -621,7 +796,7 @@ class AuthorityModel:
         # object is alive exactly while a slot names it — that is the whole
         # claim.  The kernel is where the number can come out different.
         #
-        named = len({self.slots[i].obj for i in self.slots
+        named = len({self.slots[i].obj for i in real
                      if not self.slots[i].empty
                      and self.slots[i].obj in self.seeded})
         out.append("live %d named %d" % (named, named))
@@ -635,9 +810,32 @@ class AuthorityModel:
         # can be retired at all.
         #
         from collections import Counter
-        cnt = Counter(self.slots[i].obj for i in self.slots
-                      if not self.slots[i].empty)
-        out.append("final %d" % sum(1 for o in cnt if cnt[o] == 1))
+        # Counted over the REAL slots, but "is this the last one?" is asked of
+        # EVERY capability including the space's.
+        #
+        # Both halves are the kernel's: `kcnode_count_final_caps` walks the
+        # four CNodes, so a mapping capability is never itself counted; the
+        # predicate it calls is `kcnode_slot_is_final_cap`, which reads the MDB
+        # neighbourhood and therefore DOES see one.  Asking only over the real
+        # slots made the model call a slot final while the space still held a
+        # capability to its object — `spec-differential` disagreed at 10 vs 9.
+        total = Counter(self.slots[i].obj for i in self.slots
+                        if not self.slots[i].empty)
+        out.append("final %d" % sum(1 for i in real
+                                    if not self.slots[i].empty
+                                    and total[self.slots[i].obj] == 1))
+        #
+        # D-13, both sides of it, per frame — the lines the driver prints from
+        # the real `mapped_count` and the real `kvspace_map_cap_has`.  The
+        # invariant is `mapped > 0 -> cap`, and neither side asserts it here:
+        # both numbers are computed independently and compared, so a
+        # disagreement says which side is wrong instead of only that one is.
+        #
+        for fi in range(len(self.frames)):
+            held = ((MAPCAP_BASE + fi) in self.slots
+                    and not self.slots[MAPCAP_BASE + fi].empty)
+            out.append("frame %d mapped %d cap %d"
+                       % (fi, len(self.maps.get(fi, ())), 1 if held else 0))
         # D-7's shadow comparison, made at every slot delete in the kernel:
         # the MDB predicate and the reference count decided the same thing.
         # The model asserts zero disagreements, which is what retiring the
@@ -756,6 +954,42 @@ def chk_object_liveness(m: AuthorityModel):
     return None
 
 
+
+def chk_mapping_authority(m):
+    """
+    D-13, checked from the MAPPING side — independently of `inv_D13`.
+
+    The shared predicate asks, per (space, object), whether `hascap` holds
+    wherever `maps` does, reading the pseudo-slot's occupancy.  This walks the
+    other way: it starts from what the space has MAPPED and searches the slot
+    space for a capability that names that object and lives above
+    `MAPCAP_BASE` — which is what "the space holds a capability for it" means
+    structurally — and it also requires that capability to be IN the derivation
+    tree, because a capability no revoke can reach is not authority a revoke
+    can withdraw.
+
+    Two formulations of one invariant is the entire point of `spec/bridge.py`:
+    the proved side is the one no hardware executes, so letting it drift is the
+    worse of the two failures.
+    """
+    for fi, vas in m.maps.items():
+        if not vas:
+            continue
+        if fi >= len(m.frames):
+            return "frame %d has mappings but no object" % fi
+        oid = m.frames[fi]
+        held = [sid for sid, sl in m.slots.items()
+                if sid >= MAPCAP_BASE and not sl.empty and sl.obj == oid]
+        if not held:
+            return ("frame %d is mapped at %d address(es) and the space holds "
+                    "no capability naming it" % (fi, len(vas)))
+        for sid in held:
+            sl = m.slots[sid]
+            if sl.parent is not None and sid not in m.slots[sl.parent].children:
+                return ("the space's capability for frame %d is detached from "
+                        "the derivation tree" % fi)
+    return None
+
 ALL_CHECKS = (
     chk_rights_monotone,
     chk_badge_sealed,
@@ -763,6 +997,11 @@ ALL_CHECKS = (
     chk_links_symmetric,
     chk_derivation_same_object,
     chk_object_liveness,
+    # D-13, enforced on every state every lane builds — including all 531441
+    # of `spec-exhaustive`'s.  A mapping that outlives the space's capability
+    # is access without authority (charter A10), so a trace that produces one
+    # is a failure and not a curiosity.
+    chk_mapping_authority,
 )
 
 
