@@ -2726,7 +2726,7 @@ static int init_prove_shared_objects(void) {
     struct iris_msg m;
     long objid;
     uint64_t text_pa[2] = { 0, 0 }, priv_pa[2] = { 0, 0 };
-    int ok = 0, seen_before = 0, seen_after = 0, still_mapped = 0;
+    int ok = 0, seen_before = 0, seen_after = 0, lost_mapping = 0;
     uint32_t started = 0;
 
     /*
@@ -2845,13 +2845,20 @@ static int init_prove_shared_objects(void) {
             { init_share_give_up("round three"); goto out; }
         if (m.label != OBJREG_ROUND_AFTER)
             { init_share_give_up("round three: wrong round"); goto out; }
-        /* words[1] says whether the MAPPING survived the revoke.  It does, and
-         * that is the contract T137 pins: revoke is capability-scoped and a
-         * live mapping holds its own reference.  Recorded rather than assumed,
-         * because the difference between "cannot name it" and "cannot read it"
-         * is the difference between withdrawing authority and evicting, and
-         * only one of those is a thing this system can do. */
-        if (m.words[1]) still_mapped++;
+        /*
+         * words[1] says whether the MAPPING is GONE, proved by mapping one of
+         * the consumer's own frames at that address rather than by reading it.
+         *
+         * This counted the opposite until Stage V, and said so: "it does, and
+         * that is the contract T137 pins".  Charter A10 says otherwise —
+         * *revoke recursively removes all descendant authority* — and a page
+         * readable through a space that holds no capability naming it is
+         * access without authority.  The registry believed it had withdrawn
+         * this library and had not.  Ledger D-13.  T137 pins a different case:
+         * it revokes a branch the mapping does not descend from, and there the
+         * mapping rightly survives.
+         */
+        if (m.words[1]) lost_mapping++;
         seen_after++;
     }
     g_init_found.obj_revoked = (seen_before == 2 && seen_after == 2);
@@ -2860,8 +2867,8 @@ static int init_prove_shared_objects(void) {
         il_str(&L, "[USER][INIT] objreg: after the revoke ");
         il_num(&L, (uint64_t)seen_after);
         il_str(&L, " of 2 lost the capability and ");
-        il_num(&L, (uint64_t)still_mapped);
-        il_str(&L, " kept the mapping");
+        il_num(&L, (uint64_t)lost_mapping);
+        il_str(&L, " lost the mapping");
         init_log(il_done(&L));
     }
 

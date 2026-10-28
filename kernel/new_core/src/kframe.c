@@ -196,8 +196,24 @@ struct KFrame *kframe_alloc(uint64_t paddr, uint64_t size,
 }
 
 
-iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
-                              uint64_t user_va, uint64_t map_flags)
+/*
+ * The space's own capability to what it maps (D-7 class 3, D-13).
+ *
+ * Every ring-3 map comes through here with the slot the caller named, so what
+ * the space holds is DERIVED from the caller's authority and revoking the
+ * caller's capability reaches it — which is the whole point of charter A9.
+ *
+ * `src_cn` NULL means the caller has no slot to derive from, and there are two
+ * such callers.  A space WITH a pool gets an unparented capability, like every
+ * other boot root.  A space with NO pool has nowhere to carve a capability
+ * CNode from and gets none at all: those are the kernel's bootstrap spaces and
+ * the host fixtures, their mappings carry the frozen boot authority that
+ * `kvspace_map_cap_has_locked` grants them, and the install below is skipped
+ * because that function already answers yes for them.
+ */
+iris_error_t kframe_map_page_from(struct KFrame *f, struct KVSpace *vs,
+                                  uint64_t user_va, uint64_t map_flags,
+                                  struct KCNode *src_cn, uint32_t src_idx)
 {
     struct KFrameMapping *m;
     uint64_t page_flags;
@@ -299,6 +315,32 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
         spinlock_unlock(&vs->lock);
         kvspace_node_free(vs, m);
         return IRIS_ERR_MISSING_TABLE;
+    }
+
+    /*
+     * The capability, installed while the PTEs are in and the lock still
+     * held, so no map can race the space into holding pages it has no
+     * capability for.  ONE capability covers however many times this space
+     * maps this frame, so a second map of the same frame installs nothing.
+     */
+    if (!vs->pt_pool) {
+        /* Nothing to carve a capability CNode from: this is a bootstrap map,
+         * and the authority is recorded on the mapping itself so that a pool
+         * arriving later cannot take it away. */
+        m->boot_authority = 1u;
+    } else if (!kvspace_map_cap_has_locked(vs, &f->base)) {
+        iris_error_t ce = IRIS_OK;
+        (void)kvspace_map_cap_install(vs, &f->base, src_cn, src_idx, &ce);
+        if (ce != IRIS_OK) {
+            /* Unwind exactly what went in, as the missing-level path does:
+             * a failed map changes nothing. */
+            /* BOUND: `pages`, computed above from the frame's own size. */
+            for (uint64_t i = 0; i < pages; i++)
+                paging_unmap_in(vs->cr3, user_va + (i << 12));
+            spinlock_unlock(&vs->lock);
+            kvspace_node_free(vs, m);
+            return ce;
+        }
     }
 
     /* Retain the frame for the lifetime of this mapping record. */
@@ -413,6 +455,15 @@ void kframe_unmap_all(struct KVSpace *vs, uint64_t cr3,
     }
 }
 
+iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
+                              uint64_t user_va, uint64_t map_flags)
+{
+    /* No source slot: the bootstrap maps and the host unit suites, which have
+     * no CSpace to derive from.  What the space ends up holding depends on
+     * whether it has a pool — see `kframe_map_page_from`. */
+    return kframe_map_page_from(f, vs, user_va, map_flags, 0, 0u);
+}
+
 iris_error_t kframe_unmap_page(struct KFrame *f, struct KVSpace *vs,
                                 uint64_t user_va)
 {
@@ -468,6 +519,18 @@ iris_error_t kframe_unmap_page(struct KFrame *f, struct KVSpace *vs,
      * because after it the frame may be gone. */
     kframe_backlinks_check(f);
     kframe_stat_unmap();
+    /*
+     * The space's capability goes with its LAST mapping of this frame (D-13),
+     * HERE and not before the two lines above.
+     *
+     * Dropping it releases the capability's reference, which can be the last
+     * one — and then the frame is destroyed inside this call, with
+     * `mapped_count` not yet decremented and two uses of `f` still to come.
+     * This close to the end, the mapping reference released on the next line
+     * is still held, so `f` cannot go away underneath the drop, and a destroy
+     * the drop does trigger sees the count this unmap already corrected.
+     */
+    kvspace_map_cap_drop_frame(vs, f);
     kobject_release(&f->base);
     return IRIS_OK;
 }

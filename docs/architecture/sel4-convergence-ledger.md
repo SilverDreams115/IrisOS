@@ -1420,14 +1420,20 @@ space costs, including the ones that map nothing.  Two numbers, one slot apart,
 chose the separate CNode.
 
 **DONE.**  `kvspace.c` has zero `kobject_retain` left.  A VSpace carves a
-`VSPACE_TABLE_CAP_SLOTS` (64) CNode from its `pt_pool` on FIRST map — a space
-that maps nothing pays nothing — and `sys_vspace_map_table` installs the
-table's capability into it from the slot the caller named.  Unmap deletes that
-slot under the same lock that unlinked the table; teardown empties the whole
-CNode in one act, before `pt_pool` is cleared, because the CNode was carved
-from that pool and its own release is what returns the block.  Exceeding 64
-answers `NO_MEMORY`, which is what a CNode answers when its slots run out, so a
-space's capacity for tables is the budget it was given.
+capability CNode from its `pt_pool` on FIRST map — a space that maps nothing
+pays nothing — and `sys_vspace_map_table` installs the table's capability into
+it from the slot the caller named.  Unmap deletes that slot under the same lock
+that unlinked the table; teardown empties every chunk, before `pt_pool` is
+cleared, because they were carved from that pool and their own release is what
+returns the blocks.  Running out answers `NO_MEMORY`, which is what a CNode
+answers when its slots run out.
+
+That CNode was `VSPACE_TABLE_CAP_SLOTS` (64), one fixed node for tables alone.
+It now holds mapped FRAMES too, and it grows: `VSPACE_MAP_CAP_SLOTS` (32) per
+chunk, `VSPACE_MAP_CAP_CHUNKS` (8) of them, the next carved when the one before
+fills.  The 88-byte slot that decided against inline slots here is also what
+makes one fixed node impossible for frames — see the 2026-10-26 section under
+D-13 for the two measurements.
 
 It cost one bug the host suite caught at once: the CNode needs an ACTIVE
 reference as well as a lifecycle one, because it is the active count reaching
@@ -1528,6 +1534,12 @@ writes through the mapping, asserts the value reads back, and only then unmaps.
 **IRIS promises that revoke is not destructive**, and making the space's
 reference a capability makes revoke destroy it — which makes revoke unmap.
 
+> **Superseded — this paragraph and the two that follow it are wrong.**  T137
+> revokes a sibling of the mapping's branch, not the capability the mapping
+> descends from, so it never asserted this.  See *the mechanism was built, and
+> the reading above was wrong* below; the record is kept because it is what was
+> believed when the frame case was reverted.
+
 That promise was in six tests and **in no document**, which is now **D-13**.
 So the frame case is not waiting on structure (built), nor on the concurrency
 model (the earlier wrong answer), but on a decision about what REVOKE MEANS —
@@ -1552,6 +1564,180 @@ capability unmaps, which is both seL4's behaviour and what A10 asks for.
 
 So D-7's frame case is waiting on one named kernel mechanism, not on a
 decision, and the three wrong answers are each eliminated with evidence.
+
+### 2026-10-26 — the mechanism was built, and the reading above was wrong
+
+`kvspace_finalise_orphans` is the per-capability finalise, dispatched from
+`kcnode_slot_drop_old`: *walk what the object is mapped into, and unmap wherever
+that space no longer holds a capability for it.*  The back-links made it
+answerable from the object side, so it needs no owner back-pointer and consults
+no caller.  Option (1) landed with it — a space holds what it mapped as a
+capability DERIVED from the slot the mapper named, so revoke reaches it.
+
+**The six tests did not have to be rewritten.  Not one of them changed.**  The
+suite is 327/327 with T135, T137, T139, T151 and T155 exactly as they were.
+
+> **Amended the same day, and this is the correction that cost the most.**  The
+> paragraphs below went on to say there was "no ABI change".  That was wrong,
+> and it was wrong because the suite is not the whole of what this system
+> promises.  Closing D-13 changed ring-3 behaviour and took THREE ring-3
+> changes with it — `services/libuser/main.c`, `services/init/init_launch.c`,
+> and a REQUIRED claim in `scripts/run_qemu_headless.sh`.  What stayed true is
+> narrower and still worth stating: no test in `iris_test` changed, and T137 in
+> particular was always right.  See *the relation had to be a SIBLING* below.
+
+The reading in the row was wrong in a specific way worth naming:
+
+* `SUITE FAIL 319/325`, every failure a `reset busy`, was **not** those tests
+  asserting a promise incompatible with A10.  It was the mechanism half-built.
+  Option (1) alone makes revoke destroy the space's capability and leaves the
+  mapping standing — an orphan holding a reference — so the Untyped could not
+  be reset.  The tests were reporting a mapping that should have gone and had
+  not.  They were right; the tree was missing the other half.
+* T137's own comment — *"Revoke did NOT unmap: the mapping is still live and
+  usable"* — was read as "IRIS promises revoke is not destructive".  It does
+  not say that.  T137 mints a COPY, derives a child from the copy, and revokes
+  **the copy**: a sibling of the branch the mapping descends from.  A9 and A10
+  both say that leaves the mapping alone, so T137 asserts the right thing and
+  always did.  The promise it encodes is narrow, and it is seL4's.
+
+The case the charter actually names had **no test at all**, which is why it
+read as settled.  T359 and T360 are that case: map through a capability, revoke
+**that** capability, and the mapping must go — T360 with the frame mapped at two
+addresses through one capability, because a space holds one capability however
+many times it mapped the frame and the sweep has to take both.
+
+T359 then failed, and what it caught was not in the design:
+`kcnode_slot_revoke_bounded` cleared its victim's slot and released the pair
+inline, so it never reached the choke point.  D-13's unmap applied to seven
+paths and not to the eighth — **revoke**, the one word charter A10 uses.  The
+comment claiming "every path that removes a capability reaches this function"
+was written by the same hand in the same change, and reading it was what made
+the gap invisible; a failing test is what found it.  Routing revoke through the
+choke point also removed an unconditional `active_release` that was wrong for a
+slot naming its own CNode, where the install skips the matching retain.
+
+Two numbers chose the storage, and the first answer was wrong twice.  A `KCSlot`
+is 88 bytes, because it carries the MDB links that let a revoke reach a derived
+capability at all.  One fixed 256-slot CNode is 22584 bytes carved from the
+space's own pool on its FIRST map — the suite ran out of memory (T359's retype
+answered `-3`, and T324's allocator audit broke).  At 64 slots the big mappers
+ran out of slots instead and nine tests failed on `map`.  No single number is
+both small enough to charge every space and large enough for what FR-62 asks
+for on purpose, 128 distinct frames.  So capacity grows in chunks of 32, the
+next carved when the one before fills: a space that maps a handful pays 2872
+bytes and one that maps 128 frames pays for what it used.
+
+### the relation had to be a SIBLING, and a boot is what said so
+
+The space's capability was first installed as a CHILD of the slot the mapper
+named.  It is a sibling now — same parent — and the difference is the whole
+mechanism.
+
+A child means `Revoke(S)` destroys it, and `Revoke(S)` is what IRIS's own
+services do: `blk`, `fs` and `ip` each hold a data frame, map it, hand out
+derived copies, and revoke their slot before the next handout.  With the
+capability as a child, that revoke took the SERVER's own authority with the
+handouts and unmapped the server's own page.  Thirteen pages went in the first
+eighteen lines of a boot, and init then blocked forever in `FS_OP_STAT` with no
+output at all — the fs service could not answer because it no longer had the
+page it was answering from.
+
+seL4 does not behave that way, and the reason is structural: there the mapping
+lives IN the CTE, so deleting S's DESCENDANTS cannot disturb what S itself
+mapped.  A sibling reproduces exactly that, and gives both halves of what the
+services mean:
+
+| who maps | through | its capability is | `Revoke(S)` |
+|---|---|---|---|
+| the server | `S` | a sibling of `S` | spares the server's page |
+| a client | `C`, a child of `S` | a sibling of `C`, so a CHILD of `S` | takes the client's mapping |
+
+The second row is the one charter A10 is about, and it is the one that was
+missing before any of this: the registry believed revoking withdrew a shared
+library and the consumers could still read it.
+
+**Three ring-3 promises had to change, and none of them was a test.**
+
+* `services/libuser/main.c` — the consumer reported whether its mapping
+  survived by READING the page.  That now faults, which killed it before it
+  could report: `consumers exited without reporting, 0 and 0`, and init `gave
+  up at round three`.  It proves the new fact instead of assuming it, by
+  mapping one of its OWN frames at that address: a map that succeeds says
+  nothing is there any more, and BUSY would say a mapping outlived its
+  authority.  It needs no capability to the library, which is the point.
+* `services/init_launch.c`'s round three counted `still_mapped` and its comment
+  said *"It does, and that is the contract T137 pins"*.  It counts
+  `lost_mapping` now, and the citation was wrong twice over: T137 revokes a
+  branch the mapping does not descend from.
+* `scripts/run_qemu_headless.sh` REQUIRED the old promise in so many words —
+  `after the revoke 2 of 2 lost the capability and 2 kept the mapping`.  A
+  required claim in the gate is the strongest statement this tree makes, and it
+  asserted access without authority.  It requires `2 lost the mapping` now, and
+  the slice reports `one copy of the text, private data, and one revoke reached
+  both` with both consumers exiting 42.
+
+That is what "the promise was in six tests and in no document" was missing: it
+was also in a service's comment, in a supervisor's counter, and in the gate.
+
+**Two of the lanes were a stopwatch, not a defect.**  `smoke-stage10` and
+`smoke-verified` failed `Error 1` with `SUITE PASS 327/327` in their own logs,
+which reads like a filesystem bug.  Their recipes pinned
+`IRIS_QEMU_TIMEOUT_SECS` at 180 and 200, and with the selftests enabled they
+run 327 tests BEFORE the slice they are about, so the boot was cut between the
+suite's verdict and the mount.  `smoke-runtime-selftests` had 90.  The defaults
+are 600 and 400 now: a lane that needs its caller to export a variable in order
+to pass is not a lane.  Diagnosing this cost two runs that proved nothing,
+because the first hypothesis — a timeout — was right about those two lanes and
+wrong about the hang underneath them, and the two were only separable by
+disabling the finalise and watching the slice hold.
+
+### a PRE-EXISTING intermittent at two processors, measured on HEAD
+
+The selftests lane is clean at one and at four processors and flaky at TWO, and
+the flakiness is **not** this change.  Measured by stashing the work and running
+the same lane on `b95410e`:
+
+| tree | runs at `-smp 2` | result |
+|---|---|---|
+| `b95410e` (HEAD, without any of this) | 3 | 1 pass, **2 fail** |
+| this change | ~4 | 0 clean |
+
+HEAD's two failures are both `[USER][INIT] proc: reclaim FAILED after the last
+cap went, err -8` — BUSY — with `SUITE PASS 325/325` in the same log.  That is
+the dominant mode and it predates this work, so the lane AGENTS.md asks for at
+two processors was not reliably green before it either.
+
+What init asserts there is deliberately strict and worth keeping: it asks
+`PROC_OP_REAP` while still holding the dead program's thread, requires BUSY,
+deletes that last capability and requires OK **with no retry and no settle** —
+because the claim is that *a region becomes reusable at the moment the last
+capability into it does*, not that a collector gets round to it.  At two
+processors something still holds the region when init asks.  Sliced teardown
+(D-12) draining at the dispatcher's preemption point is the obvious suspect and
+it is a SUSPECT: what was observed is BUSY, and this row says only that.
+
+Two more single occurrences on the changed tree, each seen once and not
+reproduced, are recorded without attribution for the same reason: `T259 FAIL:
+final reset` and `T146 FAIL: kreply drift`.  With HEAD failing 2 of 3 on a
+different claim, three one-off failures at two processors are not evidence about
+this change; they are evidence that this configuration is unstable on this
+machine and that nobody had measured its rate.
+
+**This is the fourteenth lane, and it is honestly amber rather than green.**
+Every other lane is green on the changed tree, including the same suite at one
+and at four processors (327/327 each, by exit code).
+
+**Still open, and registered rather than argued away:** `VSPACE_MAP_CAP_CHUNKS`
+is a kernel-chosen ceiling (8 chunks, 256 capabilities per space).  Exceeding it
+answers `NO_MEMORY`, which is what a CNode answers when its slots run out, but
+the ceiling itself is not the budget — holding the chunks in a list instead of
+an array retires it.  The SMP window is named too: `kvspace_map_cap_drop_frame`
+decides "last mapping gone" under `vs->lock` and deletes after dropping it,
+because the delete re-enters the finalise and that takes `vs->lock` itself.  A
+map racing that gap keeps the mapping and loses the capability.  IRIS-V is
+uniprocessor, so it is outside the verified configuration, and §9.4 already
+records that the rig interleaves without reordering.
 
 The original wording, kept because it is what the code said:
 `kvspace_assign_asid`:
@@ -1615,7 +1801,7 @@ What is left is the mechanism: two counters where seL4 reads the tree, 8 bytes a
 | D-9 | **A device Untyped's object headers had nowhere to come from** | Boot now publishes the framebuffer's MMIO region as a DEVICE Untyped, minted into the root task's CSpace and described in BootInfo with `is_device = 1` — the flag that had been in the ABI since v1 and had only ever been written as 0.  Before that, `kuntyped_create` was called from exactly two places (boot, always RAM, and the device branch of retype, which already required a device Untyped), so **no device Untyped could exist** and invariants U11/U12 described an object the system could not construct | seL4's BootInfo lists device Untypeds alongside RAM ones; that is how a driver is handed an MMIO region as a capability and retypes frames from it | A device region is MMIO, so it cannot hold the HEADERS of the objects carved from it: a `struct KFrame` written into a framebuffer is pixels, and read back it is whatever the display controller left there.  The old code took those headers from `kslab` — the kernel allocating on somebody's behalf, charter M3's exact prohibition — and the only reason it was not a live hole is that nothing could reach it | **CLOSED (Stage 6).**  `SYS_UNTYPED_SET_DEVICE_BUDGET` pairs a device Untyped with a RAM one that pays for its headers, and an UNPAIRED device Untyped refuses to retype rather than falling back to kernel memory: the kernel does not know whose memory to spend and will not guess.  The pairing is set ONCE and retains the RAM Untyped, which makes two properties fall out of one retain — the budget's own RESET already refuses while any header carved from it is alive, and the pairing cannot move, so no header can be stranded in a region that is then reset.  T316 measures BOTH halves of a retype (header charged to RAM, page charged to the device region), because charging the wrong one to the wrong region is the mistake that would pass every other test.  **This unblocks D-5's remainder**: the framebuffer is now reachable as an Untyped a driver can retype frames from, which is the path that retires `SYS_FRAMEBUFFER_VMO` and with it the last kernel-fabricated memory object.  Multi-page frames landed with it (D-10), and **the migration is DONE**: `SYS_FRAMEBUFFER_INFO` reports the geometry and creates nothing, `fb` retypes one frame covering the whole region out of the device Untyped and maps it, and `SYS_FRAMEBUFFER_VMO` is retired — its number reserved, its code and `kvmo_wrap` DELETED rather than left undispatched, because a second way to reach the framebuffer that nothing tests and nothing revokes is worse than none.  T316 proves it end to end from ring 3 by observing that the region is CARVED and carries a child: a migration that had quietly fallen back would leave it untouched and every other test would still pass, because the screen is painted either way |
 | D-10 | **A frame mapped only its first page** | `SYS_UNTYPED_RETYPE2` accepted any page multiple for a `KOBJ_FRAME` and `SYS_FRAME_MAP` installed exactly ONE PTE — `kframe_map_page` mapped `f->paddr` and never read `f->size`.  A caller who bought a 64 KiB frame spent 64 KiB of its Untyped and could reach 4 KiB of it, with no error anywhere: the other fifteen pages were charged, owned, and unreachable | seL4 has frame SIZES (4K, 2M, 1G on x86-64) and a map covers the whole frame; large frames are how a driver maps an MMIO region without thousands of invocations | Nothing had ever created a multi-page frame, which is why it went unnoticed rather than why it was acceptable.  It was found while working out what `fb` would need to retype the framebuffer out of the device Untyped D-9 published | **CLOSED (Stage 6).**  A map installs every page of the frame, an unmap removes every page, and the THREE bulk teardown paths walk the frame rather than the mapping record's first address — a cleanup that removed one page of sixteen would leave PTEs outliving the object that justified them, which is the one thing an unmap exists to prevent, so all four share `kframe_unmap_all`.  Two properties are deliberate.  The occupancy check runs over EVERY page before any PTE is installed, so a failed map changes nothing — checking as it went would leave six pages of somebody's frame in an address space whose owner was told the map failed.  And a partial install unwinds exactly what went in, because a holder that has to retype a page table and retry must find the address space as it left it, or the retry hits BUSY on its own leftovers.  T317 asserts the charge, that every page is distinct (a map that aliased them all onto the first would pass a single-page test), that one unmap removes all of it, and that an OVERLAPPING map is refused while changing nothing.  **First recorded as "refused, not fixed"** — the refusal shipped, and the fix followed once the shape of it was clear |
 | D-12 | **CNode teardown is bounded by memory, not by a budget** (first written as D-11, which Stage 10-dma had already taken for the device-refusal witness) | Deleting the one capability that names a CNode empties its slots, which ends the last active reference of every CNode below it, and so on to the bottom of the tree.  Since A-39 the STACK cost of that is constant, but the syscall still does not return until the whole tree is gone.  `kcnode_slot_revoke_bounded` takes a budget; `kcnode_slot_delete` does not, and teardown calls the unbounded form | `cteDelete` is preemptible through zombie capabilities: a delete that cannot finish in one slice names its own unfinished state and is restarted, so in-kernel latency is bounded whatever the object graph looks like | Reachable from ring 3 by one syscall, which is why it is a row and not a note.  What limits it is the principal's own Untyped: a 1-slot CNode costs about 144 bytes, so the work is proportional to memory the principal was legitimately granted, never more.  That is the charter's own bound — what bounds an allocation is the budget it was given — applied to time instead of space, which is weaker than D-8's explicit slice and weaker than seL4's | **CLOSED to a per-object bound (Stage V phase 2).**  The objection recorded here was that D-8's trick does not transfer, because "a half-emptied CNode must not become reachable again".  That is true of a slice taken MID-CNode and it is not true of the slice actually available: `kcnode_cascade` already processes WHOLE CNodes, so every entry left on the list is either untouched — exactly the state the list already holds between an enqueue and the drain reaching it — or emptied and released.  Slicing at that boundary introduces no state that was not observable before it, and needs no zombie for the same reason D-8 needed none.  `IRIS_CASCADE_SLICE` (8) CNodes per pass; the remainder is drained at the dispatcher's preemption point, beside the dead-task reaper (`sched_resume` -> `kcnode_cascade_drain_slice`), so nothing is left owing work with nobody to do it.  **What is NOT bounded is one CNode's slots**, and that is a per-object bound where there was none at all: the slot count is fixed at retype, out of the principal's own Untyped, which is the charter's own rule — what bounds an allocation is the budget it was given — applied to time.  Weaker than seL4's, and no longer unbounded in the TREE, which is what the row was about.  `test_cnode_teardown_depth` asserts both halves: that a 200-link chain is genuinely NOT finished when the delete returns (the slice is real, and cannot be quietly removed later) and that it quiesces in a bounded number of passes (deferred work is not stranded) |
-| D-13 | **Revoking or deleting a capability does NOT unmap what it named** — found UNREGISTERED in Stage V, asserted by six runtime tests and absent from this ledger | `SYS_CSPACE_REVOKE` on a frame capability takes the authority away and leaves the MAPPING live: T137 writes through the frame after the revoke and asserts the value reads back, then unmaps explicitly.  T135, T139, T151 and T155 assert the same for Untyped RESET.  The mapping record holds its own reference, so the object outlives every capability to it | `finaliseCap` UNMAPS.  Deleting the last capability to a frame or a page table removes it from every address space first, which is what lets seL4 need no mapping-side reference at all | It is the reason D-7's frame case cannot be closed by moving a reference: making the space's reference a capability makes revoke destroy it, which makes revoke unmap — and six tests say IRIS promises the opposite.  It is also **the property D-7's target contradicts**: *an object exists exactly while a capability names it* and *a mapping keeps a frame alive after its last capability* cannot both hold.  Found by implementing the frame case and watching T135..T155 go red together: `SUITE FAIL 319/325`, every failure a `reset busy` | **OPEN, registered here for the first time, and the direction is DECIDED.**  The behaviour was deliberate and was nowhere in this document, whose job is every non-seL4 mechanism still alive; that is the defect this row fixes.  **Charter A10 decides which way it goes**: *revoke recursively removes all descendant authority*, and a mapping that outlives every capability to a frame is ACCESS WITHOUT AUTHORITY — the holder can still read and write a page nothing names.  So seL4's answer is also this charter's, and the target is that destroying the last capability unmaps.  What blocks it is a MECHANISM, named: **IRIS has no per-capability finalise.**  Destruction here is per-OBJECT — `kobject_dispatch_destroy`, triggered at refcount 0 — while `finaliseCap` is per-CAPABILITY, triggered by the CTE being deleted.  That distinction is the whole difference, and it is why the three available options all cost something: **(1)** the space's capability DERIVED from the holder's, which is what connects them in the MDB and makes `kcnode_slot_is_final_cap` complete — but a child dies with its parent, so revoke unmaps, which is seL4 and inverts what T135–T155 promise; **(2)** the capability UNPARENTED, so revoke leaves it alone and those tests hold — but two unrelated roots name one frame, which is exactly the disconnection that makes the predicate D-7 depends on wrong; **(3)** the counted reference the tree has, under which D-7's target is false for mapped objects by design.  Measured, not argued: (1) was implemented with the back-links in place and produced `SUITE FAIL 319/325`, every failure a `reset busy`.  Closing this row means building the per-capability finalise — plausibly deferred through the cascade list A-39 introduced, since unmapping under `mdb_lock` is the unbounded work D-8 and D-12 exist about — and then rewriting what six ring-3 tests promise.  That is a mechanism and an ABI change, in that order |
+| D-13 | **Revoking or deleting a capability does NOT unmap what it named** — found UNREGISTERED in Stage V, asserted by six runtime tests and absent from this ledger | `SYS_CSPACE_REVOKE` on a frame capability takes the authority away and leaves the MAPPING live: T137 writes through the frame after the revoke and asserts the value reads back, then unmaps explicitly.  T135, T139, T151 and T155 assert the same for Untyped RESET.  The mapping record holds its own reference, so the object outlives every capability to it | `finaliseCap` UNMAPS.  Deleting the last capability to a frame or a page table removes it from every address space first, which is what lets seL4 need no mapping-side reference at all | It is the reason D-7's frame case cannot be closed by moving a reference: making the space's reference a capability makes revoke destroy it, which makes revoke unmap — and six tests say IRIS promises the opposite.  It is also **the property D-7's target contradicts**: *an object exists exactly while a capability names it* and *a mapping keeps a frame alive after its last capability* cannot both hold.  Found by implementing the frame case and watching T135..T155 go red together: `SUITE FAIL 319/325`, every failure a `reset busy` | **OPEN, registered here for the first time, and the direction is DECIDED.**  The behaviour was deliberate and was nowhere in this document, whose job is every non-seL4 mechanism still alive; that is the defect this row fixes.  **Charter A10 decides which way it goes**: *revoke recursively removes all descendant authority*, and a mapping that outlives every capability to a frame is ACCESS WITHOUT AUTHORITY — the holder can still read and write a page nothing names.  So seL4's answer is also this charter's, and the target is that destroying the last capability unmaps.  What blocks it is a MECHANISM, named: **IRIS has no per-capability finalise.**  Destruction here is per-OBJECT — `kobject_dispatch_destroy`, triggered at refcount 0 — while `finaliseCap` is per-CAPABILITY, triggered by the CTE being deleted.  That distinction is the whole difference, and it is why the three available options all cost something: **(1)** the space's capability DERIVED from the holder's, which is what connects them in the MDB and makes `kcnode_slot_is_final_cap` complete — but a child dies with its parent, so revoke unmaps, which is seL4 and inverts what T135–T155 promise; **(2)** the capability UNPARENTED, so revoke leaves it alone and those tests hold — but two unrelated roots name one frame, which is exactly the disconnection that makes the predicate D-7 depends on wrong; **(3)** the counted reference the tree has, under which D-7's target is false for mapped objects by design.  Measured, not argued: (1) was implemented with the back-links in place and produced `SUITE FAIL 319/325`, every failure a `reset busy`.  Closing this row means building the per-capability finalise — plausibly deferred through the cascade list A-39 introduced, since unmapping under `mdb_lock` is the unbounded work D-8 and D-12 exist about — and then rewriting what six ring-3 tests promise.  That is a mechanism and an ABI change, in that order.  **CLOSED 2026-10-26, and two of the claims in this cell were wrong** — see the dated section above.  The mechanism is `kvspace_finalise_orphans`, dispatched from `kcnode_slot_drop_old`; option (1) landed with it.  There was no ABI change and **not one of the six tests was rewritten** (327/327).  `SUITE FAIL 319/325` was the mechanism half-built, not a promise in conflict with A10: option (1) without the finalise destroys the space's capability and orphans the mapping, which is the `reset busy` those tests reported.  T137 revokes a SIBLING of the mapping's branch, so A9 and A10 both say its mapping survives and it asserted the right thing all along; the case A10 names had no test, which is why this read as decided.  T359 and T360 are that case, and T359 caught `kcnode_slot_revoke_bounded` bypassing the choke point — D-13's unmap reached seven paths and not revoke, the one the charter names.  Residual, registered: `VSPACE_MAP_CAP_CHUNKS` is a kernel-chosen ceiling, retired by a list; and `kvspace_map_cap_drop_frame`'s decide-then-delete window, which is SMP-only and outside IRIS-V |
 
 ### A-4 — CSpace-native introspection replaces the CPtr→handle bridge
 

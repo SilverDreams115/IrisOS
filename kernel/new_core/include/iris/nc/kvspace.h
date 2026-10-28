@@ -63,6 +63,39 @@ struct KFrameMapping {
      */
     struct KVSpace       *vs;
     struct KFrameMapping *frame_next;
+    /*
+     * Which `kvspace_finalise_orphans` call last found this mapping's space
+     * AUTHORISED, so one sweep never asks about the same space twice.
+     *
+     * It replaces a cursor that counted how many distinct spaces a pass had
+     * already looked at, which was wrong: the count deduplicated only inside
+     * the pass's own window, so a frame mapped twice into one space inflated
+     * it and the window could advance PAST a space that was never examined.
+     * That is a silently missed orphan — the exact thing the cursor was there
+     * to prevent — and it was found by re-reading the loop, not by a test,
+     * because no fixture in this tree maps one frame into eight spaces.
+     *
+     * 64 bits so it cannot wrap onto a stale stamp.
+     */
+    uint64_t              finalise_epoch;
+    /*
+     * This mapping carries the BOOT authority: it was installed when its space
+     * had no Untyped pool, so there was nothing to carve a capability CNode
+     * from and no capability was installed.  The root task's text, stack and
+     * BootInfo are these, and so is every service page `bootstrap_kframe_map`
+     * puts in before there is a CSpace to derive from.
+     *
+     * It lives on the MAPPING and not on the space, which is the correction
+     * that matters.  The first version asked `!vs->pt_pool` at finalise time —
+     * and `kvspace_set_pt_pool` can be called AFTER mappings exist, so the
+     * moment a pool arrived the boot authority evaporated and every boot
+     * mapping became "access without authority".  The next delete of any frame
+     * capability then unmapped the root task's own pages: 13 unmaps in the
+     * first 18 lines of a boot, after which init blocked forever in
+     * `FS_OP_STAT` with no output.  The suite did not notice, because no test
+     * reads a service's boot pages.
+     */
+    uint32_t              boot_authority;
 };
 
 struct KUntyped;
@@ -100,10 +133,36 @@ struct KAsidPool;
  * what those two numbers chose.
  *
  * Exceeding it answers NO_MEMORY, which is what a CNode answers when its slots
- * run out, and makes a space's capacity for tables a property of the budget it
- * was given.
+ * run out, and makes a space's capacity a property of the budget it was given.
+ *
+ * ONE capability namespace for page tables AND mapped frames, grown in CHUNKS.
+ *
+ * It was a single fixed CNode, and two measurements said that cannot work.  A
+ * `KCSlot` is 88 bytes, because it carries the MDB links that let a revoke
+ * reach a derived capability at all, so a 256-slot CNode is 22584 bytes —
+ * carved from the space's own pool on its FIRST map, whether it goes on to map
+ * three pages or two hundred.  At that size the suite ran out of memory
+ * (T359's retype answered -3, and T324's allocator audit broke); at 64 slots
+ * the big mappers ran out of SLOTS instead, and nine tests failed on `map`.
+ * No single number is both small enough to pay for on every space and large
+ * enough to hold what FR-62 deliberately asks for — 128 distinct frames.
+ *
+ * So capacity GROWS: chunks of 32 slots, the next allocated when the one
+ * before it fills.  A space that maps a handful pays 2872 bytes; a space that
+ * maps 128 frames pays for what it used.  That is what the charter means by
+ * "what bounds an allocation is the budget it was given".
+ *
+ * The ceiling on CHUNKS is still a kernel-chosen number, and is registered in
+ * the ledger as one rather than argued away; the retirement is to hold the
+ * chunks in a list instead of an array.
+ *
+ * Global index `g` lives in chunk `g / VSPACE_MAP_CAP_SLOTS` at local slot
+ * `g % VSPACE_MAP_CAP_SLOTS`.  Global 0 is chunk 0 slot 0, the null slot every
+ * CNode reserves, so the usable range is 1 .. VSPACE_MAP_CAP_TOTAL-1.
  */
-#define VSPACE_TABLE_CAP_SLOTS 64u
+#define VSPACE_MAP_CAP_SLOTS  32u
+#define VSPACE_MAP_CAP_CHUNKS  8u
+#define VSPACE_MAP_CAP_TOTAL  (VSPACE_MAP_CAP_SLOTS * VSPACE_MAP_CAP_CHUNKS)
 
 struct KVSpace {
     struct KObject        base;          /* must be first */
@@ -141,11 +200,13 @@ struct KVSpace {
     struct KCNode         caps_hdr;
     struct KCSlot         caps[VSPACE_CAP_SLOTS];
     /*
-     * The CNode holding one capability per MAPPED page table, carved from
-     * `pt_pool` on first map and NULL until then — a space that maps nothing
-     * pays nothing.  See `VSPACE_TABLE_CAP_SLOTS` for why it is separate.
+     * The CNodes holding one capability per MAPPED page table and per mapped
+     * FRAME, carved from `pt_pool` as they are needed and all NULL until the
+     * first map — a space that maps nothing pays nothing.  Filled in order, so
+     * a NULL ends the walk.  See `VSPACE_MAP_CAP_SLOTS` for why they are
+     * separate from the embedded slots above, and why they are chunks.
      */
-    struct KCNode        *table_caps;
+    struct KCNode        *map_caps[VSPACE_MAP_CAP_CHUNKS];
     int                   valid;         /* 1 = live, 0 = reaped */
     uint32_t              mapping_count; /* number of live KFrameMapping nodes */
     struct KFrameMapping *mappings;      /* singly-linked list head; NULL = empty */
@@ -333,6 +394,28 @@ iris_error_t kvspace_assign_asid(struct KVSpace *vs, struct KAsidPool *pool);
  * Without it a space keeps an id whose pool it does not name, and the pool is
  * short one for the rest of its life. */
 void kvspace_unassign_asid(struct KVSpace *vs);
+
+/* The capability a space keeps for something it MAPPED, in its own `map_caps`
+ * chunks (D-7), allocating the next chunk if the ones it has are full.
+ * Returns the GLOBAL index, or VSPACE_MAP_CAP_TOTAL with `*err` set.  `src_cn`
+ * NULL installs unparented — the boot path, which has no slot to derive from.
+ * `vs->lock` held by the caller. */
+uint32_t kvspace_map_cap_install(struct KVSpace *vs, struct KObject *obj,
+                                 struct KCNode *src_cn, uint32_t src_idx,
+                                 iris_error_t *err);
+int  kvspace_map_cap_has_locked(const struct KVSpace *vs,
+                                const struct KObject *obj);
+int  kvspace_map_cap_has(const struct KVSpace *vs, const struct KObject *obj);
+void kvspace_map_cap_drop_locked(struct KVSpace *vs, struct KObject *obj);
+/* Drops a FRAME's capability when the space's LAST mapping of it has gone.
+ * Holds no lock while deleting — see the definition. */
+void kvspace_map_cap_drop_frame(struct KVSpace *vs, struct KFrame *f);
+int  kvspace_maps_frame(const struct KVSpace *vs, const struct KFrame *f);
+
+/* D-13: remove any mapping of `obj` whose space no longer holds a capability
+ * for it — access without authority, which charter A10 forbids.  Called from
+ * every path that removes a capability, with `mdb_lock` dropped. */
+void kvspace_finalise_orphans(struct KObject *obj);
 
 /* Hold the page-table pool as a capability in the space's own slot, for a
  * space whose STORAGE did not come from that pool — the boot path, where

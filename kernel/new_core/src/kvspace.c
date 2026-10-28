@@ -247,7 +247,7 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
             t->mapped_vs = 0;
             t->level     = KPT_LEVEL_UNMAPPED;
             /* No release here: the space's capabilities to its tables are in
-             * `table_caps`, emptied below in one act (D-7, class 3). */
+             * `map_caps`, emptied below in one act (D-7, class 3). */
             t = next;
         }
     }
@@ -286,9 +286,11 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
      * capability to one, and the holder's own capability (if it kept one) is
      * untouched, which is the whole point of it being a capability.
      */
-    if (vs->table_caps) {
-        struct KCNode *tc = vs->table_caps;
-        vs->table_caps = 0;
+    /* BOUND: VSPACE_MAP_CAP_CHUNKS, a constant. */
+    for (uint32_t ci = 0; ci < VSPACE_MAP_CAP_CHUNKS; ci++) {
+        struct KCNode *tc = vs->map_caps[ci];
+        if (!tc) continue;
+        vs->map_caps[ci] = 0;
         kobject_active_release(&tc->base);   /* empties its slots */
         kobject_release(&tc->base);          /* returns the block to pt_pool */
     }
@@ -370,6 +372,12 @@ iris_error_t kvspace_bind(struct KVSpace *vs) {
  * revoke it and its one reference is never released.
  */
 static void kvspace_caps_init(struct KVSpace *vs) {
+    /* Before anything can consult it.  `kvspace_alloc` is slab-born and the
+     * slab does not zero, so a chunk pointer left as garbage here would be
+     * dereferenced by the first map into the root task's own address space.
+     * BOUND: VSPACE_MAP_CAP_CHUNKS, a constant. */
+    for (uint32_t ci = 0; ci < VSPACE_MAP_CAP_CHUNKS; ci++)
+        vs->map_caps[ci] = 0;
     kobject_init(&vs->caps_hdr.base, KOBJ_CNODE);
     irq_spinlock_init(&vs->caps_hdr.lock);
     vs->caps_hdr.slot_count = VSPACE_CAP_SLOTS;
@@ -516,7 +524,8 @@ static struct KFrameMapping *kvspace_boot_node_alloc(void) {
     }
     irq_spinlock_unlock(&kvspace_boot_lock, f);
     if (m) { m->next = 0; m->frame = 0; m->user_va = 0;
-             m->vs = 0; m->frame_next = 0; }
+             m->vs = 0; m->frame_next = 0; m->finalise_epoch = 0;
+             m->boot_authority = 0u; }
     return m;
 }
 
@@ -539,6 +548,7 @@ struct KFrameMapping *kvspace_node_alloc(struct KVSpace *vs) {
         spinlock_unlock(&vs->lock);
         m->next = 0; m->frame = 0; m->user_va = 0;
         m->vs = 0; m->frame_next = 0;
+        m->finalise_epoch = 0; m->boot_authority = 0u;
         return m;
     }
     struct KUntyped *pool = vs->pt_pool;
@@ -605,24 +615,24 @@ static void kvspace_release_nodes(struct KVSpace *vs) {
 
 
 /*
- * The CNode that holds one capability per MAPPED page table (D-7, class 3).
+ * The CNode chunk that holds capabilities for what this space MAPPED (D-7).
  *
- * Carved from `pt_pool` on first map, so a space that maps nothing pays
- * nothing, and NULL until then.  See `VSPACE_TABLE_CAP_SLOTS` for why it is a
- * separate CNode rather than more inline slots: 39 tables measured against 38
- * that fit in a one-page VSpace.
+ * Carved from `pt_pool` when the chunk before it fills, so a space that maps
+ * nothing pays nothing and one that maps a handful pays for a single chunk.
+ * See `VSPACE_MAP_CAP_SLOTS` for the two measurements that chose chunking.
  *
  * `vs->lock` held by the caller.
  */
-static iris_error_t kvspace_table_caps_ensure(struct KVSpace *vs) {
-    if (vs->table_caps) return IRIS_OK;
-    if (!vs->pt_pool)   return IRIS_ERR_NO_MEMORY;
+static iris_error_t kvspace_map_caps_chunk(struct KVSpace *vs, uint32_t ci) {
+    if (ci >= VSPACE_MAP_CAP_CHUNKS) return IRIS_ERR_NO_MEMORY;
+    if (vs->map_caps[ci]) return IRIS_OK;
+    if (!vs->pt_pool)     return IRIS_ERR_NO_MEMORY;
     void *mem = kuntyped_alloc_child(
-        vs->pt_pool, KCNODE_ALLOC_SIZE(VSPACE_TABLE_CAP_SLOTS));
+        vs->pt_pool, KCNODE_ALLOC_SIZE(VSPACE_MAP_CAP_SLOTS));
     if (!mem) return IRIS_ERR_NO_MEMORY;
-    struct KCNode *cn = kcnode_alloc_at(mem, VSPACE_TABLE_CAP_SLOTS);
+    struct KCNode *cn = kcnode_alloc_at(mem, VSPACE_MAP_CAP_SLOTS);
     if (!cn) {
-        kuntyped_release_child(mem, KCNODE_ALLOC_SIZE(VSPACE_TABLE_CAP_SLOTS));
+        kuntyped_release_child(mem, KCNODE_ALLOC_SIZE(VSPACE_MAP_CAP_SLOTS));
         return IRIS_ERR_NO_MEMORY;
     }
     /*
@@ -634,22 +644,261 @@ static iris_error_t kvspace_table_caps_ensure(struct KVSpace *vs) {
      * (it did, loudly, in the host suite) and nothing would empty the CNode
      * even if it did not.
      *
-     * Nothing names this CNode with a capability, so it is never retyped,
+     * Nothing names these CNodes with a capability, so they are never retyped,
      * deleted or revoked; both references go when the space tears down.
      */
     kobject_active_retain(&cn->base);
-    vs->table_caps = cn;
+    vs->map_caps[ci] = cn;
     return IRIS_OK;
 }
 
-/* The slot a mapped table's capability sits in, or VSPACE_TABLE_CAP_SLOTS when
- * it is not there.  `vs->lock` held. */
-static uint32_t kvspace_table_cap_slot(const struct KVSpace *vs,
-                                       const struct KPageTable *pt) {
-    if (!vs->table_caps) return VSPACE_TABLE_CAP_SLOTS;
-    for (uint32_t i = 1u; i < VSPACE_TABLE_CAP_SLOTS; i++)
-        if (vs->table_caps->slots[i].object == &pt->base) return i;
-    return VSPACE_TABLE_CAP_SLOTS;
+/* The CNode and local slot a global index addresses, or NULL.  `vs->lock`
+ * held. */
+static struct KCNode *kvspace_map_cap_at(const struct KVSpace *vs, uint32_t g,
+                                         uint32_t *local) {
+    if (g >= VSPACE_MAP_CAP_TOTAL) return 0;
+    *local = g % VSPACE_MAP_CAP_SLOTS;
+    return vs->map_caps[g / VSPACE_MAP_CAP_SLOTS];
+}
+
+/* The global index a mapped object's capability sits at, or
+ * VSPACE_MAP_CAP_TOTAL when it is not there.  `vs->lock` held. */
+static uint32_t kvspace_map_cap_slot(const struct KVSpace *vs,
+                                     const struct KObject *obj) {
+    /* BOUND: VSPACE_MAP_CAP_CHUNKS by VSPACE_MAP_CAP_SLOTS, both constants.
+     * Stops at the first absent chunk, because they are filled in order. */
+    for (uint32_t ci = 0; ci < VSPACE_MAP_CAP_CHUNKS; ci++) {
+        const struct KCNode *cn = vs->map_caps[ci];
+        if (!cn) break;
+        for (uint32_t i = (ci == 0u) ? 1u : 0u; i < VSPACE_MAP_CAP_SLOTS; i++)
+            if (cn->slots[i].object == obj)
+                return ci * VSPACE_MAP_CAP_SLOTS + i;
+    }
+    return VSPACE_MAP_CAP_TOTAL;
+}
+
+uint32_t kvspace_map_cap_install(struct KVSpace *vs, struct KObject *obj,
+                                 struct KCNode *src_cn, uint32_t src_idx,
+                                 iris_error_t *err) {
+    uint32_t g = VSPACE_MAP_CAP_TOTAL;
+    /* BOUND: VSPACE_MAP_CAP_CHUNKS, a constant.  Each pass searches one chunk,
+     * allocating it first if this space has not needed it yet; running out of
+     * chunks answers NO_MEMORY, which is what a CNode answers when its slots
+     * run out. */
+    for (uint32_t ci = 0; ci < VSPACE_MAP_CAP_CHUNKS &&
+                          g == VSPACE_MAP_CAP_TOTAL; ci++) {
+        iris_error_t ie = kvspace_map_caps_chunk(vs, ci);
+        if (ie != IRIS_OK) { *err = ie; return VSPACE_MAP_CAP_TOTAL; }
+        const struct KCNode *c = vs->map_caps[ci];
+        /* BOUND: VSPACE_MAP_CAP_SLOTS, a constant.  Global 0 is the null slot
+         * every CNode reserves. */
+        for (uint32_t i = (ci == 0u) ? 1u : 0u; i < VSPACE_MAP_CAP_SLOTS; i++)
+            if (!c->slots[i].object) { g = ci * VSPACE_MAP_CAP_SLOTS + i;
+                                       break; }
+    }
+    if (g == VSPACE_MAP_CAP_TOTAL) { *err = IRIS_ERR_NO_MEMORY;
+                                     return VSPACE_MAP_CAP_TOTAL; }
+
+    uint32_t local = 0;
+    struct KCNode *cn = kvspace_map_cap_at(vs, g, &local);
+    iris_error_t ie = src_cn ? kcnode_slot_install_sibling(src_cn, src_idx,
+                                                           cn, local)
+                             : kcnode_mint(cn, local, obj,
+                                   RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE);
+    if (ie != IRIS_OK) { *err = ie; return VSPACE_MAP_CAP_TOTAL; }
+    *err = IRIS_OK;
+    return g;
+}
+
+/* Separate from dropping on purpose: one capability covers however many times a
+ * space mapped one frame, so "did the drop find a slot?" is a different
+ * question and conflating them released a count nobody took. */
+int kvspace_map_cap_has_locked(const struct KVSpace *vs,
+                               const struct KObject *obj) {
+    if (kvspace_map_cap_slot(vs, obj) < VSPACE_MAP_CAP_TOTAL) return 1;
+    /*
+     * No capability, and this function no longer makes an exception.
+     *
+     * It used to answer yes for a space with no `pt_pool`, on the grounds that
+     * such a space has no capability storage and only the kernel's bootstrap
+     * builds one.  Both halves were true and the conclusion was still wrong:
+     * `kvspace_set_pt_pool` can be called after mappings exist, so that
+     * exception was a property of WHEN it was asked rather than of the mapping
+     * it was asked about, and it vanished the moment a pool arrived.  The boot
+     * authority is recorded on the mapping now — see `boot_authority` in
+     * `struct KFrameMapping` for the boot it cost.
+     */
+    return 0;
+}
+
+int kvspace_map_cap_has(const struct KVSpace *vs, const struct KObject *obj) {
+    /* Takes `vs->lock` itself, unlike the `_locked` forms, because its caller
+     * is `kvspace_finalise_orphans` — which must ask this question with the
+     * FRAME's lock dropped, the two being ranked 3 and 6 and taken in that
+     * order by the insert path. */
+    spinlock_lock(&((struct KVSpace *)vs)->lock);
+    int has = kvspace_map_cap_has_locked(vs, obj);
+    spinlock_unlock(&((struct KVSpace *)vs)->lock);
+    return has;
+}
+
+void kvspace_map_cap_drop_locked(struct KVSpace *vs, struct KObject *obj) {
+    uint32_t local = 0;
+    struct KCNode *cn = kvspace_map_cap_at(vs, kvspace_map_cap_slot(vs, obj),
+                                           &local);
+    if (cn) (void)kcnode_slot_delete(cn, local);
+}
+
+/*
+ * The FRAME form, and why it holds nothing while deleting.
+ *
+ * Deleting the capability re-enters `kcnode_slot_drop_old`, which calls
+ * `kvspace_finalise_orphans`, which takes `vs->lock` for every space the frame
+ * is still mapped into.  Doing the delete under this space's lock would either
+ * self-deadlock or nest two rank-3 locks, so the decision is made under the
+ * lock and the delete happens after it drops.
+ *
+ * The re-check is the point: ONE capability covers however many times a space
+ * mapped one frame, so the capability goes only when the LAST of them has, and
+ * a map that arrived in the meantime keeps it.
+ */
+void kvspace_map_cap_drop_frame(struct KVSpace *vs, struct KFrame *f) {
+    uint32_t idx, local = 0;
+    spinlock_lock(&vs->lock);
+    if (kvspace_maps_frame(vs, f)) { spinlock_unlock(&vs->lock); return; }
+    idx = kvspace_map_cap_slot(vs, &f->base);
+    struct KCNode *cn = kvspace_map_cap_at(vs, idx, &local);
+    spinlock_unlock(&vs->lock);
+    if (cn) (void)kcnode_slot_delete(cn, local);
+}
+
+/*
+ * ── kvspace_finalise_orphans — what revoke owed, and never paid (D-13) ──────
+ *
+ * seL4 unmaps when the last capability to a frame goes, in `finaliseCap`,
+ * because the mapping lives IN the capability: deleting the capability IS the
+ * unmap.  IRIS keeps mappings in the address space, so deleting a capability
+ * left the PTE standing — a mapping that outlives every capability naming it,
+ * which is access without authority and which charter A10 forbids.  Six tests
+ * asserted the old behaviour and no document recorded it; that is D-13.
+ *
+ * The question is answered from the OBJECT side, which the back-links made
+ * possible: walk what this object is mapped into, and unmap wherever that
+ * space no longer holds a capability for it.  No owner back-pointer is needed,
+ * and nothing here consults the caller — which is why one choke point
+ * (`kcnode_slot_drop_old`) covers all seven paths that remove a capability.
+ *
+ * It runs with `mdb_lock` DROPPED, and takes `vs->lock` before the frame's.
+ */
+static _Atomic uint64_t kvspace_finalise_epoch;
+
+void kvspace_finalise_orphans(struct KObject *obj) {
+    if (!obj) return;
+
+    if (obj->type == KOBJ_PAGE_TABLE) {
+        struct KPageTable *pt = (struct KPageTable *)obj;
+        /* Read without the space's lock: it is written only under it, and a
+         * stale non-NULL is re-checked by `kvspace_unmap_table`, which answers
+         * NOT_FOUND rather than acting on a record that moved.  `_unmap_table`
+         * clears it BEFORE dropping the capability, so the re-entry this
+         * causes through `kcnode_slot_drop_old` finds 0 and stops here. */
+        struct KVSpace *vs = pt->mapped_vs;
+        if (vs && !kvspace_map_cap_has(vs, obj))
+            (void)kvspace_unmap_table(vs, pt);
+        return;
+    }
+    if (obj->type != KOBJ_FRAME) return;
+
+    struct KFrame *f = (struct KFrame *)obj;
+    uint64_t epoch = atomic_fetch_add_explicit(&kvspace_finalise_epoch, 1u,
+                                               memory_order_relaxed) + 1u;
+    /*
+     * BOUND: every pass either UNMAPS one mapping of this frame, which removes
+     * it from the list, or STAMPS at least one unstamped mapping with this
+     * call's epoch — and a stamped mapping is never examined again in this
+     * call.  Both are bounded by the frame's `mapped_count`, which ring 3
+     * lengthens only by mapping the frame again, each time spending a record
+     * from its own Untyped: the charter's bound.
+     *
+     * The authority question is asked with the FRAME's lock DROPPED, because
+     * it takes `vs->lock` and the insert path takes those two in the order
+     * rank 3 then rank 6.
+     */
+    for (;;) {
+        struct KVSpace *vs = 0;
+
+        spinlock_lock(&f->base.lock);
+        /* BOUND: the mappings of ONE frame; the frame's lock is held, so
+         * nothing is inserted while it walks. */
+        for (struct KFrameMapping *m = f->mappings; m; m = m->frame_next)
+            if (m->vs && !m->boot_authority && m->finalise_epoch != epoch) {
+                vs = m->vs; break;
+            }
+        spinlock_unlock(&f->base.lock);
+        if (!vs) return;
+
+        if (kvspace_map_cap_has(vs, obj)) {
+            /* Authorised: stamp every mapping this frame has in that space, so
+             * the next pass moves on.  ONE capability covers however many
+             * times a space mapped the frame, so the answer is the same for
+             * all of them. */
+            spinlock_lock(&f->base.lock);
+            /* BOUND: the mappings of ONE frame; the frame's lock is held. */
+            for (struct KFrameMapping *m = f->mappings; m; m = m->frame_next)
+                if (m->vs == vs) m->finalise_epoch = epoch;
+            spinlock_unlock(&f->base.lock);
+            continue;
+        }
+
+        /*
+         * Not authorised: every mapping this frame has in that space goes.
+         * Conflating "a slot was found" with "the mapping was authorised" is
+         * what released a count nobody took, twice, before this was split.
+         *
+         * BOUND: each turn removes one mapping of this frame in this space, or
+         * breaks; bounded by the frame's `mapped_count`.
+         */
+        for (;;) {
+            uint64_t va = 0u; int found = 0;
+            spinlock_lock(&f->base.lock);
+            /* BOUND: the mappings of ONE frame; the frame's lock is held. */
+            for (struct KFrameMapping *m = f->mappings; m; m = m->frame_next)
+                if (m->vs == vs && !m->boot_authority) {
+                    va = m->user_va; found = 1; break;
+                }
+            spinlock_unlock(&f->base.lock);
+            if (!found) break;
+            if (kframe_unmap_page(f, vs, va) != IRIS_OK) break;
+        }
+
+        /*
+         * Whatever is LEFT in that space gets this epoch, and without it this
+         * function can spin forever.
+         *
+         * The loop above stops on an unmap that fails — `kframe_unmap_page`
+         * answers BAD_HANDLE for a space whose `valid` has already been
+         * cleared, which is reachable while `kvspace_invalidate` is sweeping —
+         * and a mapping left behind unstamped is the same mapping the outer
+         * pass selects next, with the same space, failing the same way.  That
+         * is a livelock, not a bound, and the BOUND note above claims every
+         * pass either unmaps or stamps.  This is what makes that true.
+         *
+         */
+        spinlock_lock(&f->base.lock);
+        /* BOUND: the mappings of ONE frame, which ring 3 lengthens only by
+         * mapping the frame again out of its own Untyped; the frame's lock is
+         * held, so nothing is inserted while it walks. */
+        for (struct KFrameMapping *m = f->mappings; m; m = m->frame_next)
+            if (m->vs == vs) m->finalise_epoch = epoch;
+        spinlock_unlock(&f->base.lock);
+    }
+}
+
+int kvspace_maps_frame(const struct KVSpace *vs, const struct KFrame *f) {
+    /* BOUND: the mapping list of one VSpace; `vs->lock` held. */
+    for (const struct KFrameMapping *m = vs->mappings; m; m = m->next)
+        if (m->frame == f) return 1;
+    return 0;
 }
 
 
@@ -758,21 +1007,8 @@ iris_error_t kvspace_map_table(struct KVSpace *vs, struct KPageTable *pt,
      * what `userboot` refuted.
      */
     {
-        iris_error_t ie = kvspace_table_caps_ensure(vs);
-        if (ie != IRIS_OK) { spinlock_unlock(&vs->lock); return ie; }
-        uint32_t free_idx = VSPACE_TABLE_CAP_SLOTS;
-        /* BOUND: VSPACE_TABLE_CAP_SLOTS, a constant; `vs->lock` held.  Slot 0
-         * is the null slot, by the convention every CNode follows. */
-        for (uint32_t i = 1u; i < VSPACE_TABLE_CAP_SLOTS; i++)
-            if (!vs->table_caps->slots[i].object) { free_idx = i; break; }
-        if (free_idx == VSPACE_TABLE_CAP_SLOTS) {
-            /* Out of table slots: the same answer a CNode gives when its slots
-             * run out, and the space's capacity is the budget it was given. */
-            spinlock_unlock(&vs->lock);
-            return IRIS_ERR_NO_MEMORY;
-        }
-        ie = kcnode_slot_install_for_thread(src_cn, src_idx,
-                                            vs->table_caps, free_idx);
+        iris_error_t ie = IRIS_OK;
+        (void)kvspace_map_cap_install(vs, &pt->base, src_cn, src_idx, &ie);
         if (ie != IRIS_OK) { spinlock_unlock(&vs->lock); return ie; }
     }
     pt->mapped_vs = vs;
@@ -906,11 +1142,7 @@ iris_error_t kvspace_unmap_table(struct KVSpace *vs, struct KPageTable *pt) {
      * holder keeps its own; what it gets back is a table it can install
      * elsewhere — and `kvspace_map_table` zeroes on install, so what it held
      * before cannot follow it (PT-9). */
-    {
-        uint32_t idx = kvspace_table_cap_slot(vs, pt);
-        if (idx < VSPACE_TABLE_CAP_SLOTS)
-            (void)kcnode_slot_delete(vs->table_caps, idx);
-    }
+    kvspace_map_cap_drop_locked(vs, &pt->base);
     spinlock_unlock(&vs->lock);
     return IRIS_OK;
 }

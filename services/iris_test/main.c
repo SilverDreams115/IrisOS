@@ -209,6 +209,15 @@ void iris_test_main(iris_cptr_t rbx_unused) {
     test_t135();
     test_t136();
     test_t137();
+    /* T137's companions, and they run beside it rather than at the end of the
+     * numeric order: both retype a frame from the shared test Untyped, which
+     * by the 350s is full of live children — the retype answered -3 there, and
+     * the failed retype left a leaf that T324's allocator audit then caught.
+     * T137 establishes that revoking a SIBLING leaves a mapping alone; these
+     * two establish that revoking what the mapping was DERIVED from does not
+     * (D-13).  Reading them together is the point. */
+    test_t359();
+    test_t360();
     test_t138();
     test_t139();
     test_t140();

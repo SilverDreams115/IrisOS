@@ -116,13 +116,26 @@ struct KFrame *kframe_alloc_at(void *mem, uint64_t paddr, uint64_t size);
  *   IRIS_ERR_INVALID_ARG — bad VA alignment, kernel VA, or bad flags.
  *   IRIS_ERR_BAD_HANDLE  — VSpace has been invalidated (cr3 == 0).
  *   IRIS_ERR_BUSY        — user_va already has a PTE in this VSpace.
- *   IRIS_ERR_NO_MEMORY   — page-table allocation failed.
+ *   IRIS_ERR_NO_MEMORY   — page-table allocation failed, or the space has no
+ *                          room left for the CAPABILITY it must hold to what
+ *                          it maps (D-13); a failed map changes nothing, so
+ *                          the PTEs already installed are unwound first.
  *
  * Single-core TLB note: no TLB flush is needed on map (new PTE, no stale
  * entry).  SMP shootdown is deferred.
  */
 iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
                               uint64_t user_va, uint64_t map_flags);
+
+struct KCNode;
+
+/* As kframe_map_page, but the space's capability for the frame is DERIVED
+ * from the slot the caller named (D-7, D-13).  src_cn NULL installs it
+ * unparented, for the bootstrap maps that have no CSpace to derive from. */
+iris_error_t kframe_map_page_from(struct KFrame *f, struct KVSpace *vs,
+                                  uint64_t user_va, uint64_t map_flags,
+                                  struct KCNode *src_cn, uint32_t src_idx);
+
 
 /*
  * kframe_unmap_page — remove the PTE at user_va in a VSpace if it belongs

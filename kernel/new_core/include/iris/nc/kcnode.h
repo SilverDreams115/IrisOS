@@ -359,4 +359,13 @@ iris_error_t kcnode_slot_install_for_thread(struct KCNode *src_cn,
                                            struct KCNode *dst_cn,
                                            uint32_t dst_idx);
 
+/* As above, but installed as a SIBLING of the source — same parent — which is
+ * what a MAPPING's capability must be so that revoking the slot used to map
+ * does not unmap the mapper's own page.  See the definition for the boot that
+ * decided it. */
+iris_error_t kcnode_slot_install_sibling(struct KCNode *src_cn,
+                                         uint32_t src_idx,
+                                         struct KCNode *dst_cn,
+                                         uint32_t dst_idx);
+
 #endif /* IRIS_NC_KCNODE_H */

@@ -84,10 +84,29 @@ uint64_t sys_frame_map(uint64_t arg0, uint64_t arg1,
         return syscall_err(err);
     }
 
+    /* The SLOT the caller named, for the same reason `PageTable_Map` resolves
+     * one: the space holds the frame as a capability DERIVED from the caller's
+     * (D-7 class 3, D-13), so revoking the caller's capability reaches the
+     * space's and the mapping goes with it — charter A9.  A counted pointer
+     * could not be reached by a revoke, which is how a mapping came to outlive
+     * every capability naming it. */
+    struct KCNode *f_cn = 0;
+    uint32_t       f_idx = 0;
+    err = cspace_resolve_slot(t->cspace_root, frame_cptr, &f_cn, &f_idx);
+    if (err != IRIS_OK) {
+        kobject_active_release(&frame->base);
+        kobject_release(&frame->base);
+        kobject_active_release(&vs->base);
+        kobject_release(&vs->base);
+        return syscall_err(err);
+    }
+
     /* Core map: validates VSpace liveness, duplicate check, PTE install,
      * and increments frame->mapped_count. */
-    err = kframe_map_page(frame, vs, user_va, map_flags);
+    err = kframe_map_page_from(frame, vs, user_va, map_flags, f_cn, f_idx);
 
+    kobject_active_release(&f_cn->base);
+    kobject_release(&f_cn->base);
     kobject_active_release(&frame->base);
     kobject_release(&frame->base);
     kobject_active_release(&vs->base);

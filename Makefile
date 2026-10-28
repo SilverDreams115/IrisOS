@@ -1289,7 +1289,7 @@ smoke-runtime: all
 # `IRIS_QEMU_TIMEOUT_SECS=60` that CI passes on the command line, which is how
 # a lane can be tuned and never change.
 smoke-runtime-selftests: all
-	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-90}" IRIS_QEMU_EXPECT_SELFTESTS=1 \
+	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-600}" IRIS_QEMU_EXPECT_SELFTESTS=1 \
 		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-selftests.log \
 		bash scripts/run_qemu_headless.sh
 
@@ -1306,14 +1306,21 @@ smoke-runtime-selftests: all
 #
 # Four processors as well as one, because every claim in it involves a spawn,
 # and a spawn is where this system's memory accounting and its scheduler meet.
+# The timeouts are 600 and 400 and not 180 and 200.  With
+# ENABLE_RUNTIME_SELFTESTS=1 these lanes run 327 ring-3 tests BEFORE the slice
+# they are about, and the old numbers cut the boot off between the suite's
+# verdict and the filesystem — so the lane failed on `no filesystem mounted`
+# while the log showed SUITE PASS, which reads like a filesystem bug and is a
+# stopwatch.  A lane that needs the caller to export a variable to pass is not
+# a lane, so the defaults carry it.
 smoke-stage10: all
 	@echo '== stage 10-run vertical slice: 1 processor =='
-	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-180}" \
+	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-600}" \
 		IRIS_QEMU_SMP=1 IRIS_QEMU_EXPECT_SELFTESTS=1 \
 		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-stage10-smp1.log \
 		bash scripts/run_qemu_headless.sh
 	@echo '== stage 10-run vertical slice: 4 processors =='
-	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-180}" \
+	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-600}" \
 		IRIS_QEMU_SMP=4 IRIS_QEMU_EXPECT_SELFTESTS=1 \
 		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-stage10-smp4.log \
 		bash scripts/run_qemu_headless.sh
@@ -1324,7 +1331,7 @@ smoke-full: all
 		bash scripts/run_qemu_headless.sh
 
 smoke-full-selftests: all
-	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-90}" IRIS_QEMU_EXPECT_SELFTESTS=1 \
+	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-600}" IRIS_QEMU_EXPECT_SELFTESTS=1 \
 		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-full-selftests.log \
 		bash scripts/run_qemu_headless.sh
 
@@ -1481,7 +1488,7 @@ spec-exhaustive: $(SPEC_DRIVER_BIN)
 smoke-verified:
 	@echo "== IRIS-V: the verified configuration (uniprocessor, no IOMMU) =="
 	$(MAKE) IRIS_VERIFIED=1 ENABLE_RUNTIME_SELFTESTS=1
-	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-200}" \
+	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-400}" \
 	IRIS_QEMU_SMP=1 IRIS_QEMU_EXPECT_SELFTESTS=1 \
 	IRIS_QEMU_LOG=build/qemu-verified.log \
 	bash scripts/run_qemu_headless.sh

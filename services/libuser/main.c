@@ -229,26 +229,43 @@ int libuser_main(const uint64_t *sp) {
      * The CAPABILITY must be gone — in this process and in the other one, from
      * one invocation in a third.  That is what revoke is.
      *
-     * The MAPPING is not.  `CSpace_Revoke` is capability-scoped: it destroys
-     * the derived capabilities and does not touch a page table, because a live
-     * mapping holds its own reference to the frame (T137 pins this).  So this
-     * program can still READ the library it can no longer name, until it
-     * unmaps it — and it reports that rather than assuming either way, because
-     * a system that changed its mind about this would otherwise change it
-     * silently.
+     * And so must the MAPPING.  This comment used to say the opposite, at
+     * length: that `CSpace_Revoke` is capability-scoped, that a live mapping
+     * holds its own reference, that this program "can still READ the library it
+     * can no longer name", and that T137 pinned it.  That was the behaviour,
+     * and charter A10 says it was wrong — *revoke recursively removes all
+     * descendant authority*, and a page still readable through a space that
+     * holds no capability naming it is access without authority.  The registry
+     * believed it had withdrawn this library and it had not.  Ledger D-13.
      *
-     * Revoke is therefore withdrawal of AUTHORITY, not eviction: the holder
-     * cannot map it again, cannot pass it on, and cannot ask anything about
-     * it, and the memory is not reclaimable until the last mapping goes.
+     * So revoke IS eviction for the mappings that descended from what was
+     * revoked, and the fact is PROVED rather than assumed: reading `text_va`
+     * now faults, which would kill this program before it could report
+     * anything — which is exactly how the change was found.  Instead this maps
+     * one of its OWN frames at that address.  A map that succeeds says nothing
+     * is there any more; BUSY would say the old mapping outlived its
+     * authority.  It needs no capability to the library, which is the point:
+     * this program no longer has one.
      */
     {
         long what = iris_invoke0((long)text_slot, INV_CAP_IDENTIFY);
-        const volatile uint8_t *t = (const volatile uint8_t *)(uintptr_t)text_va;
-        uint64_t still_readable;
+        uint64_t mapping_gone = 0u;
         if (what >= 0) return LU_STILL_THERE;
-        still_readable = (t[0] == 0x7fu && t[1] == 'E') ? 1u : 0u;
+        {
+            int idx = prog_mem_find(&g_mem, priv_va, 1u);
+            if (idx < 0) return LU_NO_PRIVATE;
+            long mr = iris_invoke((long)g_mem.maps[idx].slot, INV_FRAME_MAP,
+                                  (long)IRIS_CPTR_OWN_VSPACE, (long)text_va,
+                                  0 /* read-only, NX */);
+            if (mr == 0) {
+                mapping_gone = 1u;
+                /* Leave the address space as it was found. */
+                (void)iris_invoke2((long)g_mem.maps[idx].slot, INV_FRAME_UNMAP,
+                                   (long)IRIS_CPTR_OWN_VSPACE, (long)text_va);
+            }
+        }
         if (lu_report(OBJREG_ROUND_AFTER, (uint64_t)(uint32_t)(-what),
-                      still_readable, id) != 0)
+                      mapping_gone, id) != 0)
             return LU_NO_PARENT;
     }
 

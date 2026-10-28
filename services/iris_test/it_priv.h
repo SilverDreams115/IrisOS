@@ -719,6 +719,11 @@ struct it_child { uint32_t proc; uint32_t leaf; };
 #define T137_VA     0x8074000000ULL
 #define T138_VA     0x8075000000ULL
 #define T139_VA_BASE 0x8078000000ULL
+/* D-13: a revoke that reaches a mapping.  T360 maps one frame at BOTH of its
+ * VAs through ONE capability, which is the case the sweep has to get right. */
+#define T359_VA      0x8079000000ULL
+#define T360_VA_A    0x807A000000ULL
+#define T360_VA_B    0x807B000000ULL
 #define IT_MAP_W    1ULL   /* SYS_FRAME_MAP flags: bit0 = WRITABLE */
 
 /*
@@ -3114,6 +3119,8 @@ void test_t355(void);
 void test_t356(void);
 void test_t357(void);
 void test_t358(void);
+void test_t359(void);
+void test_t360(void);
 void test_t324(void);
 void test_t319(void);
 void test_t296(void);

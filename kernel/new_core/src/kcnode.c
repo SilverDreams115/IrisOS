@@ -22,6 +22,7 @@
 #include <iris/nc/kobject.h>
 #include <iris/nc/kobject_dispatch.h>
 #include <iris/nc/kuntyped.h>
+#include <iris/nc/kvspace.h>
 #include <iris/nc/rights.h>
 #include <iris/kslab.h>
 #include <stdatomic.h>
@@ -852,6 +853,81 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
  * Rights and badge travel unchanged: the thread holds what the supervisor
  * aimed, which is what makes a fault carry the badge that says whose it is.
  */
+/*
+ * ── Install a MAPPING's capability as a SIBLING of the slot used to map ─────
+ *
+ * Not a child of it, which is what this did first and what the boot refuted.
+ *
+ * seL4 keeps a mapping IN the CTE that made it, so `Revoke(S)` — which deletes
+ * S's DESCENDANTS — leaves S's own mapping standing.  Making the space's
+ * capability a child of S instead meant a revoke of S destroyed the mapper's
+ * own authority and unmapped its own page, and IRIS's services do exactly
+ * that: `blk`, `fs` and `ip` each hold a data frame, map it, hand out derived
+ * copies and REVOKE their slot before the next handout.  Thirteen pages
+ * vanished in the first eighteen lines of a boot, after which init blocked
+ * forever in `FS_OP_STAT`.
+ *
+ * A sibling — same parent as S — gives both halves of what the services mean:
+ *
+ *   server maps through S  → its capability is a sibling of S, so `Revoke(S)`
+ *                            kills the handouts and spares the server's page;
+ *   client maps through C, a child of S → its capability is a sibling of C and
+ *                            so a CHILD of S, and `Revoke(S)` takes the
+ *                            client's mapping with the capability.
+ *
+ * The second half is the one charter A10 is about, and it is the one that was
+ * missing before any of this: the service believed revoking withdrew access
+ * and the client could still read the page.
+ *
+ * A source that is a ROOT has no parent to share, so the capability is
+ * unparented — the disconnection the ledger registers under D-7.  In practice
+ * a ring-3 frame is a child of the Untyped slot it was retyped from.
+ */
+iris_error_t kcnode_slot_install_sibling(struct KCNode *src_cn,
+                                         uint32_t src_idx,
+                                         struct KCNode *dst_cn,
+                                         uint32_t dst_idx) {
+    if (!src_cn || !dst_cn) return IRIS_ERR_INVALID_ARG;
+    if (src_idx >= src_cn->slot_count || dst_idx >= dst_cn->slot_count)
+        return IRIS_ERR_INVALID_ARG;
+
+    struct KObject *obj;
+    iris_rights_t   rights;
+    uint64_t        badge;
+    struct KCNode  *par_cn = 0;
+    uint32_t        par_idx = 0;
+    struct KObject *par_expect = 0;
+    {
+        /* The MDB link is MDB state, so it is read under `mdb_lock`; the slot's
+         * own fields are read under the CNode's, in that order. */
+        uint64_t mf = irq_spinlock_lock(&mdb_lock);
+        struct KCSlot *src = &src_cn->slots[src_idx];
+        if (!src->object) {
+            irq_spinlock_unlock(&mdb_lock, mf);
+            return IRIS_ERR_NOT_FOUND;
+        }
+        obj    = src->object;
+        rights = src->rights;
+        badge  = src->badge;
+        struct KCSlot *p = src->mdb_parent;
+        if (p && p->mdb_cnode) {
+            par_cn     = p->mdb_cnode;
+            par_idx    = (uint32_t)(p - p->mdb_cnode->slots);
+            par_expect = p->object;
+        }
+        irq_spinlock_unlock(&mdb_lock, mf);
+    }
+
+    /* `par_expect` is what makes the re-read safe: the parent is named by
+     * IDENTITY, and `kcnode_slot_install_linked` checks it under the same hold
+     * that installs the link, so a slot that changed in between is refused
+     * rather than linked under an ancestor that never authorised it (A9). */
+    return kcnode_slot_install_linked(dst_cn, dst_idx, obj, rights, badge,
+                                      par_cn, par_idx, par_expect,
+                                      /*exclusive=*/1,
+                                      /*unparented=*/par_cn ? 0 : 1);
+}
+
 iris_error_t kcnode_slot_install_for_thread(struct KCNode *src_cn,
                                            uint32_t src_idx,
                                            struct KCNode *dst_cn,
@@ -1147,11 +1223,43 @@ static iris_error_t kcnode_slot_delete_locked(struct KCNode *cn,
     return IRIS_OK;
 }
 
-/* Release an occupant taken out by the helper above.  Mirrors the install: a
- * self-naming slot never took an active reference. */
+/*
+ * ── Per-capability finalise (ledger D-13), which seL4 calls finaliseCap ──────
+ *
+ * Charter A10: *revoke recursively removes all descendant authority*.  A
+ * mapping that outlives every capability its space held to the object is
+ * ACCESS WITHOUT AUTHORITY — the holder reads and writes a page nothing names
+ * — so removing the capability has to remove the access.
+ *
+ * IRIS had no hook for this.  Destruction is per-OBJECT
+ * (`kobject_dispatch_destroy`, at refcount 0); seL4's fires on the CTE being
+ * deleted, which is the only moment that knows "this capability named
+ * something mapped".  This is that moment.
+ *
+ * It needs no record of which space owned the slot, which is what made it look
+ * like it needed a back-pointer: the question is answerable from the OBJECT
+ * side.  Walk what the object is mapped into, and unmap wherever that space no
+ * longer holds a capability for it.  `kvspace_finalise_orphans` is that
+ * walk, and it runs HERE — after `mdb_lock` is dropped, so the unmap may take
+ * a space's lock, and so the work is not unbounded under rank 1, which is the
+ * thing D-8 and D-12 exist about.
+ *
+ * Every path that removes a capability reaches this function, which is why the
+ * hook is here and not at each of them.  The same lesson as `kvspace_node_free`:
+ * one choke point cannot be the one somebody misses.
+ *
+ * That sentence was written when it was true of seven callers and false of the
+ * eighth.  `kcnode_slot_revoke_bounded` cleared its victim's slot and released
+ * the pair inline, so D-13's unmap reached every path EXCEPT revoke — the one
+ * the charter names.  It was not caught by reading the code, which is what the
+ * sentence above invited; it was caught by T359 failing with "revoke did not
+ * unmap".  A choke point is a claim about callers, so it is worth a test.
+ */
 static void kcnode_slot_drop_old(struct KCNode *cn, struct KObject *old) {
     if (!old) return;
     if (old != &cn->base) kobject_active_release(old);
+    if (old->type == KOBJ_FRAME || old->type == KOBJ_PAGE_TABLE)
+        kvspace_finalise_orphans(old);
     kobject_release(old);
 }
 
@@ -1274,13 +1382,21 @@ iris_error_t kcnode_slot_revoke_bounded(struct KCNode *cn, uint32_t slot_idx,
         atomic_fetch_add_explicit(&mdb_revoked_nodes, 1u, memory_order_relaxed);
         irq_spinlock_unlock(&mdb_lock, mf);
 
-        /* Lifecycle effects strictly outside the MDB lock: this release may
+        /*
+         * Lifecycle effects strictly outside the MDB lock: this release may
          * close endpoints (waking blocked tasks) or cascade into destroying
-         * a CNode whose close re-enters these primitives. */
-        if (victim_obj) {
-            kobject_active_release(victim_obj);
-            kobject_release(victim_obj);
-        }
+         * a CNode whose close re-enters these primitives.
+         *
+         * Through the choke point, which this path did NOT use.  It released
+         * the pair itself, so when `kcnode_slot_drop_old` grew D-13's unmap
+         * every other way of removing a capability unmapped and REVOKE did
+         * not — which is the one case charter A10 names ("revoke recursively
+         * removes all descendant authority") and the one T359 and T360 test.
+         * Going through it also drops the unconditional `active_release` here,
+         * which was wrong for a slot naming its own CNode: the install skips
+         * that retain for a self-reference and this did not skip the release.
+         */
+        if (victim_obj) kcnode_slot_drop_old(v_cn, victim_obj);
         revoked++;
     }
 
