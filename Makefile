@@ -1509,6 +1509,23 @@ spec-bridge:
 # codes is the same whether or not B ran.  Flows through message CONTENTS are
 # outside it, because nothing in `spec/` models what is sent, and the lane
 # says so in its own output rather than leaving it to be discovered.
+# ── what the COMPILER made of the source-level claim ────────────────────────
+#
+# `check-purity` proves a property of the SOURCE: destruction dispatches on
+# `obj->type` and no kernel file holds an ops pointer.  Nobody had checked what
+# the compiler made of it, and it made six indirect jumps — a dense `switch`
+# becomes a JUMP TABLE, so the very statements that replaced the 18
+# `KObjectOps` tables compile to `notrack jmp *%rax`.
+#
+# Not a defect, and not nothing.  The distinction is WHERE the targets live: a
+# jump table sits in `.rodata`, derived from the switch and unwritable, while
+# `KObjectOps` sat in `.data` and anything that could write it could choose
+# what the kernel called next.  So the lane checks the inventory AND that every
+# table is read-only, and fails on a transfer nobody accounted for.
+.PHONY: check-binary
+check-binary: all
+	@python3 scripts/check_binary.py
+
 .PHONY: spec-noninterference
 spec-noninterference:
 	@python3 spec/noninterference.py $${SPEC_NI_STATES:-300}

@@ -1918,6 +1918,46 @@ mode this directory exists to avoid.  Sabotage-tested: a transliteration whose
 
 It is the fifteenth lane, and `AGENTS.md` says fifteen now.
 
+### binary verification's modest half — what the COMPILER made of it
+
+`check-purity` proves a property of the SOURCE: destruction dispatches on
+`obj->type`, and no kernel file holds an ops pointer.  Nobody had checked what
+the compiler made of it.
+
+It made six indirect jumps.  A dense `switch` becomes a JUMP TABLE, so the very
+statements that replaced the 18 `KObjectOps` tables compile to
+`notrack jmp *%rax` — in `kobject_dispatch_close`, `kobject_dispatch_destroy`,
+`sys_untyped_retype2` twice, `syscall_invoke` and
+`root_bootinfo_set_control_cap`.  Two more are register-indirect `call`s and
+neither is dispatch: `sched_resume` calls `task->kentry` to start a kernel
+thread, and `tramp_lm` calls the per-CPU entry from the AP trampoline.  Eight
+in 47030 instructions, beside 3620 direct calls.
+
+**That is not a defect and it is not nothing.**  The distinction a verification
+story has to state is WHERE the targets live.  A jump table sits in `.rodata` —
+derived from the switch, unwritable — and `make check-binary` checks that for
+every table it finds: the one in `kobject_dispatch_destroy` loads from
+`0x22c148`, inside `.rodata [0x22b000, 0x34a828)`.  `KObjectOps` sat in
+`.data`, and anything that could write it could choose what the kernel called
+next.  The source-level claim and the binary-level one are different claims,
+and until this lane only the first was checked.
+
+**The first version of this check reported "0 indirect calls", which agreed
+with the source claim perfectly and was entirely false.**  The ELF did not
+exist — the spec lanes had just cleaned it with a configuration change — and
+`2>/dev/null` had swallowed `objdump: No such file`.  A zero with no
+denominator is how a non-check disguises itself as evidence, and this one
+disguised itself as agreement with the property it was meant to test.  So the
+lane now requires the binary to exist, requires the disassembly to be large
+(>=10000 instructions), requires the DIRECT calls to be plentiful (>=1000), and
+only then lets the indirect count mean anything.  Sabotage-tested on both
+paths, by exit code and not by reading its output: an unaccounted transfer and
+a missing ELF each return 1.
+
+`scripts/gate.sh` runs all seventeen now, classifying by EXIT CODE — a
+hand-written classifier lied three times in one session, and a lane's own `$?`
+is the only thing that cannot drift.
+
 ### the two OWED inductions, checked unbounded in depth
 
 `revoke_removes_exactly_the_subtree` and `delete_preserves_A9` are the two
