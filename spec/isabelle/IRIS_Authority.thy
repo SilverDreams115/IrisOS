@@ -637,6 +637,135 @@ proof (rule subsetI)
   thus "x \<in> ?r\<^sup>+" using xab by simp
 qed
 
+section \<open>Refinement: what the MDB is for, and where it is not needed\<close>
+
+text \<open>
+  Phase 4 asks for `abstract \<sqsubseteq> executable \<sqsubseteq> C`.  `spec-theory` now checks the
+  first link by running both sides; `spec-exhaustive` checks the second to a
+  bounded depth.  What neither says is what the derivation TREE is for.
+
+  So: the AUTHORITY VIEW of a state is what each slot can do — the object it
+  names, its rights, its badge — with the parent links and child lists thrown
+  away.  An operation REFINES a view-level operation when its effect on the
+  view is computable from the view alone; and then the tree is bookkeeping for
+  that operation, not semantics.
+
+  The result is a split, and the split is the point:
+
+    * `derive` and `delete` refine single-slot view updates.  Everything the
+      MDB carries is invisible to them — a derive's rights and badge come from
+      the SOURCE's, and a delete's reparenting moves links and touches no
+      slot's authority.
+    * `revoke` does NOT.  Which slots it empties depends on the tree and on
+      nothing in the view, which is exactly why the tree exists.  That is
+      stated below as a counterexample rather than left as a remark, because
+      "the MDB is necessary" is the kind of claim this project keeps and does
+      not check.
+\<close>
+
+definition aobj :: "cspace \<Rightarrow> sid \<Rightarrow> oid option" where
+  "aobj C = (\<lambda>i. s_obj (slots C i))"
+
+definition arights :: "cspace \<Rightarrow> sid \<Rightarrow> rights" where
+  "arights C = (\<lambda>i. s_rights (slots C i))"
+
+definition abadge :: "cspace \<Rightarrow> sid \<Rightarrow> badge" where
+  "abadge C = (\<lambda>i. s_badge (slots C i))"
+
+lemma derive_refines:
+  \<comment> \<open>A derive's whole effect on authority is one slot's worth, and every
+      input to it is in the view: the source's object, rights and badge.\<close>
+  assumes ok: "can_derive C src dst req bg = Ok"
+  shows "aobj (derive C src dst req bg) = (aobj C)(dst := aobj C src)
+         \<and> arights (derive C src dst req bg)
+             = (arights C)(dst := rights_reduce (arights C src) req)
+         \<and> abadge (derive C src dst req bg)
+             = (abadge C)(dst := (if bg = 0 then abadge C src else bg))"
+proof -
+  have ne: "src \<noteq> dst" using ok by (rule can_derive_src_dst)
+  show ?thesis
+    using ne
+    by (auto simp: aobj_def arights_def abadge_def derive_def badge_of_derive_def
+                   Let_def fun_eq_iff)
+qed
+
+lemma delete_refines:
+  \<comment> \<open>A delete clears one slot's authority and moves links.  No other slot's
+      object, rights or badge changes — the reparenting is invisible here,
+      which is what makes it safe for A7 and A8 and what
+      `delete_preserves_A9` is separately about.\<close>
+  "aobj (delete C i) = (aobj C)(i := None)
+   \<and> arights (delete C i) = (arights C)(i := 0)
+   \<and> abadge (delete C i) = (abadge C)(i := 0)"
+  by (auto simp: aobj_def arights_def abadge_def delete_def Let_def fun_eq_iff)
+
+text \<open>
+  And the negative half, which is where the derivation tree earns its keep.
+
+  Two states with the SAME authority view — every slot naming the same object
+  with the same rights and the same badge — and the only difference is a parent
+  link.  Revoking the same slot empties a capability in one and not in the
+  other, so the effect of `revoke` on authority is not a function of authority.
+  That is the whole reason IRIS carries an MDB, and it is stated here as a
+  construction rather than as a remark.
+\<close>
+
+definition ex_objs :: "oid \<Rightarrow> obj option" where
+  "ex_objs = (\<lambda>x. if x = 7 then Some \<lparr> o_type = Endpoint \<rparr> else None)"
+
+definition ex_linked :: cspace where
+  \<comment> \<open>Slot 1 is a CHILD of slot 0.\<close>
+  "ex_linked =
+     \<lparr> slots = (\<lambda>t. if t = 0
+                     then \<lparr> s_obj = Some 7, s_rights = 1, s_badge = 0,
+                             s_parent = None, s_children = [1] \<rparr>
+                     else if t = 1
+                     then \<lparr> s_obj = Some 7, s_rights = 1, s_badge = 0,
+                             s_parent = Some 0, s_children = [] \<rparr>
+                     else empty_slot),
+       objs = ex_objs, dom_s = {0, 1} \<rparr>"
+
+definition ex_loose :: cspace where
+  \<comment> \<open>The same authority, and slot 1 is a ROOT.\<close>
+  "ex_loose =
+     \<lparr> slots = (\<lambda>t. if t = 0
+                     then \<lparr> s_obj = Some 7, s_rights = 1, s_badge = 0,
+                             s_parent = None, s_children = [] \<rparr>
+                     else if t = 1
+                     then \<lparr> s_obj = Some 7, s_rights = 1, s_badge = 0,
+                             s_parent = None, s_children = [] \<rparr>
+                     else empty_slot),
+       objs = ex_objs, dom_s = {0, 1} \<rparr>"
+
+lemma ex_same_view:
+  "aobj ex_linked = aobj ex_loose \<and> arights ex_linked = arights ex_loose
+   \<and> abadge ex_linked = abadge ex_loose"
+  by (auto simp: aobj_def arights_def abadge_def ex_linked_def ex_loose_def
+                 fun_eq_iff)
+
+lemma ex_linked_desc: "(1::sid) \<in> desc ex_linked 0"
+  by (auto simp: desc_def ex_linked_def intro: r_into_trancl)
+
+lemma ex_loose_desc: "(1::sid) \<notin> desc ex_loose 0"
+proof -
+  have e: "{(a, b). a \<in> dom_s ex_loose
+                    \<and> s_parent (slots ex_loose a) = Some b} = {}"
+    by (auto simp: ex_loose_def)
+  show ?thesis by (simp add: desc_def e trancl_empty)
+qed
+
+lemma revoke_does_not_refine:
+  \<comment> \<open>So no view-level operation can stand in for `revoke`: the tree is
+      semantics for it and not bookkeeping.\<close>
+  "aobj (revoke ex_linked 0) \<noteq> aobj (revoke ex_loose 0)"
+proof -
+  have "aobj (revoke ex_linked 0) 1 = None"
+    using ex_linked_desc by (simp add: aobj_def revoke_def Let_def)
+  moreover have "aobj (revoke ex_loose 0) 1 = Some 7"
+    using ex_loose_desc by (simp add: aobj_def revoke_def Let_def ex_loose_def)
+  ultimately show ?thesis by force
+qed
+
 section \<open>The theorems phase 4 owed — and they are proved\<close>
 
 text \<open>

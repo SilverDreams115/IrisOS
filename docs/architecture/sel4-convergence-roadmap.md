@@ -4040,6 +4040,29 @@ The same pass strengthened a real obligation: idempotence was guarded by
 was narrowing what was being proved.  53 of 53 now.
 
 | **4 — the refinement** | `abstract ⊑ executable ⊑ C`, in the gate | ◐ **THE FIRST LINK EXISTS.**  `spec/invariants.py` holds the predicates once; `make spec-prove` proves them symbolically and `make spec-bridge` evaluates the SAME definitions concretely on states real traces built, requiring agreement with `authority_model.py`'s independently written checkers.  `abstract ⊑ executable` is therefore checked rather than assumed.  `executable ⊑ C` is now TOTAL below a bound: `make spec-exhaustive` runs every trace of length ≤ 4 over a fixed alphabet through the model and the real C, comparing every intermediate result code and every final state.  The alphabet is 27 symbols since the VSpace operations joined it, so that is **531441 traces at depth 4 and 14348907 at depth 5** — the depth-5 run measured clean, with D-7's predicate agreeing with the reference count on all 17056258 finality decisions.  It now covers D-13's mechanism against the real `kvspace.c` and not only the CSpace.  Still bounded model checking and not a refinement proof: a disagreement needing SIX operations is outside it, and so is one needing a fourth CNode slot or a second address space.  Depth 5 is a soak and not one of the fourteen, because it is minutes rather than seconds |
+
+**Phase 4, the link nobody had: what the MDB is FOR (2026-10-28).**  With
+Isabelle running, `spec/isabelle/IRIS_Authority.thy` now carries a refinement
+result and not only preservation.  The AUTHORITY VIEW of a state is what each
+slot can do — object, rights, badge — with the parent links and child lists
+thrown away.  An operation REFINES a view-level operation when its effect on
+the view is computable from the view alone, and then the tree is bookkeeping
+for it rather than semantics.
+
+The answer splits, and the split is the content:
+
+* `derive_refines` and `delete_refines` — both PROVED.  A derive's rights and
+  badge come from the SOURCE's, which are in the view; a delete clears one
+  slot's authority and moves links, touching no other slot's object, rights or
+  badge.  So for these two the MDB is bookkeeping.
+* `revoke_does_not_refine` — PROVED, as a construction.  Two states with the
+  same authority view at every slot, differing only in one parent link:
+  revoking the same slot empties a capability in one and not in the other.  So
+  no view-level operation can stand in for `revoke`, and the derivation tree is
+  semantics for it.
+
+"The MDB is necessary" is the kind of claim a project keeps and does not check.
+It is checked now, and the thing it is necessary FOR is named.
 | **5 — beyond functional correctness** | integrity, information flow, binary verification | ◔ **INTEGRITY STARTED, the other two not.**  `make spec-prove` carries integrity as its own obligations, separate from functional correctness on purpose: a kernel can satisfy its functional specification at every step and still, somewhere inside it, hand out an authority nobody conferred.  Four rows — a derive names no object that was not already named, confers no right its source did not hold, **changes nothing else**, and a delete grants nothing — plus a refutable row for amplifying by one bit.  The third is the FRAME CONDITION and it is what makes the others mean anything: without it they are satisfied by an operation that installs correctly at the destination and quietly widens an unrelated slot on the way past, which is the shape of an integrity violation a per-slot functional specification does not see.  Sabotage-tested: an operation that touches a second slot turns that row REFUTED and the lane fails at 57 of 58.  **AUTHORITY CONFINEMENT is in too**, which is information flow's integrity half: a revoke invoked inside one SUBJECT leaves a disjoint subject's slots alone, where a subject is a SUBTREE of the derivation forest — not an invented notion, but what "the authority reachable from a capability" means in a capability system.  Stated at a bounded depth, like the other revoke rows, because the unbounded descendant relation is a transitive closure the decidable fragment cannot express; `desc` in the Isabelle text can, and that asymmetry is recorded there.  Its disjointness premise is checked NECESSARY: drop it and the victim can be the other subject's slot, which the lane asserts stays satisfiable.  **What is still absent is non-interference in the CONFIDENTIALITY sense** — that needs a notion of OBSERVATION, what a subject can SEE rather than reach, and nothing here models reading a message or timing an operation.  A confinement theorem presented as non-interference would be the strongest-sounding wrong claim in the file.  Binary verification is untouched |
 
 ### What phase 1 found in its first sixty traces
