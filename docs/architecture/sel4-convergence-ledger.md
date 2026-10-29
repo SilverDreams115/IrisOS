@@ -1918,6 +1918,26 @@ mode this directory exists to avoid.  Sabotage-tested: a transliteration whose
 
 It is the fifteenth lane, and `AGENTS.md` says fifteen now.
 
+### the selftests lanes were destroying each other's evidence
+
+A gate run reported `selftests smp2 rc=2`, and the failure could not be
+diagnosed at all: all three selftest lanes wrote `qemu-headless-selftests.log`,
+so the smp-4 run that followed had overwritten the only record of it.  Two
+clean re-runs afterwards (327/327 each, teardown draining in 0 yields) say
+nothing about what the failing one was — **an unreproduced failure with its log
+gone is not evidence of anything, including of being the known intermittent.**
+
+The log carries the processor count now, as `smoke-stage10`'s already did.
+That is the whole fix, and it is the reason AGENTS.md warns about stale logs:
+the warning was there and the lane was still arranged so that the next run
+destroyed the last one's evidence.
+
+This session's measured facts about `-smp 2` stay what they were: `b95410e`
+fails it 2 of 3 on `proc: reclaim FAILED ... err -8`, which was a stopwatch and
+is fixed; and `T259` and `T146` were each seen once and never reproduced.  This
+rc=2 joins them as unattributed, and now the next one will leave something to
+read.
+
 ### phase 3 closed — and six defects the prover found in one afternoon
 
 `isabelle build -D spec/isabelle` discharges `IRIS_Authority.thy` with **no

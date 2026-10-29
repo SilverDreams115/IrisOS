@@ -1288,9 +1288,17 @@ smoke-runtime: all
 # now.  A hardcode also silently ignored the
 # `IRIS_QEMU_TIMEOUT_SECS=60` that CI passes on the command line, which is how
 # a lane can be tuned and never change.
+#
+# The log carries the PROCESSOR COUNT in its name, because this lane is run at
+# 1, 2 and 4 and they used to share one file — so when the smp-2 run failed,
+# smp-4 overwrote the only evidence of it before anyone could look.  That
+# happened: a gate reported `selftests smp2 rc=2` and the serial log by then
+# belonged to a later, passing run, which left two clean re-runs and nothing to
+# diagnose.  `smoke-stage10` already names its logs per configuration; this is
+# the same fix, and the reason AGENTS.md warns about stale logs at all.
 smoke-runtime-selftests: all
 	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-600}" IRIS_QEMU_EXPECT_SELFTESTS=1 \
-		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-selftests.log \
+		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-selftests-smp$${IRIS_QEMU_SMP:-1}.log \
 		bash scripts/run_qemu_headless.sh
 
 # ── the Stage 10-run vertical slice, as a lane (step 8) ──────────────────────
