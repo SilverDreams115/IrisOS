@@ -1918,6 +1918,50 @@ mode this directory exists to avoid.  Sabotage-tested: a transliteration whose
 
 It is the fifteenth lane, and `AGENTS.md` says fifteen now.
 
+### phase 3 closed — and six defects the prover found in one afternoon
+
+`isabelle build -D spec/isabelle` discharges `IRIS_Authority.thy` with **no
+`oops` and no `sorry`**.  Eight obligations: the three of the rights algebra,
+A7 and A8 under derive, O2 under retype, A9 under delete-with-reparent, and
+A10's claims under revoke.  `make spec-isabelle` is the lane, and it reports
+CHECKED NOTHING with status 0 where no prover is installed — a machine without
+a prover has missing evidence, not a failure.
+
+**The file had never been processed by any tool.**  That is measured, not
+inferred: building the copy at `b95410e` fails on its line 107.  Every one of
+the six defects below was found by RUNNING it, and the first one is why none of
+the others could be:
+
+| # | defect | how it hid |
+|---|---|---|
+| 1 | `AND` is infix notation Isabelle keeps in a BUNDLE; without `unbundle bit_operations_syntax` the rights algebra does not parse | the first thing a prover says about the file, and nobody had heard it |
+| 2 | `derive`, `delete`, `revoke`, `retype` used in five statements, defined nowhere | type errors — loud, once anything ran |
+| 3 | `retype_preserves_O2` false for want of the Untyped guard | the premise was simply absent |
+| 4 | `descendant` used in A10, defined nowhere | it sits in a BOOLEAN position, so Isabelle read it as a FREE VARIABLE: the lemma type-checked and claimed something about EVERY ternary predicate |
+| 5 | A10 stated two claims where the model checks three — it never said non-descendants are untouched | "removes the descendants" is satisfied by removing everything |
+| 6 | four missing premises, each making its obligation FALSE rather than unproved | `oops` reads the same either way |
+
+Number 4 is the one worth remembering.  An undefined OPERATION fails loudly,
+because it stands where a `cspace` is required.  An undefined PREDICATE is
+well-typed as a variable, so the text keeps its shape and loses its meaning —
+and `oops` then hides a statement that was never the statement.
+
+Number 6 includes `inv_wf`, which `spec/invariants.py` has carried since phase
+4's first link and `spec/prove.py` supplies to every theorem.  The abstract
+side never stated it.  That is precisely the drift those two files exist to
+prevent, in the one direction they could not check while this text would not
+load — so the bridge was sound and the gap was upstream of it.
+
+**And `delete_preserves_A9` needed no induction at all.**  This ledger has
+described it as owing one since phase 2, because a depth-bounded acyclicity
+invariant is not inductive under reparenting.  True, and the wrong frame: the
+right statement is about the RELATION.  Reparenting replaces an edge `(a, i)`
+with `(a, b)` where `(i, b)` was already there, so every new edge lies in the
+OLD relation's transitive closure — and well-foundedness passes to any subset
+of a well-founded closure.  Two rules, `wf_trancl` and `wf_subset`.  The
+bounded form the solver could state needed its doubled premise for the same
+reason it could not take the last step: a closure is not in its fragment.
+
 ### binary verification's modest half — what the COMPILER made of it
 
 `check-purity` proves a property of the SOURCE: destruction dispatches on

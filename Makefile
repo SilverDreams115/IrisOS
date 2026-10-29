@@ -1530,6 +1530,18 @@ check-binary: all
 spec-noninterference:
 	@python3 spec/noninterference.py $${SPEC_NI_STATES:-300}
 
+# ── the abstract specification, PROVED ──────────────────────────────────────
+#
+# `spec-theory` checks that the Isabelle TEXT and the executable model agree.
+# This builds the text: `isabelle build` over `spec/isabelle`, plus a guard
+# that no `oops` or `sorry` is left — the build alone is not enough, because
+# `oops` abandons a goal and lets the session finish, which is how that file
+# sat unproved for as long as it did.  Skips with a named message when no
+# prover is installed, the way `spec-prove` does without z3.
+.PHONY: spec-isabelle
+spec-isabelle:
+	@bash scripts/check_isabelle.sh
+
 .PHONY: spec-theory
 spec-theory:
 	@python3 spec/theory_check.py $${SPEC_THEORY_STATES:-500}

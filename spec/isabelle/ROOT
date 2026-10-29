@@ -1,0 +1,13 @@
+(* The session that makes IRIS_Authority buildable at all.
+ *
+ * There was none, which is part of why the theory had never been processed:
+ * `isabelle build` needs a session to load a theory into, and Isabelle2026
+ * has no `process` tool to load one without.  Built against HOL, which the
+ * Linux bundle ships prebuilt.
+ *
+ *   isabelle build -D spec/isabelle
+ *)
+session IRIS = HOL +
+  description "IRIS's authority model — the abstract specification"
+  theories
+    IRIS_Authority

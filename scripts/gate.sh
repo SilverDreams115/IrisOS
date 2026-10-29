@@ -49,7 +49,7 @@ build_clean() {
 
 run make                 build_clean
 for t in check-purity check-abi check-locks check-loops check-binary \
-         test-unit spec-differential spec-rights spec-prove spec-bridge \
+         test-unit spec-differential spec-rights spec-prove spec-bridge spec-isabelle \
          spec-theory spec-noninterference spec-exhaustive; do
     run "$t" make "$t"
 done
