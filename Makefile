@@ -1530,6 +1530,26 @@ spec-bridge:
 # `KObjectOps` sat in `.data` and anything that could write it could choose
 # what the kernel called next.  So the lane checks the inventory AND that every
 # table is read-only, and fails on a transfer nobody accounted for.
+# ── the static checks, as ONE lane ──────────────────────────────────────────
+#
+# Five separate targets for five scripts that together take nine seconds, in a
+# gate whose measured total is 392.  Grouping them loses nothing — each still
+# prints its own RESULT line and each is still callable on its own — and it
+# takes the required list from eighteen entries to thirteen, which is the part
+# of "reduce the gate" that was real.  The time was never the problem: that
+# estimate was wrong by a factor of six, and `scripts/gate.sh` prints seconds
+# now so the next one is measured.
+.PHONY: check
+check: check-purity check-abi check-locks check-loops check-binary
+
+# ── the abstract specification, as ONE lane ─────────────────────────────────
+#
+# `spec-isabelle` proves the text; `spec-theory` checks the text against the
+# executable model.  Both are about the same artefact and together take six
+# seconds, so they answer as one lane and keep both claims.
+.PHONY: spec-abstract
+spec-abstract: spec-isabelle spec-theory
+
 .PHONY: check-binary
 check-binary: all
 	@python3 scripts/check_binary.py

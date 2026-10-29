@@ -1918,6 +1918,42 @@ mode this directory exists to avoid.  Sabotage-tested: a transliteration whose
 
 It is the fifteenth lane, and `AGENTS.md` says fifteen now.
 
+### the gate's cost, measured — and the estimate was wrong by six
+
+The gate was believed to take about forty minutes, and the plan for shortening
+it was to stop re-running the 327-test suite in the lanes that do not exist for
+it.  Both halves were wrong, and `scripts/gate.sh` prints each lane's seconds
+now so the next estimate is measured instead of argued:
+
+| | seconds |
+|---|---|
+| the five static checks together | 9 |
+| `test-unit`, `spec-differential`, `spec-rights`, `spec-prove`, `spec-bridge`, `spec-theory`, `spec-noninterference` | 2 |
+| `spec-isabelle` | 5 |
+| `spec-exhaustive` | 44 |
+| selftests at 1, 2 and 4 processors | 65, 50, 44 |
+| `smoke-stage10` (two boots) | 103 |
+| `smoke-verified` | 64 |
+| **total** | **392** |
+
+Six and a half minutes, not forty.  The forty had two causes and both were
+local to the session that measured them: D-13's bug hung init in `FS_OP_STAT`,
+so NO boot reached `[USER] init idle loop start` and every lane waited out its
+deadline — the harness polls for that marker and kills QEMU two seconds after
+it, which is why a working boot costs about a minute — and the timeouts had
+been raised to 700 and 1100 seconds while that was being debugged.
+
+The suite is not the cost either: a boot with it took 64 s and one without took
+65 s.  And "without" was not even achievable from outside — `smoke-verified`
+sets `ENABLE_RUNTIME_SELFTESTS=1` inside its own recipe, so the planned saving
+would have been work with no effect at all.
+
+**What was real about "reduce the gate" was the COUNT, not the time.**  Five
+targets for nine seconds of scripts, and two targets for the same Isabelle
+artefact, are now `make check` and `make spec-abstract`.  Thirteen required
+lanes instead of eighteen, every underlying check still run, still printing its
+own RESULT line, and still callable on its own.
+
 ### the selftests lanes were destroying each other's evidence
 
 A gate run reported `selftests smp2 rc=2`, and the failure could not be

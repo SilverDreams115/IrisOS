@@ -22,20 +22,28 @@
 #         FAST=1 bash scripts/gate.sh     (skip the QEMU lanes)
 set -u
 cd "$(dirname "$0")/.."
-P=0; F=0; FAILED=""
+P=0; F=0; TOTAL=0; FAILED=""
 
+# Per-lane wall time, because the gate's cost was guessed and not measured.
+# The first guess was "the 327-test suite runs six times"; a boot with the
+# suite and one without came out 64s and 65s, so that was wrong — the suite is
+# not the cost.  Printing each lane's seconds is how the next guess gets
+# checked instead of argued.
 run() {                       # run <label> <command...>
     local label="$1"; shift
-    local out rc
+    local out rc t0
+    t0=$SECONDS
     out=$("$@" 2>&1); rc=$?
+    local secs=$(( SECONDS - t0 ))
     local last
     last=$(printf '%s\n' "$out" | grep -vE '^\s*$' | tail -1 | cut -c1-96)
     if [ "$rc" = "0" ]; then
-        P=$((P+1)); printf '%-26s PASS  %s\n' "$label" "$last"
+        P=$((P+1)); printf '%-26s PASS %5ss  %s\n' "$label" "$secs" "$last"
     else
         F=$((F+1)); FAILED="$FAILED $label"
-        printf '%-26s FAIL  rc=%s  %s\n' "$label" "$rc" "$last"
+        printf '%-26s FAIL %5ss rc=%s  %s\n' "$label" "$secs" "$rc" "$last"
     fi
+    TOTAL=$(( TOTAL + secs ))
 }
 
 # A zero-warning build is the claim, so the warnings are counted rather than
@@ -48,9 +56,8 @@ build_clean() {
 }
 
 run make                 build_clean
-for t in check-purity check-abi check-locks check-loops check-binary \
-         test-unit spec-differential spec-rights spec-prove spec-bridge spec-isabelle \
-         spec-theory spec-noninterference spec-exhaustive; do
+for t in check test-unit spec-differential spec-rights spec-prove spec-bridge \
+         spec-abstract spec-noninterference spec-exhaustive; do
     run "$t" make "$t"
 done
 
@@ -66,8 +73,8 @@ fi
 
 echo
 if [ "$F" = "0" ]; then
-    echo "GATE: $P green, 0 failed"
+    echo "GATE: $P green, 0 failed   (${TOTAL}s total)"
 else
-    echo "GATE: $P green, $F FAILED —$FAILED"
+    echo "GATE: $P green, $F FAILED —$FAILED   (${TOTAL}s total)"
 fi
 exit $([ "$F" = "0" ] && echo 0 || echo 1)
