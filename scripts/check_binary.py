@@ -72,17 +72,45 @@ def main():
               % (insns, direct, MIN_INSNS, MIN_DIRECT))
         return 1
 
-    # .rodata's extent, for the jump-table check.
-    hdrs = subprocess.run(["objdump", "-h", ELF], capture_output=True,
+    #
+    # The SEGMENTS, which is what the hardware enforces.
+    #
+    # The jump-table check used to ask whether a table was inside `.rodata`,
+    # by name.  What actually matters is whether the page it lives on can be
+    # WRITTEN: a section's name is a convention and the segment's flags are a
+    # permission.  So the segments are read, W^X is required of all of them,
+    # and a table has to land in one that is not writable.
+    segs = []
+    phdr = subprocess.run(["readelf", "-lW", ELF], capture_output=True,
                           text=True).stdout
-    ro = None
-    for ln in hdrs.splitlines():
+    for ln in phdr.splitlines():
         f = ln.split()
-        if len(f) > 5 and f[1] == ".rodata":
-            ro = (int(f[3], 16), int(f[3], 16) + int(f[2], 16))
-    if ro is None:
-        print("[binary] FAIL: no .rodata section to check jump tables against")
+        if len(f) >= 8 and f[0] == "LOAD":
+            try:
+                vaddr = int(f[2], 16); memsz = int(f[5], 16)
+            except ValueError:
+                continue
+            flags = "".join(f[6:-1]) if len(f) > 8 else f[6]
+            segs.append((vaddr, vaddr + memsz, flags))
+    if len(segs) < 2:
+        print("[binary] FAIL: parsed %d LOAD segments — any permission claim "
+              "below would be meaningless" % len(segs))
         return 1
+
+    wx = [s_ for s_ in segs if "W" in s_[2] and "E" in s_[2]]
+    if wx:
+        print("[binary] FAIL: %d segment(s) are WRITABLE and EXECUTABLE:" % len(wx))
+        for a, b, fl in wx:
+            print("         [0x%x,0x%x) flags=%s" % (a, b, fl))
+        print("         A page that can be written and executed is where a "
+              "jump table stops being read-only data.")
+        return 1
+
+    def writable_at(a):
+        for lo, hi, fl in segs:
+            if lo <= a < hi:
+                return "W" in fl
+        return True        # outside every segment: treat as unsafe
 
     fn, found, bad = "?", [], 0
     prev = []
@@ -107,10 +135,10 @@ def main():
                 t = re.search(r"mov\s+0x([0-9a-f]+)\(,%r[a-z0-9]+,8\)", p)
                 if t:
                     a = int(t.group(1), 16)
-                    if not (ro[0] <= a < ro[1]):
+                    if writable_at(a):
                         print("[binary] FAIL: %s jumps through a table at "
-                              "0x%x, which is NOT in .rodata [0x%x,0x%x)"
-                              % (fn, a, ro[0], ro[1]))
+                              "0x%x, on a page that can be WRITTEN"
+                              % (fn, a))
                         bad += 1
         prev.append(ln)
 
@@ -125,8 +153,9 @@ def main():
         print("[binary] RESULT: %d problem(s)" % bad)
         return 1
     print("[binary] RESULT: OK (%d instructions, %d direct calls, %d indirect "
-          "transfers and every one accounted for; every jump table in "
-          ".rodata)" % (insns, direct, len(found)))
+          "transfers and every one accounted for; %d LOAD segments, none "
+          "writable+executable, every jump table unwritable)"
+          % (insns, direct, len(found), len(segs)))
     return 0
 
 

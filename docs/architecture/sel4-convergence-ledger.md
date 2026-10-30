@@ -1918,6 +1918,31 @@ mode this directory exists to avoid.  Sabotage-tested: a transliteration whose
 
 It is the fifteenth lane, and `AGENTS.md` says fifteen now.
 
+### binary verification, second step: the permission, not the section name
+
+The jump-table check asked whether a table was inside `.rodata`, by name.  What
+the hardware enforces is whether the PAGE can be written — a section's name is
+a convention and a segment's flags are a permission — so `check-binary` reads
+the LOAD segments now and requires two things of them:
+
+* **no segment is WRITABLE and EXECUTABLE.**  The kernel image has exactly two:
+  `R E` over `.text` and `.rodata`, and `RW` over `.data` and `.bss`.  W^X
+  holds at the level the CPU checks it.
+* **every jump table lands on a page that cannot be written.**  That is the
+  claim the earlier `.rodata` test was approximating, stated against the
+  permission instead of the name.
+
+With a control, because a zero here would read like a result: fewer than two
+LOAD segments parsed means the permissions below are meaningless, and the lane
+says so rather than passing.  Sabotage-tested on both: a segment declared
+`RWE` fails with both segments named, and a `writable_at` that always says yes
+fails with each table's address.
+
+That is as far as binary verification goes here, and the distance left is worth
+naming: this checks PERMISSIONS and an INVENTORY of control transfers.  It does
+not check that the machine code implements the C — that needs the binary in a
+logic, which is a different toolchain.
+
 ### the gate's cost, measured — and the estimate was wrong by six
 
 The gate was believed to take about forty minutes, and the plan for shortening
