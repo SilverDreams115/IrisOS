@@ -15,7 +15,7 @@ result.
 | Purity gate | `make check-purity` | allowlist respected; the kernel-memory-reachable closure is 26 functions and only ever shrinks |
 | ABI gate | `make check-abi` | every `SYS_*` number the dispatcher cannot reach declares its retirement; a retired number answers `NOT_SUPPORTED` for ever and is never reused |
 | Lock-order gate | `make check-locks` | 32 ranked locks, no inversions — it holds SMP roadmap §9.1's hierarchy and follows calls three hops |
-| Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests` | `SUITE PASS 325/325` plus the `[IRIS][SELFTEST]` markers.  The total is what the machine could RUN: a test whose subject is a device it does not have is counted beside it as `(N not applicable here)` rather than as a pass or a failure, because both of those would be untrue.  What keeps the gate's own machine from skipping anything is the runner, which refuses to start unless `-device edu` is attachable and then requires that test's own markers |
+| Runtime suite | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests` | `SUITE PASS 327/327` plus the `[IRIS][SELFTEST]` markers.  The total is what the machine could RUN: a test whose subject is a device it does not have is counted beside it as `(N not applicable here)` rather than as a pass or a failure, because both of those would be untrue.  What keeps the gate's own machine from skipping anything is the runner, which refuses to start unless `-device edu` is attachable and then requires that test's own markers |
 | Persistence | `make smoke-persist` | two boots over one image, then the host reads what IRIS wrote |
 
 ### The IOMMU dimension
@@ -26,7 +26,7 @@ the one that differs from the ordinary one, and a gate that can only be run one
 way proves nothing about the other.
 
 ```bash
-IRIS_QEMU_IOMMU=1 make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests
+IRIS_QEMU_IOMMU=1 make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests
 ```
 
 Both directions are gated: with a unit attached the kernel must FIND it and
@@ -199,8 +199,8 @@ worse than no gauge.
 must pass on both 1 and 4:
 
 ```
-make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests
-IRIS_QEMU_SMP=4 make ENABLE_RUNTIME_SELFTESTS=1 smoke-full-selftests
+make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests
+IRIS_QEMU_SMP=4 make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests
 ```
 
 On more than one processor the script gates three claims that fail

@@ -1333,15 +1333,18 @@ smoke-stage10: all
 		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-stage10-smp4.log \
 		bash scripts/run_qemu_headless.sh
 
-smoke-full: all
-	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-90}" \
-		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-full.log \
-		bash scripts/run_qemu_headless.sh
-
-smoke-full-selftests: all
-	IRIS_QEMU_TIMEOUT_SECS="$${IRIS_QEMU_TIMEOUT_SECS:-600}" IRIS_QEMU_EXPECT_SELFTESTS=1 \
-		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-full-selftests.log \
-		bash scripts/run_qemu_headless.sh
+# `smoke-full` and `smoke-full-selftests` were here and are gone.  They were
+# `run_qemu_headless.sh` with a different log name and a different default
+# timeout — duplicates of `smoke-runtime` and `smoke-runtime-selftests` — and
+# No CI step, no gate lane, no mention in AGENTS.md or the README invoked
+# them.  `docs/testing.md` DID, in four places, which the first grep for users
+# missed by not looking in `docs/` — so "nothing invokes them" was overstated
+# and the doc now names `smoke-runtime-selftests`, the equivalent lane the gate
+# and CI actually run.
+#
+# What gave them away is that raising the gate's timeouts changed
+# `smoke-full-selftests` to 600 s and nobody noticed, because nothing in the
+# gate runs it.  An unused target is a lane that can rot without failing.
 
 #
 # The OTHER card.  Same image, same peer, same assertions -- only the device
