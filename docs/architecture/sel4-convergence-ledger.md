@@ -1929,13 +1929,16 @@ disagree:
 |---|---|
 | 3 | 63 % |
 | 6 | 39 % |
-| **10** | **26 %** |
-| 30 | 9.5 % |
+| 10 | 26 % |
+| **30 — where this stands** | **9.5 %** |
 | 60 | 4.9 % |
 
-So ten clean runs bound the rate at **about one in four**, which is barely a
-bound.  `b95410e` failed 2 of 3 — roughly 67 % — so the fix plainly moved
-something; distinguishing "gone" from "one in twenty" would need around sixty.
+Ten clean runs bound the rate at about one in four, which is barely a bound, so
+twenty more were run: **thirty consecutive clean runs, bounding it at 9.5 %**.
+`b95410e` failed 2 of 3 — roughly 67 % — so the fix plainly moved something,
+and the bound is now tight enough to say what it rules OUT: whatever this is,
+it is not a frequent failure.  Telling "gone" from "one in twenty" would still
+need around sixty.
 
 **Neither failure is attributed and neither is claimed fixed.**  The `proc:
 reclaim ... err -8` mode was a stopwatch and that one IS fixed, with its cause
