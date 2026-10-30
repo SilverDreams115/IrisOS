@@ -100,7 +100,7 @@ build_clean() {
 }
 
 run make                 build_clean
-for t in check test-unit spec-differential spec-rights spec-prove spec-bridge \
+for t in check-static test-unit spec-differential spec-rights spec-prove spec-bridge \
          spec-abstract spec-noninterference spec-exhaustive; do
     run "$t" make "$t"
 done

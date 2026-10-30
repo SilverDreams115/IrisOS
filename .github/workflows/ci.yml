@@ -6,7 +6,6 @@ on:
       - main
       - silver
       - staging
-      - collab
   pull_request:
 
 jobs:
@@ -26,11 +25,15 @@ jobs:
             gnu-efi \
             make
 
-      - name: Purity gate (frozen legacy-consumer allowlist)
-        run: make check-purity
-
-      - name: Lock-order gate (SMP roadmap 9.1)
-        run: make check-locks
+      # The five static checks as one step, which is what `make check-static` is
+      # for.  It used to be two of them: `check-abi`, `check-loops` and
+      # `check-binary` existed and CI never ran them, so three gates the tree
+      # treats as required were green only on a workstation.
+      #
+      # NOT `make check` — that is the ELF-header inspection, below, and it was
+      # here first.
+      - name: The static gates (purity, abi, locks, loops, binary)
+        run: make check-static
 
       - name: Host unit suites
         run: make test-unit
@@ -199,6 +202,31 @@ jobs:
       - name: The rights algebra, over every input (Stage V phase 2)
         run: make spec-rights
 
+      # The lanes CI did not run.  `spec-prove` needs z3 and `spec-abstract`
+      # needs Isabelle; both report that they checked NOTHING and return 0 when
+      # their prover is absent, because a machine without a prover has missing
+      # evidence and not a failure.  z3 is a pip install and worth having here;
+      # Isabelle is 2.7 GB and is not, so that lane will skip and say so.
+      - name: Install z3 for the proof lane
+        run: python3 -m pip install --quiet z3-solver
+
+      - name: The invariants, over every state (Stage V phase 2)
+        run: make spec-prove
+
+      - name: Proved == tested (Stage V phase 4's first link)
+        run: make spec-bridge
+
+      - name: The abstract specification, and that it matches the model
+        run: make spec-abstract
+
+      - name: What one subject can learn from another (Stage V phase 5)
+        run: make spec-noninterference
+
+      # Total below a bound, which is the strongest thing any lane here says
+      # about the kernel rather than about a model of it.
+      - name: Every trace of four operations against the real kernel
+        run: make spec-exhaustive
+
       - name: IRIS-V boots (the verified configuration)
         run: IRIS_QEMU_TIMEOUT_SECS=180 make smoke-verified
 
@@ -207,4 +235,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: iris-runtime-selftests-log
-          path: build/qemu-headless-selftests.log
+          # Per PROCESSOR COUNT since the three selftest lanes stopped sharing
+          # one file: the smp-4 run used to overwrite an smp-2 failure before
+          # anyone could read it.  `build/gate-logs/` is where `scripts/gate.sh`
+          # keeps the same evidence per lane.
+          path: |
+            build/qemu-headless-selftests-smp*.log
+            build/qemu-stage10-smp*.log
+            build/qemu-verified.log
+            build/gate-logs/
+          if-no-files-found: ignore

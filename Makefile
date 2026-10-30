@@ -1539,8 +1539,16 @@ spec-bridge:
 # of "reduce the gate" that was real.  The time was never the problem: that
 # estimate was wrong by a factor of six, and `scripts/gate.sh` prints seconds
 # now so the next one is measured.
-.PHONY: check
-check: check-purity check-abi check-locks check-loops check-binary
+#
+# It is `check-static` and NOT `check`, which is the mistake this comment
+# exists to record.  `check` was already taken — line 1238, the ELF-header
+# inspection CI runs — and an aggregate added under the same name has no
+# recipe, so make quietly MERGED the prerequisites and kept the old recipe.
+# Nothing broke, which is the problem: `make check` silently became two
+# unrelated things, and the gate summarised it with a line from
+# `readelf -l`'s flag legend.
+.PHONY: check-static
+check-static: check-purity check-abi check-locks check-loops check-binary
 
 # ── the abstract specification, as ONE lane ─────────────────────────────────
 #

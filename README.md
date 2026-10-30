@@ -11,7 +11,22 @@ and the README will say so until one exists.  What does exist is the
 *boundary* a proof would need: `make IRIS_VERIFIED=1` builds **IRIS-V** —
 uniprocessor, x86-64, the IOMMU outside the trusted computing base — which is
 the artefact a refinement proof would be about, and `make smoke-verified`
-boots it.  Everything else is **IRIS-P**, the platform kernel, which has SMP
+boots it.
+
+What also exists now, and is easy to misread, is a **proved abstract
+specification**: `spec/isabelle/IRIS_Authority.thy` states IRIS's authority
+model in Isabelle/HOL and `make spec-abstract` discharges it with no `oops` and
+no `sorry` — A7 and A8 under derive, O2 under retype, A9 under
+delete-with-reparent, A10's three claims under revoke, and a refinement result
+saying which operations the derivation tree is bookkeeping for and which it is
+semantics for.  **That is a proof about the specification, not about the
+kernel.**  What ties the two together is `make spec-exhaustive`: every trace of
+four operations over a fixed alphabet — 531441 of them, and 14348907 at depth
+five — run through the model and through the real `kcnode.c`, compared on every
+intermediate result code and every final state.  Total below a bound is not a
+refinement proof, and the gap between them is the whole of what "verified"
+would mean.  Said once here so it is not inferred from the word "proved"
+anywhere else.  Everything else is **IRIS-P**, the platform kernel, which has SMP
 and an IOMMU and is the better system in every way except that one.  Naming
 the target is not claiming it; see
 [the charter](docs/architecture/iris-sel4-purity-charter.md) §1.
@@ -636,7 +651,7 @@ somebody's delegation.
 
 Three independently-gating layers, run on every change:
 
-- **Host unit tests** — `make test-unit`: **28210 assertions** across 35 suites
+- **Host unit tests** — `make test-unit`: **28243 assertions** across 38 suites
   that exercise the kernel objects and pure logic directly (cspace, cnode,
   kendpoint, kreply, knotification, kuntyped including its two-ended carve,
   kschedctx, kframe, the MDB/CDT (structural + model-based fuzzing), rights,
@@ -644,7 +659,7 @@ Three independently-gating layers, run on every change:
   the file-grant layer, …). They cover what a successful boot cannot show:
   buffer bounds on a page about to be mapped into ring 3, a CSpace that names
   itself, and an allocator's two ends meeting exactly once.
-- **Runtime tests** — booted under QEMU headless: **325 tests** covering IPC and
+- **Runtime tests** — booted under QEMU headless: **327 tests** covering IPC and
   syscall basics, CPtr-first slots, badges & sender identity, service lifecycle /
   death-restart / relookup, endpoint cap-transfer, device/driver isolation,
   service supervision, the user pager and fault model, file-backed memory,
@@ -676,14 +691,27 @@ Three independently-gating layers, run on every change:
   part of how it does that.
 
 ```bash
+bash scripts/gate.sh                                       # all thirteen, with seconds
+```
+
+Thirteen lanes, **392 s end to end**, of which 83 % is five QEMU boots.  Each
+lane's full output and any serial log it wrote land in `build/gate-logs/`, so a
+failing lane's evidence survives the next run:
+
+```bash
 make                                                       # zero-warning build
-make check-purity                                          # seL4 purity allowlist
-make check-abi                                             # every retired number declares it
-make check-locks                                           # the lock hierarchy, no inversions
-make test-unit                                             # host unit suites (28210)
-make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (325/325)
+make check-static                                          # purity, abi, locks, loops, binary
+make test-unit                                             # host unit suites (28243)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # the ring-3 suite (327/327)
 ENABLE_RUNTIME_SELFTESTS=1 make smoke-stage10              # the dynamic C runtime slice
+make spec-differential                                     # the model vs the real kernel
+make spec-rights                                           # the rights algebra, exhaustively
+make spec-prove                                            # 60 obligations, every state (z3)
+make spec-bridge                                           # proved == tested
+make spec-abstract                                         # the Isabelle text: PROVED, and == the model
+make spec-noninterference                                  # what one subject can learn
+make spec-exhaustive                                       # every trace of length 4, not 200
+make smoke-verified                                        # IRIS-V boots
 make run                                                   # interactive QEMU
 ```
 
@@ -711,6 +739,10 @@ of every mechanism that is not yet seL4's. Where it stands:
 | 11-life / 12-pol / 13-form | closed: object lifetime measured for every type, the kernel futex and every product ceiling removed, and address-space identity given its own authority (`ASIDControl`/`ASIDPool`) |
 | 10-run — the dynamic C runtime | closed, 8 of 8: an ordinary C program, loaded from the filesystem, linked at launch against an object set its spawner resolved, printing and exiting with a status the shell reads |
 | 10 — general-purpose platform | 8 of 9 settled: PCI, ACPI, AHCI storage, a persistent filesystem, an e1000 driver with an IPv4/UDP stack, and measured performance — all in ring 3. The ninth is real hardware, which has run once and cannot be automated here |
+| **V/0–V/2 — the verification boundary, the executable spec, the provable core** | closed: `IRIS_VERIFIED=1` names the artefact; `spec/` models the authority model and checks it against the real C over random and exhaustive traces; destruction dispatches on `obj->type` with zero function pointers, every loop's bound is written, and "core" is defined and measured at **4904 lines of a 12000 ceiling** |
+| **V/3 — the abstract specification** | closed: proved in Isabelle, no `oops` and no `sorry`.  The theory had never been processed by any tool before — the copy at the previous release fails to load on its line 107 — and six defects came out of running it, including a lemma provable there and FALSE of the kernel, and a predicate used but never defined, which Isabelle read as a free variable so the statement type-checked while meaning something else |
+| **V/4 — the refinement** | partial: `abstract ⊑ executable` is checked by running both sides (`make spec-abstract`, 2435 applications), `executable ⊑ C` is total below a bound and not a proof.  Outside the bound: six operations, a fourth slot, a second address space |
+| **V/5 — beyond functional correctness** | partial: integrity with its frame condition, authority confinement between disjoint subtrees, and non-interference over the one channel a capability system always has — the result codes a subject sees.  Absent: flows through message CONTENTS (nothing models what is sent) and binary verification beyond an inventory of the kernel's 8 indirect control transfers, each accounted for and each jump table in `.rodata` |
 
 **How close is this to seL4?**  The two answers this section used to give —
 "the authority model is close, the kernel architecture is not" — have
@@ -725,7 +757,7 @@ What is left is registered and small: the **rights set** is IRIS's own and not
 translatable to seL4's one-to-one (D-3, deliberate), object lifetime is
 **reference-counted** where seL4 reads the derivation tree (D-7, whose
 permanence was withdrawn in Stage V and whose target is now checked against
-the kernel over 4084101 traces), and CNode teardown is bounded per OBJECT
+the kernel over 14348907 traces), and CNode teardown is bounded per OBJECT
 rather than per tree since Stage V sliced it (D-12 — a latency property, not
 an authority one).  CNode guards (D-2) are CLOSED: capability-local guards
 plus a root guard carried on the thread, which is seL4's `cspace_root_data`.
@@ -785,9 +817,10 @@ children's threads, and their address spaces when it maps into them — that *is
 the child table a process server would have kept, in the place seL4 puts it.
 
 With that, charter §4's last unchecked box — every canonical object born from
-Untyped — is checked, and **33 of the 36 charter invariants are MET**, with A5
-(ambient authority), O1 (object form) and P2 (mechanism, not policy) PARTIAL
-and nothing PENDING.
+Untyped — is checked, and **all 37 charter invariants are MET** — none
+PARTIAL, none PENDING.  A5 (ambient authority), O1 (object form) and P2
+(mechanism, not policy) were the last three, and the charter records what
+closed each.
 
 ## What does not exist yet
 
