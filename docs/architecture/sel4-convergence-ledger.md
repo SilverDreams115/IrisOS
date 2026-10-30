@@ -1918,6 +1918,37 @@ mode this directory exists to avoid.  Sabotage-tested: a transliteration whose
 
 It is the fifteenth lane, and `AGENTS.md` says fifteen now.
 
+### the two-processor intermittents: what 10 clean runs actually bound
+
+Ten consecutive clean runs of the selftests lane at `-smp 2`, and three of
+`smoke-stage10` since its one failure, with every run's serial log and output
+kept per run this time.  The arithmetic, because the impression and the number
+disagree:
+
+| clean runs | 95 % upper bound on the failure rate |
+|---|---|
+| 3 | 63 % |
+| 6 | 39 % |
+| **10** | **26 %** |
+| 30 | 9.5 % |
+| 60 | 4.9 % |
+
+So ten clean runs bound the rate at **about one in four**, which is barely a
+bound.  `b95410e` failed 2 of 3 — roughly 67 % — so the fix plainly moved
+something; distinguishing "gone" from "one in twenty" would need around sixty.
+
+**Neither failure is attributed and neither is claimed fixed.**  The `proc:
+reclaim ... err -8` mode was a stopwatch and that one IS fixed, with its cause
+named.  The gate's `rc=2` at smp 2 and `smoke-stage10`'s `rc=2` are different
+events whose logs were destroyed before they could be read — the first by lanes
+sharing a file, the second by the rerun that investigated it.  Both causes are
+fixed, so the next occurrence will leave something to read; until one occurs,
+what this row records is a weak bound and the honest reason it is weak.
+
+This is the lesson this project already had written down, applied to itself:
+when a fix is followed by N clean runs, check whether N is large against the
+RATE that was measured.  It was not.
+
 ### binary verification, second step: the permission, not the section name
 
 The jump-table check asked whether a table was inside `.rodata`, by name.  What
