@@ -138,12 +138,30 @@ def gen_trace(rng, nops):
                 ops.append("vframe %d" % dst)
                 if dst not in occupied:
                     occupied.append(dst)
-            elif k < 0.75:
-                ops.append("vmap %d %d" % (rng.choice(occupied),
-                                           rng.randrange(3)))
+            elif k < 0.60:
+                ops.append("vmap %d %d %d" % (rng.choice(occupied),
+                                              rng.randrange(3),
+                                              rng.randrange(2)))
+            elif k < 0.80:
+                ops.append("vunmap %d %d %d" % (rng.randrange(3),
+                                                rng.randrange(3),
+                                                rng.randrange(2)))
             else:
-                ops.append("vunmap %d %d" % (rng.randrange(3),
-                                             rng.randrange(3)))
+                # The TWO-SPACE unit: one frame mapped into both spaces, then
+                # the authority revoked.  `kvspace_finalise_orphans` loops over
+                # every space a frame is mapped into, and the defect that lived
+                # in that loop could advance its window past a space never
+                # examined — so "unmap it from every space" has to be a
+                # different statement here from "unmap it", and separately
+                # drawn ops almost never put one frame in both.
+                src = rng.choice(occupied)
+                ops.append("vmap %d %d 0" % (src, rng.randrange(3)))
+                ops.append("vmap %d %d 1" % (src, rng.randrange(3)))
+                if rng.random() < 0.6:
+                    ops.append("revoke %d" % src)
+                else:
+                    ops.append("vunmap 0 %d %d" % (rng.randrange(3),
+                                                   rng.randrange(2)))
         elif r < 0.69:
             # The DATA channel: signal bits through one capability, take them
             # through another.  Weighted towards an occupied slot in the root
@@ -270,11 +288,16 @@ def run_model(ops):
             if r is not None:
                 results.append(r)
         elif f[0] == "vmap":
-            r = m.vmap(int(f[1]), int(f[2]))
+            # The SPACE is optional and defaults to 0, exactly as the driver
+            # reads it, so every two-argument `vmap` already recorded keeps its
+            # meaning.
+            r = m.vmap(int(f[1]), int(f[2]),
+                       int(f[3]) if len(f) > 3 else 0)
             if r is not None:
                 results.append(r)
         elif f[0] == "vunmap":
-            r = m.vunmap(int(f[1]), int(f[2]))
+            r = m.vunmap(int(f[1]), int(f[2]),
+                         int(f[3]) if len(f) > 3 else 0)
             if r is not None:
                 results.append(r)
     return m, results

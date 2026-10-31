@@ -1803,9 +1803,11 @@ soak rather than one of the fourteen, because it is minutes and not seconds.
 > notification data channel and a constructive `retype 1 1 2` took it to 31
 > symbols: **923521 at depth 4 in ~73 s, 28629151 at depth 5 in 40 min 11 s**,
 > both clean, the latter with D-7's predicate agreeing on 29672596 finality
-> decisions.  Kept rather than rewritten because the ratio is the lesson — four
-> symbols cost 1.7x at depth 4 and the same four cost 2x at depth 5, so the
-> alphabet is the expensive knob and the depth is the one that buys strength.
+> decisions.  A second address space then took it to 33: **1185921 at depth 4
+> in 94 s**.  Kept rather than rewritten because the ratio is the lesson — four
+> symbols cost 1.74x at depth 4 and 2.00x at depth 5, two more cost a further
+> 1.28x and 1.37x, so the alphabet is the expensive knob and the depth is the
+> one that buys strength.
 
 The bounded claim is still bounded, and the bound moved rather than went: a
 disagreement needing SIX operations is outside it, and so is one needing a
@@ -2011,13 +2013,13 @@ now so the next estimate is measured instead of argued:
 | the five static checks together | 9 |
 | `test-unit`, `spec-differential`, `spec-rights`, `spec-prove`, `spec-bridge`, `spec-theory`, `spec-noninterference` | 2 |
 | `spec-isabelle` | 6 |
-| `spec-exhaustive` | 73 |
-| selftests at 1, 2 and 4 processors | 64, 48, 43 |
-| `smoke-stage10` (two boots) | 102 |
-| `smoke-verified` | 62 |
-| **total** | **405** |
+| `spec-exhaustive` | 94 |
+| selftests at 1, 2 and 4 processors | 64, 51, 42 |
+| `smoke-stage10` (two boots) | 101 |
+| `smoke-verified` | 63 |
+| **total** | **434** |
 
-Just under seven minutes, not forty.  The forty had two causes and both were
+Just over seven minutes, not forty.  The forty had two causes and both were
 local to the session that measured them: D-13's bug hung init in `FS_OP_STAT`,
 so NO boot reached `[USER] init idle loop start` and every lane waited out its
 deadline — the harness polls for that marker and kills QEMU two seconds after
@@ -2380,6 +2382,95 @@ both be running, and nothing in `spec/` has threads — which is precisely why
 the notification could be done and the endpoint cannot be, and the distinction
 is the scheduler and not the data.  Timing is modelled nowhere, by anything, at
 any point in this directory.
+
+### a second address space — and the drift `spec-bridge` caught (2026-10-30)
+
+`spec/` modelled ONE address space, and `kvspace_finalise_orphans` has a loop
+over all of them.  With one space that loop was never entered, so neither
+`spec-differential` nor `spec-exhaustive` could reach it.
+
+That is not hypothetical territory.  The count-cursor defect fixed earlier in
+Stage V lived in exactly that loop — "skip the first N distinct spaces",
+deduplicating only inside the current window, so a frame mapped twice into one
+space inflated the count and the window could advance past a space never
+examined.  The note written at the time says how it was found and why nothing
+caught it: *found by re-reading the loop, not by a test, because no fixture
+maps one frame into eight spaces.*
+
+So the driver has `g_vs[2]`, `vmap`/`vunmap` take an OPTIONAL third argument
+defaulting to space 0, and the model's `maps` holds `(space, VA)` pairs with a
+pseudo-slot per `(space, frame)` — space 0 keeping the ids it had, so nothing
+already recorded shifts.  `inv_D13` needed no change at all: it has taken a
+`(space, object)` pair since it was written.  The abstract side was general and
+the two concrete sides were the narrow ones.
+
+What the kernel does, measured on the four traces that could not exist before:
+
+| trace | result |
+|---|---|
+| one frame mapped into both spaces | `mapped 2 cap 1 1` |
+| ...then the authority revoked | `mapped 0 cap 0 0` — unmapped from BOTH |
+| unmap from space 1 only | `mapped 1 cap 1 0` — asymmetric, and correct |
+| the same VA in two spaces | not BUSY: two spaces are two page walks |
+
+Three sabotages, all three caught — and the middle one is the point, because it
+is the shape of the defect that actually lived here:
+
+| sabotage | caught |
+|---|---|
+| the sweep clears EVERY space, not the orphaned one | 4 of 600 random |
+| **the sweep only looks at space 0** (the window that advances past one) | **121 of 1185921 exhaustive**, 4 of 600 random |
+| a VA is BUSY in any space (collapses the two to one) | 1 of 600 random |
+
+So a class of defect that lived in this tree, and was found by reading, is now
+caught by two lanes.  Two exhaustive symbols were enough — `vmap 0 0 1` and
+`vunmap 0 0 1` — because the sequence that matters is exactly four operations:
+`vframe 0 ; vmap 0 0 ; vmap 0 0 1 ; revoke 0`.  The alphabet went 31 -> 33,
+which is 1.28x at depth 4 (923521 -> 1185921, 73 s -> 94 s).
+
+**And the first gate run after it landed FAILED, in `spec-bridge`, which is the
+whole reason that lane exists.**
+
+    bridge: trace 60 — D13: predicate says violated for frame 0,
+                       model checker says holds
+    bridge: 3 disagreement(s) over 400 states
+
+The model and `chk_mapping_authority` had been widened to two spaces; the
+BRIDGE's two adapters had not.  They ignored the space argument and read
+`MAPCAP_BASE + ob` — space 0's pseudo-slot — and called `inv_D13` with the
+space hardcoded to 0.  A frame mapped only in space 1 therefore had `maps`
+true and `hascap` false, so the proved formulation said VIOLATED while the
+tested one said holds.
+
+One formulation of an invariant updated and the other not, with every other
+lane green: that is the exact failure `spec-bridge` was built for, and it is
+worth recording that it was caught by the lane and not by re-reading the diff.
+The proved side is the one no hardware executes, which is why letting it drift
+is the worse of the two.
+
+### the two unattributed `rc=2`, bounded again (2026-10-30)
+
+Forty consecutive clean `smoke-verified` runs, 0 failures, each with its own
+preserved output.  That puts the 95 % upper bound at **7.22 %**, and it makes
+the earlier figure unlikely rather than confirming it: at the ~1-in-8 (12.5 %)
+rate once measured, forty clean runs have probability 0.875^40 = 0.5 %.
+
+**Not fixed, and specifically not diagnosed.**  It never occurred, so the
+self-diagnosing check — the one that reports the suite's own verdict beside the
+missing T354 line, and therefore distinguishes a DROPPED line from a kernel
+failure — never got to classify anything.  The likeliest reading is that the
+original 1-in-8 was an artifact of conditions that no longer hold (parallel
+lanes and QEMU disk-lock collisions, which the headless guard now refuses), but
+that is a hypothesis and it is written here as one.
+
+A caution for whoever runs the next soak: `make smoke-verified` writes the
+serial log to `build/qemu-verified.log` and OVERWRITES it every run, so a soak
+that keeps only that file keeps one run's evidence.  Capturing the lane's
+stdout is enough, because the failure paths `cat` the whole serial log into it
+— 58 places do — but grepping those captures for `SUITE PASS` finds nothing on
+a PASSING run, which looks alarming and means only that the serial text is not
+there.  The verdict to grep for is `[headless] healthy runtime signature
+observed`.
 
 ### A-4 — CSpace-native introspection replaces the CPtr→handle bridge
 

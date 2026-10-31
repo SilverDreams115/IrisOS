@@ -44,6 +44,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import invariants                                            # noqa: E402
 from authority_model import (AuthorityModel, ALL_CHECKS,      # noqa: E402
                              chk_mapping_authority, MAPCAP_BASE,
+                             NVSPACES,
                              chk_rights_monotone, chk_badge_sealed,
                              chk_derivation_same_object)
 from differential import gen_trace, run_model, NCNODES, SPC   # noqa: E402
@@ -189,16 +190,31 @@ def main():
         #     and the states are the ones real traces built — which now include
         #     mappings, because the generator's mapping ops are reachable.
         #
+        #     PER SPACE, and this lane is what forced that.  `inv_D13` has
+        #     taken a (space, object) pair since it was written, but these two
+        #     adapters ignored the space and read `MAPCAP_BASE + ob` — space
+        #     0's pseudo-slot — while the model and `chk_mapping_authority`
+        #     were widened to two spaces.  A frame mapped only in space 1 then
+        #     had `maps` true and `hascap` false, so the predicate said
+        #     VIOLATED while the checker said holds: 3 disagreements over 400
+        #     states, on the first gate run after the second space landed.
+        #     That is exactly the drift `spec-bridge` exists to catch, found in
+        #     the direction that matters — one formulation updated and the
+        #     other not — and it was caught by the lane and not by reading.
+        #
         CON = invariants.CON()
         def _maps(sp, ob):
-            return ob in m.maps and bool(m.maps[ob])
+            return ob in m.maps and any(k == sp for k, _ in m.maps[ob])
         def _hascap(sp, ob):
-            mc = MAPCAP_BASE + ob
+            mc = m._mapcap(ob, sp)
             return mc in m.slots and not m.slots[mc].empty
         pred_bad = None
         for fi in range(len(m.frames)):
-            if not invariants.inv_D13(CON, _maps, _hascap, 0, fi):
-                pred_bad = fi
+            for sp in range(NVSPACES):
+                if not invariants.inv_D13(CON, _maps, _hascap, sp, fi):
+                    pred_bad = "%d in space %d" % (fi, sp)
+                    break
+            if pred_bad is not None:
                 break
         checker_bad = chk_mapping_authority(m)
         if (pred_bad is None) != (checker_bad is None):

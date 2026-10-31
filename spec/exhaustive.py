@@ -120,6 +120,27 @@ ALPHABET = [
     #
     "vframe 0", "vmap 0 0", "vmap 1 0", "vunmap 0 0",
     #
+    # And a SECOND address space, two symbols, because the sequence that
+    # matters is exactly four operations and so lands at this depth:
+    #
+    #   `vframe 0`, `vmap 0 0`, `vmap 0 0 1`, `revoke 0`
+    #       one frame mapped into both spaces and then the authority revoked.
+    #       `kvspace_finalise_orphans` loops over every space a frame is mapped
+    #       into, and with one space that loop was never entered — the
+    #       count-cursor defect that lived in it (a window that could advance
+    #       past a space never examined) was found by RE-READING the C, and the
+    #       note written at the time says why: no fixture mapped one frame into
+    #       more than one space.  This alphabet now does, 923521 ways over.
+    #
+    #   `vunmap 0 0 1` is the asymmetric half: space 1 loses its mapping and
+    #       its capability while space 0 keeps both, so "swept the orphan" and
+    #       "swept everything" stop being the same dump.
+    #
+    # The space is a third, OPTIONAL argument, so the four symbols above and
+    # every trace already recorded keep their meaning.
+    #
+    "vmap 0 0 1", "vunmap 0 0 1",
+    #
     # The DATA channel, against the real `knotification.c`.  Three symbols,
     # picked the same way D-13's four were — the fewest that make a named case
     # reachable at depth 4, given what the rest of the alphabet already

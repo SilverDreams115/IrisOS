@@ -21,15 +21,15 @@ delete-with-reparent, A10's three claims under revoke, and a refinement result
 saying which operations the derivation tree is bookkeeping for and which it is
 semantics for.  **That is a proof about the specification, not about the
 kernel.**  What ties the two together is `make spec-exhaustive`: every trace of
-four operations over a fixed alphabet — 923521 of them — run through the model
-and through the real `kcnode.c`, compared on every intermediate result code and
-every final state.  Depth five over the same alphabet is 28629151 traces and
-**has been run clean** — 40 min 11 s, with D-7's predicate agreeing with the
-reference count on all 29672596 finality decisions.  Depth five is where two of
-the data channel's properties exist at all: a model sabotaged so that polling
-does not CONSUME the bits passes every one of the 923521 traces at depth four,
-because observing it needs five operations and building a notification that may
-be polled costs two of them.  Total below a bound is not a
+four operations over a fixed alphabet of 33 symbols — 1185921 of them, 94 s —
+run through the model and through the real `kcnode.c`, compared on every
+intermediate result code and every final state.  Depth five was measured clean
+at the 31-symbol alphabet: 28629151 traces in 40 min 11 s, with D-7's predicate
+agreeing with the reference count on all 29672596 finality decisions.  Depth
+five is where two of the data channel's properties exist at all — a model
+sabotaged so that polling does not CONSUME the bits passes every one of the
+depth-four traces, because observing it needs five operations and building a
+notification that may be polled costs two of them.  Total below a bound is not a
 refinement proof, and the gap between them is the whole of what "verified"
 would mean.  Said once here so it is not inferred from the word "proved"
 anywhere else.  Everything else is **IRIS-P**, the platform kernel, which has SMP

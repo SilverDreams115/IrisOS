@@ -81,32 +81,55 @@
 #define VS_POOL_BYTES  (256u * 1024u)
 #define VA_OF(i)  (USER_PRIVATE_BASE + ((uint64_t)(i) << 12))
 
-static struct KVSpace *g_vs;
+/*
+ * TWO address spaces, because `kvspace_finalise_orphans` has a loop over all
+ * of them and one space never enters it.
+ *
+ * That loop is not hypothetical territory: the count-cursor defect fixed
+ * earlier in Stage V lived exactly there — "skip the first N distinct spaces",
+ * deduplicating only inside the current window, so a frame mapped twice into
+ * one space inflated the count and the window could advance past a space never
+ * examined.  It was found by RE-READING the loop, and the note written at the
+ * time says why no test found it: *no fixture maps one frame into eight
+ * spaces*.  With a single `g_vs` neither `spec-differential` nor
+ * `spec-exhaustive` could have caught it, which makes the second space the
+ * one increment that turns that class of bug from unreachable into covered.
+ *
+ * Two and not eight: what the sweep needs is MORE THAN ONE, so that "unmap it
+ * from every space that maps it" is a different statement from "unmap it".
+ */
+#define NVSPACES  2u
+static struct KVSpace *g_vs[NVSPACES];
 static struct KFrame   *g_fr[NVFRAMES];
 static unsigned         g_nfr;
 static uint64_t         g_fr_pa = 0x62000000ULL;
 
 /* Lazily, so a trace that never maps pays nothing — the same reason the
  * kernel carves `map_caps` on first map. */
-static struct KVSpace *vs_ensure(void) {
-    if (g_vs) return g_vs;
+static struct KVSpace *vs_ensure(unsigned k) {
+    if (k >= NVSPACES) return 0;
+    if (g_vs[k]) return g_vs[k];
     void *mem = kpage_alloc(VS_POOL_BYTES);
     struct KUntyped *pool;
     if (!mem) return 0;
-    g_vs = kvspace_alloc(0x5EC0000ULL);
-    if (!g_vs) return 0;
+    /* Distinct roots, so the two spaces are two spaces and not one object
+     * reached twice — `kvspace_maps_frame` answers per space. */
+    g_vs[k] = kvspace_alloc(0x5EC0000ULL + ((uint64_t)k << 24));
+    if (!g_vs[k]) return 0;
     pool = kuntyped_create((uint64_t)(uintptr_t)mem, VS_POOL_BYTES, 0);
     if (!pool) return 0;
-    kvspace_set_pt_pool(g_vs, pool);
-    return g_vs;
+    kvspace_set_pt_pool(g_vs[k], pool);
+    return g_vs[k];
 }
 
 static void vs_teardown(void) {
-    if (!g_vs) return;
-    kvspace_invalidate(g_vs);
+    for (unsigned k = 0; k < NVSPACES; k++) {
+        if (!g_vs[k]) continue;
+        kvspace_invalidate(g_vs[k]);
+        g_vs[k] = 0;   /* the pool's pages are the harness's to leak per trace */
+    }
     for (unsigned i = 0; i < g_nfr; i++) g_fr[i] = 0;
     g_nfr = 0;
-    g_vs = 0;          /* the pool's pages are the harness's to leak per trace */
 }
 
 /*
@@ -381,9 +404,13 @@ static void dump(void) {
         unsigned m = g_fr[i] ? (unsigned)atomic_load_explicit(
                                    &g_fr[i]->mapped_count, memory_order_relaxed)
                              : 0u;
-        int hc = (g_fr[i] && g_vs) ? kvspace_map_cap_has(g_vs, &g_fr[i]->base)
-                                   : 0;
-        printf("frame %u mapped %u cap %d\n", i, m, hc);
+        /* Per space, because "which spaces still hold authority for this
+         * frame" is exactly what the finalise sweep decides, and one number
+         * summed over both would hide a sweep that cleared one and not the
+         * other. */
+        int h0 = (g_fr[i] && g_vs[0]) ? kvspace_map_cap_has(g_vs[0], &g_fr[i]->base) : 0;
+        int h1 = (g_fr[i] && g_vs[1]) ? kvspace_map_cap_has(g_vs[1], &g_fr[i]->base) : 0;
+        printf("frame %u mapped %u cap %d %d\n", i, m, h0, h1);
     }
     /*
      * D-7's shadow: every slot delete compared the predicate against the
@@ -411,6 +438,7 @@ int main(void) {
     while (fgets(line, sizeof line, stdin)) {
         char op[16];
         unsigned a, b, c, d;
+        int sc;            /* how many arguments an op actually got */
         if (sscanf(line, "%15s", op) != 1) continue;
 
         /*
@@ -586,7 +614,7 @@ int main(void) {
              * CNode — the source a map derives the space's capability FROM. */
             struct KFrame *f;
             if (a >= SPC || g_nfr >= NVFRAMES) continue;
-            if (!vs_ensure()) return 2;
+            if (!vs_ensure(0)) return 2;
             f = kframe_alloc(g_fr_pa, 4096, 0);
             if (!f) return 2;
             g_fr_pa += 0x1000ULL;
@@ -595,27 +623,38 @@ int main(void) {
                                                RIGHT_READ | RIGHT_WRITE |
                                                RIGHT_DUPLICATE));
         } else if (!strcmp(op, "vmap") &&
-                   sscanf(line, "%*s %u %u", &a, &b) == 2) {
+                   (sc = sscanf(line, "%*s %u %u %u", &a, &b, &c)) >= 2) {
             /* Through the SLOT, which is what makes the space's capability a
              * sibling of it and what a revoke of an ancestor then reaches. */
+            /*
+             * The SPACE is a third, OPTIONAL argument defaulting to 0, so
+             * every two-argument `vmap` in the alphabet and in every trace
+             * already recorded still means exactly what it meant.  That
+             * matters more than tidiness here: the depth-5 result is
+             * 28629151 traces and forty minutes, and silently redefining its
+             * symbols would turn its verdict into a statement about a system
+             * that no longer exists.
+             */
             const struct KCSlot *sl;
+            unsigned k = (sc >= 3) ? (c % NVSPACES) : 0u;
             if (a >= NSLOTS) continue;
-            if (!vs_ensure()) return 2;
+            if (!vs_ensure(k)) return 2;
             sl = &cn_of(a)->slots[idx_of(a)];
             if (!sl->object || sl->object->type != KOBJ_FRAME) {
                 printf("r %d\n", (int)IRIS_ERR_WRONG_TYPE);
             } else {
                 printf("r %d\n", (int)kframe_map_page_from(
-                           (struct KFrame *)sl->object, g_vs, VA_OF(b), 0u,
+                           (struct KFrame *)sl->object, g_vs[k], VA_OF(b), 0u,
                            cn_of(a), idx_of(a)));
             }
         } else if (!strcmp(op, "vunmap") &&
-                   sscanf(line, "%*s %u %u", &a, &b) == 2) {
+                   (sc = sscanf(line, "%*s %u %u %u", &a, &b, &c)) >= 2) {
+            unsigned k = (sc >= 3) ? (c % NVSPACES) : 0u;
             if (a >= NVFRAMES) continue;
-            if (!g_vs || a >= g_nfr || !g_fr[a]) {
+            if (!g_vs[k] || a >= g_nfr || !g_fr[a]) {
                 printf("r %d\n", (int)IRIS_ERR_NOT_FOUND);
             } else {
-                printf("r %d\n", (int)kframe_unmap_page(g_fr[a], g_vs,
+                printf("r %d\n", (int)kframe_unmap_page(g_fr[a], g_vs[k],
                                                          VA_OF(b)));
             }
         } else if (!strcmp(op, "nsig") &&

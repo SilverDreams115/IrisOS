@@ -68,6 +68,7 @@ T_FRAME = "frame"
 # walks the four CNodes and never sees it.
 #
 MAPCAP_BASE = 10000
+NVSPACES = 2                     # as `spec_driver.c` declares
 NVFRAMES = 3
 
 OK = 0
@@ -136,7 +137,18 @@ class AuthorityModel:
         self.last_revoked = 0
         # D-13: the one address space, its frames and what it maps.
         self.frames: list = []            # frame index -> oid
-        self.maps: dict = {}              # frame index -> set of VA indices
+        # frame index -> set of (space, VA index) pairs.
+        #
+        # The space is in the KEY because `kvspace_finalise_orphans` loops over
+        # every space a frame is mapped into, and with one space that loop is
+        # never entered.  `inv_D13` was written over (space, object) pairs from
+        # the start; it was the model and the driver that collapsed to one, so
+        # this widens them to the predicate rather than the other way round.
+        self.maps: dict = {}
+        # The space's capability is PER SPACE, which is what
+        # `kvspace_map_cap_has(vs, obj)` asks.  Space 0 keeps the pseudo-slot
+        # ids it had (`MAPCAP_BASE + fi`) so nothing already recorded shifts.
+        self.nvspaces = NVSPACES
 
     # ── helpers ────────────────────────────────────────────────────────────
     def _new_obj(self, type_: str, seeded: bool = False) -> int:
@@ -200,13 +212,28 @@ class AuthorityModel:
         """
         Unmap wherever the space no longer holds a capability for what it
         mapped — `kvspace_finalise_orphans`, which is the mechanism D-13 asked
-        for.  One space here, so "wherever" is one question per frame.
+        for.
+
+        "Wherever" is one question per (frame, SPACE), and that is the whole
+        reason the second space exists here.  With one space the sweep's loop
+        over spaces was never entered, and the count-cursor defect that lived
+        in exactly that loop — a window that could advance past a space never
+        examined — was found by re-reading the C, because no fixture mapped one
+        frame into more than one space.  A sweep that clears one space and
+        leaves the other now shows up as a different dump.
         """
         for fi in list(self.maps):
-            mc = MAPCAP_BASE + fi
-            held = mc in self.slots and not self.slots[mc].empty
-            if not held:
-                self.maps[fi] = set()
+            for k in range(NVSPACES):
+                mc = self._mapcap(fi, k)
+                held = mc in self.slots and not self.slots[mc].empty
+                if not held:
+                    self.maps[fi] = {(sp, va) for sp, va in self.maps[fi]
+                                     if sp != k}
+
+    def _mapcap(self, fi: int, space: int) -> int:
+        """The pseudo-slot standing for space `space`'s capability on frame
+        `fi`.  Space 0 is `MAPCAP_BASE + fi`, unchanged."""
+        return MAPCAP_BASE + space * NVFRAMES + fi
 
     def _frame_index(self, oid: int):
         for i, o in enumerate(self.frames):
@@ -754,7 +781,7 @@ class AuthorityModel:
             self.maps[len(self.frames) - 1] = set()
         return r
 
-    def vmap(self, sid: int, va: int):
+    def vmap(self, sid: int, va: int, space: int = 0):
         """
         Map through the SLOT, which is what makes the space's capability a
         SIBLING of it (`kcnode_slot_install_sibling`).  A child is what
@@ -772,14 +799,19 @@ class AuthorityModel:
             return ERR_WRONG_TYPE
         # The address, not the frame: a VA already carrying a PTE is BUSY
         # whichever frame put it there, because the kernel checks the walk.
-        if any(va in m for m in self.maps.values()):
+        # Per SPACE, because a walk is a walk of one space's tables — the same
+        # VA in two spaces is two PTEs and neither is busy on the other's
+        # account.
+        space %= NVSPACES
+        if any((space, va) in m for m in self.maps.values()):
             return ERR_BUSY
-        mc = MAPCAP_BASE + fi
+        mc = self._mapcap(fi, space)
         if mc not in self.slots:
             self.slots[mc] = Slot()
         if self.slots[mc].empty:
-            # ONE capability covers however many times the space maps the
-            # frame, so a second map installs nothing new.
+            # ONE capability per SPACE covers however many times THAT space
+            # maps the frame, so a second map into the same space installs
+            # nothing new — and a map into the OTHER space installs its own.
             self.slots[mc].obj = s.obj
             # The SOURCE's rights and badge, unchanged — what
             # `kcnode_slot_install_sibling` copies.  They were hardcoded to
@@ -798,16 +830,17 @@ class AuthorityModel:
             par = s.parent if s.parent is not None else sid
             self.slots[mc].parent = par
             self.slots[par].children.append(mc)
-        self.maps[fi].add(va)
+        self.maps[fi].add((space, va))
         return OK
 
-    def vunmap(self, fi: int, va: int):
+    def vunmap(self, fi: int, va: int, space: int = 0):
         """The driver's `vunmap`: by frame index, since it holds the pointer."""
         if fi >= NVFRAMES:
             return None
+        space %= NVSPACES
         if fi >= len(self.frames) or fi not in self.maps:
             return ERR_NOT_FOUND
-        if va not in self.maps[fi]:
+        if (space, va) not in self.maps[fi]:
             #
             # Two different answers, and the kernel distinguishes them:
             # `kframe_unmap_page` searches the space's list by VA, and a VA
@@ -816,13 +849,15 @@ class AuthorityModel:
             # at all is NOT_FOUND.  The model answered NOT_FOUND for both and
             # `vunmap 1 1` disagreed.
             #
-            if any(va in self.maps[o] for o in self.maps if o != fi):
+            if any((space, va) in self.maps[o] for o in self.maps if o != fi):
                 return ERR_INVALID_ARG
             return ERR_NOT_FOUND
-        self.maps[fi].discard(va)
-        # The space's capability goes with its LAST mapping of this frame.
-        if not self.maps[fi]:
-            mc = MAPCAP_BASE + fi
+        self.maps[fi].discard((space, va))
+        # The space's capability goes with THAT space's last mapping of this
+        # frame.  Summed over both spaces it would survive its own space's
+        # last unmap, which is the authority-without-mapping direction.
+        if not any(sp == space for sp, _ in self.maps[fi]):
+            mc = self._mapcap(fi, space)
             if mc in self.slots and not self.slots[mc].empty:
                 self._clear(mc)
         return OK
@@ -901,10 +936,14 @@ class AuthorityModel:
         # disagreement says which side is wrong instead of only that one is.
         #
         for fi in range(len(self.frames)):
-            held = ((MAPCAP_BASE + fi) in self.slots
-                    and not self.slots[MAPCAP_BASE + fi].empty)
-            out.append("frame %d mapped %d cap %d"
-                       % (fi, len(self.maps.get(fi, ())), 1 if held else 0))
+            held = []
+            for k in range(NVSPACES):
+                mc = self._mapcap(fi, k)
+                held.append(1 if (mc in self.slots
+                                  and not self.slots[mc].empty) else 0)
+            out.append("frame %d mapped %d cap %s"
+                       % (fi, len(self.maps.get(fi, ())),
+                          " ".join(str(h) for h in held)))
         # D-7's shadow comparison, made at every slot delete in the kernel:
         # the MDB predicate and the reference count decided the same thing.
         # The model asserts zero disagreements, which is what retiring the
@@ -1047,16 +1086,28 @@ def chk_mapping_authority(m):
         if fi >= len(m.frames):
             return "frame %d has mappings but no object" % fi
         oid = m.frames[fi]
-        held = [sid for sid, sl in m.slots.items()
-                if sid >= MAPCAP_BASE and not sl.empty and sl.obj == oid]
-        if not held:
-            return ("frame %d is mapped at %d address(es) and the space holds "
-                    "no capability naming it" % (fi, len(vas)))
-        for sid in held:
-            sl = m.slots[sid]
-            if sl.parent is not None and sid not in m.slots[sl.parent].children:
-                return ("the space's capability for frame %d is detached from "
-                        "the derivation tree" % fi)
+        #
+        # PER SPACE, and that is not a refinement of the wording — it is what
+        # makes the check able to fail.  Searching every pseudo-slot for one
+        # naming the object passes whenever ANY space still holds a capability,
+        # so a sweep that cleared space 0's capability and left its mapping
+        # standing would be excused by space 1's.  That is precisely the defect
+        # shape the second space was added to reach.
+        #
+        for space in sorted({sp for sp, _ in vas}):
+            n_here = sum(1 for sp, _ in vas if sp == space)
+            held = [sid for sid, sl in m.slots.items()
+                    if sid >= MAPCAP_BASE and not sl.empty and sl.obj == oid
+                    and (sid - MAPCAP_BASE) // NVFRAMES == space]
+            if not held:
+                return ("frame %d is mapped at %d address(es) in space %d and "
+                        "that space holds no capability naming it"
+                        % (fi, n_here, space))
+            for sid in held:
+                sl = m.slots[sid]
+                if sl.parent is not None and sid not in m.slots[sl.parent].children:
+                    return ("space %d's capability for frame %d is detached "
+                            "from the derivation tree" % (space, fi))
     return None
 
 ALL_CHECKS = (
