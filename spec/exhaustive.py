@@ -58,6 +58,7 @@ so the rule was only ever caught INDIRECTLY, through the badge ordering.
 
 import itertools
 import multiprocessing
+import time
 import os
 import subprocess
 import sys
@@ -213,6 +214,10 @@ CHUNK = 400          # traces per driver process
 # Summed across WORKERS.  `SHADOW` is per-process and private; this is the
 # only total the verdict may read.
 SHADOW_TOTAL = {"checks": 0, "mismatch": 0}
+# How often a long run says where it is.  Two million traces is ~20 s at
+# depth 4 and ~2 min of a depth-6 run, so a four-hour run speaks ~120 times
+# and a one-minute run says nothing at all.
+PROGRESS_EVERY = int(os.environ.get("SPEC_PROGRESS", "2000000"))
 
 # D-7 shadow-comparison coverage, accumulated across driver processes.
 SHADOW = {"checks": 0, "mismatch": 0}
@@ -324,10 +329,21 @@ def main():
     print("exhaustive: %d traces — every sequence of %d operations over an "
           "alphabet of %d, on %d worker(s)"
           % (total, depth, len(ALPHABET), jobs))
+    #
+    # FLUSHED before any fork.  `multiprocessing` forks, a fork copies the
+    # parent's stdout buffer, and a child that flushes at exit writes a second
+    # copy of whatever was sitting in it — so an unflushed header can come out
+    # once per worker.  It did not happen in the depth-4 and depth-5 runs,
+    # which means the buffer happened to be empty, not that the hazard was
+    # absent.
+    #
+    sys.stdout.flush()
 
     bad = 0
     checked = 0
     shown = 0
+    t_start = time.time()
+    next_report = PROGRESS_EVERY
     #
     # Each chunk is INDEPENDENT: a fresh model per trace, and the driver's
     # `reset` empties the CSpace in its own process, so nothing crosses a
@@ -356,6 +372,35 @@ def main():
             if shown < 5:
                 print(msg)
                 shown += 1
+        #
+        # PROGRESS, to stderr, flushed.  A depth-6 run is four hours and this
+        # lane used to print its header and then nothing: a run killed at hour
+        # three taught nothing, not even how far it got, which is the evidence
+        # failure this tree keeps catching in other people's code and had in
+        # its own.  stderr because stdout is the verdict and the gate reads a
+        # summary line out of it.
+        #
+        if checked >= next_report:
+            el = time.time() - t_start
+            rate = checked / el if el > 0 else 0.0
+            left = (total - checked) / rate if rate > 0 else 0.0
+            def _dur(sec):
+                """Seconds under a minute and a half, minutes under two hours,
+                hours above.  A progress line that says "~0 min left" with ten
+                seconds to go is the kind of output this tree would flag in
+                somebody else's code."""
+                if sec < 90.0:
+                    return "%.0f s" % sec
+                if sec < 7200.0:
+                    return "%.0f min" % (sec / 60.0)
+                return "%.1f h" % (sec / 3600.0)
+            sys.stderr.write(
+                "exhaustive: %d/%d traces (%.1f%%), %.0f/s, %s elapsed, "
+                "~%s left, %d disagreement(s) so far\n"
+                % (checked, total, 100.0 * checked / total, rate,
+                   _dur(el), _dur(left), bad))
+            sys.stderr.flush()
+            next_report = checked + PROGRESS_EVERY
 
     if bad:
         print("\nexhaustive: %d disagreement(s) over %d traces" % (bad, checked))
