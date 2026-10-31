@@ -1810,6 +1810,14 @@ soak rather than one of the fourteen, because it is minutes and not seconds.
 > rewritten because the ratio is the lesson: the alphabet is the expensive knob
 > (each symbol costs its count to the depth) and the depth is the one that buys
 > strength.
+>
+> **And the rate is not constant across depths**, which cost an estimate.
+> Depth 6 was written up as "about 4.4 h" by extrapolating depth 5's 97084
+> traces/s; the live run reports 75400/s and 5.7 h, because a trace of six
+> operations costs more than one of five — 0.78 of the depth-5 rate against the
+> 0.83 that per-operation cost alone predicts.  Extrapolate the RATE and not
+> the count, and note that the progress reporting added the same day is what
+> surfaced it within a minute of the run starting.
 
 The bounded claim is still bounded, and the bound moved rather than went: a
 disagreement needing SIX operations is outside it, and so is one needing a
