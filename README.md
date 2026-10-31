@@ -21,9 +21,12 @@ delete-with-reparent, A10's three claims under revoke, and a refinement result
 saying which operations the derivation tree is bookkeeping for and which it is
 semantics for.  **That is a proof about the specification, not about the
 kernel.**  What ties the two together is `make spec-exhaustive`: every trace of
-four operations over a fixed alphabet — 531441 of them, and 14348907 at depth
-five — run through the model and through the real `kcnode.c`, compared on every
-intermediate result code and every final state.  Total below a bound is not a
+four operations over a fixed alphabet — 923521 of them — run through the model
+and through the real `kcnode.c`, compared on every intermediate result code and
+every final state.  Depth five over the same alphabet is 28629151 traces and
+has not been run at this size; the clean depth-five result on record was
+measured at the 27-symbol alphabet, before the notification data channel and a
+constructive retype joined it.  Total below a bound is not a
 refinement proof, and the gap between them is the whole of what "verified"
 would mean.  Said once here so it is not inferred from the word "proved"
 anywhere else.  Everything else is **IRIS-P**, the platform kernel, which has SMP
@@ -706,10 +709,10 @@ ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # the ring-3 suite (3
 ENABLE_RUNTIME_SELFTESTS=1 make smoke-stage10              # the dynamic C runtime slice
 make spec-differential                                     # the model vs the real kernel
 make spec-rights                                           # the rights algebra, exhaustively
-make spec-prove                                            # 60 obligations, every state (z3)
+make spec-prove                                            # 69 obligations, every state (z3)
 make spec-bridge                                           # proved == tested
 make spec-abstract                                         # the Isabelle text: PROVED, and == the model
-make spec-noninterference                                  # what one subject can learn
+make spec-noninterference                                  # what one subject can learn, codes and bits
 make spec-exhaustive                                       # every trace of length 4, not 200
 make smoke-verified                                        # IRIS-V boots
 make run                                                   # interactive QEMU

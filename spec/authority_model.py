@@ -77,6 +77,7 @@ ERR_ACCESS_DENIED = -5
 ERR_ALREADY_EXISTS = -7
 ERR_BUSY = -8
 ERR_WRONG_TYPE = -9
+ERR_WOULD_BLOCK = -13
 
 
 @dataclass
@@ -84,6 +85,14 @@ class Obj:
     """A kernel object. `oid` stands in for the pointer the C uses."""
     oid: int
     type: str
+    # The PENDING SIGNAL BITS, for a notification; unused by every other type.
+    #
+    # The only mutable DATA in this model.  Everything else here is authority
+    # — who may do what — and authority is what the slots say.  These sixty-
+    # four bits are the one thing a subject can put into the kernel and
+    # another subject can take out, which is why they are modelled at all:
+    # without them "no information flows" is a claim about return codes only.
+    bits: int = 0
     # The DERIVATION TREE decides when this dies, not a reference count.
     # That is the D-7 question stated as a model: an object exists exactly
     # while some slot names it, and "some slot names it" is a fact about the
@@ -491,6 +500,66 @@ class AuthorityModel:
     # and a frame is 15.
     TYPE_WIRE = {T_NOTIFICATION: 2, T_ENDPOINT: 8, T_CNODE: 9,
                  T_SC: 10, T_UNTYPED: 11, T_REPLY: 12, T_FRAME: 15}
+
+    # ── the data channel ───────────────────────────────────────────────────
+    #
+    # `SYS_NOTIFY_SIGNAL` and `SYS_NOTIFY_POLL`, which are the only pair in
+    # this model that moves BITS instead of authority.  They are here so that
+    # an information-flow statement has something to be about: a subject
+    # confined to its own subtree still shares a notification with whoever
+    # derived the capability to it, and what crosses is a word the sender
+    # chose.
+    #
+    # The two rights are NOT the same one.  Signalling needs WRITE, polling
+    # needs WAIT (`sys_notify_signal`/`sys_notify_poll`), so a derived
+    # capability can carry the power to send and not the power to receive, or
+    # the reverse — which is the asymmetry that makes the channel directional
+    # and is the reason seL4 splits them.  A model that required one right for
+    # both would describe a channel nobody can build.
+    #
+    # The refusal ORDER is the resolver's and was measured, not assumed:
+    # CPtr 0 is malformed (INVALID_ARG) before anything is looked up, an empty
+    # slot is NOT_FOUND, then TYPE before RIGHTS — `DUAL_RESOLVE_IPC` checks
+    # the tag and only then the mask, so a WRITE-less endpoint capability
+    # answers WRONG_TYPE and not ACCESS_DENIED.
+
+    def _resolve_notification(self, sid: int, required: int):
+        """The resolver, as a refusal code or a slot.  `None` is "not printed"."""
+        if sid >= self.spc:
+            return None, None          # the driver's `continue`: root CNode only
+        s = self.slots.get(sid)
+        if s is None or sid == 0:
+            return ERR_INVALID_ARG, None
+        if s.empty:
+            return ERR_NOT_FOUND, None
+        if self.objs[s.obj].type != T_NOTIFICATION:
+            return ERR_WRONG_TYPE, None
+        if not s.rights & required:
+            return ERR_ACCESS_DENIED, None
+        return None, s
+
+    # The patterns the driver can send, by index.  A zero pattern is in the
+    # table on purpose: signalling nothing SUCCEEDS and leaves the word alone,
+    # so a following poll still answers WOULD_BLOCK — the one case where the
+    # send is permitted and no information moves at all.
+    SIG_PATTERNS = (1, 3, 0x8000000000000000, 0)
+
+    def nsig(self, sid: int, pat_idx: int):
+        err, s = self._resolve_notification(sid, R_WRITE)
+        if s is None:
+            return err
+        self.objs[s.obj].bits |= self.SIG_PATTERNS[pat_idx % 4]
+        return OK
+
+    def npoll(self, sid: int):
+        err, s = self._resolve_notification(sid, R_WAIT)
+        if s is None:
+            return err
+        o = self.objs[s.obj]
+        got, o.bits = o.bits, 0        # an exchange, not a read: polling CONSUMES
+        if got == 0:
+            return ERR_WOULD_BLOCK
+        return got
 
     def identify(self, sid: int) -> int:
         """

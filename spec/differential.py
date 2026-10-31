@@ -70,7 +70,14 @@ def gen_trace(rng, nops):
     # A generator with dead branches is the same defect as a check that cannot
     # fail: the output is indistinguishable from coverage.
     #
-    ops, occupied, uts = [], [], []
+    # And the slots a NOTIFICATION was last put into.  The data-channel ops
+    # need it: drawing their target uniformly from `occupied` found the
+    # refusal branches easily and almost never polled one live notification
+    # twice, which is the one property the channel exists to have — bits are
+    # delivered EXACTLY once.  A deliberately non-consuming model survived 400
+    # traces before this list existed.  It is a hint and not a claim: a later
+    # delete or rotate can empty the slot, and the trace is still valid.
+    ops, occupied, uts, notifs = [], [], [], []
     for _ in range(nops):
         r = rng.random()
         # `ut` and `retype` only reach CNode 0 (ids 0..15): the syscall takes
@@ -85,14 +92,23 @@ def gen_trace(rng, nops):
         elif r < 0.25 and uts:
             u = rng.choice(uts)
             d = rng.randrange(SPC)
-            ops.append("retype %d %d %d" % (u, rng.randrange(4), d))
+            ty = rng.randrange(4)
+            ops.append("retype %d %d %d" % (u, ty, d))
             if d not in occupied:
                 occupied.append(d)
+            if ty % 4 == 1 and d not in notifs:
+                notifs.append(d)
         elif r < 0.35 or not occupied:
             s = rng.randrange(NSLOTS)
-            ops.append("seed %d %d" % (s, rng.randrange(4)))
+            ty = rng.randrange(4)
+            ops.append("seed %d %d" % (s, ty))
             if s not in occupied:
                 occupied.append(s)
+            # A SEEDED notification carries no WAIT, so it can be signalled and
+            # never polled.  Worth aiming at anyway: "signal succeeds, poll is
+            # ACCESS_DENIED on the same slot" is the directional case.
+            if ty % 4 == 1 and s < SPC and s not in notifs:
+                notifs.append(s)
         elif r < 0.48:
             src = rng.choice(occupied)
             dst = rng.randrange(NSLOTS)
@@ -128,7 +144,42 @@ def gen_trace(rng, nops):
             else:
                 ops.append("vunmap %d %d" % (rng.randrange(3),
                                              rng.randrange(3)))
-        elif r < 0.70:
+        elif r < 0.69:
+            # The DATA channel: signal bits through one capability, take them
+            # through another.  Weighted towards an occupied slot in the root
+            # CNode, because the interesting trace is the one where the slot
+            # really holds a notification and the bits survive a derivation —
+            # a generator drawing uniformly from 16 slots would spend its time
+            # confirming NOT_FOUND.
+            if notifs and rng.random() < 0.85:
+                sid = rng.choice(notifs)
+            elif rng.random() < 0.5:
+                sid = rng.choice(occupied) % SPC
+            else:
+                sid = rng.randrange(SPC)
+            k = rng.random()
+            if k < 0.34:
+                ops.append("nsig %d %d" % (sid, rng.randrange(4)))
+            elif k < 0.68:
+                ops.append("npoll %d" % sid)
+            elif k < 0.84:
+                # The ACCUMULATION case, also a unit: two different patterns
+                # with no take between them.  Signalling OR-s into the word,
+                # and a model that ASSIGNED instead survived 400 traces until
+                # this branch existed — the two agree on every trace that
+                # never signals twice in a row.  Patterns 2 and 0 are chosen
+                # because 0x8000000000000000 | 1 differs from either alone.
+                ops.append("nsig %d 2" % sid)
+                ops.append("nsig %d 0" % sid)
+                ops.append("npoll %d" % sid)
+            else:
+                # The exactly-once case, emitted as a UNIT so it survives the
+                # draw: signal, take, and take again.  The second take is the
+                # whole point — it must come back empty.
+                ops.append("nsig %d %d" % (sid, rng.randrange(3)))
+                ops.append("npoll %d" % sid)
+                ops.append("npoll %d" % sid)
+        elif r < 0.74:
             # the read-only queries: what a slot holds, and whether two
             # capabilities name one object
             if rng.random() < 0.5:
@@ -136,12 +187,12 @@ def gen_trace(rng, nops):
             else:
                 ops.append("same %d %d" % (rng.randrange(SPC),
                                            rng.randrange(SPC)))
-        elif r < 0.76:
+        elif r < 0.79:
             if rng.random() < 0.5:
                 ops.append("srevoke %d" % (rng.choice(occupied) % SPC))
             else:
                 ops.append("sdelete %d" % (rng.choice(occupied) % SPC))
-        elif r < 0.79 and len(occupied) >= 2:
+        elif r < 0.82 and len(occupied) >= 2:
             # rotate: dest, pivot, src.  Half the draws aim dest AT src,
             # which is the three-way SWAP branch and the only one that needs
             # a temporary — the branch a generator that never repeats an
@@ -152,7 +203,7 @@ def gen_trace(rng, nops):
             ops.append("rotate %d %d %d" % (ds, pv, sr))
             if ds not in occupied:
                 occupied.append(ds)
-        elif r < 0.90:
+        elif r < 0.91:
             ops.append("delete %d" % rng.choice(occupied))
         else:
             ops.append("revoke %d" % rng.choice(occupied))
@@ -202,6 +253,18 @@ def run_model(ops):
         # — so the model says so and no result is recorded, or the two sides
         # would compare a result against the next operation's.
         #
+        #
+        # The data channel.  Same `None` convention: the driver restricts both
+        # to the root CNode and prints nothing outside it.
+        #
+        elif f[0] == "nsig":
+            r = m.nsig(int(f[1]), int(f[2]))
+            if r is not None:
+                results.append(r)
+        elif f[0] == "npoll":
+            r = m.npoll(int(f[1]))
+            if r is not None:
+                results.append(r)
         elif f[0] == "vframe":
             r = m.vframe(int(f[1]))
             if r is not None:

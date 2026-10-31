@@ -276,6 +276,7 @@ BV = z3.BitVecSort(W)
 
 
 T_UNTYPED = 11                   # the wire type, as `TYPE_WIRE` records it
+T_NOTIF   = 2                    # likewise, and the only type here with DATA in it
 
 
 def new_state(tag):
@@ -1179,9 +1180,12 @@ def prove_authority_confinement():
 
     What this is NOT: non-interference in the confidentiality sense.  That
     needs a notion of OBSERVATION — what a subject can see, not what it can
-    reach — and nothing in `spec/` models reading a message or timing an
-    operation.  Saying so is the point: a confinement theorem presented as
-    non-interference would be the strongest-sounding wrong claim in this file.
+    reach — and this row does not have one.  `prove_data_confinement` below
+    does, for the one channel that carries data without a scheduler, and
+    `spec-noninterference` carries the observational form over result codes
+    and polled bits together.  Timing is modelled nowhere.  Saying so is the
+    point: a confinement theorem presented as non-interference would be the
+    strongest-sounding wrong claim in this file.
     """
     obj, rgt, par, bdg, oty = new_state("cf")
     a, b, victim, j = (z3.Int("subj_a"), z3.Int("subj_b"),
@@ -1237,6 +1241,158 @@ def prove_authority_confinement():
                     "PROVED" if r == z3.sat else "REFUTED", None))
 
 
+def prove_data_confinement():
+    """
+    The DATA channel, over every state: what a subject can RECEIVE.
+
+    `prove_authority_confinement` above is about what one subject can reach.
+    This is about what it can be TOLD by another, and it exists because the
+    notification bits are now modelled — sixty-four bits a sender chooses,
+    the one data channel in this kernel that needs no scheduler.  Without
+    this row the only statements about data were finite: 923521 traces in
+    `spec-exhaustive` and constructed pairs in `spec-noninterference`.
+
+    The bits live in an array indexed by OBJECT and not by slot, for the same
+    reason `oty` does: two capabilities naming one notification name one word
+    of pending bits, and that sharing is the whole question.
+
+    The operations are the kernel's, each in one line of its own source:
+    `knotification_signal` ORs the sender's pattern into the word
+    (`atomic_fetch_or_explicit`), and `knotification_take_pending` exchanges
+    it for zero (`atomic_exchange_explicit`).
+
+    **Four of these rows are FRAME CONDITIONS, and a frame condition is an
+    identity of array theory once the operation is encoded as a `Store`.**
+    Said plainly because it would otherwise be the most flattering thing in
+    this file: they do not prove the C correct, they prove that THIS encoding
+    of signal and poll touches one object and leaves the rest alone — and what
+    ties the encoding to `knotification.c` is `spec-differential`, not z3.  It
+    is the same standing as `prove_integrity_no_fabrication`'s frame row,
+    which the roadmap calls "what makes the others mean anything", and it
+    earns that standing the same way: by being REFUTABLE.  The control below
+    perturbs the operation so that it touches a second object, and requires
+    the claim to break.  Without that, these four would pass for any encoding
+    whatsoever, including a wrong one.
+
+    The fifth row is not a frame condition.  `bits` is nonzero only for
+    objects whose type is a notification, quantified over EVERY object, and
+    both operations have to preserve it — that one needs the premise that the
+    capability names a notification, and fails without it.  The exactly-once
+    row is the one no finite lane can make at all: `spec-exhaustive` reaches
+    it only at depth 5, which is 28629151 traces over this alphabet and has
+    not been run.
+    """
+    obj, rgt, par, bdg, oty = new_state("dc")
+    st = invariants.State(obj, rgt, par, bdg, oty, slot)
+    BV64 = z3.BitVecSort(64)
+    bits = z3.Array("bits_dc", I, BV64)
+    i, j, k = z3.Int("i_dc"), z3.Int("j_dc"), z3.Int("k_dc")
+    pat = z3.BitVec("pat_dc", 64)
+    zero = z3.BitVecVal(0, 64)
+
+    pre = [
+        z3.ForAll([k], z3.Implies(slot(k), wf(st, k))),
+        slot(i), slot(j),
+        obj[i] != -1, obj[j] != -1,
+        # Both capabilities name notifications; nothing else here has bits.
+        oty[obj[i]] == T_NOTIF, oty[obj[j]] == T_NOTIF,
+    ]
+    # Two SUBJECTS, in the only sense data can distinguish them: their
+    # capabilities name DIFFERENT objects.  Slot-disjointness is not enough
+    # and `spec-noninterference` carries the same precondition for the same
+    # reason — two unrelated slots naming one notification share its word, and
+    # that is the channel working rather than a leak.
+    apart = [obj[i] != obj[j]]
+
+    sig = z3.Store(bits, obj[i], bits[obj[i]] | pat)   # knotification_signal
+    pol = z3.Store(bits, obj[i], zero)                 # ..._take_pending
+
+    prove("DC  a signal reaches only the notification its capability names",
+          sig[obj[j]] == bits[obj[j]],
+          extra=pre + apart + [rgt[i] & R_WRITE != 0])
+
+    prove("DC  a poll consumes only the notification its capability names",
+          pol[obj[j]] == bits[obj[j]],
+          extra=pre + apart + [rgt[i] & R_WAIT != 0])
+
+    prove("DC  a signal sets no bit that was neither pending nor sent",
+          sig[obj[i]] & ~(bits[obj[i]] | pat) == zero,
+          extra=pre + [rgt[i] & R_WRITE != 0])
+
+    prove("DC  a poll delivers the pending bits exactly once",
+          pol[obj[i]] == zero,
+          extra=pre + [rgt[i] & R_WAIT != 0])
+
+    #
+    # The one row here that is NOT an identity of the encoding: only a
+    # notification ever carries bits, over every object, preserved by both
+    # operations.  It needs the premise that the capability names a
+    # notification and is false without it, which is what makes it a theorem
+    # about the authority state rather than about `Store`.
+    #
+    o = z3.Int("o_dc")
+    only_notifs = z3.ForAll([o], z3.Implies(bits[o] != zero, oty[o] == T_NOTIF))
+    prove("DC  only a notification carries bits, and a signal preserves that",
+          z3.ForAll([o], z3.Implies(sig[o] != zero, oty[o] == T_NOTIF)),
+          extra=pre + [only_notifs, rgt[i] & R_WRITE != 0])
+    prove("DC  ...and a poll preserves it too",
+          z3.ForAll([o], z3.Implies(pol[o] != zero, oty[o] == T_NOTIF)),
+          extra=pre + [only_notifs, rgt[i] & R_WAIT != 0])
+
+    #
+    # And the quantified row's own premise, checked NECESSARY the same way:
+    # drop "the capability names a notification" and a signal can put bits on
+    # an object of some other type, so the invariant stops being preserved.
+    # Measured: unsat with the premise, sat without it.
+    #
+    loose0 = z3.Solver()
+    loose0.add(slot(i), obj[i] != -1, only_notifs, rgt[i] & R_WRITE != 0)
+    loose0.add(z3.Not(z3.ForAll([o], z3.Implies(sig[o] != zero,
+                                                oty[o] == T_NOTIF))))
+    r0 = loose0.check()
+    results.append(("--  DC without naming a notification a signal CAN put "
+                    "bits on another type",
+                    "PROVED" if r0 == z3.sat else "REFUTED", None))
+
+    #
+    # REFUTABILITY of the frame rows.  Encode a signal that also touches the
+    # OTHER subject's notification — the shape of a kernel that let a send
+    # splash onto a neighbouring object — and the frame claim must break.  If
+    # it does not, the four rows above hold for any encoding at all and are
+    # measuring nothing.
+    #
+    splash = z3.Store(z3.Store(bits, obj[i], bits[obj[i]] | pat),
+                      obj[j], bits[obj[j]] | pat)
+    loose = z3.Solver()
+    loose.add(slot(i), slot(j), obj[i] != -1, obj[j] != -1,
+              oty[obj[i]] == T_NOTIF, oty[obj[j]] == T_NOTIF,
+              obj[i] != obj[j], rgt[i] & R_WRITE != 0,
+              pat != zero, bits[obj[j]] & pat == zero)
+    loose.add(splash[obj[j]] != bits[obj[j]])     # the frame claim FAILS
+    r = loose.check()
+    results.append(("--  DC a signal that touched a second notification DOES "
+                    "break the frame claim",
+                    "PROVED" if r == z3.sat else "REFUTED", None))
+
+    #
+    # And the premise must be NECESSARY, the same control the CF row carries:
+    # drop "different objects" and the conclusion must STOP following.  If it
+    # still holds, these rows are about any two slots and say nothing about
+    # subjects — and they would print exactly the same either way.
+    #
+    loose = z3.Solver()
+    loose.add(slot(i), slot(j), obj[i] != -1, obj[j] != -1,
+              oty[obj[i]] == T_NOTIF, oty[obj[j]] == T_NOTIF,
+              rgt[i] & R_WAIT != 0,
+              obj[i] == obj[j],            # ONE notification, two capabilities
+              bits[obj[i]] != zero)        # with something pending
+    loose.add(pol[obj[j]] != bits[obj[j]])  # the conclusion FAILS
+    r = loose.check()
+    results.append(("--  DC without distinct objects a poll DOES change what "
+                    "the other capability would see",
+                    "PROVED" if r == z3.sat else "REFUTED", None))
+
+
 def main():
     prove_the_harness_can_fail()
     prove_rights()
@@ -1253,6 +1409,7 @@ def main():
     prove_d13_mapping_authority()
     prove_integrity_no_fabrication()
     prove_authority_confinement()
+    prove_data_confinement()
 
     bad = 0
     for name, verdict, model in results:

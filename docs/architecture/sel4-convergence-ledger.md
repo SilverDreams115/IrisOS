@@ -1831,7 +1831,21 @@ needs a model of SUBJECTS, and `spec/` reasons about one CSpace — so stating a
 non-interference property over it would be a theorem about a system this
 directory does not describe.  Said rather than approximated.
 
+> **SUPERSEDED.**  Both are in now.  A subject turned out to be expressible in
+> the model this directory already had — a SUBTREE of the derivation forest —
+> and the two sections below record what followed: `authority confinement` for
+> the integrity half, `the data channel` for the confidentiality half, and
+> `check-binary` for the binary half.  The paragraph is kept because the reason
+> it gave was the right kind of reason, and because what unblocked it was
+> finding that the premise "`spec/` cannot name a subject" was false.
+
 ### the Isabelle theory, audited against the kernel without Isabelle
+
+> **SUPERSEDED.**  Isabelle was installed afterwards and the `oops` lemmas were
+> discharged — `make spec-abstract` now requires the theory to build with no
+> `oops` and no `sorry`.  This section is the audit that was done INSTEAD, and
+> it is kept because it is what found the defects: asking whether the lemmas
+> were true, before any prover could be asked whether they were provable.
 
 Isabelle is not installed here, so the `oops` lemmas cannot be discharged.  What
 could be done instead was to ask whether they are TRUE — the theory itself names
@@ -1988,14 +2002,14 @@ now so the next estimate is measured instead of argued:
 |---|---|
 | the five static checks together | 9 |
 | `test-unit`, `spec-differential`, `spec-rights`, `spec-prove`, `spec-bridge`, `spec-theory`, `spec-noninterference` | 2 |
-| `spec-isabelle` | 5 |
-| `spec-exhaustive` | 44 |
-| selftests at 1, 2 and 4 processors | 65, 50, 44 |
-| `smoke-stage10` (two boots) | 103 |
-| `smoke-verified` | 64 |
-| **total** | **392** |
+| `spec-isabelle` | 6 |
+| `spec-exhaustive` | 73 |
+| selftests at 1, 2 and 4 processors | 64, 48, 43 |
+| `smoke-stage10` (two boots) | 102 |
+| `smoke-verified` | 62 |
+| **total** | **405** |
 
-Six and a half minutes, not forty.  The forty had two causes and both were
+Just under seven minutes, not forty.  The forty had two causes and both were
 local to the session that measured them: D-13's bug hung init in `FS_OP_STAT`,
 so NO boot reached `[USER] init idle loop start` and every lane waited out its
 deadline — the harness polls for that marker and kills QEMU two seconds after
@@ -2163,10 +2177,11 @@ slots and would say nothing about subjects at all.
 
 **What is NOT here is non-interference in the confidentiality sense.**  That
 needs a notion of OBSERVATION — what a subject can SEE, not what it can reach —
-and nothing in `spec/` models reading a message or timing an operation.  A
-confinement theorem presented as non-interference would be the
-strongest-sounding wrong claim in this directory, which is why it is named for
-what it is.
+and this row does not have one.  A confinement theorem presented as
+non-interference would be the strongest-sounding wrong claim in this directory,
+which is why it is named for what it is.  The next section has the
+observational form, for the channels that need no scheduler; timing is still
+modelled nowhere.
 
 **Still open, and registered rather than argued away:** `VSPACE_MAP_CAP_CHUNKS`
 is a kernel-chosen ceiling (8 chunks, 256 capabilities per space).  Exceeding it
@@ -2242,6 +2257,115 @@ What is left is the mechanism: two counters where seL4 reads the tree, 8 bytes a
 | D-10 | **A frame mapped only its first page** | `SYS_UNTYPED_RETYPE2` accepted any page multiple for a `KOBJ_FRAME` and `SYS_FRAME_MAP` installed exactly ONE PTE — `kframe_map_page` mapped `f->paddr` and never read `f->size`.  A caller who bought a 64 KiB frame spent 64 KiB of its Untyped and could reach 4 KiB of it, with no error anywhere: the other fifteen pages were charged, owned, and unreachable | seL4 has frame SIZES (4K, 2M, 1G on x86-64) and a map covers the whole frame; large frames are how a driver maps an MMIO region without thousands of invocations | Nothing had ever created a multi-page frame, which is why it went unnoticed rather than why it was acceptable.  It was found while working out what `fb` would need to retype the framebuffer out of the device Untyped D-9 published | **CLOSED (Stage 6).**  A map installs every page of the frame, an unmap removes every page, and the THREE bulk teardown paths walk the frame rather than the mapping record's first address — a cleanup that removed one page of sixteen would leave PTEs outliving the object that justified them, which is the one thing an unmap exists to prevent, so all four share `kframe_unmap_all`.  Two properties are deliberate.  The occupancy check runs over EVERY page before any PTE is installed, so a failed map changes nothing — checking as it went would leave six pages of somebody's frame in an address space whose owner was told the map failed.  And a partial install unwinds exactly what went in, because a holder that has to retype a page table and retry must find the address space as it left it, or the retry hits BUSY on its own leftovers.  T317 asserts the charge, that every page is distinct (a map that aliased them all onto the first would pass a single-page test), that one unmap removes all of it, and that an OVERLAPPING map is refused while changing nothing.  **First recorded as "refused, not fixed"** — the refusal shipped, and the fix followed once the shape of it was clear |
 | D-12 | **CNode teardown is bounded by memory, not by a budget** (first written as D-11, which Stage 10-dma had already taken for the device-refusal witness) | Deleting the one capability that names a CNode empties its slots, which ends the last active reference of every CNode below it, and so on to the bottom of the tree.  Since A-39 the STACK cost of that is constant, but the syscall still does not return until the whole tree is gone.  `kcnode_slot_revoke_bounded` takes a budget; `kcnode_slot_delete` does not, and teardown calls the unbounded form | `cteDelete` is preemptible through zombie capabilities: a delete that cannot finish in one slice names its own unfinished state and is restarted, so in-kernel latency is bounded whatever the object graph looks like | Reachable from ring 3 by one syscall, which is why it is a row and not a note.  What limits it is the principal's own Untyped: a 1-slot CNode costs about 144 bytes, so the work is proportional to memory the principal was legitimately granted, never more.  That is the charter's own bound — what bounds an allocation is the budget it was given — applied to time instead of space, which is weaker than D-8's explicit slice and weaker than seL4's | **CLOSED to a per-object bound (Stage V phase 2).**  The objection recorded here was that D-8's trick does not transfer, because "a half-emptied CNode must not become reachable again".  That is true of a slice taken MID-CNode and it is not true of the slice actually available: `kcnode_cascade` already processes WHOLE CNodes, so every entry left on the list is either untouched — exactly the state the list already holds between an enqueue and the drain reaching it — or emptied and released.  Slicing at that boundary introduces no state that was not observable before it, and needs no zombie for the same reason D-8 needed none.  `IRIS_CASCADE_SLICE` (8) CNodes per pass; the remainder is drained at the dispatcher's preemption point, beside the dead-task reaper (`sched_resume` -> `kcnode_cascade_drain_slice`), so nothing is left owing work with nobody to do it.  **What is NOT bounded is one CNode's slots**, and that is a per-object bound where there was none at all: the slot count is fixed at retype, out of the principal's own Untyped, which is the charter's own rule — what bounds an allocation is the budget it was given — applied to time.  Weaker than seL4's, and no longer unbounded in the TREE, which is what the row was about.  `test_cnode_teardown_depth` asserts both halves: that a 200-link chain is genuinely NOT finished when the delete returns (the slice is real, and cannot be quietly removed later) and that it quiesces in a bounded number of passes (deferred work is not stranded) |
 | D-13 | **Revoking or deleting a capability does NOT unmap what it named** — found UNREGISTERED in Stage V, asserted by six runtime tests and absent from this ledger | `SYS_CSPACE_REVOKE` on a frame capability takes the authority away and leaves the MAPPING live: T137 writes through the frame after the revoke and asserts the value reads back, then unmaps explicitly.  T135, T139, T151 and T155 assert the same for Untyped RESET.  The mapping record holds its own reference, so the object outlives every capability to it | `finaliseCap` UNMAPS.  Deleting the last capability to a frame or a page table removes it from every address space first, which is what lets seL4 need no mapping-side reference at all | It is the reason D-7's frame case cannot be closed by moving a reference: making the space's reference a capability makes revoke destroy it, which makes revoke unmap — and six tests say IRIS promises the opposite.  It is also **the property D-7's target contradicts**: *an object exists exactly while a capability names it* and *a mapping keeps a frame alive after its last capability* cannot both hold.  Found by implementing the frame case and watching T135..T155 go red together: `SUITE FAIL 319/325`, every failure a `reset busy` | **OPEN, registered here for the first time, and the direction is DECIDED.**  The behaviour was deliberate and was nowhere in this document, whose job is every non-seL4 mechanism still alive; that is the defect this row fixes.  **Charter A10 decides which way it goes**: *revoke recursively removes all descendant authority*, and a mapping that outlives every capability to a frame is ACCESS WITHOUT AUTHORITY — the holder can still read and write a page nothing names.  So seL4's answer is also this charter's, and the target is that destroying the last capability unmaps.  What blocks it is a MECHANISM, named: **IRIS has no per-capability finalise.**  Destruction here is per-OBJECT — `kobject_dispatch_destroy`, triggered at refcount 0 — while `finaliseCap` is per-CAPABILITY, triggered by the CTE being deleted.  That distinction is the whole difference, and it is why the three available options all cost something: **(1)** the space's capability DERIVED from the holder's, which is what connects them in the MDB and makes `kcnode_slot_is_final_cap` complete — but a child dies with its parent, so revoke unmaps, which is seL4 and inverts what T135–T155 promise; **(2)** the capability UNPARENTED, so revoke leaves it alone and those tests hold — but two unrelated roots name one frame, which is exactly the disconnection that makes the predicate D-7 depends on wrong; **(3)** the counted reference the tree has, under which D-7's target is false for mapped objects by design.  Measured, not argued: (1) was implemented with the back-links in place and produced `SUITE FAIL 319/325`, every failure a `reset busy`.  Closing this row means building the per-capability finalise — plausibly deferred through the cascade list A-39 introduced, since unmapping under `mdb_lock` is the unbounded work D-8 and D-12 exist about — and then rewriting what six ring-3 tests promise.  That is a mechanism and an ABI change, in that order.  **CLOSED 2026-10-26, and two of the claims in this cell were wrong** — see the dated section above.  The mechanism is `kvspace_finalise_orphans`, dispatched from `kcnode_slot_drop_old`; option (1) landed with it.  There was no ABI change and **not one of the six tests was rewritten** (327/327).  `SUITE FAIL 319/325` was the mechanism half-built, not a promise in conflict with A10: option (1) without the finalise destroys the space's capability and orphans the mapping, which is the `reset busy` those tests reported.  T137 revokes a SIBLING of the mapping's branch, so A9 and A10 both say its mapping survives and it asserted the right thing all along; the case A10 names had no test, which is why this read as decided.  T359 and T360 are that case, and T359 caught `kcnode_slot_revoke_bounded` bypassing the choke point — D-13's unmap reached seven paths and not revoke, the one the charter names.  Residual, registered: `VSPACE_MAP_CAP_CHUNKS` is a kernel-chosen ceiling, retired by a list; and `kvspace_map_cap_drop_frame`'s decide-then-delete window, which is SMP-only and outside IRIS-V |
+
+### the data channel — information flow's confidentiality half
+
+The objection that blocked this for two phases was half wrong, and the half
+that was wrong is worth writing down: *"information flow needs a notion of
+OBSERVATION, and nothing in `spec/` models reading a message."*  True of
+synchronous IPC.  False of the kernel as a whole — `knotification.c` is linked
+into `spec_driver.c` like every other core file, and a notification is the one
+object that moves DATA without needing a scheduler.  `knotification_signal`
+ORs a word the sender chose into pending bits; `knotification_take_pending`
+exchanges it for zero.  No thread has to be running for either, so both execute
+in a single-threaded harness exactly as they do in the kernel, and with no
+waiter queued and nothing bound the waiter and bound-delivery arms are inert —
+the one configuration a harness with no scheduler can state honestly.
+
+So `spec/` models the bits, and `spec_driver.c` gained `nsig`/`npoll`.  Both go
+through the real `cspace_resolve_only_notification` rather than reaching into
+the slot, because the question is not what the bits do, it is **who may move
+them**: signalling needs WRITE and polling needs WAIT
+(`sys_notify_signal`/`sys_notify_poll`), those are not the same right, and a
+check reimplemented in the harness would have agreed with a check reimplemented
+in the model and tested neither.  Zero pending is `IRIS_ERR_WOULD_BLOCK` and
+not `0`, which is the syscall's own answer in its own words; so a successful
+poll always carries a bit and the success and failure spaces do not overlap.
+
+What it now says, in four places, strongest last:
+
+- `spec-differential`: the bits a sender chose, over random traces, against the
+  real `knotification.c`.  Four sabotages are named in its comments and all
+  four are caught — a poll that does not consume, a signal gated on WAIT
+  instead of WRITE, an empty poll answering `0`, and a signal that ASSIGNS
+  instead of OR-ing.
+- `spec-exhaustive`: every sequence of four operations over 31 symbols,
+  923521 traces, including `ut 1 ; retype 1 1 2 ; nsig 2 0 ; npoll 2` — a
+  notification carved from an Untyped, signalled, and taken — and every way of
+  getting it wrong.
+- `spec-noninterference`: a subject's result codes **and the bits it polls**
+  are identical whether or not a disjoint subject ran.
+- `spec-prove`: nine DC rows over EVERY state, and they are not all of the
+  same strength, which the lane says out loud.  **Four are FRAME CONDITIONS**
+  — a signal and a poll each reach only the notification their capability
+  names, a signal sets no bit that was neither pending nor sent, a poll
+  delivers the pending bits **exactly once** — and a frame condition is an
+  identity of array theory once the operation is encoded as a `Store`.  They
+  do not prove the C correct; they prove that THIS encoding touches one object
+  and leaves the rest alone, and what ties the encoding to `knotification.c`
+  is `spec-differential`, not z3.  Same standing as the integrity frame row,
+  earned the same way: a control perturbs the signal so it also touches the
+  other subject's notification and requires the claim to break.  **Two are
+  not frame conditions**: `bits` is nonzero only for objects whose type is a
+  notification, quantified over EVERY object, preserved by both operations —
+  measured unsat with the premise that the capability names a notification and
+  sat without it, so it is a theorem about the authority state rather than
+  about `Store`.  **Three are the controls** for those premises.  The
+  exactly-once row is the one no finite lane can make at all: `spec-exhaustive`
+  reaches it only at depth 5, which is 28629151 traces over this alphabet and
+  has not been run.
+
+**Three defects had to be fixed first, and every one was found by a control
+rather than by reading the code.**  They are recorded because each of them
+produced output indistinguishable from evidence:
+
+1. The first `nsig`/`npoll` cast a slot's object straight to
+   `struct KNotification *`.  The driver fabricates seeded objects as
+   `sizeof(struct KObject)` — sound, because until then it only ever touched a
+   fabricated object through `base` — so signalling `0x3` polled back `0x1011`,
+   which was the heap, and the signal had already written there.  A fabricated
+   object of type T is now a valid T.  Same defect the `seed` comment already
+   named for Untyped: *an object whose type is a lie is worse than an object
+   that is missing.*
+2. The exhaustive alphabet's data symbols were unreachable.  The comment said
+   `ut 0 ; retype 0 1 2` built the notification — and slot 0 is
+   `IRIS_CPTR_NULL`, so that retype answers `INVALID_ARG` and slot 2 stays
+   empty.  No notification born with WAIT existed anywhere in the alphabet, so
+   every `npoll` in it answered `NOT_FOUND` or `WRONG_TYPE`, and a model
+   sabotaged to answer `0` instead of `WOULD_BLOCK` passed all 810000 traces.
+   A constructive `retype 1 1 2` was added; the sabotage is now caught 111
+   times.  Both `retype 0 ...` symbols are kept — a retype from the null
+   capability IS a refusal worth covering — but they are refusals, not
+   constructions, and the comment says so now.
+3. `spec-noninterference`'s data claim was nearly vacuous and its control was
+   worthless twice over.  Of 285 object-disjoint pairs drawn from random
+   traces, exactly ONE had A able to receive and B able to send; in 236 neither
+   could do either.  A model sabotaged to let `npoll` take the bits of EVERY
+   notification — a textbook cross-subject leak — passed the entire lane.  The
+   first control merely PERMITTED the subjects to share an object, which
+   changed nothing because the search returns the first disjoint pair it finds
+   and that is the same pair either way; the second HUNTED for a sharing pair
+   and found 4 states in 300, still with no interference, because what has to
+   be shared is not any object but a notification with WAIT on one side and
+   WRITE on the other.  Random traces do not build that.  Both configurations
+   are now CONSTRUCTED — and the leak sabotage is caught on 41 of 52 pairs.
+
+A fourth defect was in the lane's own machinery and predates this work:
+`observations` chose its interleaving with `random.Random(len(seen))`, a FRESH
+generator seeded with the position.  The sequence it produces is fixed
+(0.844, 0.134, 0.956, 0.238, ...), so B acted before A's second and fourth
+operations and never before its first, identically for all 300 pairs — and a
+subject with one observation could never be reached at all, which is exactly
+the shape the data-channel control needs.  The lane now takes an rng, and
+checks two interleavings: B as early as it can act, and B placed by the
+generator.
+
+**What is still absent, and registered rather than argued away:** flows through
+SYNCHRONOUS IPC.  An endpoint message is copied between two threads that must
+both be running, and nothing in `spec/` has threads — which is precisely why
+the notification could be done and the endpoint cannot be, and the distinction
+is the scheduler and not the data.  Timing is modelled nowhere, by anything, at
+any point in this directory.
 
 ### A-4 — CSpace-native introspection replaces the CPtr→handle bridge
 

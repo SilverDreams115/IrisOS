@@ -50,3 +50,9 @@ AGENTS.md
 .codex
 .claude/
 build/iris-disk.img
+
+# Python bytecode.  `spec/` is run as scripts and imported only by its own
+# lanes, so these caches are build output like any other — and `spec-exhaustive`
+# importing `differential` is enough to create one on every gate run.
+__pycache__/
+*.pyc

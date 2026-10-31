@@ -77,6 +77,13 @@ ALPHABET = [
     "ut 0", "ut 1",
     "seed 0 0", "seed 1 1", "seed 2 2",
     "retype 0 0 1", "retype 0 1 2", "retype 1 2 0",
+    # From slot ONE, because slot 0 is `IRIS_CPTR_NULL`: the two `retype 0 ...`
+    # symbols above can only ever answer INVALID_ARG, which is a refusal worth
+    # covering and is not a construction.  Until this symbol existed no
+    # notification born with WAIT could exist anywhere in this alphabet, so
+    # every `npoll` in it answered NOT_FOUND or WRONG_TYPE and a model
+    # sabotaged to answer 0 instead of WOULD_BLOCK passed all 810000 traces.
+    "retype 1 1 2",
     "mint 0 1 5 0",          # READ|DUPLICATE, inherit badge
     "mint 0 1 5 7",          # a fresh badge on an identity type
     "mint 1 2 1 0",          # a reduction to READ alone, leaving slot 2
@@ -112,6 +119,54 @@ ALPHABET = [
     # every way of getting it wrong.
     #
     "vframe 0", "vmap 0 0", "vmap 1 0", "vunmap 0 0",
+    #
+    # The DATA channel, against the real `knotification.c`.  Three symbols,
+    # picked the same way D-13's four were — the fewest that make a named case
+    # reachable at depth 4, given what the rest of the alphabet already
+    # builds.
+    #
+    #   `ut 1`, `retype 1 1 2`, `nsig 2 0`, `npoll 2`
+    #       is four: a notification carved from an Untyped, born with WAIT,
+    #       signalled, and taken.  Bits a sender chose arriving at a receiver,
+    #       exhaustively over every way of arranging those four and every way
+    #       of getting them wrong.
+    #
+    #       From slot 1 and not slot 0.  The first version of this comment
+    #       said `ut 0`, `retype 0 1 2` — and slot 0 is the null capability,
+    #       so that retype answers INVALID_ARG and slot 2 stays empty.  The
+    #       sequence was unreachable and the comment read exactly like
+    #       coverage; what caught it was sabotaging the model and watching all
+    #       810000 traces pass.
+    #
+    #   `seed 1 1`, `mint 1 2 1 0`, `nsig 2 0` / `npoll 2`
+    #       is two plus one: slot 2 ends up holding a notification capability
+    #       reduced to READ alone, and then BOTH ends are refused —
+    #       ACCESS_DENIED to signal and ACCESS_DENIED to poll.  The rights gate
+    #       is on each direction separately, which is what makes it a gate.
+    #
+    #       The sharper case — WRITE without WAIT, so the holder may send and
+    #       may not receive — is NOT reachable at depth 4 over this alphabet,
+    #       and saying so is the point.  Getting it needs a notification
+    #       capability carrying WRITE and not WAIT in slot 2, and no three
+    #       symbols here build one: the only mint into slot 2 from a
+    #       notification source is `mint 1 2 1 0`, which reduces to READ.  An
+    #       earlier version of this comment claimed `rotate 2 0 1` did it;
+    #       that rotate answers NOT_FOUND.  The asymmetry is covered by
+    #       `spec-differential`, where a seeded notification signals (0) and
+    #       refuses to be polled (-5) on the one capability, and proved
+    #       outright by `spec-prove`'s DC rows, which gate the two directions
+    #       on WRITE and WAIT separately for every state.
+    #
+    # What is NOT reachable at depth 4, stated rather than left to look like
+    # coverage: exactly-once delivery (two takes after one signal) and
+    # accumulation (two signals before one take) both need five, because the
+    # notification costs two operations to build with WAIT.  `SPEC_DEPTH=5`
+    # reaches them; the random lane emits both as units and the four
+    # sabotages in its comments are the ones that catch them.  Two patterns
+    # are in the alphabet and not one so that accumulation is observable at
+    # all when the depth does reach it: 0x8000000000000000 | 1 is neither.
+    #
+    "nsig 2 0", "nsig 2 2", "npoll 2",
 ]
 
 CHUNK = 400          # traces per driver process

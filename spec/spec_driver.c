@@ -39,6 +39,7 @@
  * the comparison machinery.
  */
 #include <iris/nc/kcnode.h>
+#include <iris/nc/cspace.h>
 #include <iris/nc/kendpoint.h>
 #include <iris/nc/knotification.h>
 #include <iris/irq_routing.h>
@@ -240,6 +241,22 @@ static const char *const g_type_names[] = {
  */
 #define MAX_TRACKED 8192
 static struct KObject *g_objs[MAX_TRACKED];
+/*
+ * And how many bytes each one is, because they are no longer all one size.
+ *
+ * Every fabricated object used to be `sizeof(struct KObject)`, which held
+ * because the driver only ever touched a fabricated object through `base` --
+ * authority operations read the type, the rights and the lock and nothing
+ * else.  `nsig`/`npoll` are the first operations here that reach into a
+ * BODY, and a notification tagged onto a bare KObject makes that read land
+ * past the allocation: signalling bits 0x3 polled back 0x1011, which was the
+ * heap, and the signal itself had already written there.
+ *
+ * So a fabricated object of type T is now a valid T.  The same defect the
+ * `seed` comment already names -- an object whose type is a lie -- and the
+ * same cure it chose for Untyped.
+ */
+static uint32_t        g_objsz[MAX_TRACKED];
 static unsigned        g_nobjs;
 static unsigned        g_alive;
 
@@ -252,12 +269,24 @@ static const struct KObjectOps g_ops = { .close = NULL, .destroy = obj_destroy }
 /* Storage is not returned — see above — but the object is tracked so the
  * trace can be freed as a whole at `reset`, which is what keeps an exhaustive
  * run's memory flat across millions of traces. */
+static uint32_t obj_bytes(kobject_type_t t) {
+    /* A body only where the driver reads one.  Zeroed, so the notification is
+     * the one configuration the model can mirror: no pending bits, not
+     * closed, no waiter queued and no thread bound. */
+    if (t == KOBJ_NOTIFICATION) return (uint32_t)sizeof(struct KNotification);
+    return (uint32_t)sizeof(struct KObject);
+}
+
 static struct KObject *obj_new(kobject_type_t t) {
-    struct KObject *o = (struct KObject *)kpage_alloc((uint32_t)sizeof(*o));
+    uint32_t nbytes = obj_bytes(t);
+    struct KObject *o = (struct KObject *)kpage_alloc(nbytes);
     if (!o) return NULL;
-    memset(o, 0, sizeof(*o));
+    memset(o, 0, nbytes);
     kobject_init_test(o, t, &g_ops);
-    if (g_nobjs < MAX_TRACKED) g_objs[g_nobjs++] = o;
+    if (g_nobjs < MAX_TRACKED) {
+        g_objsz[g_nobjs] = nbytes;
+        g_objs[g_nobjs++] = o;
+    }
     g_alive++;
     return o;
 }
@@ -423,7 +452,7 @@ int main(void) {
             printf("==\n");
             vs_teardown();
             for (unsigned oi = 0; oi < g_nobjs; oi++)
-                kpage_free(g_objs[oi], (uint32_t)sizeof(struct KObject));
+                kpage_free(g_objs[oi], g_objsz[oi]);
             g_nobjs = 0;
             g_alive = 0;
             fflush(stdout);
@@ -588,6 +617,82 @@ int main(void) {
             } else {
                 printf("r %d\n", (int)kframe_unmap_page(g_fr[a], g_vs,
                                                          VA_OF(b)));
+            }
+        } else if (!strcmp(op, "nsig") &&
+                   sscanf(line, "%*s %u %u", &a, &b) == 2) {
+            /*
+             * ── A DATA channel, against the real `knotification.c` ─────────
+             *
+             * Every other operation here moves AUTHORITY.  This one moves
+             * sixty-four bits a sender chose, which is the only data channel
+             * the kernel has that needs no scheduler: `signal` ORs bits into
+             * the word and `poll` exchanges it to zero and never blocks, so
+             * both run in a single-threaded harness exactly as they run in
+             * the kernel.  With no thread waiting and none bound, the waiter
+             * and bound-delivery arms of `knotification_signal` are inert,
+             * which is the one configuration a harness with no scheduler can
+             * state honestly.
+             *
+             * That is what makes an information-flow claim about DATA
+             * checkable here rather than only in a model.  `spec-prove`'s
+             * non-interference rows are about the result codes a subject
+             * sees; these two ops are about the bits it receives.
+             *
+             * Both go through `cspace_resolve_only_notification` rather than
+             * reaching into the slot, because the question is not "what do
+             * the bits do" — it is "who is allowed to move them".  The
+             * resolver is the gate the real syscalls use, it checks TYPE
+             * before RIGHTS, and signalling needs WRITE while polling needs
+             * WAIT (`sys_notify_signal`/`sys_notify_poll`).  Those are not
+             * the same right, so a capability can carry one and not the
+             * other, and a reimplemented check here would have agreed with a
+             * reimplemented check in the model and tested neither.
+             */
+            static const uint64_t pat[4] = { 1u, 3u, 0x8000000000000000ull, 0u };
+            struct KNotification *n; iris_rights_t nr;
+            iris_error_t rr;
+            if (a >= SPC) continue;
+            rr = cspace_resolve_only_notification(g_task->cspace_root,
+                                                  (iris_cptr_t)a,
+                                                  RIGHT_WRITE, &n, &nr);
+            (void)nr;
+            if (rr != IRIS_OK) {
+                printf("r %d\n", (int)rr);
+            } else {
+                knotification_signal(n, pat[b % 4u]);
+                kobject_release(&n->base);   /* the resolver dropped the active ref */
+                printf("r 0\n");
+            }
+        } else if (!strcmp(op, "npoll") && sscanf(line, "%*s %u", &a) == 1) {
+            /*
+             * The bits are the OBSERVABLE, so they are the result: the
+             * comparator checks them on every trace without a dump line.
+             *
+             * Printed UNSIGNED while a refusal is printed signed, so the two
+             * can never be confused.  It matters for one pattern: bit 63
+             * polls back as 9223372036854775808, and as a signed value that
+             * is INT64_MIN — a number that reads nothing like `-13`.
+             *
+             * Zero pending is IRIS_ERR_WOULD_BLOCK and not `0`, which is
+             * `sys_notify_poll`'s own answer, in its words: "the same answer,
+             * in the same words, that SYS_EP_NB_RECV gives".  So a successful
+             * poll always carries at least one bit, and the success and
+             * failure spaces do not overlap at all.
+             */
+            struct KNotification *n; iris_rights_t nr;
+            iris_error_t rr;
+            if (a >= SPC) continue;
+            rr = cspace_resolve_only_notification(g_task->cspace_root,
+                                                  (iris_cptr_t)a,
+                                                  RIGHT_WAIT, &n, &nr);
+            (void)nr;
+            if (rr != IRIS_OK) {
+                printf("r %d\n", (int)rr);
+            } else {
+                uint64_t got = knotification_take_pending(n);
+                kobject_release(&n->base);
+                if (got == 0u) printf("r %d\n", (int)IRIS_ERR_WOULD_BLOCK);
+                else           printf("r %llu\n", (unsigned long long)got);
             }
         } else if (!strcmp(op, "ident") && sscanf(line, "%*s %u", &a) == 1) {
             /* A QUERY, and it is in the trace for the same reason the return
