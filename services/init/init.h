@@ -303,7 +303,6 @@ void init_spawn_iris_test(iris_cptr_t sm_h);
 
 /* Runtime probes + S8 exception selftest (init_test.c). */
 void init_runtime_probe_invalid_userptr(void);
-void init_runtime_probe_timeout_overflow(void);
 void init_selftest_exception(void);
 
 /*

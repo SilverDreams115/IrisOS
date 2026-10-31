@@ -154,7 +154,44 @@ static const char sm_str_bootok[]       = "[SVCMGR] child bootstrap OK\n";
 static const char sm_str_bootfail[]     = "[SVCMGR] WARN: child bootstrap failed\n";
 /* Sm_str_bootdupfail/bootsendfail retired with the
  * KChannel bootstrap senders — bootstrap caps are now pre-start CSpace mints. */
-static const char sm_str_lookupfail[]   = "[SVCMGR] WARN: lookup failed\n";
+/*
+ * A lookup that found nothing, in TWO messages, because they mean opposite
+ * things and used to share one line.
+ *
+ * `[SVCMGR] WARN: lookup failed` was 36 of 131 registry answers in a boot
+ * measured on 2026-10-31, and every one of the 36 was followed by a success:
+ * they were clients asking for a name microseconds before its owner published
+ * it, then retrying -- `init/main.c` says so in its own words, "retrying until
+ * VFS has bootstrapped".  So the warning was never actionable, which teaches a
+ * reader to skip the line, and the case that IS worth a warning -- a name
+ * nobody will ever register, because a service failed to spawn or somebody
+ * mistyped it -- arrived in the same words.
+ *
+ * svcmgr can tell them apart with no new state: `svcmgr_catalog_find_name`
+ * already walks the catalog of services it knows and `svcmgr_dynamic_find_name`
+ * the dynamic ones.  Known-but-unpublished is the protocol working; unknown is
+ * the defect.  And both now carry the NAME, which the old line did not, so the
+ * answer is actionable either way.
+ *
+ * **It says "not registered" and not "no such name", because the second would
+ * claim something svcmgr does not know.**  A dynamic ALIAS lands in the
+ * unknown bucket before its registrar runs, and one does on every boot:
+ * `init_launch.c` publishes `proc` under the name "spawn" -- "not `proc.ep`:
+ * svcmgr RESERVES every name ending in .ep" -- and `sh` looks "spawn" up
+ * lazily on its way past, because `proc` is started by `init` AFTER `sh` is
+ * already up.  Nothing declares that alias ahead of time, so at the moment of
+ * the miss svcmgr genuinely cannot separate "an alias that is coming" from "a
+ * name nobody will ever register".  An earlier version of this comment
+ * claimed it could.  What the name buys is that a READER can: `spawn` and
+ * `ghost.svc` are one glance apart, and that is the whole improvement.
+ *
+ * Deliberately NOT gated on "have all catalog services published yet", which
+ * is the obvious next idea: a configuration that never starts one of them
+ * would leave that condition false forever and this warning would never fire
+ * again.  A check that cannot fire is worse than one that is sometimes benign.
+ */
+static const char sm_str_lookupfail[]   = "[SVCMGR] WARN: not registered: ";
+static const char sm_str_lookuppend[]   = "[SVCMGR] name not published yet: ";
 /* sm_str_svc_exited replaced by inline format in svcmgr_release_service (logs name) */
 static const char sm_str_irqfail[]      = "[SVCMGR] WARN: irq route xfer failed\n";
 static const char sm_str_svc_unknown[]  = "[SVCMGR] WARN: unknown bootstrap service\n";
@@ -235,6 +272,59 @@ static uint8_t *g_ep_buf;
 
 static void svcmgr_log(const char *msg) {
     (void)console_ep_write(g_svcmgr_state.console_ep_c, g_ep_buf, msg);
+}
+
+/*
+ * Say which name missed, and at the level it deserves.
+ *
+ * The name is COPIED before anything is logged, and that is not tidiness.
+ * `svcmgr_log` hands `g_ep_buf` to `console_ep_write` as its staging buffer,
+ * and that function copies the string it is GIVEN into that buffer -- so
+ * logging the prefix first would overwrite the name with the prefix and print
+ * the message twice.  The name lives in `g_ep_buf`.
+ */
+static char g_miss_line[IRIS_EP_SVCNAME_MAX + 48u];
+
+static void svcmgr_log_lookup_miss(const char *name, int known) {
+    /*
+     * ONE console call, composed here, and that is a correctness requirement
+     * rather than a preference.
+     *
+     * `svcmgr_log` is an EP_CALL to the console, and an EP_CALL BINDS A REPLY
+     * OBJECT.  T110 counts those bindings EXACTLY -- `after[IT_SI_REPLY] ==
+     * before[IT_SI_REPLY] + exp_reply` -- and this path runs on every lookup
+     * miss, of which a boot has dozens.  The first version of this function
+     * logged prefix, name and newline as three calls where there had been
+     * one; the two extra bindings per miss put the count over and the suite
+     * failed at 326/327 with `T110 FAIL: reply count`.  Measured, not
+     * reasoned about: the test found it before this shipped.
+     *
+     * Composing also makes the ORDER safe for free.  `svcmgr_log` hands
+     * `g_ep_buf` to `console_ep_write` as its staging buffer and that function
+     * copies the string it is given INTO it -- and `name` points into
+     * `g_ep_buf`.  Reading the name out first is the only correct order, and a
+     * single composed line cannot get it wrong.
+     *
+     * Static rather than on the stack: svcmgr is a single-threaded event loop,
+     * so there is no second caller, and the file already keeps its buffers
+     * this way.
+     */
+    const char *pre = known ? sm_str_lookuppend : sm_str_lookupfail;
+    uint32_t o = 0;
+    /* BOUND: sizeof(g_miss_line) - 1 in both loops; each copies from a
+     * NUL-terminated source and stops at the buffer.  Ring 3 cannot make
+     * either larger -- the name is already clamped to IRIS_EP_SVCNAME_MAX by
+     * the caller and the prefixes are literals. */
+    while (o + 1u < (uint32_t)sizeof(g_miss_line) && pre[o] != '\0') {
+        g_miss_line[o] = pre[o]; o++;
+    }
+    for (uint32_t i = 0;
+         o + 1u < (uint32_t)sizeof(g_miss_line) && name[i] != '\0'; i++) {
+        g_miss_line[o++] = name[i];
+    }
+    if (o + 1u < (uint32_t)sizeof(g_miss_line)) g_miss_line[o++] = '\n';
+    g_miss_line[o] = '\0';
+    svcmgr_log(g_miss_line);
 }
 
 static void svcmgr_log_u32(uint32_t value) {
@@ -725,6 +815,12 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
          * mint straight from it — no handle is materialized at any point. */
         uint32_t    src_cptr  = 0u;
 
+        /* Whether svcmgr has ever HEARD of this name, hoisted out of the
+         * block below because that is where the answer is computed and the
+         * failure is reported further down.  It is what separates "asked
+         * early, will retry" from "nobody will ever register this". */
+        int name_known = 0;
+
         /* Reserved "<name>.ep" endpoint names resolve first. */
         if (!svcmgr_resolve_ep_name(state, (const char *)g_ep_buf,
                                     &master_h, &granted, &src_cptr)) {
@@ -732,6 +828,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
                 svcmgr_dynamic_find_name(state, (const char *)g_ep_buf);
             const struct iris_service_catalog_entry *cat =
                 (!dyn) ? svcmgr_catalog_find_name((const char *)g_ep_buf) : 0;
+            name_known = (dyn || cat) ? 1 : 0;
 
             if (dyn && dyn->public_cptr != 0u) {
                 /* CSpace-backed registration — the source IS a slot;
@@ -785,7 +882,10 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct iris_msg
         } else {
             reply.label    = IRIS_EP_REPLY_ERR;
             reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND;
-            svcmgr_log(sm_str_lookupfail);
+            /* The REPLY is unchanged -- NOT_FOUND either way, because from the
+             * client's side both cases are "not there yet" and the retry
+             * policy is the client's.  Only what is LOGGED differs. */
+            svcmgr_log_lookup_miss((const char *)g_ep_buf, name_known);
         }
         break;
     }

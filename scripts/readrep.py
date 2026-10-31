@@ -92,6 +92,36 @@ def main():
         print("\n--- what IRIS found, written by the machine itself ---")
         print(body.rstrip())
 
+        #
+        # SAY SO when the report is incomplete.
+        #
+        # A file in this filesystem is ONE SECTOR -- `services/fs/main.c`
+        # refuses a write longer than FS_SECTOR, so init truncates to it and
+        # logs "report written to boot.rep (CUT to one sector)".  The report
+        # has since outgrown that: eleven lines and 542 bytes in a current
+        # build against a 512-byte file, which loses the last 30.
+        #
+        # Today what is lost is the closing separator, which is why this went
+        # unnoticed -- the printed report looked complete and was not, and it
+        # took counting bytes by hand to see it.  One more line and the `obj`
+        # row goes with it.  A tool that reads the evidence has to say when the
+        # evidence is partial; otherwise the first real loss is read as a
+        # report.
+        #
+        # No guess about WHAT is missing: the first version tried, and got it
+        # backwards -- the cut leaves a PARTIAL closing separator ("==" where
+        # thirty "=" belong), which its test read as a complete one and so
+        # reported "nothing visible" about a report that had lost a line's
+        # worth.  A wrong guess is worse than none here, because this message
+        # exists to stop a truncated report being read as a whole one.
+        if size >= SECTOR:
+            print("\nreadrep: this report FILLS its sector (%d of %d bytes), so it is\n"
+                  "         probably TRUNCATED -- a file here is one sector and init\n"
+                  "         cuts the text to fit, logging \"CUT to one sector\" when it\n"
+                  "         does.  What is missing is at the END; the screen and the\n"
+                  "         serial log carry the whole thing."
+                  % (size, SECTOR))
+
 
 if __name__ == "__main__":
     main()

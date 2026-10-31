@@ -31,9 +31,29 @@ void init_runtime_probe_invalid_userptr(void) {
         init_log("[USER][INIT][SELFTEST] invalid-userptr WARN\n");
 }
 
-void init_runtime_probe_timeout_overflow(void) {
-    init_log("[USER][INIT][SELFTEST] timeout-overflow SKIP\n");
-}
+/* ── timeout-overflow probe RETIRED ──────────────────────────────────────
+ * Its SUBJECT was `SYS_NOTIFY_WAIT_TIMEOUT`, which is retired -- the probe
+ * called `init_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n, &bits, 1000000000L)` and
+ * checked what an overflowing timeout did.  When the syscall went, the body
+ * went with it and what remained printed
+ *
+ *     [USER][INIT][SELFTEST] timeout-overflow SKIP
+ *
+ * on every boot since `2448cb0`: a line that reads like a test and asserts
+ * nothing, which is the shape this tree spends its effort refusing.  Nothing
+ * required the line -- no script, no doc, no CI job mentions it.
+ *
+ * The questions it used to ask are covered elsewhere, which is why this is a
+ * deletion and not a rewrite: T010 still exercises a timed wait that times
+ * out, through `it_wait_timeout`, a helper written to keep "the signature
+ * SYS_NOTIFY_WAIT_TIMEOUT had, deliberately"; and `check-abi` asserts
+ * statically that every unreachable SYS_* number declares its retirement.
+ *
+ * What is NOT covered, and is registered rather than quietly added here: that
+ * retired number 64 answers IRIS_ERR_NOT_SUPPORTED at RUNTIME.  The suite has
+ * the idiom for it -- T001 does exactly that for `SYS_GETPID` -- so it belongs
+ * there, as a numbered test, not as an init probe.
+ */
 
 /* Stack for the ud2 fault thread — statically allocated, never actually used
  * (the thread immediately faults before touching the stack). */

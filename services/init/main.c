@@ -359,7 +359,6 @@ void init_main(iris_cptr_t rbx_unused) {
      * → TIMED_OUT) is retired — covered by iris_test T010 (NOTIFY_WAIT_TIMEOUT). */
 
     init_runtime_probe_invalid_userptr();
-    init_runtime_probe_timeout_overflow();
     init_selftest_exception();
 
     /* ── Block 8: iris_test ring-3 syscall test suite ── */
