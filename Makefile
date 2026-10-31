@@ -1491,7 +1491,12 @@ spec-bridge:
 # Bounded model checking, which is the standard thing between testing and
 # proof.  It does not prove refinement: a disagreement needing five operations
 # is outside it, which is why the random lane keeps running.  Depth 4 is
-# 194481 traces in ~13 s; SPEC_DEPTH=5 is 4.1M and takes minutes.
+# 923521 traces over 31 symbols in ~73 s; SPEC_DEPTH=5 is 28629151 and takes
+# tens of minutes.  SPEC_DEPTH is a MAKE variable this recipe turns into the
+# script's argument -- `python3 -I spec/exhaustive.py` with it in the
+# environment silently runs depth 4, because -I implies -E and the script takes
+# the depth as argv[1].  A green line for the wrong depth reads exactly like a
+# green line for the right one.
 # ── the ABSTRACT specification against the EXECUTABLE one ───────────────────
 #
 # `spec-bridge` links the two for the INVARIANTS: the predicates live once and

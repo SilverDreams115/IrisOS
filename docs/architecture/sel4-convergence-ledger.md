@@ -1799,6 +1799,14 @@ intermediate result code and every final state.  `SPEC_DEPTH=5` is
 agreeing with the reference count on all 17056258 finality decisions; it is a
 soak rather than one of the fourteen, because it is minutes and not seconds.
 
+> **SUPERSEDED by the alphabet.**  Those are the 27-symbol figures.  The
+> notification data channel and a constructive `retype 1 1 2` took it to 31
+> symbols: **923521 at depth 4 in ~73 s, 28629151 at depth 5 in 40 min 11 s**,
+> both clean, the latter with D-7's predicate agreeing on 29672596 finality
+> decisions.  Kept rather than rewritten because the ratio is the lesson — four
+> symbols cost 1.7x at depth 4 and the same four cost 2x at depth 5, so the
+> alphabet is the expensive knob and the depth is the one that buys strength.
+
 The bounded claim is still bounded, and the bound moved rather than went: a
 disagreement needing SIX operations is outside it, and so is one needing a
 fourth slot or a second address space — the driver has one space, which is
@@ -2311,9 +2319,15 @@ What it now says, in four places, strongest last:
   measured unsat with the premise that the capability names a notification and
   sat without it, so it is a theorem about the authority state rather than
   about `Store`.  **Three are the controls** for those premises.  The
-  exactly-once row is the one no finite lane can make at all: `spec-exhaustive`
-  reaches it only at depth 5, which is 28629151 traces over this alphabet and
-  has not been run.
+  exactly-once row is the one the finite lanes reach only at length five, and
+  that bound was MEASURED rather than argued: a model sabotaged so a poll does
+  not consume its bits passes every one of the 923521 traces at depth 4, and
+  the five-operation trace `ut 1 ; retype 1 1 2 ; nsig 2 0 ; npoll 2 ;
+  npoll 2` separates them — the kernel answers `[0, 0, 0, 1, -13]` and the
+  sabotaged model `[0, 0, 0, 1, 1]`.  Depth 5 over this alphabet is 28629151
+  traces and has been run clean in 40 min 11 s, with D-7's predicate agreeing
+  with the reference count on all 29672596 finality decisions.  So the lane
+  covers it; it just costs forty minutes rather than seventy seconds.
 
 **Three defects had to be fixed first, and every one was found by a control
 rather than by reading the code.**  They are recorded because each of them
