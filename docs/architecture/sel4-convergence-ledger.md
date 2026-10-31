@@ -2535,6 +2535,59 @@ One symbol, `mint 0 3 5 0`, makes the chain `1 -> 2 -> 0 -> 3` reachable at
 depth 4, and `revoke 1` over it — which takes all three descendants, measured —
 lands at depth 5.  Alphabet 33 -> 34: depth 4 is 1336336 traces in 13 s.
 
+### the r8169 reset could spin forever, found by reading its siblings (2026-10-31)
+
+The Realtek backend cannot be run here — QEMU models an RTL8139, a different
+part with a different descriptor model, and the driver matches 0x8168, 0x8161,
+0x8136 and 0x8169.  So it is 407 lines that no tool has ever executed, which
+is the same standing the Isabelle text had before it was built, and the same
+reason to audit it by hand.
+
+**The technique that found it is the one this directory already records:** read
+the fixes that exist in the tree and look for the mirror that was never done.
+Two NIC backends sit beside this one and the gate runs both on every commit.
+`e1000.c`'s link wait carries
+
+    if (t0 <= 0 || now <= 0) break;   /* no clock: do not spin */
+
+and the question is simply which loops in the family lack it.  Three of the
+r8169's wait loops, and they are three different cases rather than one bug
+repeated:
+
+| loop | guard | acknowledged? |
+|---|---|---|
+| link wait | **present** | — |
+| transmit wait | absent | **yes** — its own comment says "A clock that will not answer leaves this unbounded rather than instantaneous" |
+| **reset wait** | **absent** | **no** |
+
+Only the third is a defect.  With `SYS_CLOCK_GET` refusing, `t0 > 0 && now > 0`
+is false forever, the timeout is never evaluated, and the only exit left is a
+bit the card may never clear — so a controller that fails its reset hangs the
+whole net service instead of returning.
+
+**And a hang there defeats the reason that file numbers its steps.**  Its own
+header argues that on a first run against silicon "it refused at the reset" and
+"no BAR was claimable" are different problems and only one of them is in that
+file; a spin reports neither.  `netdev.h` already says what to do when a
+backend cannot be sure — *return 0 rather than leave a half-configured
+controller doing DMA* — so no clock means refuse, with `step` still 3.  Fixed
+that way, with the `BOUND:` note the convention asks for, and the bare
+`100ull * 1000000ull` replaced by `NET_RESET_MS` since it was the only wait in
+the file written as a literal while its siblings used names.
+
+What was checked and found SOUND, so a later reader does not redo it: the
+receive ring indexes `rx_phys[i / NET_RX_PER_FRAME]` with `NET_RING_LEN` 8 over
+`NET_RX_FRAMES` 2 x `NET_RX_PER_FRAME` 4 = 8 buffers, so `i / 4` is 0..1 and in
+bounds — the same arithmetic `e1000.c` uses; `out_off` is consistent with it at
+4 x 1024 = one page per frame; the split-frame drop mirrors the e1000's,
+including the reason it drops the whole frame rather than the pieces without
+the end marker; and `desc_set` writes the address before the ownership bit,
+with a barrier, which is the ordering that matters when the card may read the
+descriptor the instant OWN appears.
+
+**Still NOT verified against silicon, and this does not change that.**  One
+hang removed by reading is not a driver that has run.
+
 ### A-4 — CSpace-native introspection replaces the CPtr→handle bridge
 
 **Change**: two new CSpace-only syscalls, `SYS_CAP_IDENTIFY` (117) and

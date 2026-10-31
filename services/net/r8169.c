@@ -93,6 +93,9 @@
 #define FCS_BYTES        4u
 
 #define NET_TX_MS        1000u
+/* And the reset, which was the one wait here written as a bare literal while
+ * its two siblings used names. */
+#define NET_RESET_MS     100u
 /* And how long to wait for the LINK.  Long, because what is being waited for
  * is a real autonegotiation; free where the link is already up.  The Intel
  * backend learned the cost of being impatient here against a hypervisor that
@@ -217,12 +220,33 @@ static int r8169_bring_up(struct net_hw *hw) {
     hw->step = 3u;
     w8(R_CR, CR_RST);
     {
+        /*
+         * BOUND: the reset bit clearing, or NET_RESET_MS elapsing, or the
+         * clock refusing to answer.  Ring 3 cannot make any of the three
+         * larger.
+         *
+         * The third is the one that was missing, and it is the only loop in
+         * this file that was missing it: the link wait below carries
+         * `t0 <= 0 || now <= 0` with the comment "no clock: do not spin", and
+         * the transmit wait leaves itself unbounded ON PURPOSE and says so.
+         * This one did neither -- with no clock the timeout was never
+         * evaluated and the only exit was a bit the card might never clear.
+         *
+         * A hang here defeats the reason this file numbers its steps.  The
+         * header's own argument is that on a first run against silicon "it
+         * refused at the reset" and "no BAR was claimable" are different
+         * problems; a spin reports neither.  And `netdev.h` says what to do
+         * when a backend cannot be sure -- return 0 rather than leave a
+         * half-configured controller doing DMA -- so no clock means refuse,
+         * with `step` still 3.
+         */
         long t0 = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
         for (;;) {
             if (!(r8(R_CR) & CR_RST)) break;
             long now = iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0);
-            if (t0 > 0 && now > 0 &&
-                (uint64_t)(now - t0) > 100ull * 1000000ull) return 0;
+            if (t0 <= 0 || now <= 0) return 0;   /* no clock: do not spin */
+            if ((uint64_t)(now - t0) >
+                (uint64_t)NET_RESET_MS * 1000000ull) return 0;
         }
     }
 
