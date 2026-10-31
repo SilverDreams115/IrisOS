@@ -2570,10 +2570,32 @@ header argues that on a first run against silicon "it refused at the reset" and
 "no BAR was claimable" are different problems and only one of them is in that
 file; a spin reports neither.  `netdev.h` already says what to do when a
 backend cannot be sure — *return 0 rather than leave a half-configured
-controller doing DMA* — so no clock means refuse, with `step` still 3.  Fixed
-that way, with the `BOUND:` note the convention asks for, and the bare
-`100ull * 1000000ull` replaced by `NET_RESET_MS` since it was the only wait in
-the file written as a literal while its siblings used names.
+controller doing DMA.*
+
+**And the first fix for it was itself wrong, found by reading the siblings
+rather than by testing.**  Going looking for the unfixed mirror of the e1000's
+guard turned up nothing — all three transmit waits here are deliberately
+unbounded without a clock and all three say so, the e1000 at length: *"the
+failure being guarded is a card that never replies, and treating a missing
+clock as an expired deadline turns a working card into a broken one."*  Those
+three are correct and must not be "fixed"; an empty search is a result worth
+recording, because the next reader will have the same suspicion.
+
+That reasoning then indicted the repair.  Refusing the INSTANT the clock is
+missing is the very mistake the e1000 names: on a clockless machine a card
+whose reset completes in microseconds would never come up at all.  A reset wait
+still cannot simply spin — giving up on a transmit costs one frame, giving up
+on a reset would program the rings of a controller still in reset — so the
+no-clock bound is now NET_RESET_SPINS register reads.  A count is "a different
+amount of patience on every machine", which is why it is not the primary bound,
+and with no clock it is the only bound there is.
+
+The clock is consulted ONCE to choose between a timed loop and a counted one,
+rather than re-read a million times after already answering that it is dead,
+and the timed loop falls through to the counted one if the clock dies mid-wait.
+Every path is bounded.  The `BOUND:` note was corrected twice in the process —
+after the first fix it described an exit the code no longer had, which is the
+small version of exactly what this directory keeps catching.
 
 What was checked and found SOUND, so a later reader does not redo it: the
 receive ring indexes `rx_phys[i / NET_RX_PER_FRAME]` with `NET_RING_LEN` 8 over
