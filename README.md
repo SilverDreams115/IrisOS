@@ -24,9 +24,11 @@ kernel.**  What ties the two together is `make spec-exhaustive`: every trace of
 four operations over a fixed alphabet of 34 symbols — 1336336 of them, 13 s on
 sixteen cores — run through the model and through the real `kcnode.c`, compared
 on every intermediate result code and every final state.  Depth five is
-45435424 traces and was measured clean in 7 min 48 s, with D-7's predicate
-agreeing with the reference count on all 43753139 finality decisions.  Depth
-five is where two of the data channel's properties exist at all — a model
+45435424 traces, clean in 7 min 48 s, and **depth SIX is 1544804416 traces,
+clean in 5 h 57 min 11 s** — every sequence of six operations, with D-7's
+predicate agreeing with the reference count on all 1810204570 finality
+decisions.  Depth five is where two of the data channel's properties exist at
+all — a model
 sabotaged so that polling does not CONSUME the bits passes every one of the
 depth-four traces, because observing it needs five operations and building a
 notification that may be polled costs two of them.  Total below a bound is not a

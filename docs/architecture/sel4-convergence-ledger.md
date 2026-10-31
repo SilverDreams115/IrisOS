@@ -1813,11 +1813,18 @@ soak rather than one of the fourteen, because it is minutes and not seconds.
 >
 > **And the rate is not constant across depths**, which cost an estimate.
 > Depth 6 was written up as "about 4.4 h" by extrapolating depth 5's 97084
-> traces/s; the live run reports 75400/s and 5.7 h, because a trace of six
-> operations costs more than one of five — 0.78 of the depth-5 rate against the
-> 0.83 that per-operation cost alone predicts.  Extrapolate the RATE and not
-> the count, and note that the progress reporting added the same day is what
-> surfaced it within a minute of the run starting.
+> traces/s; the run averaged ~72000/s and took **5 h 57 min 11 s**, because a
+> trace of six operations costs more than one of five.  Extrapolate the RATE
+> and not the count, and note that the progress reporting added the same day is
+> what surfaced it within a minute of the run starting rather than after six
+> hours.
+>
+> **Depth 6 is clean**: 1544804416 traces, every sequence of six operations
+> over the 34-symbol alphabet, D-7's predicate agreeing with the reference
+> count on all 1810204570 finality decisions, peak resident set 17.8 MB.  That
+> last figure is the one worth keeping — the depth had been written off as
+> "~30 h" when what actually blocked it was the materialised product, tens of
+> gigabytes before the first trace ran.  It was never the hours.
 
 The bounded claim is still bounded, and the bound moved rather than went: a
 disagreement needing SIX operations is outside it, and so is one needing a
