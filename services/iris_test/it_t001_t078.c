@@ -13,7 +13,7 @@
 
 
 #include "../common/iris_msg.h"
-/* ── T001: the three ambient answers are RETIRED ────────────────────
+/* ── T001: the ambient answers are RETIRED ──────────────────────────
  *
  * `SYS_GETPID` handed a thread its own task id and `SYS_THREAD_EXIT` ended it
  * without recording why.  Neither was authority — no number selected an object
@@ -26,12 +26,29 @@
  * unprivileged instruction, so a monotonic read cannot be gated by anything and
  * retiring the syscall would have moved the same ungated read into an
  * instruction.  Reading a counter is not authority; BLOCKING on one is, and
- * That became a capability. */
+ * That became a capability.
+ *
+ * `SYS_NOTIFY_WAIT_TIMEOUT` is that blocking wait, and it is checked here for
+ * the reason the sentence above gives.  Its RUNTIME answer was untested:
+ * `check-abi` asserts statically that every unreachable number declares its
+ * retirement, T010 covers a timed wait that times out through the replacement
+ * helper, and init's `timeout-overflow` probe had been reduced to printing
+ * SKIP on every boot since 2448cb0.  The charter's rule is stronger than a
+ * declaration -- *a retired syscall number is never reused; it answers
+ * NOT_SUPPORTED forever* -- and this is where that is asked of the running
+ * kernel rather than of the header. */
 void test_t001(void) {
     int ok = 1;
     const char *why = "ambient answers";
     if (ok && it_sys0(SYS_GETPID) != (long)IRIS_ERR_NOT_SUPPORTED) {
         ok = 0; why = "GETPID still answers";
+    }
+    /* Arguments deliberately harmless: the dispatch refuses on the NUMBER
+     * before reading any of them, so a retired number needs no valid
+     * capability to be asked about. */
+    if (ok && it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, 0, 0, 0)
+              != (long)IRIS_ERR_NOT_SUPPORTED) {
+        ok = 0; why = "NOTIFY_WAIT_TIMEOUT still answers";
     }
     /* THREAD_EXIT is not called from this thread for the obvious reason; it is
      * exercised where it would have ended one — every helper thread in this
