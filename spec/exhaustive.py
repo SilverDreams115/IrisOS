@@ -57,6 +57,7 @@ so the rule was only ever caught INDIRECTLY, through the badge ordering.
 """
 
 import itertools
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -141,6 +142,24 @@ ALPHABET = [
     #
     "vmap 0 0 1", "vunmap 0 0 1",
     #
+    # A FOURTH slot, one symbol, and it is here because descoping it was a
+    # mistake with a stated reason that turned out to be false.
+    #
+    # The reason given was "a three-level derivation chain is already reachable
+    # with three slots".  Measured: with slots 0,1,2 the deepest chain is
+    # `seed 1 1 ; mint 1 2 5 0 ; mint 2 0 5 0`, which is a root and TWO
+    # descendants.  `prove.py`'s revoke and confinement rows walk `anc(x, y, 4)`
+    # — FOUR parent links — so the proved side reasons about an ancestry depth
+    # the lane checking the C could not build.  That asymmetry is the whole
+    # argument for the slot, and it was sitting in the file unnoticed.
+    #
+    #   `seed 1 1 ; mint 1 2 5 0 ; mint 2 0 5 0 ; mint 0 3 5 0`
+    #       is four: a chain 1 -> 2 -> 0 -> 3, four levels, built at this
+    #       depth.  Revoking its root is `revoke 1`, already in the alphabet,
+    #       so the revoke over a three-deep subtree lands at depth 5.
+    #
+    "mint 0 3 5 0",
+    #
     # The DATA channel, against the real `knotification.c`.  Three symbols,
     # picked the same way D-13's four were — the fewest that make a named case
     # reachable at depth 4, given what the rest of the alphabet already
@@ -191,6 +210,9 @@ ALPHABET = [
 ]
 
 CHUNK = 400          # traces per driver process
+# Summed across WORKERS.  `SHADOW` is per-process and private; this is the
+# only total the verdict may read.
+SHADOW_TOTAL = {"checks": 0, "mismatch": 0}
 
 # D-7 shadow-comparison coverage, accumulated across driver processes.
 SHADOW = {"checks": 0, "mismatch": 0}
@@ -226,65 +248,127 @@ def run_kernel_batch(traces):
     return out
 
 
+def _do_chunk(chunk):
+    """
+    One chunk, start to finish: the real kernel, the model, and the compare.
+
+    Returned rather than printed, and SHADOW is returned rather than
+    accumulated, because this runs in a worker process where a module global
+    is a private copy.  A lane that summed a global across processes would
+    report `shadow 0` from checks that did run — the exact shape this file
+    already refuses to accept as evidence.
+    """
+    SHADOW["checks"] = 0
+    SHADOW["mismatch"] = 0
+    msgs = []
+    bad = 0
+    checked = 0
+    kres = run_kernel_batch(chunk)
+    if len(kres) != len(chunk):
+        return (-1, ["exhaustive: driver returned %d segments for %d traces"
+                     % (len(kres), len(chunk))], 0, 0, 0)
+    for t, (kcodes, kdump) in zip(chunk, kres):
+        m, mcodes = run_model(t)
+        checked += 1
+        mcodes = [str(c) for c in mcodes]
+        if mcodes != kcodes:
+            bad += 1
+            if len(msgs) < 5:
+                msgs.append("exhaustive: RESULT CODES differ\n  trace: %s\n"
+                            "  model:  %s\n  kernel: %s"
+                            % (" ; ".join(t), mcodes, kcodes))
+            continue
+        mdump = m.dump().strip().splitlines()
+        if mdump != kdump:
+            bad += 1
+            if len(msgs) < 5:
+                msgs.append("exhaustive: STATE differs\n  trace: %s\n"
+                            "  model:\n    %s\n  kernel:\n    %s"
+                            % (" ; ".join(t), "\n    ".join(mdump),
+                               "\n    ".join(kdump)))
+            continue
+        why = check_all(m)
+        if why:
+            bad += 1
+            if len(msgs) < 5:
+                msgs.append("exhaustive: the model violates an invariant: "
+                            "%s\n  trace: %s" % (why, " ; ".join(t)))
+    return (bad, msgs, SHADOW["checks"], SHADOW["mismatch"], checked)
+
+
+def _stream_chunks(depth):
+    """
+    Chunks of traces, STREAMED.
+
+    `itertools.product` was materialised into a list, which is what actually
+    made depth 6 impossible: 33**6 is 1290468969 traces, and a list of that
+    many small lists is tens of gigabytes before a single trace runs.  The
+    product is lazy; only the chunk in hand is not.
+    """
+    it = itertools.product(ALPHABET, repeat=depth)
+    while True:
+        chunk = [list(t) for t in itertools.islice(it, CHUNK)]
+        if not chunk:
+            return
+        yield chunk
+
+
 def main():
     depth = int(sys.argv[1]) if len(sys.argv) > 1 else 4
+    jobs = int(os.environ.get("SPEC_JOBS", "0")) or (os.cpu_count() or 1)
     if not os.path.exists(DRIVER):
         print("exhaustive: %s is missing — run `make spec-driver`" % DRIVER)
         return 2
 
-    traces = [list(t) for t in itertools.product(ALPHABET, repeat=depth)]
-    total = len(traces)
+    total = len(ALPHABET) ** depth
     print("exhaustive: %d traces — every sequence of %d operations over an "
-          "alphabet of %d" % (total, depth, len(ALPHABET)))
+          "alphabet of %d, on %d worker(s)"
+          % (total, depth, len(ALPHABET), jobs))
 
     bad = 0
     checked = 0
-    for base in range(0, total, CHUNK):
-        chunk = traces[base:base + CHUNK]
-        kres = run_kernel_batch(chunk)
-        if len(kres) != len(chunk):
-            print("exhaustive: driver returned %d segments for %d traces"
-                  % (len(kres), len(chunk)))
+    shown = 0
+    #
+    # Each chunk is INDEPENDENT: a fresh model per trace, and the driver's
+    # `reset` empties the CSpace in its own process, so nothing crosses a
+    # chunk boundary and the work parallelises without changing what is
+    # checked.  `imap` keeps the chunks in order, so the first disagreements
+    # reported are the same ones the sequential lane would have reported.
+    #
+    def _results():
+        if jobs <= 1:
+            for c in _stream_chunks(depth):
+                yield _do_chunk(c)
+        else:
+            with multiprocessing.Pool(jobs) as pool:
+                for r in pool.imap(_do_chunk, _stream_chunks(depth)):
+                    yield r
+
+    for nbad, msgs, sc, sm, nchk in _results():
+        if nbad < 0:
+            print(msgs[0])
             return 1
-        for t, (kcodes, kdump) in zip(chunk, kres):
-            m, mcodes = run_model(t)
-            checked += 1
-            mcodes = [str(c) for c in mcodes]
-            if mcodes != kcodes:
-                bad += 1
-                if bad <= 5:
-                    print("exhaustive: RESULT CODES differ\n  trace: %s\n"
-                          "  model:  %s\n  kernel: %s"
-                          % (" ; ".join(t), mcodes, kcodes))
-                continue
-            mdump = m.dump().strip().splitlines()
-            if mdump != kdump:
-                bad += 1
-                if bad <= 5:
-                    print("exhaustive: STATE differs\n  trace: %s\n"
-                          "  model:\n    %s\n  kernel:\n    %s"
-                          % (" ; ".join(t), "\n    ".join(mdump),
-                             "\n    ".join(kdump)))
-                continue
-            why = check_all(m)
-            if why:
-                bad += 1
-                if bad <= 5:
-                    print("exhaustive: the model violates an invariant: %s\n"
-                          "  trace: %s" % (why, " ; ".join(t)))
+        bad += nbad
+        checked += nchk
+        SHADOW_TOTAL["checks"] += sc
+        SHADOW_TOTAL["mismatch"] += sm
+        for msg in msgs:
+            if shown < 5:
+                print(msg)
+                shown += 1
 
     if bad:
         print("\nexhaustive: %d disagreement(s) over %d traces" % (bad, checked))
         return 1
-    if SHADOW["checks"] == 0:
+    if SHADOW_TOTAL["checks"] == 0:
         print("exhaustive: the D-7 shadow comparison never RAN — `shadow 0` "
               "in the dumps means nothing and this lane is not evidence for "
               "retiring the reference count")
         return 1
-    if SHADOW["mismatch"]:
+    if SHADOW_TOTAL["mismatch"]:
         print("exhaustive: the MDB predicate and the reference count "
               "disagreed %d time(s) in %d comparisons"
-              % (SHADOW["mismatch"], SHADOW["checks"]))
+              % (SHADOW_TOTAL["mismatch"], SHADOW_TOTAL["checks"]))
         return 1
 
     print("exhaustive: %d traces, EVERY sequence of %d operations over the "
@@ -292,7 +376,7 @@ def main():
           "intermediate result code and on every final state, and every "
           "charter invariant held throughout; D-7's predicate agreed with the "
           "reference count on all %d finality decisions"
-          % (checked, depth, SHADOW["checks"]))
+          % (checked, depth, SHADOW_TOTAL["checks"]))
     return 0
 
 

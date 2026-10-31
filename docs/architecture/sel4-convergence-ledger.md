@@ -1803,12 +1803,13 @@ soak rather than one of the fourteen, because it is minutes and not seconds.
 > notification data channel and a constructive `retype 1 1 2` took it to 31
 > symbols: **923521 at depth 4 in ~73 s, 28629151 at depth 5 in 40 min 11 s**,
 > both clean, the latter with D-7's predicate agreeing on 29672596 finality
-> decisions.  A second address space then took it to 33: **1185921 at depth 4
-> in 94 s and 39135393 at depth 5 in 54 min 52 s**, both clean, the latter with
-> the predicate agreeing on 37996931 decisions.  Kept rather than rewritten
-> because the ratio is the lesson — four symbols cost 1.74x at depth 4 and
-> 2.00x at depth 5, two more cost a further 1.28x and 1.37x, so the alphabet is
-> the expensive knob and the depth is the one that buys strength.
+> decisions.  A second address space took it to 33, a fourth CNode slot to 34:
+> **1336336 at depth 4 in 13 s and 45435424 at depth 5 in 7 min 48 s**, both
+> clean, the latter with the predicate agreeing on 43753139 decisions — and
+> those seconds are a PARALLEL lane, not a faster one.  Kept rather than
+> rewritten because the ratio is the lesson: the alphabet is the expensive knob
+> (each symbol costs its count to the depth) and the depth is the one that buys
+> strength.
 
 The bounded claim is still bounded, and the bound moved rather than went: a
 disagreement needing SIX operations is outside it, and so is one needing a
@@ -2014,13 +2015,13 @@ now so the next estimate is measured instead of argued:
 | the five static checks together | 9 |
 | `test-unit`, `spec-differential`, `spec-rights`, `spec-prove`, `spec-bridge`, `spec-theory`, `spec-noninterference` | 2 |
 | `spec-isabelle` | 6 |
-| `spec-exhaustive` | 94 |
-| selftests at 1, 2 and 4 processors | 64, 51, 42 |
-| `smoke-stage10` (two boots) | 101 |
-| `smoke-verified` | 63 |
-| **total** | **434** |
+| `spec-exhaustive` (parallel, 16 workers) | 13 |
+| selftests at 1, 2 and 4 processors | 62, 47, 43 |
+| `smoke-stage10` (two boots) | 100 |
+| `smoke-verified` | 61 |
+| **total** | **346** |
 
-Just over seven minutes, not forty.  The forty had two causes and both were
+Just under six minutes, not forty.  The forty had two causes and both were
 local to the session that measured them: D-13's bug hung init in `FS_OP_STAT`,
 so NO boot reached `[USER] init idle loop start` and every lane waited out its
 deadline — the harness polls for that marker and kills QEMU two seconds after
@@ -2477,6 +2478,62 @@ stdout is enough, because the failure paths `cat` the whole serial log into it
 a PASSING run, which looks alarming and means only that the serial text is not
 there.  The verdict to grep for is `[headless] healthy runtime signature
 observed`.
+
+### the exhaustive lane, parallel — and why depth 6 was impossible (2026-10-30)
+
+Depth 6 was recorded as "1.3 billion traces, ~30 h, an overnight soak".  Both
+halves of that were wrong, and the first one was not about time at all.
+
+`main` began with `traces = [list(t) for t in itertools.product(ALPHABET,
+repeat=depth)]`.  That MATERIALISES the whole product: at 33 symbols and depth
+6 it is 1290468969 small lists, tens of gigabytes, allocated before a single
+trace runs.  The lane would have died of memory long before it ran out of
+hours.  `itertools.product` is lazy; only the list around it was not.  It is
+streamed now, a chunk at a time.
+
+The second half was that the lane was single-threaded while the machine has 16
+cores.  Each chunk is independent — a fresh model per trace, and the driver's
+`reset` empties the CSpace inside its own process — so the work parallelises
+without changing what is checked.  `SPEC_JOBS` sets the worker count and
+defaults to `os.cpu_count()`.
+
+**Proven to give the same verdict, not assumed to:**
+
+| | 1 worker | 16 workers |
+|---|---|---|
+| depth 3, traces | 35937 | 35937 |
+| depth 3, finality decisions | 20373 | 20373 |
+| depth 4 under sabotage | **121 disagreements** | **121 disagreements** |
+| depth 4 clean, wall time | 95 s | **11.6 s** |
+
+8.2x on 16 cores.  The sabotage row is the one that matters: a parallel lane
+that agreed on clean runs and lost disagreements would be worse than no
+speedup, because the thing it would lose is the only output that matters.
+
+One trap worth naming, because this file already refuses its shape elsewhere:
+`SHADOW` is a module global, and in a worker process a module global is a
+PRIVATE COPY.  Summing it in the parent would have reported `shadow 0` from
+checks that really ran — and this lane explicitly fails when the shadow count
+is zero, on the grounds that `shadow 0` from a check that never executed is not
+evidence.  The counts are returned per chunk and summed into `SHADOW_TOTAL`,
+which is the only total the verdict reads.
+
+### a fourth CNode slot — the descoping was wrong, with a false reason
+
+It was left out with a stated reason: *"a three-level derivation chain is
+already reachable with three slots"*.  Measured, which is what should have
+happened first: with slots 0, 1 and 2 the deepest chain is
+`seed 1 1 ; mint 1 2 5 0 ; mint 2 0 5 0` — a root and TWO descendants.
+
+And `prove.py`'s revoke and confinement rows walk `anc(x, y, 4)`, FOUR parent
+links.  So the proved side reasoned about an ancestry depth the lane that
+checks the C could not construct, and that asymmetry had been sitting in the
+tree unnoticed.  It is the whole argument for the slot, and the descoping note
+missed it.
+
+One symbol, `mint 0 3 5 0`, makes the chain `1 -> 2 -> 0 -> 3` reachable at
+depth 4, and `revoke 1` over it — which takes all three descendants, measured —
+lands at depth 5.  Alphabet 33 -> 34: depth 4 is 1336336 traces in 13 s.
 
 ### A-4 — CSpace-native introspection replaces the CPtr→handle bridge
 
