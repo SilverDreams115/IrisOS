@@ -2478,6 +2478,19 @@ original 1-in-8 was an artifact of conditions that no longer hold (parallel
 lanes and QEMU disk-lock collisions, which the headless guard now refuses), but
 that is a hypothesis and it is written here as one.
 
+A THIRD signature to rule out before blaming either: a run killed by an OUTER
+timeout exits non-zero with no fresh log and no `[headless]` verdict, which
+looks exactly like the collision this tree already attributed those `rc=2`s to.
+Measured while hunting them: a soak wrapping the lane in `timeout 400` killed
+one run of thirty at 387 s with the recipe's own 400 s QEMU timeout still 80 s
+away, so the self-diagnosing check never spoke.  The outer bound must exceed
+build plus inner timeout.  That run was under deliberate 1200 % CPU load, and a
+TCG boot starved of cores taking 5x its 79 s norm is most likely starvation and
+not a kernel fault — the condition was invented by the test rather than met by
+the project, which runs its lanes sequentially on an idle machine.  17 further
+runs under the same load were clean, which at a 1-in-30 rate proves nothing and
+is recorded as a data point rather than a result.
+
 A caution for whoever runs the next soak: `make smoke-verified` writes the
 serial log to `build/qemu-verified.log` and OVERWRITES it every run, so a soak
 that keeps only that file keeps one run's evidence.  Capturing the lane's
