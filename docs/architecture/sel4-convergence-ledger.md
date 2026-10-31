@@ -1804,10 +1804,11 @@ soak rather than one of the fourteen, because it is minutes and not seconds.
 > symbols: **923521 at depth 4 in ~73 s, 28629151 at depth 5 in 40 min 11 s**,
 > both clean, the latter with D-7's predicate agreeing on 29672596 finality
 > decisions.  A second address space then took it to 33: **1185921 at depth 4
-> in 94 s**.  Kept rather than rewritten because the ratio is the lesson — four
-> symbols cost 1.74x at depth 4 and 2.00x at depth 5, two more cost a further
-> 1.28x and 1.37x, so the alphabet is the expensive knob and the depth is the
-> one that buys strength.
+> in 94 s and 39135393 at depth 5 in 54 min 52 s**, both clean, the latter with
+> the predicate agreeing on 37996931 decisions.  Kept rather than rewritten
+> because the ratio is the lesson — four symbols cost 1.74x at depth 4 and
+> 2.00x at depth 5, two more cost a further 1.28x and 1.37x, so the alphabet is
+> the expensive knob and the depth is the one that buys strength.
 
 The bounded claim is still bounded, and the bound moved rather than went: a
 disagreement needing SIX operations is outside it, and so is one needing a
@@ -2421,6 +2422,11 @@ is the shape of the defect that actually lived here:
 | the sweep clears EVERY space, not the orphaned one | 4 of 600 random |
 | **the sweep only looks at space 0** (the window that advances past one) | **121 of 1185921 exhaustive**, 4 of 600 random |
 | a VA is BUSY in any space (collapses the two to one) | 1 of 600 random |
+
+At depth 5 the same alphabet is 39135393 traces, also measured clean, in
+54 min 52 s with the predicate agreeing on 37996931 finality decisions — so the
+two-space sweep is covered exhaustively at both lengths and not only at the one
+where its shortest sequence fits.
 
 So a class of defect that lived in this tree, and was found by reading, is now
 caught by two lanes.  Two exhaustive symbols were enough — `vmap 0 0 1` and
